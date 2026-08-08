@@ -32,17 +32,16 @@ need_command() {
 need_command "$PYTHON_BIN"
 
 print_banner() {
-  local width=68 title="AESORA-AGENT" subtitle="SELF-HOSTED AI AGENT FRAMEWORK"
+  local subtitle="SELF-HOSTED AI AGENT FRAMEWORK  ·  BY MFTRFERDINAND"
+  local art
+  art='   _   ___ ___  ___  ___    _       _   ___ ___ _  _ _____
+  /_\ | __/ __|/ _ \| _ \  /_\ ___ /_\ / __| __| \| |_   _|
+ / _ \| _|\__ \ (_) |   / / _ \___/ _ \ (_ | _|| .` | | |
+/_/ \_\___|___/\___/|_|_\/_/ \_\ /_/ \_\___|___|_|\_| |_|'
   if [ -t 1 ] && [ "${NO_COLOR+x}" != x ] && [ "${TERM:-}" != "dumb" ]; then
-    printf '\n\033[38;5;27m╔%*s╗\033[0m\n' "$width" '' | tr ' ' '═'
-    printf '\033[38;5;33m║\033[0m  \033[38;5;51mA E S O R A\033[0m\033[38;5;33m ━ \033[38;5;27mA G E N T\033[0m%*s\033[38;5;33m║\033[0m\n' "$((width - 29))" ''
-    printf '\033[38;5;33m║\033[0m  \033[38;5;75m%s\033[0m%*s\033[38;5;33m║\033[0m\n' "$subtitle" "$((width - ${#subtitle} - 2))" ''
-    printf '\033[38;5;27m╚%*s╝\033[0m\n\n' "$width" '' | tr ' ' '═'
+    printf '\n\033[38;5;51m%s\033[0m\n\033[38;5;75m  %s\033[0m\n\n' "$art" "$subtitle"
   else
-    printf '\n+%*s+\n' "$width" '' | tr ' ' '-'
-    printf '|  %s%*s|\n' "$title" "$((width - ${#title} - 2))" ''
-    printf '|  %s%*s|\n' "$subtitle" "$((width - ${#subtitle} - 2))" ''
-    printf '+%*s+\n\n' "$width" '' | tr ' ' '-'
+    printf '\n%s\n  %s\n\n' "$art" "$subtitle"
   fi
 }
 

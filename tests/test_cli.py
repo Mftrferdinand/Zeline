@@ -110,17 +110,18 @@ class AesoraCliTests(unittest.TestCase):
         self.assertIn("api key", result.lower())
         self.assertIn("aesora setup", result.lower())
 
-    def test_status_alias_uses_aesora_agent_banner(self):
+    def test_status_alias_uses_large_aesora_agent_wordmark(self):
         result = self.invoke(["status"], expected_status=1)
-        self.assertIn("AESORA-AGENT", result)
+        self.assertIn("/ _ \\| _|\\__ \\ (_) |", result)
         self.assertIn("SELF-HOSTED AI AGENT FRAMEWORK", result)
+        self.assertIn("BY MFTRFERDINAND", result)
 
     def test_banner_falls_back_to_plain_text_when_color_is_disabled(self):
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.cli._print_banner()
-        self.assertIn("AESORA-AGENT", output.getvalue())
+        self.assertIn("/ _ \\| _|\\__ \\ (_) |", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
 
 

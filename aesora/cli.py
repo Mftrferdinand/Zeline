@@ -45,32 +45,25 @@ def _terminal_color_enabled() -> bool:
     return bool(os.environ.get("FORCE_COLOR")) or sys.stdout.isatty()
 
 
+BANNER_ART = (
+    "   _   ___ ___  ___  ___    _       _   ___ ___ _  _ _____ ",
+    "  /_\\ | __/ __|/ _ \\| _ \\  /_\\ ___ /_\\ / __| __| \\| |_   _|",
+    " / _ \\| _|\\__ \\ (_) |   / / _ \\___/ _ \\ (_ | _|| .` | | |  ",
+    "/_/ \\_\\___|___/\\___/|_|_\\/_/ \\_\\ /_/ \\_\\___|___|_|\\_| |_|  ",
+)
+
+
 def _print_banner() -> None:
-    """Render the Aesora terminal identity without breaking plain terminals."""
-    title = "AESORA-AGENT"
-    subtitle = f"SELF-HOSTED AI AGENT FRAMEWORK  ·  v{__version__}"
-    width = 68
+    """Render a large portable AESORA-AGENT terminal wordmark."""
+    subtitle = f"SELF-HOSTED AI AGENT FRAMEWORK  ·  v{__version__}  ·  BY MFTRFERDINAND"
     if _terminal_color_enabled():
-        cyan = "\033[38;5;51m"
-        blue = "\033[38;5;33m"
-        deep_blue = "\033[38;5;27m"
-        dim = "\033[38;5;75m"
+        colors = ("\033[38;5;51m", "\033[38;5;45m", "\033[38;5;39m", "\033[38;5;27m")
         reset = "\033[0m"
-        print(
-            f"\n{deep_blue}╔{'═' * width}╗{reset}\n"
-            f"{blue}║{reset}  {cyan}A E S O R A{reset}{blue} ━ {deep_blue}A G E N T{reset}"
-            f"{' ' * (width - 29)}{blue}║{reset}\n"
-            f"{blue}║{reset}  {dim}{subtitle}{reset}"
-            f"{' ' * (width - len(subtitle) - 2)}{blue}║{reset}\n"
-            f"{deep_blue}╚{'═' * width}╝{reset}\n"
-        )
+        wordmark = "\n".join(f"{color}{line}{reset}" for color, line in zip(colors, BANNER_ART))
+        print(f"\n{wordmark}\n\033[38;5;75m  {subtitle}{reset}\n")
     else:
-        print(
-            f"\n+{'-' * width}+\n"
-            f"|  {title}{' ' * (width - len(title) - 2)}|\n"
-            f"|  {subtitle}{' ' * (width - len(subtitle) - 2)}|\n"
-            f"+{'-' * width}+\n"
-        )
+        wordmark = "\n".join(BANNER_ART)
+        print(f"\n{wordmark}\n  {subtitle}\n")
 
 
 def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
