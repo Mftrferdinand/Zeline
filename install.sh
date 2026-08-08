@@ -32,16 +32,17 @@ need_command() {
 need_command "$PYTHON_BIN"
 
 print_banner() {
-  local subtitle="SELF-HOSTED AI AGENT FRAMEWORK  ·  BY MFTRFERDINAND"
+  local width=59 subtitle="AI AGENT FRAMEWORK  ·  BY MFTRFERDINAND"
   local art
   art='   _   ___ ___  ___  ___    _       _   ___ ___ _  _ _____
   /_\ | __/ __|/ _ \| _ \  /_\ ___ /_\ / __| __| \| |_   _|
  / _ \| _|\__ \ (_) |   / / _ \___/ _ \ (_ | _|| .` | | |
-/_/ \_\___|___/\___/|_|_\/_/ \_\ /_/ \_\___|___|_|\_| |_|'
+/_/ \_\___|___/\___/|_|_\/_/ \_\ /_/ \_\___|___|_|\_| |_|  '
+  printf -v subtitle '%*s%s%*s' $(((width - ${#subtitle}) / 2)) '' "$subtitle" $(((width - ${#subtitle} + 1) / 2)) ''
   if [ -t 1 ] && [ "${NO_COLOR+x}" != x ] && [ "${TERM:-}" != "dumb" ]; then
-    printf '\n\033[38;5;51m%s\033[0m\n\033[38;5;75m  %s\033[0m\n\n' "$art" "$subtitle"
+    printf '\n\033[38;5;51m%s\033[0m\n\033[38;5;75m%s\033[0m\n\n' "$art" "$subtitle"
   else
-    printf '\n%s\n  %s\n\n' "$art" "$subtitle"
+    printf '\n%s\n%s\n\n' "$art" "$subtitle"
   fi
 }
 

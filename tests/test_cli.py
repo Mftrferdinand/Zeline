@@ -147,8 +147,9 @@ class AesoraCliTests(unittest.TestCase):
     def test_status_alias_uses_large_aesora_agent_wordmark(self):
         result = self.invoke(["status"], expected_status=1)
         self.assertIn("/ _ \\| _|\\__ \\ (_) |", result)
-        self.assertIn("SELF-HOSTED AI AGENT FRAMEWORK", result)
+        self.assertIn("AI AGENT FRAMEWORK", result)
         self.assertIn("BY MFTRFERDINAND", result)
+        self.assertNotIn("SELF-HOSTED", result)
 
     def test_banner_falls_back_to_plain_text_when_color_is_disabled(self):
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):

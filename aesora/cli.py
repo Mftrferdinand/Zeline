@@ -51,11 +51,16 @@ BANNER_ART = (
     " / _ \\| _|\\__ \\ (_) |   / / _ \\___/ _ \\ (_ | _|| .` | | |  ",
     "/_/ \\_\\___|___/\\___/|_|_\\/_/ \\_\\ /_/ \\_\\___|___|_|\\_| |_|  ",
 )
+BANNER_WIDTH = max(len(line) for line in BANNER_ART)
+
+
+def _centered_banner_line(text: str) -> str:
+    return text.center(BANNER_WIDTH)
 
 
 def _print_banner() -> None:
     """Render a large portable AESORA-AGENT terminal wordmark."""
-    subtitle = f"SELF-HOSTED AI AGENT FRAMEWORK  ·  v{__version__}  ·  BY MFTRFERDINAND"
+    subtitle = _centered_banner_line(f"AI AGENT FRAMEWORK  ·  v{__version__}  ·  BY MFTRFERDINAND")
     if _terminal_color_enabled():
         colors = ("\033[38;5;51m", "\033[38;5;45m", "\033[38;5;39m", "\033[38;5;27m")
         reset = "\033[0m"
