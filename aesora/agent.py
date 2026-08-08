@@ -1,0 +1,197 @@
+"""Inti Aesora: LLM di dalam loop yang boleh memakai tool.
+
+Setiap object ``Aesora`` milik satu identity percakapan dan satu tool profile.
+Jadi Telegram user A tidak pernah berbagi history atau memory dengan user B.
+"""
+from __future__ import annotations
+
+import copy
+import json
+from typing import Any, Callable
+
+import requests
+
+from aesora import config
+from aesora import skills
+from aesora.tools import ToolExecutor
+
+
+class AesoraError(RuntimeError):
+    """Error yang aman ditampilkan gateway sebagai gangguan internal."""
+
+
+def _parse_response(text: str) -> dict[str, Any]:
+    """Parse normal JSON dan quirk router yang mengirim JSON+trailing SSE."""
+    cleaned = text.strip()
+    if cleaned.startswith("data:"):
+        cleaned = cleaned[5:].strip()
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError:
+        try:
+            value, _ = json.JSONDecoder().raw_decode(cleaned)
+        except json.JSONDecodeError as exc:
+            raise AesoraError("Provider memberi respons yang bukan JSON valid.") from exc
+    if not isinstance(value, dict):
+        raise AesoraError("Provider memberi bentuk respons yang tidak dikenal.")
+    if value.get("error"):
+        error = value["error"]
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        raise AesoraError(f"Provider menolak request: {str(message)[:300]}")
+    return value
+
+
+class Aesora:
+    """Satu sesi agent untuk satu user/chat.
+
+    ``tool_profile``:
+      - safe: memory + load skill (default gateway publik)
+      - workspace: safe + file di workspace
+      - full: workspace + shell, default CLI owner
+    """
+
+    def __init__(
+        self,
+        identity: str = "cli:local",
+        tool_profile: str | None = None,
+        workspace: str | None = None,
+        system_extra: str = "",
+    ):
+        self.identity = identity or "cli:local"
+        self.base_url = config.BASE_URL
+        self.api_key = config.API_KEY
+        self.model = config.MODEL
+        self.executor = ToolExecutor(
+            identity=self.identity,
+            profile=tool_profile or config.CLI_TOOL_PROFILE,
+            workspace=workspace or config.WORKSPACE,
+        )
+        self.messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    config.SYSTEM_PROMPT
+                    + self.executor.memory.prompt_block()
+                    + skills.skills_block(include_private=self.executor.profile == "full")
+                    + system_extra
+                    + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
+                    "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
+                    "Jangan meminta, menebak, atau mengungkap rahasia konfigurasi dan API key."
+                ),
+            }
+        ]
+
+    def _call_llm(self) -> dict[str, Any]:
+        if not self.api_key:
+            raise AesoraError("API key belum dikonfigurasi. Jalankan `aesora setup`.")
+        if not self.base_url or not self.model:
+            raise AesoraError("Provider belum lengkap. Jalankan `aesora setup`.")
+        # Snapshot immutable: history berubah lagi setelah request (tool/final reply).
+        # Tanpa deepcopy, mock/async transport bisa melihat message yang sudah berubah.
+        payload = {
+            "model": self.model,
+            "messages": copy.deepcopy(self.messages),
+            "tools": self.executor.schemas,
+            "tool_choice": "auto",
+            "temperature": 0.7,
+            "stream": False,
+        }
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "aesora-agent/0.1.0",
+                },
+                json=payload,
+                timeout=180,
+            )
+        except requests.RequestException as exc:
+            raise AesoraError(f"Gagal menghubungi provider: {exc.__class__.__name__}.") from exc
+        if not response.ok:
+            # Jangan masukkan body API (bisa mengandung detail sensitif) ke user.
+            raise AesoraError(f"Provider HTTP {response.status_code}.")
+        parsed = _parse_response(response.text)
+        try:
+            message = parsed["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AesoraError("Provider tidak mengembalikan pilihan respons.") from exc
+        if not isinstance(message, dict):
+            raise AesoraError("Provider mengembalikan message yang tidak valid.")
+        return message
+
+    def _trim_history(self) -> None:
+        """Batasi history tanpa memulai context dari assistant/tool orphan.
+
+        Tool-call protocol mengharuskan ``assistant(tool_calls)`` diikuti semua
+        ``tool`` result terkait. Maka kita hanya memotong pada awal user turn,
+        bukan sekadar `messages[-N:]`.
+        """
+        maximum = 60
+        if len(self.messages) <= maximum + 1:
+            return
+        system = self.messages[0]
+        tail = self.messages[-maximum:]
+        # Cari awal user turn pertama di window; buang sisa turn sebelumnya.
+        start = next((index for index, message in enumerate(tail) if message.get("role") == "user"), len(tail))
+        trimmed = tail[start:]
+        # Fallback defensif bila tidak ada user message (seharusnya tidak terjadi
+        # karena trim dipanggil setelah turn final selesai).
+        if not trimmed:
+            trimmed = []
+        self.messages = [system, *trimmed]
+
+    def send(
+        self,
+        user_input: str,
+        on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> str:
+        text = user_input.strip()
+        if not text:
+            return "Tulis pesan dulu ya."
+        if len(text) > 16_000:
+            return "Pesan terlalu panjang (maksimum 16.000 karakter)."
+        self.messages.append({"role": "user", "content": text})
+
+        for _ in range(config.MAX_TOOL_ROUNDS):
+            message = self._call_llm()
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                content = str(message.get("content") or "").strip()
+                self.messages.append({"role": "assistant", "content": content})
+                self._trim_history()
+                return content or "(provider tidak mengirim jawaban teks)"
+
+            if not isinstance(tool_calls, list):
+                raise AesoraError("Format tool call dari provider tidak valid.")
+            # Urutan ini wajib untuk OpenAI-compatible tool calling.
+            self.messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.get("content") or "",
+                    "tool_calls": tool_calls,
+                }
+            )
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                name = str(function.get("name", ""))
+                try:
+                    args = json.loads(function.get("arguments") or "{}")
+                    if not isinstance(args, dict):
+                        args = {}
+                except json.JSONDecodeError:
+                    args = {}
+                if on_tool:
+                    on_tool(name, args)
+                result = self.executor.run(name, args)
+                self.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(tool_call.get("id", "")),
+                        "content": result,
+                    }
+                )
+
+        self._trim_history()
+        return "Aku berhenti karena terlalu banyak putaran tool. Coba tugas yang lebih spesifik."

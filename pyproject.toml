@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aesora-agent"
+version = "0.1.0"
+description = "A lightweight, multi-platform AI agent framework."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Mahesa F. Ferdinand"},
+]
+keywords = ["ai", "agent", "llm", "telegram", "whatsapp", "openai-compatible"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+  "Topic :: Communications :: Chat",
+]
+dependencies = [
+  "requests>=2.28",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["build>=1.2"]
+
+[project.scripts]
+aesora = "aesora.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Mftrferdinand/aesora"
+Repository = "https://github.com/Mftrferdinand/aesora"
+Issues = "https://github.com/Mftrferdinand/aesora/issues"
+
+[tool.setuptools.packages.find]
+include = ["aesora*"]
+
+[tool.setuptools.package-data]
+aesora = ["skills/*.md"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.unittest]
+start-directory = "tests"
+pattern = "test_*.py"

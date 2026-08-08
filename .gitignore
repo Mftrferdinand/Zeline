@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.release-check/
+.release-check-wheel.txt
+.test-final.log
+.pytest_cache/
+.coverage
+
+# Local secrets and Aesora user state
+.env
+.aesora/
+memory.json
+*.log
+*.pid
+
+# Node / WhatsApp bridge
+node_modules/
+wa-bridge/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Android / Termux transient files
+*.tmp
+*.bak
