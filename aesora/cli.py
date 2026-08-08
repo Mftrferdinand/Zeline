@@ -143,28 +143,45 @@ def _setup_webhook(cfg: dict[str, Any], *, reveal_token: bool = True) -> bool:
     return True
 
 
-def cmd_setup() -> int:
+def _setup_config(*, reset: bool) -> dict[str, Any]:
+    """Use generic provider defaults until an installation has a real API key."""
+    current = config.stored_config_copy()
+    if reset or not str(current.get("provider", {}).get("api_key", "")).strip():
+        fresh = config._defaults()
+        fresh["name"] = str(current.get("name") or fresh["name"])
+        return fresh
+    return current
+
+
+def _step(number: int, title: str, detail: str) -> None:
+    print(f"\n[ STEP {number}/3 ]  {title}\n  {detail}")
+
+
+def cmd_setup(*, reset: bool = False) -> int:
     _print_banner()
-    print(f"==> Setup Aesora · config: {config.CONFIG_FILE}")
-    cfg = config.stored_config_copy()
+    print(f"==> CONFIGURE AESORA  ·  {config.CONFIG_FILE}")
+    if reset:
+        print("  Starting with clean generic defaults. Existing provider settings will be replaced.")
+    cfg = _setup_config(reset=reset)
 
+    _step(1, "AGENT IDENTITY", "Choose the local name shown in the terminal.")
+    cfg["name"] = _ask("Agent name", str(cfg.get("name", "Aesora")))
 
-    cfg["name"] = _ask("Nama agent", str(cfg.get("name", "Aesora")))
+    _step(2, "AI PROVIDER", "Use any OpenAI-compatible endpoint. Nothing is imported automatically.")
     provider = cfg["provider"]
-    print("\n-- Provider LLM (OpenAI-compatible) --")
     provider["base_url"] = _ask("Base URL", str(provider.get("base_url", "https://api.openai.com/v1"))).rstrip("/")
     provider["api_key"] = _ask("API key", str(provider.get("api_key", "")), secret=True)
     provider["model"] = _ask("Model", str(provider.get("model", config.DEFAULT_MODEL)))
 
-    print("\n-- Platform --")
+    _step(3, "OPTIONAL GATEWAYS", "Skip any platform now; you can configure it later with `aesora gateway setup`.")
     _setup_telegram(cfg)
     _setup_whatsapp(cfg)
     _setup_webhook(cfg)
 
     config.save_config(cfg)
     copied = skills.seed_skills()
-    print(f"\nSelesai. {copied} skill bawaan ditambahkan.")
-    print("Lanjutkan dengan: aesora doctor  →  aesora gateway run")
+    print(f"\n[ READY ]  Configuration saved. {copied} built-in skills added.")
+    print("  Next: aesora status  ·  aesora chat -q \"Hello\"  ·  aesora gateway list")
     return 0
 
 
@@ -432,7 +449,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"aesora {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
-    setup = subparsers.add_parser("setup", help="wizard provider dan gateway")
+    setup = subparsers.add_parser("setup", help="configure agent, provider, and gateways")
+    setup.add_argument("--reset", action="store_true", help="discard saved provider defaults and start clean")
 
     chat = subparsers.add_parser("chat", help="chat di terminal")
     chat.add_argument("-q", "--query", help="satu query tanpa mode interaktif")
@@ -459,6 +477,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", aliases=["status"], help="cek dependency dan konfigurasi")
     subparsers.add_parser("skills", aliases=["skill"], help="list skill")
     subparsers.add_parser("memory", help="lihat memory CLI lokal")
+    for alias, alias_help in (
+        ("start", "alias: start enabled gateways"),
+        ("stop", "alias: stop background gateways"),
+        ("gateway-status", "alias: show background gateway status"),
+        ("logs", "alias: show gateway logs"),
+    ):
+        subparsers.add_parser(alias, help=alias_help)
     return parser
 
 
@@ -471,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     namespace = parser.parse_args(args)
     command = namespace.command
     if command == "setup":
-        return cmd_setup()
+        return cmd_setup(reset=namespace.reset)
     if command == "chat":
         return cmd_chat(namespace.query)
     if command == "gateway":
@@ -499,6 +524,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_gateway_list()
     if command in {"doctor", "status"}:
         return cmd_doctor()
+    if command == "start":
+        return cmd_gateway_start(None)
+    if command == "stop":
+        return cmd_gateway_stop()
+    if command == "gateway-status":
+        return cmd_gateway_service_status()
+    if command == "logs":
+        return cmd_gateway_log()
     if command == "config":
         return cmd_config(namespace.action)
     if command in {"skills", "skill"}:
