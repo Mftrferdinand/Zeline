@@ -21,10 +21,12 @@ API_TEMPLATE = "https://api.telegram.org/bot{token}"
 FILE_API_TEMPLATE = "https://api.telegram.org/file/bot{token}/{file_path}"
 OFFSET_FILE = config.STATE_DIR / "telegram-offset.json"
 TELEGRAM_MESSAGE_LIMIT = 4_000
-TELEGRAM_TEXT_FILE_LIMIT = 256 * 1024
+AGENT_INPUT_LIMIT = 16_000
+# Batas unduhan dokumen Telegram. Isi ZIP/PDF tetap dibatasi terpisah saat diekstrak.
+TELEGRAM_TEXT_FILE_LIMIT = 20 * 1024 * 1024
 SUPPORTED_TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".json", ".csv", ".log", ".py", ".yaml", ".yml", ".toml", ".ini", ".xml", ".html", ".htm"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-MAX_ARCHIVE_ENTRIES = 64
+MAX_ARCHIVE_ENTRIES = 512
 MAX_ARCHIVE_TEXT_BYTES = 256 * 1024
 
 
@@ -159,7 +161,9 @@ def _extract_document_text(filename: str, content: bytes, mime_type: str = "") -
                     parts.append(f"--- {path.as_posix()} ---\n{text}")
                 if consumed >= MAX_ARCHIVE_TEXT_BYTES:
                     break
-            return ("\n\n".join(parts), None) if parts else (None, "ZIP has no safe text files to read.")
+            if not parts:
+                return None, "ZIP has no safe text files to read."
+            return "\n\n".join(parts)[:16_000], None
     except (OSError, RuntimeError, zipfile.BadZipFile):
         return None, "ZIP is invalid or cannot be extracted."
 
@@ -212,11 +216,15 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     return None
 
 
-def _build_document_prompt(filename: str, file_text: str, caption: str = ""):
+def _build_document_prompt(filename: str, file_text: str, caption: str = "") -> str:
+    """Bangun input agen tanpa melampaui batas 16.000 karakter agen."""
     header = f"User mengirim file `{filename}` lewat Telegram."
     if caption:
         header += f"\nCaption/perintah user: {caption}"
-    return f"{header}\n\nIsi file:\n```\n{file_text}\n```"
+    prefix = f"{header}\n\nIsi file:\n```\n"
+    suffix = "\n```"
+    available = max(0, AGENT_INPUT_LIMIT - len(prefix) - len(suffix))
+    return f"{prefix}{file_text[:available]}{suffix}"
 
 
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:

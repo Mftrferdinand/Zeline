@@ -68,6 +68,16 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertEqual(self.config.BASE_URL, "https://api.openai.com/v1")
         self.assertEqual(self.config.MODEL, "gpt-4o-mini")
 
+    def test_default_runtime_uses_aesora_agent_v1_persona(self):
+        self.assertIn("Aesora-Agent-V1", self.config.SYSTEM_PROMPT)
+        self.assertIn("eksekusi", self.config.SYSTEM_PROMPT.lower())
+
+    def test_seeded_superagent_skill_corpus_is_available_to_public_gateway(self):
+        skill_system = importlib.import_module("aesora.skills")
+        skill_system.seed_skills()
+        content = skill_system.load_skill("superagent-v7-sk0")
+        self.assertIn("Skill Registry", content)
+
     def test_memory_isolated_between_platform_users(self):
         one = self.memory.MemoryStore("telegram:100")
         two = self.memory.MemoryStore("telegram:200")
@@ -205,6 +215,39 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertIn("vendor/new-model", reply)
         self.assertEqual(sessions.reset_id, "telegram:42")
         self.assertEqual(self.config.config_copy()["provider"]["model"], "vendor/new-model")
+
+    def test_telegram_accepts_zip_larger_than_legacy_256_kb_limit(self):
+        telegram = importlib.import_module("aesora.gateways.telegram")
+        payload = b"z" * (729 * 1024)
+        document = {"file_name": "SUPERAGENT-V7-FORSALE-FINAL.zip", "file_size": len(payload), "file_id": "zip-file"}
+        response = mock.Mock(ok=True, content=payload)
+        with mock.patch.object(telegram, "_api_call", return_value={"result": {"file_path": "documents/zip-file"}}), \
+             mock.patch.object(telegram.requests, "get", return_value=response):
+            content, error = telegram._download_document("https://api.telegram.org/bottoken", "token", document)
+        self.assertIsNone(error)
+        self.assertEqual(content, payload)
+
+    def test_telegram_extracts_zip_with_more_than_legacy_64_text_files(self):
+        telegram = importlib.import_module("aesora.gateways.telegram")
+        import io, zipfile
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            for index in range(65):
+                archive.writestr(f"skills/skill-{index}.md", f"skill {index}")
+        text, error = telegram._extract_document_text("skills.zip", data.getvalue(), "application/zip")
+        self.assertIsNone(error)
+        self.assertIn("skill 64", text)
+
+    def test_telegram_truncates_extracted_zip_text_to_message_limit(self):
+        telegram = importlib.import_module("aesora.gateways.telegram")
+        import io, zipfile
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            archive.writestr("skills/large.md", "x" * 20_000)
+        text, error = telegram._extract_document_text("skills.zip", data.getvalue(), "application/zip")
+        self.assertIsNone(error)
+        prompt = telegram._build_document_prompt("skills.zip", text)
+        self.assertLessEqual(len(prompt), 16_000)
 
     def test_telegram_extracts_text_and_safe_zip_entries(self):
         telegram = importlib.import_module("aesora.gateways.telegram")
