@@ -107,6 +107,19 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertNotIn("run_shell", names)
         self.assertIn("tidak diizinkan", executor.run("run_shell", {"command": "id"}))
 
+    def test_safe_profile_has_web_tools(self):
+        executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        names = {item["function"]["name"] for item in executor.schemas}
+        self.assertIn("web_search", names)
+        self.assertIn("web_fetch", names)
+
+    def test_web_fetch_blocks_internal_addresses(self):
+        executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        for url in ("http://127.0.0.1/admin", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.5/", "http://192.168.1.1/"):
+            self.assertIn("diblokir", executor.run("web_fetch", {"url": url}))
+        self.assertIn("diblokir", executor.run("web_fetch", {"url": "http://localhost.localdomain/"}))
+        self.assertIn("ERROR", executor.run("web_fetch", {"url": "ftp://example.com/file"}))
+
     def test_workspace_profile_blocks_path_escape(self):
         workspace = self.home / "workspace"
         workspace.mkdir(parents=True)

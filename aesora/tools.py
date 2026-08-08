@@ -12,11 +12,19 @@ memakai LLM sebagai remote shell di device/VPS pemilik.
 """
 from __future__ import annotations
 
+import html as _html
+import ipaddress
 import os
+import re
+import socket
 import subprocess
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
+
+import requests
 
 from aesora import config
 from aesora import memory
@@ -107,6 +115,135 @@ def _run_shell(command: str, workspace: Path) -> str:
         return f"ERROR jalankan perintah: {exc}"
 
 
+WEB_TIMEOUT = 20
+WEB_MAX_BYTES = 200_000
+WEB_MAX_RESULTS = 5
+_UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Mobile Safari/537.36"
+
+
+def _is_internal_ip(host: str) -> bool:
+    """True jika hostname/IP menunjuk ke jaringan internal (proteksi SSRF)."""
+    try:
+        addr = ipaddress.ip_address(host.strip("[]"))
+        return _addr_is_internal(addr)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return True  # DNS gagal = tidak boleh dicoba
+    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+
+
+def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _html_to_text(raw: bytes) -> str:
+    text = raw.decode("utf-8", errors="replace")
+    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = _html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
+
+
+def _web_search(query: str) -> str:
+    """Cari web via DuckDuckGo HTML; fallback Google News RSS."""
+    query = query.strip()
+    if not query:
+        return "ERROR: query kosong."
+    try:
+        response = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+        )
+        if response.ok:
+            results = []
+            for match in re.finditer(
+                r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?(?:result__snippet"[^>]*>(.*?)</a>)?',
+                response.text,
+                re.S,
+            ):
+                url, title, snippet = match.group(1), match.group(2), match.group(3) or ""
+                title = re.sub(r"(?s)<[^>]+>", "", title).strip()
+                snippet = re.sub(r"(?s)<[^>]+>", "", snippet).strip()
+                results.append(f"- {title}\n  {url}\n  {snippet[:300]}")
+                if len(results) >= WEB_MAX_RESULTS:
+                    break
+            if results:
+                return "\n".join(results)
+    except requests.RequestException:
+        pass
+    # Fallback: Google News RSS tanpa API key.
+    try:
+        response = requests.get(
+            "https://news.google.com/rss/search",
+            params={"q": query, "hl": "id", "gl": "ID", "ceid": "ID:id"},
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+        )
+        if response.ok:
+            root = ET.fromstring(response.content)
+            entries = []
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                link = item.findtext("link") or ""
+                if title:
+                    entries.append(f"- {title}\n  {link}")
+                if len(entries) >= WEB_MAX_RESULTS:
+                    break
+            if entries:
+                return "\n".join(entries)
+    except (requests.RequestException, ET.ParseError):
+        pass
+    return "ERROR: tidak dapat mencari web (pencarian gagal). Coba lagi nanti."
+
+
+def _web_fetch(url: str) -> str:
+    """Buka URL publik dan kembalikan teksnya. URL internal diblokir (SSRF)."""
+    url = url.strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "ERROR: URL harus http/https yang valid."
+    host = parsed.hostname or ""
+    if not host or _is_internal_ip(host):
+        return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+            allow_redirects=True,
+            stream=True,
+        )
+        if not response.ok:
+            return f"ERROR: HTTP {response.status_code}."
+        chunks = []
+        size = 0
+        for chunk in response.iter_content(8192):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > WEB_MAX_BYTES:
+                break
+        text = _html_to_text(b"".join(chunks))
+        if not text:
+            return "(halaman tidak memiliki teks yang bisa dibaca)"
+        return text[:12_000] + ("\n... [dipotong]" if size > 12_000 else "")
+    except requests.RequestException as exc:
+        return f"ERROR fetch: {exc.__class__.__name__}."
+
+
 TOOL_DEFS: list[ToolDef] = [
     ToolDef(
         "add_memory",
@@ -141,6 +278,26 @@ TOOL_DEFS: list[ToolDef] = [
             "type": "object",
             "properties": {"name": {"type": "string", "description": "Nama skill tanpa .md"}},
             "required": ["name"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "web_search",
+        "Cari informasi terbaru dari web (berita, artikel, data publik). Gunakan saat user minta info yang tidak kamu tahu atau butuh data terbaru.",
+        {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Kata kunci pencarian"}},
+            "required": ["query"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "web_fetch",
+        "Buka satu URL publik (http/https) dan kembalikan teks halamannya. URL internal/jaringan privat otomatis diblokir.",
+        {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "URL lengkap, misal https://example.com/artikel"}},
+            "required": ["url"],
         },
         frozenset(SAFE_PROFILES),
     ),
@@ -210,6 +367,8 @@ class ToolExecutor:
             "remove_memory": self.memory.remove,
             "list_memory": self.memory.formatted,
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
+            "web_search": lambda query: _web_search(query),
+            "web_fetch": lambda url: _web_fetch(url),
             "read_file": lambda path: _read_file(path, self.workspace),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
             "save_skill": skills.save_skill,
