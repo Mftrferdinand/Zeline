@@ -74,8 +74,10 @@ def _print_banner() -> None:
 def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
     """Prompt kecil. Secret memakai getpass agar tidak tampil di terminal."""
     if secret:
-        suffix = " [tersimpan — Enter untuk pertahankan]" if default else ""
-        answer = getpass.getpass(f"{prompt}{suffix}: ").strip()
+        suffix = " [saved — Enter keeps current value]" if default else ""
+        answer = getpass.getpass(f"{prompt}{suffix} [input hidden — paste, then press Enter]: ").strip()
+        if answer:
+            print("  ✓ Saved securely. The value stays hidden.")
     else:
         suffix = f" [{default}]" if default else ""
         answer = input(f"{prompt}{suffix}: ").strip()

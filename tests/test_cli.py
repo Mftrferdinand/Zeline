@@ -104,6 +104,16 @@ class AesoraCliTests(unittest.TestCase):
         self.assertEqual(saved["provider"]["api_key"], "hidden-api-key")
         self.assertNotIn("hidden-api-key", output.getvalue())
 
+    def test_secret_prompt_explains_hidden_input_and_confirms_capture(self):
+        with mock.patch.object(self.cli.getpass, "getpass", return_value="secret-value") as hidden:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                value = self.cli._ask("Telegram bot token", secret=True)
+        self.assertEqual(value, "secret-value")
+        self.assertIn("input hidden", hidden.call_args.args[0].lower())
+        self.assertIn("saved securely", output.getvalue().lower())
+        self.assertNotIn("secret-value", output.getvalue())
+
     def test_setup_replaces_stale_provider_defaults_when_no_key_exists(self):
         cfg = self.config.config_copy()
         cfg["provider"].update({
