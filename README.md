@@ -4,7 +4,7 @@
 
 # Aesora
 
-**Aesora** is a lightweight, self-hosted AI agent framework for Python. Bring your own OpenAI-compatible provider, then connect Telegram, WhatsApp, or an authenticated HTTP webhook.
+**Aesora** is a complete, lightweight, self-hosted AI agent framework for Python by Mftrferdinand.
 
 ## What it includes
 
