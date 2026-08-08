@@ -38,16 +38,39 @@ from aesora import gateway_service
 from aesora.sessions import SessionStore
 
 
+def _terminal_color_enabled() -> bool:
+    """Use ANSI color only when the terminal explicitly supports it."""
+    if os.environ.get("NO_COLOR") is not None or os.environ.get("TERM") == "dumb":
+        return False
+    return bool(os.environ.get("FORCE_COLOR")) or sys.stdout.isatty()
+
+
 def _print_banner() -> None:
-    print(
-        f"""
-   _____
-  |  _  |___ ___ ___ ___ ___
-  |     | -_|_ -| . |  _| .'|
-  |__|__|___|___|___|_| |__,|
-        AI Agent  •  v{__version__}
-"""
-    )
+    """Render the Aesora terminal identity without breaking plain terminals."""
+    title = "AESORA-AGENT"
+    subtitle = f"SELF-HOSTED AI AGENT FRAMEWORK  ·  v{__version__}"
+    width = 68
+    if _terminal_color_enabled():
+        cyan = "\033[38;5;51m"
+        blue = "\033[38;5;33m"
+        deep_blue = "\033[38;5;27m"
+        dim = "\033[38;5;75m"
+        reset = "\033[0m"
+        print(
+            f"\n{deep_blue}╔{'═' * width}╗{reset}\n"
+            f"{blue}║{reset}  {cyan}A E S O R A{reset}{blue} ━ {deep_blue}A G E N T{reset}"
+            f"{' ' * (width - 29)}{blue}║{reset}\n"
+            f"{blue}║{reset}  {dim}{subtitle}{reset}"
+            f"{' ' * (width - len(subtitle) - 2)}{blue}║{reset}\n"
+            f"{deep_blue}╚{'═' * width}╝{reset}\n"
+        )
+    else:
+        print(
+            f"\n+{'-' * width}+\n"
+            f"|  {title}{' ' * (width - len(title) - 2)}|\n"
+            f"|  {subtitle}{' ' * (width - len(subtitle) - 2)}|\n"
+            f"+{'-' * width}+\n"
+        )
 
 
 def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
@@ -342,6 +365,7 @@ def cmd_gateway_run(only: list[str] | None = None) -> int:
 
 
 def cmd_doctor() -> int:
+    _print_banner()
     problems: list[str] = []
     warnings: list[str] = []
     print("Aesora doctor")
@@ -439,7 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_parser = subparsers.add_parser("config", help="lihat lokasi/konfigurasi aman")
     config_parser.add_argument("action", choices=["path", "show"])
-    subparsers.add_parser("doctor", help="cek dependency dan konfigurasi")
+    subparsers.add_parser("doctor", aliases=["status"], help="cek dependency dan konfigurasi")
     subparsers.add_parser("skills", aliases=["skill"], help="list skill")
     subparsers.add_parser("memory", help="lihat memory CLI lokal")
     return parser
@@ -480,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         if action == "run":
             return cmd_gateway_run(namespace.only)
         return cmd_gateway_list()
-    if command == "doctor":
+    if command in {"doctor", "status"}:
         return cmd_doctor()
     if command == "config":
         return cmd_config(namespace.action)

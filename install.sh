@@ -31,12 +31,28 @@ need_command() {
 
 need_command "$PYTHON_BIN"
 
+print_banner() {
+  local width=68 title="AESORA-AGENT" subtitle="SELF-HOSTED AI AGENT FRAMEWORK"
+  if [ -t 1 ] && [ "${NO_COLOR+x}" != x ] && [ "${TERM:-}" != "dumb" ]; then
+    printf '\n\033[38;5;27m╔%*s╗\033[0m\n' "$width" '' | tr ' ' '═'
+    printf '\033[38;5;33m║\033[0m  \033[38;5;51mA E S O R A\033[0m\033[38;5;33m ━ \033[38;5;27mA G E N T\033[0m%*s\033[38;5;33m║\033[0m\n' "$((width - 29))" ''
+    printf '\033[38;5;33m║\033[0m  \033[38;5;75m%s\033[0m%*s\033[38;5;33m║\033[0m\n' "$subtitle" "$((width - ${#subtitle} - 2))" ''
+    printf '\033[38;5;27m╚%*s╝\033[0m\n\n' "$width" '' | tr ' ' '═'
+  else
+    printf '\n+%*s+\n' "$width" '' | tr ' ' '-'
+    printf '|  %s%*s|\n' "$title" "$((width - ${#title} - 2))" ''
+    printf '|  %s%*s|\n' "$subtitle" "$((width - ${#subtitle} - 2))" ''
+    printf '+%*s+\n\n' "$width" '' | tr ' ' '-'
+  fi
+}
+
 if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
   echo "[x] Aesora butuh Python 3.10 atau lebih baru." >&2
   exit 1
 fi
 
-echo "==> Aesora AI Agent installer"
+print_banner
+echo "==> Installer"
 echo "    Python : $($PYTHON_BIN --version)"
 
 # Jika installer dieksekusi dari repo checkout, gunakan source saat ini.
