@@ -1,7 +1,7 @@
 """Lifecycle process untuk gateway Aesora.
 
 `aesora gateway run` cocok untuk foreground / systemd / tmux.
-Modul ini memberi convenience commands mirip Hermes:
+Modul ini memberi gateway lifecycle commands:
 
     aesora gateway start [--only telegram]
     aesora gateway stop

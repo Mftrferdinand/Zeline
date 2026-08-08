@@ -1,6 +1,6 @@
 """Command line interface Aesora.
 
-Alur yang dituju sengaja mirip framework agent seperti Hermes:
+Aesora command-line interface:
 
     aesora setup                 # wizard provider + platform
     aesora                       # chat lokal
@@ -67,14 +67,6 @@ def _yes_no(prompt: str, default: bool = False) -> bool:
     return default if not answer else answer in {"y", "yes", "ya"}
 
 
-def _provider_from_hermes_or_error() -> dict[str, str] | None:
-    provider = config.hermes_provider()
-    if not provider or not provider.get("base_url") or not provider.get("api_key"):
-        print("Tidak menemukan provider Nine Router yang valid dari ~/.hermes/config.yaml.")
-        return None
-    return provider
-
-
 def _gateway_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
     gateways = cfg.setdefault("gateways", {})
     defaults = config._defaults()["gateways"]
@@ -135,16 +127,11 @@ def _setup_webhook(cfg: dict[str, Any], *, reveal_token: bool = True) -> bool:
     return True
 
 
-def cmd_setup(from_hermes: bool = False) -> int:
+def cmd_setup() -> int:
     _print_banner()
     print(f"==> Setup Aesora · config: {config.CONFIG_FILE}")
     cfg = config.stored_config_copy()
 
-    if from_hermes:
-        imported = _provider_from_hermes_or_error()
-        if imported:
-            cfg["provider"].update(imported)
-            print("Provider berhasil dimigrasi dari Hermes (eksplisit).")
 
     cfg["name"] = _ask("Nama agent", str(cfg.get("name", "Aesora")))
     provider = cfg["provider"]
@@ -429,7 +416,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     setup = subparsers.add_parser("setup", help="wizard provider dan gateway")
-    setup.add_argument("--from-hermes", action="store_true", help="migrasi provider Nine Router dari Hermes secara eksplisit")
 
     chat = subparsers.add_parser("chat", help="chat di terminal")
     chat.add_argument("-q", "--query", help="satu query tanpa mode interaktif")
@@ -461,14 +447,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    # No args preserves familiar Hermes-like interactive chat behavior.
+    # No arguments start the interactive local chat.
     if not args:
         return cmd_chat()
     parser = build_parser()
     namespace = parser.parse_args(args)
     command = namespace.command
     if command == "setup":
-        return cmd_setup(namespace.from_hermes)
+        return cmd_setup()
     if command == "chat":
         return cmd_chat(namespace.query)
     if command == "gateway":

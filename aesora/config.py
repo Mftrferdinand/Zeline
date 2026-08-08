@@ -115,31 +115,6 @@ def _read_saved_config() -> dict[str, Any]:
         return {}
 
 
-def hermes_provider() -> dict[str, str] | None:
-    """Baca provider Nine Router *hanya untuk migrasi eksplisit*.
-
-    Aesora publik tidak bergantung pada Hermes. Fungsi ini dipakai oleh
-    ``aesora setup --from-hermes`` untuk memudahkan pemilik Hermes pindah.
-    """
-    hermes_cfg = Path.home() / ".hermes" / "config.yaml"
-    if not hermes_cfg.exists():
-        return None
-    try:
-        import yaml
-
-        data = yaml.safe_load(hermes_cfg.read_text(encoding="utf-8")) or {}
-        for provider in data.get("custom_providers", []):
-            if "nine" in str(provider.get("name", "")).lower():
-                return {
-                    "base_url": str(provider.get("base_url", "")),
-                    "api_key": str(provider.get("api_key", "")),
-                    "model": DEFAULT_MODEL,
-                }
-    except Exception:
-        return None
-    return None
-
-
 def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
     """Environment adalah prioritas tertinggi (aman untuk secrets)."""
     mapping = {
@@ -168,7 +143,7 @@ def stored_config_copy() -> dict[str, Any]:
 
 
 def load_config() -> dict[str, Any]:
-    """Muat effective configuration tanpa otomatis mengimpor rahasia Hermes."""
+    """Muat effective configuration."""
     _load_env_file()
     return _apply_environment(stored_config_copy())
 

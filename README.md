@@ -1,36 +1,46 @@
-# Aesora AI Agent
+<p align="center">
+  <img src="assets/aesora-logo.png" alt="Aesora Agent" width="760">
+</p>
 
-**Aesora** adalah framework AI agent ringan berbasis Python. Setiap orang dapat memasangnya sendiri, memasukkan provider LLM miliknya, lalu menghubungkan bot Telegram, akun WhatsApp, atau aplikasi HTTP webhook mereka sendiri.
+# Aesora
 
-> Status: **v0.1.0 — foundation release.** Core agent, memory per user, skills, CLI, Telegram, WhatsApp (Baileys), dan webhook sudah tersedia. Ini belum menargetkan kesetaraan fitur penuh dengan Hermes (mis. Discord, Slack, cron, MCP, dashboard, session DB, plugin marketplace), tetapi arsitektur gateway-nya sudah dibuat modular untuk menuju ke sana.
+**Aesora** is a lightweight, self-hosted AI agent framework for Python. Bring your own OpenAI-compatible provider, then connect Telegram, WhatsApp, or an authenticated HTTP webhook.
 
-## Yang tersedia
+## What it includes
 
-- Agent loop OpenAI-compatible: LLM → tool call → hasil tool → LLM
-- Provider-agnostic: OpenAI, OpenRouter, Nine Router, vLLM, Ollama, atau endpoint OpenAI-compatible lain
-- Memory persisten **terisolasi per chat/user**
-- Skills Markdown yang dimuat sesuai kebutuhan
-- CLI interaktif dan single query
-- Gateway Telegram via Bot API long-polling
-- Gateway WhatsApp via Baileys + QR Linked Devices
-- Gateway HTTP webhook dengan Bearer token
-- Tool profile aman:
-  - `safe`: memory + baca skill (default semua gateway publik)
-  - `workspace`: `safe` + file hanya dalam workspace pemilik
-  - `full`: `workspace` + shell (default hanya CLI lokal pemilik)
+- An OpenAI-compatible agent loop with tool calling
+- Provider support for OpenAI, OpenRouter, vLLM, Ollama, and compatible APIs
+- Persistent memory isolated by platform identity
+- Markdown skills loaded on demand
+- Interactive CLI and one-shot queries
+- Telegram Bot API long polling
+- WhatsApp pairing through Baileys and a QR code
+- An authenticated local HTTP webhook
+- Scoped tool profiles:
+  - `safe`: memory and public skill access only; default for messaging gateways
+  - `workspace`: `safe` plus files inside the owner workspace
+  - `full`: `workspace` plus shell access; intended for the local owner CLI
 
-## Quick start — Termux / Linux / macOS
+## Install
 
-### 1. Prasyarat
+**Requirements:** Python 3.10 or newer. WhatsApp also requires Node.js 18+ and npm.
+
+### Termux
 
 ```bash
-python3 --version   # Python 3.10+
-pip --version
+pkg install git python -y
+curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/aesora/main/install.sh | bash
+aesora setup
 ```
 
-Untuk WhatsApp, juga butuh Node.js 18+ dan npm.
+### Linux and macOS
 
-### 2. Install dari source
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/aesora/main/install.sh | bash
+aesora setup
+```
+
+To install from a checkout instead:
 
 ```bash
 git clone https://github.com/Mftrferdinand/aesora.git
@@ -38,151 +48,104 @@ cd aesora
 bash install.sh
 ```
 
-Atau secara langsung dari GitHub setelah repo dipublikasi:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/aesora/main/install.sh | bash
-```
-
-> Di Termux, jika `git` belum ada: `pkg install git python`.
-
-Installer memasang command `aesora` lalu menyalin skill bawaan ke `~/.aesora/skills/`.
-
-### 3. Setup provider dan platform
-
-```bash
-aesora setup
-```
-
-Wizard meminta:
-
-1. nama agent;
-2. `base_url`, API key, dan model provider LLM;
-3. platform yang ingin diaktifkan.
-
-Config user tersimpan privat di:
-
-```text
-~/.aesora/config.json
-```
-
-Cek instalasi:
+Your configuration is stored locally at `~/.aesora/config.json`. Run a quick check after setup:
 
 ```bash
 aesora doctor
 aesora gateway list
 ```
 
-Chat lokal:
+## Use the CLI
 
 ```bash
 aesora
-aesora chat -q "Halo, siapa kamu?"
+# or
+aesora chat -q "What can you do?"
 ```
 
-## Telegram
+## Connect a platform
 
-1. Buka [@BotFather](https://t.me/BotFather) → `/newbot`.
-2. Salin token bot yang diberikan.
-3. Jalankan:
+### Telegram
+
+Create a bot with [@BotFather](https://t.me/BotFather), then run:
 
 ```bash
 aesora gateway setup telegram
-# tempel token dari BotFather
 aesora gateway start
-# atau foreground untuk systemd/tmux: aesora gateway run
 ```
 
-Perintah bot:
+An empty allowlist makes the bot public. Public gateways always use the `safe` tool profile by default, so users cannot access host files or a shell.
 
-- `/start` atau `/help`
-- `/new` untuk menghapus history chat saat ini
-- `/status`
-
-### Privasi Telegram
-
-Allowlist kosong berarti bot **publik**. Untuk bot pribadi, isi chat ID milik owner saat setup. Meski bot publik, tool profile default tetap `safe`, sehingga user lain tidak memperoleh akses shell atau file host.
-
-## WhatsApp
-
-> Gateway ini memakai **Baileys / WhatsApp multi-device**, bukan API resmi Meta Business. Gunakan sesuai kebijakan WhatsApp dan risiko akun masing-masing.
+### WhatsApp
 
 ```bash
 aesora gateway setup whatsapp
 aesora gateway start
-# atau foreground untuk systemd/tmux: aesora gateway run
 ```
 
-Pada start pertama Aesora memasang Baileys di `~/.aesora/wa-bridge/`. QR akan muncul di terminal. Buka WhatsApp → **Linked devices** → **Link a device**, lalu scan QR tersebut.
+On first start, Aesora installs its Baileys bridge under `~/.aesora/wa-bridge/` and prints a QR code. In WhatsApp, open **Linked devices**, choose **Link a device**, then scan it.
 
-## Webhook HTTP
+> This gateway uses WhatsApp multi-device through Baileys, not the Meta Business API. Make sure your use complies with WhatsApp policies.
 
-Aktifkan:
+### HTTP webhook
 
 ```bash
 aesora gateway enable webhook
 aesora gateway start
-# atau foreground untuk systemd/tmux: aesora gateway run
 ```
 
-Secara default ia bind di `127.0.0.1:8765`, bukan ke seluruh internet. Endpoint:
+The default listener is `127.0.0.1:8765`. It does not listen on the public internet.
 
 ```bash
 curl http://127.0.0.1:8765/health
 
 curl -X POST http://127.0.0.1:8765/message \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer TOKEN_WEBHOOK_KAMU' \
-  -d '{"chat_id":"demo-user","text":"Halo Aesora"}'
+  -H 'Authorization: Bearer YOUR_WEBHOOK_TOKEN' \
+  -d '{"chat_id":"demo-user","text":"Hello Aesora"}'
 ```
 
-Lihat config secara aman (token dimask):
+Show masked configuration with:
 
 ```bash
 aesora config show
 ```
 
-Untuk mengekspos webhook, gunakan reverse proxy HTTPS/tunnel milik sendiri dan **jangan** menghapus token autentikasi.
-
-## Migrasi dari Hermes (opsional)
-
-Aesora tidak pernah otomatis membaca atau menyalin secret Hermes. Pemilik Hermes yang memang mau memakai provider lokalnya dapat memilih migrasi eksplisit:
-
-```bash
-aesora setup --from-hermes
-```
+If you expose the webhook through a tunnel or reverse proxy, use HTTPS and keep token authentication enabled.
 
 ## Command reference
 
 ```text
-aesora                         Chat CLI
-aesora chat -q "..."           Satu query
-aesora setup                   Setup semua
-aesora setup --from-hermes     Impor Nine Router Hermes secara eksplisit
-aesora doctor                  Diagnosis config/dependency
-aesora config path             Lokasi config
-aesora config show             Config dengan secret dimask
-aesora gateway setup [name]    Setup telegram|whatsapp|webhook
-aesora gateway enable <name>   Aktifkan gateway
-aesora gateway disable <name>  Matikan gateway
-aesora gateway list            Lihat konfigurasi platform
-aesora gateway token webhook   Tampilkan token hanya saat diperlukan
-aesora gateway start           Jalankan gateway aktif di background
-aesora gateway stop            Hentikan gateway background
-aesora gateway status          Status proses gateway background
-aesora gateway log             Lihat log gateway
-aesora gateway run             Jalankan semua gateway aktif foreground
-aesora skills                  Daftar skill
-aesora memory                  Lihat memory CLI lokal
+aesora                         Start the local chat
+aesora chat -q "..."           Send one query
+aesora setup                   Configure the provider and gateways
+aesora doctor                  Check dependencies and configuration
+aesora config path             Print the configuration location
+aesora config show             Print configuration with masked secrets
+aesora gateway setup [name]    Configure telegram, whatsapp, or webhook
+aesora gateway enable <name>   Enable a gateway
+aesora gateway disable <name>  Disable a gateway
+aesora gateway list            Show configured gateways
+aesora gateway token webhook   Explicitly reveal a webhook token
+aesora gateway start           Run enabled gateways in the background
+aesora gateway stop            Stop the background gateway process
+aesora gateway status          Show background gateway status
+aesora gateway log             Print gateway logs
+aesora gateway run             Run enabled gateways in the foreground
+aesora skills                  List installed skills
+aesora memory                  Print local CLI memory
 ```
 
-## Keamanan
+## Security
 
-- Jangan commit `~/.aesora/`, `.env`, token Telegram, atau provider API key.
-- Gateway publik default `safe`; pertahankan begitu kecuali Anda benar-benar paham risiko `workspace` atau `full`.
-- WhatsApp bridge Python↔Node memakai token acak internal per runtime.
-- Memory user terpisah antar identitas platform (`telegram:ID`, `whatsapp:JID`, `webhook:ID`).
-- Webhook membutuhkan token dan secara default hanya mendengar localhost.
+- Keep `~/.aesora/`, `.env`, provider keys, and bot tokens out of Git.
+- Gateway users receive the `safe` profile by default.
+- Webhooks require a secret token and bind to loopback by default.
+- Memory is namespaced by platform identity, for example `telegram:123` or `webhook:alice`.
+- The WhatsApp bridge uses a random runtime token between Python and Node.
+- The repository enables secret scanning, push protection, Dependabot, CodeQL, and dependency review.
+
+See [SECURITY.md](SECURITY.md) for reporting guidance.
 
 ## Development
 
@@ -191,18 +154,15 @@ python3 -m unittest discover -s tests -v
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-## Roadmap menuju pengalaman setara Hermes
+## Roadmap
 
-- [ ] packaging PyPI + signed release artifact
-- [ ] system service integration (`systemd` / Termux:Boot)
-- [ ] Discord, Slack, Signal, iMessage, Email adapters
-- [ ] cron scheduler
-- [ ] MCP client/server
-- [ ] plugin API dan marketplace skills
-- [ ] SQLite session store + search
-- [ ] streaming UI / TUI / web dashboard
-- [ ] tool approval policy per platform
+- PyPI publishing and signed release artifacts
+- Service integration for systemd and Termux:Boot
+- More messaging adapters
+- Scheduled jobs
+- Plugin and extension APIs
+- Session search and richer interfaces
 
 ## License
 
-MIT © 2026 Mahesa F. Ferdinand
+MIT © 2026 Mftrferdinand

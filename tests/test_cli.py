@@ -1,4 +1,4 @@
-"""CLI regression tests untuk alur install/operasi mirip Hermes."""
+"""CLI regression tests for installation and operation flows."""
 from __future__ import annotations
 
 import contextlib
@@ -104,22 +104,6 @@ class AesoraCliTests(unittest.TestCase):
         self.assertEqual(saved["provider"]["api_key"], "hidden-api-key")
         self.assertNotIn("hidden-api-key", output.getvalue())
 
-    def test_setup_from_hermes_requires_explicit_flag_and_migrates_provider(self):
-        with mock.patch.object(self.config, "hermes_provider", return_value={
-            "base_url": "http://localhost:20128/v1",
-            "api_key": "test-migration-key",
-            "model": "Vibe/test-model",
-        }):
-            # Setup asks: name, base URL, API key, model, lalu 3 pilihan gateway.
-            with mock.patch("builtins.input", side_effect=["", "", "", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value=""):
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    status = self.cli.main(["setup", "--from-hermes"])
-        self.assertEqual(status, 0)
-        saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertEqual(saved["provider"]["base_url"], "http://localhost:20128/v1")
-        self.assertEqual(saved["provider"]["api_key"], "test-migration-key")
-        self.assertIn("migrasi", output.getvalue().lower())
 
     def test_doctor_reports_missing_provider_key_without_crashing(self):
         result = self.invoke(["doctor"], expected_status=1)

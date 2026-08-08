@@ -56,7 +56,7 @@ echo "==> Install/update package…"
 "$PYTHON_BIN" -m pip install --user --upgrade "$SOURCE_DIR"
 
 # Termux sering tidak memasukkan ~/.local/bin ke PATH. Jika PREFIX/bin bisa
-# ditulis, pasang wrapper kecil agar `aesora` langsung jalan seperti Hermes.
+# ditulis, pasang wrapper kecil agar command `aesora` tersedia langsung.
 if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/bin" ] && [ -w "$PREFIX/bin" ]; then
   cat > "$PREFIX/bin/aesora" <<EOF
 #!/usr/bin/env sh

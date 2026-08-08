@@ -36,3 +36,11 @@ ENV/
 # Android / Termux transient files
 *.tmp
 *.bak
+
+# Generated package artifacts
+build/
+dist/
+*.egg-info/
+
+# Local Aesora state
+.aesora/

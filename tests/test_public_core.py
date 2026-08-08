@@ -62,7 +62,7 @@ class AesoraPublicCoreTests(unittest.TestCase):
                 os.environ[key] = value
         self.temp.cleanup()
 
-    def test_fresh_public_install_does_not_import_hermes_secret_implicitly(self):
+    def test_fresh_public_install_has_no_implicit_external_secret_import(self):
         """A public install cannot silently bind itself to another app's key."""
         self.assertEqual(self.config.API_KEY, "")
         self.assertEqual(self.config.BASE_URL, "https://api.openai.com/v1")
