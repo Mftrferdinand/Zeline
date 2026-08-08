@@ -13,7 +13,7 @@
 - Persistent memory isolated by platform identity
 - Markdown skills loaded on demand
 - Interactive CLI and one-shot queries
-- Telegram Bot API long polling
+- Telegram Bot API long polling, bot commands, and attachment intake
 - WhatsApp pairing through Baileys and a QR code
 - An authenticated local HTTP webhook
 - Scoped tool profiles:
@@ -75,6 +75,21 @@ aesora gateway start
 ```
 
 An empty allowlist makes the bot public. Public gateways always use the `safe` tool profile by default, so users cannot access host files or a shell.
+
+Telegram commands:
+
+```text
+/start, /help             Show command help
+/status                   Show provider and session status
+/models                   Show the active model
+/model <provider/model>   Persistently switch this installation's model
+/new                      Clear the current chat history
+/restart                  Restart the current Telegram chat session
+/stop                     Stop this Aesora gateway process
+/logs                     Show how to inspect gateway logs from the installation terminal
+```
+
+Attachments up to 256 KB are accepted for text, JSON, CSV, common code/config files, and ZIP archives containing safe text files. Text-based PDFs are extracted with `pypdf`. Images are accepted as attachment metadata; pixel analysis needs a vision-capable provider.
 
 ### WhatsApp
 

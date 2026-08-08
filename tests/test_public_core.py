@@ -190,6 +190,44 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertGreater(len(parts), 1)
         self.assertTrue(all(len(part) <= 4_000 for part in parts))
 
+    def test_telegram_model_command_persists_model_and_resets_session(self):
+        telegram = importlib.import_module("aesora.gateways.telegram")
+        cfg = self.config.config_copy()
+        cfg["provider"]["api_key"] = "test-key"
+        self.config.save_config(cfg)
+
+        class Sessions:
+            def __init__(self): self.reset_id = None
+            def reset(self, identity): self.reset_id = identity; return True
+
+        sessions = Sessions()
+        reply = telegram._handle_command("/model vendor/new-model", sessions, "telegram:42", stop_event=threading.Event())
+        self.assertIn("vendor/new-model", reply)
+        self.assertEqual(sessions.reset_id, "telegram:42")
+        self.assertEqual(self.config.config_copy()["provider"]["model"], "vendor/new-model")
+
+    def test_telegram_extracts_text_and_safe_zip_entries(self):
+        telegram = importlib.import_module("aesora.gateways.telegram")
+        import io, zipfile
+        text, error = telegram._extract_document_text("notes.md", b"# Hello\nAesora", "text/markdown")
+        self.assertIsNone(error)
+        self.assertIn("Hello", text)
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            archive.writestr("notes.txt", "inside archive")
+            archive.writestr("../escape.txt", "must not appear")
+        text, error = telegram._extract_document_text("notes.zip", data.getvalue(), "application/zip")
+        self.assertIsNone(error)
+        self.assertIn("inside archive", text)
+        self.assertNotIn("must not appear", text)
+
+    def test_telegram_identifies_images_without_claiming_visual_analysis(self):
+        telegram = importlib.import_module("aesora.gateways.telegram")
+        text, error = telegram._extract_document_text("image.png", b"not-a-real-image", "image/png")
+        self.assertIsNone(error)
+        self.assertIn("image", text.lower())
+        self.assertIn("vision-capable", text.lower())
+
     def test_whatsapp_adapter_declares_validation_and_safe_defaults(self):
         whatsapp = importlib.import_module("aesora.gateways.whatsapp")
         self.assertEqual(whatsapp.validate_config({"enabled": True, "allowed": [], "tool_profile": "safe"}), [])
