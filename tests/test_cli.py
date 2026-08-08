@@ -104,6 +104,40 @@ class AesoraCliTests(unittest.TestCase):
         self.assertEqual(saved["provider"]["api_key"], "hidden-api-key")
         self.assertNotIn("hidden-api-key", output.getvalue())
 
+    def test_setup_replaces_stale_provider_defaults_when_no_key_exists(self):
+        cfg = self.config.config_copy()
+        cfg["provider"].update({
+            "base_url": "http://localhost:20128/v1",
+            "api_key": "",
+            "model": "Vibe/ds/deepseek-v4-pro",
+        })
+        self.config.save_config(cfg)
+        with mock.patch("builtins.input", side_effect=["", "", "gpt-4o-mini", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value="new-key"):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = self.cli.main(["setup"])
+        self.assertEqual(status, 0)
+        self.assertIn("STEP 1/3", output.getvalue())
+        self.assertIn("Nothing is imported automatically", output.getvalue())
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertEqual(saved["provider"]["base_url"], "https://api.openai.com/v1")
+        self.assertEqual(saved["provider"]["model"], "gpt-4o-mini")
+
+    def test_setup_reset_starts_with_generic_provider_defaults(self):
+        cfg = self.config.config_copy()
+        cfg["provider"].update({"base_url": "http://example.invalid/v1", "api_key": "old-key", "model": "old-model"})
+        self.config.save_config(cfg)
+        with mock.patch("builtins.input", side_effect=["", "", "gpt-4o-mini", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value=""):
+            self.assertEqual(self.cli.main(["setup", "--reset"]), 0)
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertEqual(saved["provider"]["base_url"], "https://api.openai.com/v1")
+        self.assertEqual(saved["provider"]["api_key"], "")
+
+    def test_top_level_gateway_aliases_dispatch_to_gateway_commands(self):
+        with mock.patch.object(self.cli, "cmd_gateway_start", return_value=0) as start:
+            self.assertEqual(self.cli.main(["start"]), 0)
+        start.assert_called_once_with(None)
+
 
     def test_doctor_reports_missing_provider_key_without_crashing(self):
         result = self.invoke(["doctor"], expected_status=1)
