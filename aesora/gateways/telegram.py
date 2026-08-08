@@ -227,6 +227,15 @@ def _build_document_prompt(filename: str, file_text: str, caption: str = "") -> 
     return f"{prefix}{file_text[:available]}{suffix}"
 
 
+def _send_text(api: str, chat_id: int, text: str) -> None:
+    """Kirim pesan dengan render markdown; fallback teks polos bila gagal."""
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    rendered = _api_call(api, "sendMessage", **payload, parse_mode="Markdown")
+    if rendered is None:
+        # Markdown kadang ditolak Telegram (karakter tak berpasangan, dsb).
+        _api_call(api, "sendMessage", **payload)
+
+
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
 
@@ -246,7 +255,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         print("  [telegram] unhandled agent error", flush=True)
         reply = "Maaf, terjadi error internal. Coba lagi sebentar."
     for part in _split_message(reply):
-        _api_call(api, "sendMessage", chat_id=chat_id, text=part)
+        _send_text(api, chat_id, part)
 
 
 def start(sessions, cfg: dict[str, Any], stop_event) -> None:

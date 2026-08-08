@@ -284,6 +284,18 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertIn("image", text.lower())
         self.assertIn("vision-capable", text.lower())
 
+    def test_telegram_send_text_renders_markdown_then_falls_back_to_plain(self):
+        telegram = importlib.import_module("aesora.gateways.telegram")
+        with mock.patch.object(telegram, "_api_call", return_value={"ok": True}) as api:
+            telegram._send_text("https://api.telegram.org/botX", 123, "**bold**")
+            self.assertEqual(api.call_count, 1)
+            self.assertEqual(api.call_args.kwargs.get("parse_mode"), "Markdown")
+        with mock.patch.object(telegram, "_api_call", side_effect=[None, {"ok": True}]) as api:
+            telegram._send_text("https://api.telegram.org/botX", 123, "**bold** _miring_")
+            self.assertEqual(api.call_count, 2)
+            self.assertIn("parse_mode", api.call_args_list[0].kwargs)
+            self.assertNotIn("parse_mode", api.call_args_list[1].kwargs)
+
     def test_whatsapp_adapter_declares_validation_and_safe_defaults(self):
         whatsapp = importlib.import_module("aesora.gateways.whatsapp")
         self.assertEqual(whatsapp.validate_config({"enabled": True, "allowed": [], "tool_profile": "safe"}), [])
