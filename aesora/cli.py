@@ -27,9 +27,13 @@ import json
 import os
 import signal
 import sys
+import termios
 import time
+import tty
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from aesora import __version__, config, skills
 from aesora.agent import ZelineError
@@ -73,17 +77,112 @@ def _print_banner() -> None:
         print(f"\n{wordmark}\n{subtitle}\n")
 
 
+def _read_secret_key() -> str:
+    return os.read(sys.stdin.fileno(), 1).decode("utf-8", errors="ignore")
+
+
+def _masked_secret_input(prompt: str) -> str:
+    """Read a secret while rendering one star per character."""
+    if not sys.stdin.isatty():
+        return getpass.getpass(prompt)
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    chars: list[str] = []
+    print(prompt, end="", flush=True)
+    try:
+        tty.setraw(fd)
+        while True:
+            char = _read_secret_key()
+            if char in {"\r", "\n"}:
+                print()
+                break
+            if char == "\x03":
+                raise KeyboardInterrupt
+            if char in {"\x7f", "\b"}:
+                if chars:
+                    chars.pop()
+                    print("\b \b", end="", flush=True)
+                continue
+            if char and char.isprintable():
+                chars.append(char)
+                print("*", end="", flush=True)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+    return "".join(chars)
+
+
 def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
-    """Prompt kecil. Secret memakai getpass agar tidak tampil di terminal."""
+    """Small prompt with visible star masking for secrets."""
     if secret:
         suffix = " [saved — Enter keeps current value]" if default else ""
-        answer = getpass.getpass(f"{prompt}{suffix} [input hidden — paste, then press Enter]: ").strip()
+        answer = _masked_secret_input(f"{prompt}{suffix} [* per character]: ").strip()
         if answer:
             print("  ✓ Saved securely. The value stays hidden.")
     else:
         suffix = f" [{default}]" if default else ""
         answer = input(f"{prompt}{suffix}: ").strip()
     return answer or default
+
+
+def _model_ids(payload: Any) -> list[str]:
+    data = payload.get("data", []) if isinstance(payload, dict) else []
+    models = [str(item.get("id", "")).strip() for item in data if isinstance(item, dict)]
+    return sorted(dict.fromkeys(model for model in models if model))
+
+
+def _discover_provider_models(base_url: str, api_key: str) -> tuple[str, list[str]]:
+    """Probe OpenAI-compatible first, then native Anthropic model listing."""
+    endpoint = f"{base_url.rstrip('/')}/models"
+    probes = (
+        ("openai", {"Authorization": f"Bearer {api_key}"}),
+        ("anthropic", {"x-api-key": api_key, "anthropic-version": "2023-06-01"}),
+    )
+    for protocol, headers in probes:
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=20)
+            if response.ok:
+                models = _model_ids(response.json())
+                if models:
+                    return protocol, models
+        except (requests.RequestException, ValueError):
+            continue
+    return "openai", []
+
+
+def _choose_model(models: list[str], default: str = "") -> str:
+    if not models:
+        while True:
+            selected = _ask("Model ID").strip()
+            if selected:
+                return selected
+            print("  Model ID wajib diisi karena provider tidak menyediakan daftar model.")
+    print("  Model tersedia:")
+    for index, model in enumerate(models, 1):
+        marker = " (aktif)" if model == default else ""
+        print(f"    {index:>2}. {model}{marker}")
+    while True:
+        choice = input(f"Pilih model [1-{len(models)}]: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(models):
+            return models[int(choice) - 1]
+        print("  Pilihan tidak valid.")
+
+
+def _configure_provider(provider: dict[str, Any]) -> None:
+    base_url = _ask("Base URL", str(provider.get("base_url", "https://api.openai.com/v1"))).rstrip("/")
+    api_key = _ask("API key", str(provider.get("api_key", "")), secret=True)
+    print("  Mendeteksi protokol dan model provider…")
+    protocol, models = _discover_provider_models(base_url, api_key)
+    label = "Anthropic" if protocol == "anthropic" else "OpenAI-compatible"
+    print(f"  Provider terdeteksi: {label}")
+    if not models:
+        print("  Daftar model tidak tersedia; masukkan model ID manual.")
+    provider.update({
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": _choose_model(models, str(provider.get("model", ""))),
+        "protocol": protocol,
+        "model_verified": True,
+    })
 
 
 def _yes_no(prompt: str, default: bool = False) -> bool:
@@ -176,11 +275,9 @@ def cmd_setup(*, reset: bool = False) -> int:
     _step(1, "AGENT IDENTITY", "Choose the local name shown in the terminal.")
     cfg["name"] = _ask("Agent name", str(cfg.get("name", "Zeline")))
 
-    _step(2, "AI PROVIDER", "Use any OpenAI-compatible endpoint. Nothing is imported automatically.")
+    _step(2, "AI PROVIDER", "Masukkan endpoint OpenAI-compatible atau Anthropic. Zeline akan mendeteksi protokol dan model. Nothing is imported automatically.")
     provider = cfg["provider"]
-    provider["base_url"] = _ask("Base URL", str(provider.get("base_url", "https://api.openai.com/v1"))).rstrip("/")
-    provider["api_key"] = _ask("API key", str(provider.get("api_key", "")), secret=True)
-    provider["model"] = _ask("Model", str(provider.get("model", config.DEFAULT_MODEL)))
+    _configure_provider(provider)
 
     _step(3, "OPTIONAL GATEWAYS", "Skip any platform now; you can configure it later with `zeline gateway setup`.")
     _setup_telegram(cfg)
@@ -199,9 +296,7 @@ def cmd_model() -> int:
     """Update provider/model only; preserve every gateway setting."""
     cfg = config.stored_config_copy()
     provider = cfg["provider"]
-    provider["base_url"] = _ask("Base URL", str(provider.get("base_url", "https://api.openai.com/v1"))).rstrip("/")
-    provider["api_key"] = _ask("API key", str(provider.get("api_key", "")), secret=True)
-    provider["model"] = _ask("Model", str(provider.get("model", config.DEFAULT_MODEL)))
+    _configure_provider(provider)
     cfg["setup_complete"] = True
     config.save_config(cfg)
     print(f"Model disimpan: {provider['model']}")
@@ -211,6 +306,9 @@ def cmd_model() -> int:
 def cmd_chat(query: str | None = None) -> int:
     if not config.SETUP_COMPLETE:
         print("[!] Setup belum selesai. Jalankan: zeline setup")
+        return 2
+    if not bool(config.PROVIDER.get("model_verified", False)):
+        print("[!] Model belum diverifikasi dari provider. Jalankan: zeline model")
         return 2
     if not config.API_KEY:
         print("[!] API key kosong. Jalankan: zeline setup")

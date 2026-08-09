@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html as _html
 import ipaddress
+import json
 import os
 import re
 import socket
@@ -246,6 +247,12 @@ def _web_fetch(url: str) -> str:
 
 TOOL_DEFS: list[ToolDef] = [
     ToolDef(
+        "runtime_info",
+        "Tampilkan identitas runtime Zeline, model, provider, protokol, profile, dan tools tanpa membocorkan API key atau token.",
+        {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "add_memory",
         "Simpan satu fakta jangka panjang tentang user di memory percakapan ini.",
         {
@@ -363,6 +370,7 @@ class ToolExecutor:
         # Private skill hanya boleh dibaca operator local/full profile.
         self._can_read_private_skills = profile == "full"
         self._handlers: dict[str, ToolFunction] = {
+            "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
             "remove_memory": self.memory.remove,
             "list_memory": self.memory.formatted,
@@ -374,6 +382,20 @@ class ToolExecutor:
             "save_skill": skills.save_skill,
             "run_shell": lambda command: _run_shell(command, self.workspace),
         }
+
+    def _runtime_info(self) -> str:
+        available = [definition.name for definition in TOOL_DEFS if self.profile in definition.profiles]
+        return json.dumps({
+            "identity": config.NAME,
+            "framework": "Zeline",
+            "lab": "Zerolinear",
+            "model": config.MODEL,
+            "provider_base_url": config.BASE_URL,
+            "protocol": config.PROTOCOL,
+            "tool_profile": self.profile,
+            "tools": available,
+            "secrets": "API key dan token sengaja tidak ditampilkan",
+        }, ensure_ascii=False, indent=2)
 
     @property
     def schemas(self) -> list[dict[str, Any]]:

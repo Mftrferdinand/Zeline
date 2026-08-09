@@ -136,6 +136,7 @@ If you expose the webhook through a tunnel or reverse proxy, use HTTPS and keep 
 zeline                         Start the local chat
 zeline chat -q "..."           Send one query
 zeline setup                   Configure the provider and gateways
+zeline model                   Detect protocol, fetch models, and choose one
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
 zeline config show             Print configuration with masked secrets
@@ -152,6 +153,16 @@ zeline gateway run             Run enabled gateways in the foreground
 zeline skills                  List installed skills
 zeline memory                  Print local CLI memory
 ```
+
+During provider setup, Zeline detects OpenAI-compatible or Anthropic APIs,
+queries the provider model endpoint, and shows a numbered picker. Secret input
+renders one `*` per character while the real API key stays hidden. If a provider
+cannot list models, Zeline requires an explicit model ID instead of accepting a
+placeholder.
+
+Zeline can safely describe its active model, provider URL, protocol, tool profile,
+and available tools through `runtime_info` and the bundled `self-analysis` skill.
+API keys and gateway tokens are never included.
 
 ## Security
 

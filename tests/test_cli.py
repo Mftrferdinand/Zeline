@@ -103,6 +103,16 @@ class AesoraCliTests(unittest.TestCase):
 
         self.assertIn("zeline setup", result.lower())
 
+    def test_chat_refuses_model_that_was_never_verified(self):
+        cfg = self.config.config_copy()
+        cfg["setup_complete"] = True
+        cfg["provider"].update({"api_key": "key", "model": "gpt-4o-mini", "model_verified": False})
+        self.config.save_config(cfg)
+
+        result = self.invoke(["chat", "-q", "hello"], expected_status=2)
+
+        self.assertIn("zeline model", result.lower())
+
     def test_setup_marks_configuration_complete(self):
         with mock.patch("builtins.input", side_effect=["Zeline", "https://api.example/v1", "demo-model", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-key"):
             self.assertEqual(self.cli.main(["setup"]), 0)
@@ -121,14 +131,56 @@ class AesoraCliTests(unittest.TestCase):
         self.assertNotIn("hidden-api-key", output.getvalue())
 
     def test_secret_prompt_explains_hidden_input_and_confirms_capture(self):
-        with mock.patch.object(self.cli.getpass, "getpass", return_value="secret-value") as hidden:
+        with mock.patch.object(self.cli, "_masked_secret_input", return_value="secret-value") as masked:
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 value = self.cli._ask("Telegram bot token", secret=True)
         self.assertEqual(value, "secret-value")
-        self.assertIn("input hidden", hidden.call_args.args[0].lower())
+        masked.assert_called_once()
         self.assertIn("saved securely", output.getvalue().lower())
         self.assertNotIn("secret-value", output.getvalue())
+
+    def test_masked_secret_input_prints_one_star_per_character(self):
+        output = io.StringIO()
+        with mock.patch.object(self.cli.sys.stdin, "isatty", return_value=True), mock.patch.object(self.cli.sys.stdin, "fileno", return_value=0), mock.patch.object(self.cli.termios, "tcgetattr", return_value=[0]), mock.patch.object(self.cli.termios, "tcsetattr"), mock.patch.object(self.cli.tty, "setraw"), mock.patch.object(self.cli, "_read_secret_key", side_effect=["a", "b", "\x7f", "c", "\n"]), contextlib.redirect_stdout(output):
+            value = self.cli._masked_secret_input("API key: ")
+        self.assertEqual(value, "ac")
+        self.assertIn("API key: **\b \b*", output.getvalue())
+        self.assertNotIn("ac", output.getvalue())
+
+    def test_detects_openai_models_with_bearer_auth(self):
+        response = mock.Mock(ok=True)
+        response.json.return_value = {"data": [{"id": "gpt-4.1"}, {"id": "gpt-4o"}]}
+        with mock.patch.object(self.cli.requests, "get", return_value=response) as get:
+            protocol, models = self.cli._discover_provider_models("https://api.example/v1", "secret")
+        self.assertEqual(protocol, "openai")
+        self.assertEqual(models, ["gpt-4.1", "gpt-4o"])
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer secret")
+
+    def test_detects_anthropic_models_with_native_headers(self):
+        denied = mock.Mock(ok=False)
+        response = mock.Mock(ok=True)
+        response.json.return_value = {"data": [{"id": "claude-sonnet-4-5"}]}
+        with mock.patch.object(self.cli.requests, "get", side_effect=[denied, response]) as get:
+            protocol, models = self.cli._discover_provider_models("https://api.anthropic.com/v1", "secret")
+        self.assertEqual(protocol, "anthropic")
+        self.assertEqual(models, ["claude-sonnet-4-5"])
+        self.assertEqual(get.call_args.kwargs["headers"]["x-api-key"], "secret")
+
+    def test_model_picker_selects_detected_model_by_number(self):
+        with mock.patch("builtins.input", return_value="2"):
+            selected = self.cli._choose_model(["model-a", "model-b"], "model-a")
+        self.assertEqual(selected, "model-b")
+
+    def test_configure_provider_detects_protocol_and_uses_model_picker(self):
+        provider = {"base_url": "https://api.openai.com/v1", "api_key": "", "model": "old"}
+        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "2"]), mock.patch.object(self.cli, "_masked_secret_input", return_value="secret"), mock.patch.object(self.cli, "_discover_provider_models", return_value=("anthropic", ["claude-a", "claude-b"])):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.cli._configure_provider(provider)
+        self.assertEqual(provider, {"base_url": "https://api.example/v1", "api_key": "secret", "model": "claude-b", "protocol": "anthropic", "model_verified": True})
+        self.assertIn("Anthropic", output.getvalue())
+        self.assertNotIn("secret", output.getvalue())
 
     def test_model_command_updates_provider_and_model_without_reconfiguring_gateways(self):
         cfg = self.config.config_copy()
@@ -139,6 +191,8 @@ class AesoraCliTests(unittest.TestCase):
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("Model disimpan", result)
         self.assertEqual(saved["provider"], {
+            "protocol": "openai",
+            "model_verified": True,
             "base_url": "https://api.example/v1",
             "api_key": "provider-secret",
             "model": "research-model",

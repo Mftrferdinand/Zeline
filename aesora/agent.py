@@ -61,6 +61,7 @@ class Zeline:
         self.base_url = config.BASE_URL
         self.api_key = config.API_KEY
         self.model = config.MODEL
+        self.protocol = config.PROTOCOL
         self.executor = ToolExecutor(
             identity=self.identity,
             profile=tool_profile or config.CLI_TOOL_PROFILE,
@@ -74,9 +75,11 @@ class Zeline:
                     + self.executor.memory.prompt_block()
                     + skills.skills_block(include_private=self.executor.profile == "full")
                     + system_extra
+                    + f"\n\nRuntime aktif (non-secret): model={self.model}; provider={self.base_url}; protocol={self.protocol}; profile={self.executor.profile}. "
                     + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
                     "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
-                    "Jangan meminta, menebak, atau mengungkap rahasia konfigurasi dan API key."
+                    "Model ID, provider base URL, protokol, identitas runtime, dan daftar tool bukan rahasia; "
+                    "jawab pertanyaan tentang itu memakai runtime_info. API key, token, dan secret tetap dilarang diungkap."
                 ),
             }
         ]
@@ -86,9 +89,14 @@ class Zeline:
             raise ZelineError("API key belum dikonfigurasi. Jalankan `zeline setup`.")
         if not self.base_url or not self.model:
             raise ZelineError("Provider belum lengkap. Jalankan `zeline setup`.")
-        # Snapshot immutable: history berubah lagi setelah request (tool/final reply).
-        # Tanpa deepcopy, mock/async transport bisa melihat message yang sudah berubah.
-        payload = {
+
+        endpoint = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "zeline/0.1.0",
+        }
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": copy.deepcopy(self.messages),
             "tools": self.executor.schemas,
@@ -96,23 +104,65 @@ class Zeline:
             "temperature": 0.7,
             "stream": False,
         }
+
+        if self.protocol == "anthropic":
+            endpoint = f"{self.base_url}/messages"
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+                "User-Agent": "zeline/0.1.0",
+            }
+            messages: list[dict[str, Any]] = []
+            for item in self.messages[1:]:
+                role = str(item.get("role", "user"))
+                if role == "tool":
+                    messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": str(item.get("tool_call_id", "")), "content": str(item.get("content", ""))}]})
+                elif role == "assistant" and item.get("tool_calls"):
+                    blocks: list[dict[str, Any]] = []
+                    if item.get("content"):
+                        blocks.append({"type": "text", "text": str(item["content"])})
+                    for call in item["tool_calls"]:
+                        function = call.get("function", {})
+                        try:
+                            arguments = json.loads(function.get("arguments") or "{}")
+                        except json.JSONDecodeError:
+                            arguments = {}
+                        blocks.append({"type": "tool_use", "id": str(call.get("id", "")), "name": str(function.get("name", "")), "input": arguments})
+                    messages.append({"role": "assistant", "content": blocks})
+                elif role in {"user", "assistant"}:
+                    messages.append({"role": role, "content": str(item.get("content", ""))})
+            payload = {
+                "model": self.model,
+                "system": str(self.messages[0].get("content", "")),
+                "messages": messages,
+                "tools": [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in self.executor.schemas],
+                "max_tokens": 4096,
+            }
+
         try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                    "User-Agent": "zeline/0.1.0",
-                },
-                json=payload,
-                timeout=180,
-            )
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
         except requests.RequestException as exc:
             raise ZelineError(f"Gagal menghubungi provider: {exc.__class__.__name__}.") from exc
         if not response.ok:
-            # Jangan masukkan body API (bisa mengandung detail sensitif) ke user.
             raise ZelineError(f"Provider HTTP {response.status_code}.")
         parsed = _parse_response(response.text)
+
+        if self.protocol == "anthropic":
+            text_parts: list[str] = []
+            tool_calls: list[dict[str, Any]] = []
+            for block in parsed.get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text_parts.append(str(block.get("text", "")))
+                elif block.get("type") == "tool_use":
+                    tool_calls.append({"id": str(block.get("id", "")), "type": "function", "function": {"name": str(block.get("name", "")), "arguments": json.dumps(block.get("input", {}), ensure_ascii=False)}})
+            message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            return message
+
         try:
             message = parsed["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
