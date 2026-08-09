@@ -12,4 +12,4 @@ If private reporting is unavailable, contact the repository owner through GitHub
 
 ## Safe deployment
 
-Keep Aesora's data directory private. Use `safe` tool profiles for public messaging gateways, keep webhooks on loopback unless protected by a reverse proxy, and rotate any credential you accidentally disclose.
+Keep Zeline's data directory private. Use `safe` tool profiles for public messaging gateways, keep webhooks on loopback unless protected by a reverse proxy, and rotate any credential you accidentally disclose.

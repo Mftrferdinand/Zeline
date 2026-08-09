@@ -1,15 +1,15 @@
-"""Lifecycle process untuk gateway Aesora.
+"""Lifecycle process untuk gateway Zeline.
 
-`aesora gateway run` cocok untuk foreground / systemd / tmux.
+`zeline gateway run` cocok untuk foreground / systemd / tmux.
 Modul ini memberi gateway lifecycle commands:
 
-    aesora gateway start [--only telegram]
-    aesora gateway stop
-    aesora gateway status
-    aesora gateway log
+    zeline gateway start [--only telegram]
+    zeline gateway stop
+    zeline gateway status
+    zeline gateway log
 
-State hanya menyimpan PID milik child Python yang Aesora spawn sendiri, di
-``~/.aesora/gateway.pid``. Log dan state memiliki permission privat.
+State hanya menyimpan PID milik child Python yang Zeline spawn sendiri, di
+``~/.zeline/gateway.pid``. Log dan state memiliki permission privat.
 """
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def _process_start_ticks(pid: int) -> str | None:
 
 
 def _process_matches_state(state: dict[str, Any]) -> bool:
-    """True hanya bila PID masih child Aesora yang persis sama.
+    """True hanya bila PID masih child Zeline yang persis sama.
 
     State versi lama tanpa start_ticks dianggap tidak terverifikasi dan tidak
     pernah boleh di-signal. Ini fail-closed: lebih baik user start ulang daripada
@@ -132,7 +132,7 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
         if gateway_cfg.get("enabled", False) and (not only or name in only)
     ]
     if not enabled:
-        return False, "Tidak ada gateway aktif. Jalankan `aesora gateway setup`."
+        return False, "Tidak ada gateway aktif. Jalankan `zeline gateway setup`."
     for name in enabled:
         errors = validate_gateway(name, config.GATEWAYS[name])
         if errors:
@@ -209,7 +209,7 @@ def stop(wait_seconds: float = 8.0) -> tuple[bool, str]:
     pid = int(state["pid"])
     if not _process_matches_state(state):
         _remove_state()
-        return False, "Gateway tidak berjalan (state PID bukan process Aesora yang cocok dibersihkan)."
+        return False, "Gateway tidak berjalan (state PID bukan process Zeline yang cocok dibersihkan)."
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:

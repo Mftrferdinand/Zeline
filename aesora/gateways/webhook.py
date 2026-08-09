@@ -1,4 +1,4 @@
-"""Gateway HTTP webhook generik Aesora.
+"""Gateway HTTP webhook generik Zeline.
 
 Endpoint:
 
@@ -20,7 +20,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from aesora.agent import AesoraError
+from aesora.agent import ZelineError
 
 MAX_BODY_BYTES = 32_000
 
@@ -63,7 +63,7 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     tool_profile = str(cfg.get("tool_profile", "safe"))
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "AesoraWebhook/0.1"
+        server_version = "ZelineWebhook/0.1"
 
         def _json(self, status: int, payload: dict[str, Any]) -> None:
             raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -76,7 +76,7 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
 
         def do_GET(self) -> None:
             if self.path.rstrip("/") == "/health":
-                self._json(200, {"ok": True, "service": "aesora-webhook"})
+                self._json(200, {"ok": True, "service": "zeline-webhook"})
             else:
                 self._json(404, {"error": "not found"})
 
@@ -118,7 +118,7 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                     tool_profile=tool_profile,
                 )
                 self._json(200, {"reply": reply})
-            except AesoraError as exc:
+            except ZelineError as exc:
                 self._json(502, {"error": str(exc)})
             except Exception:
                 print("  [webhook] unhandled agent error", flush=True)

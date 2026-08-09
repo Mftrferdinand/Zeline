@@ -1,6 +1,6 @@
-"""Inti Aesora: LLM di dalam loop yang boleh memakai tool.
+"""Inti Zeline: LLM di dalam loop yang boleh memakai tool.
 
-Setiap object ``Aesora`` milik satu identity percakapan dan satu tool profile.
+Setiap object ``Zeline`` milik satu identity percakapan dan satu tool profile.
 Jadi Telegram user A tidak pernah berbagi history atau memory dengan user B.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from aesora import skills
 from aesora.tools import ToolExecutor
 
 
-class AesoraError(RuntimeError):
+class ZelineError(RuntimeError):
     """Error yang aman ditampilkan gateway sebagai gangguan internal."""
 
 
@@ -31,17 +31,17 @@ def _parse_response(text: str) -> dict[str, Any]:
         try:
             value, _ = json.JSONDecoder().raw_decode(cleaned)
         except json.JSONDecodeError as exc:
-            raise AesoraError("Provider memberi respons yang bukan JSON valid.") from exc
+            raise ZelineError("Provider memberi respons yang bukan JSON valid.") from exc
     if not isinstance(value, dict):
-        raise AesoraError("Provider memberi bentuk respons yang tidak dikenal.")
+        raise ZelineError("Provider memberi bentuk respons yang tidak dikenal.")
     if value.get("error"):
         error = value["error"]
         message = error.get("message") if isinstance(error, dict) else str(error)
-        raise AesoraError(f"Provider menolak request: {str(message)[:300]}")
+        raise ZelineError(f"Provider menolak request: {str(message)[:300]}")
     return value
 
 
-class Aesora:
+class Zeline:
     """Satu sesi agent untuk satu user/chat.
 
     ``tool_profile``:
@@ -83,9 +83,9 @@ class Aesora:
 
     def _call_llm(self) -> dict[str, Any]:
         if not self.api_key:
-            raise AesoraError("API key belum dikonfigurasi. Jalankan `aesora setup`.")
+            raise ZelineError("API key belum dikonfigurasi. Jalankan `zeline setup`.")
         if not self.base_url or not self.model:
-            raise AesoraError("Provider belum lengkap. Jalankan `aesora setup`.")
+            raise ZelineError("Provider belum lengkap. Jalankan `zeline setup`.")
         # Snapshot immutable: history berubah lagi setelah request (tool/final reply).
         # Tanpa deepcopy, mock/async transport bisa melihat message yang sudah berubah.
         payload = {
@@ -102,23 +102,23 @@ class Aesora:
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
-                    "User-Agent": "aesora-agent/0.1.0",
+                    "User-Agent": "zeline/0.1.0",
                 },
                 json=payload,
                 timeout=180,
             )
         except requests.RequestException as exc:
-            raise AesoraError(f"Gagal menghubungi provider: {exc.__class__.__name__}.") from exc
+            raise ZelineError(f"Gagal menghubungi provider: {exc.__class__.__name__}.") from exc
         if not response.ok:
             # Jangan masukkan body API (bisa mengandung detail sensitif) ke user.
-            raise AesoraError(f"Provider HTTP {response.status_code}.")
+            raise ZelineError(f"Provider HTTP {response.status_code}.")
         parsed = _parse_response(response.text)
         try:
             message = parsed["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise AesoraError("Provider tidak mengembalikan pilihan respons.") from exc
+            raise ZelineError("Provider tidak mengembalikan pilihan respons.") from exc
         if not isinstance(message, dict):
-            raise AesoraError("Provider mengembalikan message yang tidak valid.")
+            raise ZelineError("Provider mengembalikan message yang tidak valid.")
         return message
 
     def _trim_history(self) -> None:
@@ -164,7 +164,8 @@ class Aesora:
                 return content or "(provider tidak mengirim jawaban teks)"
 
             if not isinstance(tool_calls, list):
-                raise AesoraError("Format tool call dari provider tidak valid.")
+                raise ZelineError("Format tool call dari provider tidak valid.")
+
             # Urutan ini wajib untuk OpenAI-compatible tool calling.
             self.messages.append(
                 {
@@ -195,3 +196,8 @@ class Aesora:
 
         self._trim_history()
         return "Aku berhenti karena terlalu banyak putaran tool. Coba tugas yang lebih spesifik."
+
+
+# Compatibility aliases for integrations built before the Zeline rebrand.
+Aesora = Zeline
+AesoraError = ZelineError

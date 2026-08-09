@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Aesora AI Agent installer
+# Zeline agentic AI framework installer
 #
 # Pilihan penggunaan:
-#   curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/aesora/main/install.sh | bash
-#   git clone https://github.com/Mftrferdinand/aesora.git && cd aesora && bash install.sh
+#   curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zeline/main/install.sh | bash
+#   git clone https://github.com/Mftrferdinand/Zeline.git && cd Zeline && bash install.sh
 #
 # Environment opsional:
-#   AESORA_PYTHON=python3   # executable Python yang dipakai installer
+#   ZELINE_PYTHON=python3   # executable Python yang dipakai installer
 set -euo pipefail
 
-REPO_URL="https://github.com/Mftrferdinand/aesora.git"
+REPO_URL="https://github.com/Mftrferdinand/Zeline.git"
 BRANCH="main"
-PYTHON_BIN="${AESORA_PYTHON:-python3}"
-INSTALL_DIR="${AESORA_INSTALL_DIR:-$HOME/.local/share/aesora-source}"
+PYTHON_BIN="${ZELINE_PYTHON:-${AESORA_PYTHON:-python3}}"
+INSTALL_DIR="${ZELINE_INSTALL_DIR:-${AESORA_INSTALL_DIR:-$HOME/.local/share/zeline-source}}"
 TMP_DIR=""
 
 cleanup() {
@@ -32,13 +32,12 @@ need_command() {
 need_command "$PYTHON_BIN"
 
 print_banner() {
-  local width=59 subtitle="AI AGENT FRAMEWORK  ·  BY MFTRFERDINAND"
+  local subtitle="ZELINE · AGENTIC AI FRAMEWORK · BY MFTRFERDINAND"
   local art
-  art='   _   ___ ___  ___  ___    _       _   ___ ___ _  _ _____
-  /_\ | __/ __|/ _ \| _ \  /_\ ___ /_\ / __| __| \| |_   _|
- / _ \| _|\__ \ (_) |   / / _ \___/ _ \ (_ | _|| .` | | |
-/_/ \_\___|___/\___/|_|_\/_/ \_\ /_/ \_\___|___|_|\_| |_|  '
-  printf -v subtitle '%*s%s%*s' $(((width - ${#subtitle}) / 2)) '' "$subtitle" $(((width - ${#subtitle} + 1) / 2)) ''
+  art='┏━━━━━━━━━━━━━━━━━━ ZEROLINEAR ━━━━━━━━━━━━━━━━━━━┓
+┃               Z E R O L I N E A R              ┃
+┃       INTELLIGENCE BEYOND THE STRAIGHT LINE     ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛'
   if [ -t 1 ] && [ "${NO_COLOR+x}" != x ] && [ "${TERM:-}" != "dumb" ]; then
     printf '\n\033[38;5;51m%s\033[0m\n\033[38;5;75m%s\033[0m\n\n' "$art" "$subtitle"
   else
@@ -47,7 +46,7 @@ print_banner() {
 }
 
 if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
-  echo "[x] Aesora butuh Python 3.10 atau lebih baru." >&2
+  echo "[x] Zeline butuh Python 3.10 atau lebih baru." >&2
   exit 1
 fi
 
@@ -63,8 +62,8 @@ if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/aesora" ]; then
 else
   need_command git
   TMP_DIR="$(mktemp -d)"
-  SOURCE_DIR="$TMP_DIR/aesora"
-  echo "==> Mengunduh source Aesora…"
+  SOURCE_DIR="$TMP_DIR/zeline"
+  echo "==> Mengunduh source Zeline…"
   git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SOURCE_DIR"
 fi
 
@@ -72,27 +71,27 @@ echo "==> Install/update package…"
 "$PYTHON_BIN" -m pip install --user --upgrade "$SOURCE_DIR"
 
 # Termux sering tidak memasukkan ~/.local/bin ke PATH. Jika PREFIX/bin bisa
-# ditulis, pasang wrapper kecil agar command `aesora` tersedia langsung.
+# ditulis, pasang wrapper kecil agar command `zeline` tersedia langsung.
 if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/bin" ] && [ -w "$PREFIX/bin" ]; then
-  cat > "$PREFIX/bin/aesora" <<EOF
+  cat > "$PREFIX/bin/zeline" <<EOF
 #!/usr/bin/env sh
 exec "$PYTHON_BIN" -m aesora.cli "\$@"
 EOF
-  chmod +x "$PREFIX/bin/aesora"
-  echo "    Command: $PREFIX/bin/aesora"
+  chmod +x "$PREFIX/bin/zeline"
+  echo "    Command: $PREFIX/bin/zeline"
 else
   USER_BIN="$HOME/.local/bin"
   case ":$PATH:" in
     *":$USER_BIN:"*) ;;
     *)
       echo ""
-      echo "[!] Tambahkan ini ke ~/.bashrc atau restart shell agar command aesora terbaca:"
+      echo "[!] Tambahkan ini ke ~/.bashrc atau restart shell agar command zeline terbaca:"
       echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
       ;;
   esac
 fi
 
-echo "==> Inisialisasi data Aesora (~/.aesora)…"
+echo "==> Inisialisasi data Zeline (~/.zeline)…"
 "$PYTHON_BIN" - <<'PY'
 from aesora import skills
 count = skills.seed_skills()
@@ -100,13 +99,13 @@ print(f"    OK · {count} skill baru ditambahkan")
 PY
 
 echo ""
-echo "✓ Aesora terpasang."
+echo "✓ Zeline terpasang."
 echo ""
 echo "Mulai setup:"
-echo "  aesora setup"
+echo "  zeline setup"
 echo ""
 echo "Lalu cek:"
-echo "  aesora doctor"
-echo "  aesora gateway list"
+echo "  zeline doctor"
+echo "  zeline gateway list"
 echo ""
-echo "Dokumentasi: https://github.com/Mftrferdinand/aesora"
+echo "Dokumentasi: https://github.com/Mftrferdinand/Zeline"

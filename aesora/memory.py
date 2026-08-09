@@ -1,6 +1,6 @@
-"""Memory persisten Aesora yang terisolasi per identitas percakapan.
+"""Memory persisten Zeline yang terisolasi per identitas percakapan.
 
-Satu install Aesora bisa menerima banyak chat Telegram/WhatsApp. Karena itu
+Satu install Zeline bisa menerima banyak chat Telegram/WhatsApp. Karena itu
 memory tidak boleh global: ``telegram:123`` tidak boleh membaca memory
 ``telegram:456``. File fisik memakai SHA-256 dari identity agar nomor/chat ID
 tidak bocor lewat nama file.
@@ -132,7 +132,7 @@ class MemoryStore:
         )
 
 
-# API ringan untuk CLI lama dan command `aesora memory list`.
+# API ringan untuk CLI dan command `zeline memory`.
 def list_memory(identity: str = "cli:local") -> str:
     return MemoryStore(identity).formatted()
 

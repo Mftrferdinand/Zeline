@@ -66,7 +66,7 @@ class GatewayServiceTests(unittest.TestCase):
         with mock.patch.object(self.service, "_pid_alive", return_value=True), mock.patch.object(self.service, "_process_start_ticks", return_value="new"), mock.patch.object(self.service.os, "kill") as kill:
             stopped, message = self.service.stop(wait_seconds=0)
         self.assertFalse(stopped)
-        self.assertIn("bukan process aesora", message.lower())
+        self.assertIn("bukan process zeline", message.lower())
         kill.assert_not_called()
         self.assertFalse(self.config.PID_FILE.exists())
 

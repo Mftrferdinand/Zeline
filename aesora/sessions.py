@@ -1,4 +1,4 @@
-"""Session manager Aesora.
+"""Session manager Zeline.
 
 Satu gateway process menangani banyak chat secara concurrent. Store ini:
 - mengisolasi identity antar platform (telegram:123 != whatsapp:123),
@@ -14,12 +14,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 from aesora import config
-from aesora.agent import Aesora
+from aesora.agent import Zeline
 
 
 @dataclass
 class Session:
-    agent: Aesora
+    agent: Zeline
     lock: threading.Lock
     last_used: float
 
@@ -46,7 +46,7 @@ class SessionStore:
             if session is None:
                 self._evict_if_needed()
                 session = Session(
-                    agent=Aesora(
+                    agent=Zeline(
                         identity=identity,
                         tool_profile=tool_profile,
                         workspace=workspace,

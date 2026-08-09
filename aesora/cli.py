@@ -1,21 +1,21 @@
-"""Command line interface Aesora.
+"""Command line interface Zeline.
 
-Aesora command-line interface:
+Zeline command-line interface:
 
-    aesora setup                 # wizard provider + platform
-    aesora                       # chat lokal
-    aesora chat -q "halo"         # satu query
-    aesora gateway setup         # wizard gateway saja
-    aesora gateway enable telegram
-    aesora gateway start         # jalankan semua gateway aktif di background
-    aesora gateway stop|status|log
-    aesora gateway run           # jalankan foreground (systemd/tmux)
-    aesora doctor                # cek instalasi/config
-    aesora config path|show
-    aesora skills list
-    aesora memory list
+    zeline setup                 # wizard provider + platform
+    zeline                       # chat lokal
+    zeline chat -q "halo"         # satu query
+    zeline gateway setup         # wizard gateway saja
+    zeline gateway enable telegram
+    zeline gateway start         # jalankan semua gateway aktif di background
+    zeline gateway stop|status|log
+    zeline gateway run           # jalankan foreground (systemd/tmux)
+    zeline doctor                # cek instalasi/config
+    zeline config path|show
+    zeline skills list
+    zeline memory list
 
-Aesora adalah framework yang pengguna konfigurasi dengan bot/account mereka
+Zeline adalah framework yang pengguna konfigurasi dengan bot/account mereka
 sendiri. Tidak ada token Telegram/WhatsApp bersama dalam paket ini.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from aesora import __version__, config, skills
-from aesora.agent import Aesora, AesoraError
+from aesora.agent import ZelineError
 from aesora.gateways import GATEWAYS, gateway_status, run_all
 from aesora import gateway_service
 from aesora.sessions import SessionStore
@@ -46,12 +46,13 @@ def _terminal_color_enabled() -> bool:
 
 
 BANNER_ART = (
-    "   _   ___ ___  ___  ___    _       _   ___ ___ _  _ _____ ",
-    "  /_\\ | __/ __|/ _ \\| _ \\  /_\\ ___ /_\\ / __| __| \\| |_   _|",
-    " / _ \\| _|\\__ \\ (_) |   / / _ \\___/ _ \\ (_ | _|| .` | | |  ",
-    "/_/ \\_\\___|___/\\___/|_|_\\/_/ \\_\\ /_/ \\_\\___|___|_|\\_| |_|  ",
+    "┏━━━━━━━━━━━━━━━━━━ ZEROLINEAR ━━━━━━━━━━━━━━━━━━━┓",
+    "┃               Z E R O L I N E A R              ┃",
+    "┃       INTELLIGENCE BEYOND THE STRAIGHT LINE     ┃",
+    "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
 )
-BANNER_WIDTH = max(len(line) for line in BANNER_ART)
+BANNER_SUBTITLE = f"ZELINE · AGENTIC AI FRAMEWORK · v{__version__} · BY MFTRFERDINAND"
+BANNER_WIDTH = max(max(len(line) for line in BANNER_ART), len(BANNER_SUBTITLE))
 
 
 def _centered_banner_line(text: str) -> str:
@@ -59,16 +60,17 @@ def _centered_banner_line(text: str) -> str:
 
 
 def _print_banner() -> None:
-    """Render a large portable AESORA-AGENT terminal wordmark."""
-    subtitle = _centered_banner_line(f"AI AGENT FRAMEWORK  ·  v{__version__}  ·  BY MFTRFERDINAND")
+    """Render the portable ZEROLINEAR / Zeline terminal identity."""
+    lines = tuple(_centered_banner_line(line) for line in BANNER_ART)
+    subtitle = _centered_banner_line(BANNER_SUBTITLE)
     if _terminal_color_enabled():
         colors = ("\033[38;5;51m", "\033[38;5;45m", "\033[38;5;39m", "\033[38;5;27m")
         reset = "\033[0m"
-        wordmark = "\n".join(f"{color}{line}{reset}" for color, line in zip(colors, BANNER_ART))
-        print(f"\n{wordmark}\n\033[38;5;75m  {subtitle}{reset}\n")
+        wordmark = "\n".join(f"{color}{line}{reset}" for color, line in zip(colors, lines))
+        print(f"\n{wordmark}\n\033[38;5;75m{subtitle}{reset}\n")
     else:
-        wordmark = "\n".join(BANNER_ART)
-        print(f"\n{wordmark}\n  {subtitle}\n")
+        wordmark = "\n".join(lines)
+        print(f"\n{wordmark}\n{subtitle}\n")
 
 
 def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
@@ -166,13 +168,13 @@ def _step(number: int, title: str, detail: str) -> None:
 
 def cmd_setup(*, reset: bool = False) -> int:
     _print_banner()
-    print(f"==> CONFIGURE AESORA  ·  {config.CONFIG_FILE}")
+    print(f"==> CONFIGURE ZELINE  ·  {config.CONFIG_FILE}")
     if reset:
         print("  Starting with clean generic defaults. Existing provider settings will be replaced.")
     cfg = _setup_config(reset=reset)
 
     _step(1, "AGENT IDENTITY", "Choose the local name shown in the terminal.")
-    cfg["name"] = _ask("Agent name", str(cfg.get("name", "Aesora")))
+    cfg["name"] = _ask("Agent name", str(cfg.get("name", "Zeline")))
 
     _step(2, "AI PROVIDER", "Use any OpenAI-compatible endpoint. Nothing is imported automatically.")
     provider = cfg["provider"]
@@ -180,7 +182,7 @@ def cmd_setup(*, reset: bool = False) -> int:
     provider["api_key"] = _ask("API key", str(provider.get("api_key", "")), secret=True)
     provider["model"] = _ask("Model", str(provider.get("model", config.DEFAULT_MODEL)))
 
-    _step(3, "OPTIONAL GATEWAYS", "Skip any platform now; you can configure it later with `aesora gateway setup`.")
+    _step(3, "OPTIONAL GATEWAYS", "Skip any platform now; you can configure it later with `zeline gateway setup`.")
     _setup_telegram(cfg)
     _setup_whatsapp(cfg)
     _setup_webhook(cfg)
@@ -188,13 +190,25 @@ def cmd_setup(*, reset: bool = False) -> int:
     config.save_config(cfg)
     copied = skills.seed_skills()
     print(f"\n[ READY ]  Configuration saved. {copied} built-in skills added.")
-    print("  Next: aesora status  ·  aesora chat -q \"Hello\"  ·  aesora gateway list")
+    print("  Next: zeline status  ·  zeline chat -q \"Hello\"  ·  zeline gateway list")
+    return 0
+
+
+def cmd_model() -> int:
+    """Update provider/model only; preserve every gateway setting."""
+    cfg = config.stored_config_copy()
+    provider = cfg["provider"]
+    provider["base_url"] = _ask("Base URL", str(provider.get("base_url", "https://api.openai.com/v1"))).rstrip("/")
+    provider["api_key"] = _ask("API key", str(provider.get("api_key", "")), secret=True)
+    provider["model"] = _ask("Model", str(provider.get("model", config.DEFAULT_MODEL)))
+    config.save_config(cfg)
+    print(f"Model disimpan: {provider['model']}")
     return 0
 
 
 def cmd_chat(query: str | None = None) -> int:
     if not config.API_KEY:
-        print("[!] API key kosong. Jalankan: aesora setup")
+        print("[!] API key kosong. Jalankan: zeline setup")
         return 2
     _print_banner()
     print(f"  Agent : {config.NAME}")
@@ -218,7 +232,7 @@ def cmd_chat(query: str | None = None) -> int:
         try:
             print(ask(query))
             return 0
-        except AesoraError as exc:
+        except ZelineError as exc:
             print(f"[error] {exc}")
             return 1
 
@@ -237,7 +251,7 @@ def cmd_chat(query: str | None = None) -> int:
         try:
             answer = ask(text)
             print(f"\033[35m{config.NAME} ›\033[0m {answer}\n")
-        except AesoraError as exc:
+        except ZelineError as exc:
             print(f"\033[31m[error] {exc}\033[0m\n")
 
 
@@ -270,13 +284,13 @@ def cmd_gateway_enable(name: str) -> int:
         gateway.update({"enabled": True, "host": "127.0.0.1", "port": int(gateway.get("port", 8765)), "token": gateway.get("token") or config.new_webhook_token(), "tool_profile": "safe"})
     elif name == "telegram":
         if not gateway.get("token"):
-            print("Telegram butuh token. Gunakan: aesora gateway setup telegram")
+            print("Telegram butuh token. Gunakan: zeline gateway setup telegram")
             return 2
         gateway["enabled"] = True
     else:
         gateway["enabled"] = True
     config.save_config(cfg)
-    print(f"Gateway {name} diaktifkan. Jalankan `aesora gateway run`.")
+    print(f"Gateway {name} diaktifkan. Jalankan `zeline gateway run`.")
     return 0
 
 
@@ -301,7 +315,7 @@ def cmd_gateway_list() -> int:
 
 
 def cmd_gateway_token(name: str) -> int:
-    """Tampilkan secret hanya saat owner memintanya secara eksplisit."""
+    """Tampilkan status secret tanpa pernah membocorkan nilainya."""
     if name not in GATEWAYS:
         print(f"Gateway tidak dikenal: {name}. Pilihan: {', '.join(GATEWAYS)}")
         return 2
@@ -309,21 +323,20 @@ def cmd_gateway_token(name: str) -> int:
     if not token:
         print(f"Gateway {name} belum memiliki token rahasia.")
         return 2
-    print("⚠ Ini rahasia. Jangan kirim ke chat publik, screenshot, atau commit Git.")
-    print(token)
+    print(f"Token {name}: ** (tersimpan)")
     return 0
 
 
 def cmd_gateway_start(only: list[str] | None = None) -> int:
     if not config.API_KEY:
-        print("API key kosong. Jalankan `aesora setup` sebelum gateway start.")
+        print("API key kosong. Jalankan `zeline setup` sebelum gateway start.")
         return 2
     enabled = [
         name for name, gateway_cfg in config.GATEWAYS.items()
         if gateway_cfg.get("enabled", False) and (not only or name in only)
     ]
     if not enabled:
-        print("Tidak ada gateway aktif. Jalankan `aesora gateway setup`.")
+        print("Tidak ada gateway aktif. Jalankan `zeline gateway setup`.")
         return 2
     started, message = gateway_service.start(only=only)
     print(message)
@@ -334,6 +347,14 @@ def cmd_gateway_stop() -> int:
     stopped, message = gateway_service.stop()
     print(message)
     return 0 if stopped else 1
+
+
+def cmd_gateway_restart(only: list[str] | None = None) -> int:
+    _stopped, stop_message = gateway_service.stop()
+    print(stop_message)
+    started, start_message = gateway_service.start(only=only)
+    print(start_message)
+    return 0 if started else 1
 
 
 def cmd_gateway_service_status() -> int:
@@ -350,10 +371,10 @@ def cmd_gateway_log(lines: int = 80) -> int:
 def cmd_gateway_run(only: list[str] | None = None) -> int:
     enabled = [(name, data) for name, data in config.GATEWAYS.items() if data.get("enabled") and (not only or name in only)]
     if not enabled:
-        print("Tidak ada gateway aktif. Jalankan `aesora gateway setup`.")
+        print("Tidak ada gateway aktif. Jalankan `zeline gateway setup`.")
         return 2
     if not config.API_KEY:
-        print("API key kosong. Jalankan `aesora setup` sebelum gateway run.")
+        print("API key kosong. Jalankan `zeline setup` sebelum gateway run.")
         return 2
     _print_banner()
     print("==> Menjalankan gateway…")
@@ -385,7 +406,7 @@ def cmd_doctor() -> int:
     _print_banner()
     problems: list[str] = []
     warnings: list[str] = []
-    print("Aesora doctor")
+    print("Zeline doctor")
     print(f"  home      : {config.DATA_DIR}")
     print(f"  config    : {config.CONFIG_FILE} {'ada' if config.CONFIG_FILE.exists() else 'belum dibuat'}")
     print(f"  python    : {sys.version.split()[0]}")
@@ -393,7 +414,7 @@ def cmd_doctor() -> int:
     print(f"  model     : {config.MODEL or '(kosong)'}")
     print(f"  api key   : {config.mask_secret(config.API_KEY)}")
     if not config.API_KEY:
-        problems.append("API key kosong — jalankan `aesora setup`.")
+        problems.append("API key kosong — jalankan `zeline setup`.")
     if not config.BASE_URL:
         problems.append("Base URL provider kosong.")
     if not config.MODEL:
@@ -430,14 +451,14 @@ def cmd_config(action: str) -> int:
                 gateway["token"] = config.mask_secret(str(gateway.get("token", "")))
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return 0
-    print("Usage: aesora config path|show")
+    print("Usage: zeline config path|show")
     return 2
 
 
 def cmd_skills() -> int:
     available = skills.list_skill_entries(include_private=True)
     if not available:
-        print("Belum ada skill. Jalankan `aesora setup` untuk menyalin skill bawaan.")
+        print("Belum ada skill. Jalankan `zeline setup` untuk menyalin skill bawaan.")
         return 0
     for scope, name, _title, description in available:
         print(f"  - {name} [{scope}]: {description}")
@@ -452,8 +473,8 @@ def cmd_memory() -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="aesora", description="Aesora AI Agent multi-platform")
-    parser.add_argument("--version", action="version", version=f"aesora {__version__}")
+    parser = argparse.ArgumentParser(prog="zeline", description="Zeline agentic AI framework by Zerolinear")
+    parser.add_argument("--version", action="version", version=f"zeline {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     setup = subparsers.add_parser("setup", help="configure agent, provider, and gateways")
@@ -461,6 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat = subparsers.add_parser("chat", help="chat di terminal")
     chat.add_argument("-q", "--query", help="satu query tanpa mode interaktif")
+    subparsers.add_parser("model", help="ubah provider/model tanpa setup ulang gateway")
 
     gateway = subparsers.add_parser("gateway", help="kelola platform messaging")
     gateway_sub = gateway.add_subparsers(dest="gateway_command")
@@ -474,6 +496,8 @@ def build_parser() -> argparse.ArgumentParser:
     start = gateway_sub.add_parser("start", help="jalankan gateway aktif di background")
     start.add_argument("--only", choices=list(GATEWAYS), action="append", help="hanya jalankan gateway ini (bisa diulang)")
     gateway_sub.add_parser("stop", help="hentikan gateway background")
+    restart = gateway_sub.add_parser("restart", help="restart gateway background")
+    restart.add_argument("--only", choices=list(GATEWAYS), action="append", help="hanya jalankan gateway ini (bisa diulang)")
     log = gateway_sub.add_parser("log", help="lihat log gateway background")
     log.add_argument("-n", "--lines", type=int, default=80, help="jumlah baris log")
     run = gateway_sub.add_parser("run", help="jalankan gateway aktif foreground")
@@ -506,6 +530,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_setup(reset=namespace.reset)
     if command == "chat":
         return cmd_chat(namespace.query)
+    if command == "model":
+        return cmd_model()
     if command == "gateway":
         action = namespace.gateway_command or "list"
         if action == "setup":
@@ -524,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_gateway_start(namespace.only)
         if action == "stop":
             return cmd_gateway_stop()
+        if action == "restart":
+            return cmd_gateway_restart(namespace.only)
         if action == "log":
             return cmd_gateway_log(namespace.lines)
         if action == "run":
