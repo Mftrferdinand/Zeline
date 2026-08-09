@@ -150,7 +150,7 @@ class AesoraCliTests(unittest.TestCase):
             " / /| _||   / (_) | |__ | || .` | _| / _ \\|   /",
             "/___|___|_|_\\\\___/|____|___|_|\\_|___/_/ \\_\\_|_\\",
         ])
-        self.assertIn("ZELINE · AGENTIC AI FRAMEWORK", subtitle)
+        self.assertIn("ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND", subtitle)
         self.assertIn("BY MFTRFERDINAND", subtitle)
         self.assertNotIn("┏", output.getvalue())
         self.assertNotIn("AESORA", output.getvalue().upper())
@@ -200,7 +200,7 @@ class AesoraCliTests(unittest.TestCase):
         self.assertEqual(parser.prog, "zeline")
         result = self.invoke(["status"], expected_status=1)
         self.assertIn(" _______ ___  ___  _    ___ _  _ ___   _   ___ ", result)
-        self.assertIn("ZELINE · AGENTIC AI FRAMEWORK", result)
+        self.assertIn("ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND", result)
         self.assertIn("BY MFTRFERDINAND", result)
         self.assertNotIn("AESORA", result.upper())
 

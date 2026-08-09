@@ -51,7 +51,7 @@ BANNER_ART = (
     " / /| _||   / (_) | |__ | || .` | _| / _ \\|   /",
     "/___|___|_|_\\\\___/|____|___|_|\\_|___/_/ \\_\\_|_\\",
 )
-BANNER_SUBTITLE = f"ZELINE · AGENTIC AI FRAMEWORK · v{__version__} · BY MFTRFERDINAND"
+BANNER_SUBTITLE = f"ZELINE AGENTIC AI · v{__version__} · BY MFTRFERDINAND"
 BANNER_WIDTH = max(len(line) for line in BANNER_ART)
 
 

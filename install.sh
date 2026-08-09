@@ -32,7 +32,7 @@ need_command() {
 need_command "$PYTHON_BIN"
 
 print_banner() {
-  local subtitle="ZELINE · AGENTIC AI FRAMEWORK · BY MFTRFERDINAND"
+  local subtitle="ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND"
   local art
   art=' _______ ___  ___  _    ___ _  _ ___   _   ___
 |_  / __| _ \/ _ \| |  |_ _| \| | __| /_\ | _ \
