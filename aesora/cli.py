@@ -46,13 +46,13 @@ def _terminal_color_enabled() -> bool:
 
 
 BANNER_ART = (
-    "┏━━━━━━━━━━━━━━━━━━ ZEROLINEAR ━━━━━━━━━━━━━━━━━━━┓",
-    "┃               Z E R O L I N E A R              ┃",
-    "┃       INTELLIGENCE BEYOND THE STRAIGHT LINE     ┃",
-    "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
+    " _______ ___  ___  _    ___ _  _ ___   _   ___ ",
+    "|_  / __| _ \\/ _ \\| |  |_ _| \\| | __| /_\\ | _ \\",
+    " / /| _||   / (_) | |__ | || .` | _| / _ \\|   /",
+    "/___|___|_|_\\\\___/|____|___|_|\\_|___/_/ \\_\\_|_\\",
 )
 BANNER_SUBTITLE = f"ZELINE · AGENTIC AI FRAMEWORK · v{__version__} · BY MFTRFERDINAND"
-BANNER_WIDTH = max(max(len(line) for line in BANNER_ART), len(BANNER_SUBTITLE))
+BANNER_WIDTH = max(len(line) for line in BANNER_ART)
 
 
 def _centered_banner_line(text: str) -> str:
@@ -61,8 +61,8 @@ def _centered_banner_line(text: str) -> str:
 
 def _print_banner() -> None:
     """Render the portable ZEROLINEAR / Zeline terminal identity."""
-    lines = tuple(_centered_banner_line(line) for line in BANNER_ART)
-    subtitle = _centered_banner_line(BANNER_SUBTITLE)
+    lines = BANNER_ART
+    subtitle = BANNER_SUBTITLE
     if _terminal_color_enabled():
         colors = ("\033[38;5;51m", "\033[38;5;45m", "\033[38;5;39m", "\033[38;5;27m")
         reset = "\033[0m"

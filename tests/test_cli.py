@@ -144,11 +144,15 @@ class AesoraCliTests(unittest.TestCase):
         lines = output.getvalue().splitlines()
         subtitle = next(line for line in lines if "ZELINE" in line)
         wordmark = lines[1:5]
-        self.assertIn("ZERO", "\n".join(wordmark))
-        self.assertIn("LINEAR", "\n".join(wordmark))
-        self.assertEqual(len(subtitle), max(len(line) for line in wordmark))
+        self.assertEqual(wordmark, [
+            " _______ ___  ___  _    ___ _  _ ___   _   ___ ",
+            "|_  / __| _ \\/ _ \\| |  |_ _| \\| | __| /_\\ | _ \\",
+            " / /| _||   / (_) | |__ | || .` | _| / _ \\|   /",
+            "/___|___|_|_\\\\___/|____|___|_|\\_|___/_/ \\_\\_|_\\",
+        ])
         self.assertIn("ZELINE · AGENTIC AI FRAMEWORK", subtitle)
         self.assertIn("BY MFTRFERDINAND", subtitle)
+        self.assertNotIn("┏", output.getvalue())
         self.assertNotIn("AESORA", output.getvalue().upper())
 
     def test_setup_replaces_stale_provider_defaults_when_no_key_exists(self):
@@ -191,11 +195,11 @@ class AesoraCliTests(unittest.TestCase):
         self.assertIn("api key", result.lower())
         self.assertIn("zeline setup", result.lower())
 
-    def test_cli_identity_uses_zeline_command_and_zero_linear_brand(self):
+    def test_cli_identity_uses_zeline_command_and_large_zerolinear_wordmark(self):
         parser = self.cli.build_parser()
         self.assertEqual(parser.prog, "zeline")
         result = self.invoke(["status"], expected_status=1)
-        self.assertIn("ZEROLINEAR", result)
+        self.assertIn(" _______ ___  ___  _    ___ _  _ ___   _   ___ ", result)
         self.assertIn("ZELINE · AGENTIC AI FRAMEWORK", result)
         self.assertIn("BY MFTRFERDINAND", result)
         self.assertNotIn("AESORA", result.upper())
@@ -205,7 +209,7 @@ class AesoraCliTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.cli._print_banner()
-        self.assertIn("ZEROLINEAR", output.getvalue())
+        self.assertIn(" _______ ___  ___  _    ___ _  _ ___   _   ___ ", output.getvalue())
         self.assertIn("ZELINE", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
 
