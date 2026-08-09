@@ -78,7 +78,7 @@ class AesoraPublicCoreTests(unittest.TestCase):
         legacy = Path(self.temp.name) / ".aesora"
         target = Path(self.temp.name) / ".zeline"
         legacy.mkdir()
-        saved = {"provider": {"api_key": "legacy-secret", "model": "legacy-model"}}
+        saved = {"name": "Aesora", "provider": {"api_key": "legacy-secret", "model": "legacy-model"}}
         (legacy / "config.json").write_text(json.dumps(saved), encoding="utf-8")
 
         self.config._migrate_legacy_data_dir(legacy, target)
@@ -86,6 +86,7 @@ class AesoraPublicCoreTests(unittest.TestCase):
         migrated = json.loads((target / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(migrated["provider"]["api_key"], "legacy-secret")
         self.assertEqual(migrated["provider"]["model"], "legacy-model")
+        self.assertEqual(migrated["name"], "Zeline")
         self.assertTrue((legacy / "config.json").exists())
 
     def test_default_runtime_uses_zeline_identity(self):
@@ -96,6 +97,17 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertIn("Zerolinear", self.config.SYSTEM_PROMPT)
         self.assertEqual(self.config.NAME, "Zeline")
         self.assertIn("eksekusi", self.config.SYSTEM_PROMPT.lower())
+
+    def test_existing_zeline_config_normalizes_legacy_default_agent_name(self):
+        saved = self.config.config_copy()
+        saved["name"] = "Aesora"
+        saved["provider"]["model"] = "keep-this-model"
+        self.config.save_config(saved)
+
+        normalized = self.config.stored_config_copy()
+
+        self.assertEqual(normalized["name"], "Zeline")
+        self.assertEqual(normalized["provider"]["model"], "keep-this-model")
 
     def test_seeded_superagent_skill_corpus_is_available_to_public_gateway(self):
         skill_system = importlib.import_module("aesora.skills")

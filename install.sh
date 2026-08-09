@@ -34,10 +34,10 @@ need_command "$PYTHON_BIN"
 print_banner() {
   local subtitle="ZELINE · AGENTIC AI FRAMEWORK · BY MFTRFERDINAND"
   local art
-  art='┏━━━━━━━━━━━━━━━━━━ ZEROLINEAR ━━━━━━━━━━━━━━━━━━━┓
-┃               Z E R O L I N E A R              ┃
-┃       INTELLIGENCE BEYOND THE STRAIGHT LINE     ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛'
+  art=' _______ ___  ___  _    ___ _  _ ___   _   ___
+|_  / __| _ \/ _ \| |  |_ _| \| | __| /_\ | _ \
+ / /| _||   / (_) | |__ | || .` | _| / _ \|   /
+/___|___|_|_\\___/|____|___|_|\_|___/_/ \_\_|_\'
   if [ -t 1 ] && [ "${NO_COLOR+x}" != x ] && [ "${TERM:-}" != "dumb" ]; then
     printf '\n\033[38;5;51m%s\033[0m\n\033[38;5;75m%s\033[0m\n\n' "$art" "$subtitle"
   else

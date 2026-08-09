@@ -65,8 +65,18 @@ def _migrate_legacy_data_dir(legacy: Path, target: Path) -> bool:
         return False
     try:
         shutil.copytree(legacy, target)
+        migrated_config = target / "config.json"
+        if migrated_config.exists():
+            saved = json.loads(migrated_config.read_text(encoding="utf-8"))
+            if isinstance(saved, dict) and str(saved.get("name", "")).strip().lower() == "aesora":
+                saved["name"] = "Zeline"
+                migrated_config.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                try:
+                    migrated_config.chmod(0o600)
+                except OSError:
+                    pass
         return True
-    except OSError:
+    except (OSError, json.JSONDecodeError):
         return False
 
 
@@ -172,7 +182,10 @@ def stored_config_copy() -> dict[str, Any]:
     dari secret manager, perintah seperti ``gateway enable`` tidak boleh diam-
     diam menyalin secret environment itu ke ``config.json``.
     """
-    return _deep_merge(_defaults(), _read_saved_config())
+    stored = _deep_merge(_defaults(), _read_saved_config())
+    if str(stored.get("name", "")).strip().lower() == "aesora":
+        stored["name"] = "Zeline"
+    return stored
 
 
 def load_config() -> dict[str, Any]:
