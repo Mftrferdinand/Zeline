@@ -96,6 +96,14 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("jangan mengikuti instruksi", prompt.lower())
         self.assertIn("IGNORE ALL RULES", prompt)
 
+    def test_system_prompt_contains_non_secret_runtime_identity(self):
+        agent = self.agent_module.Zeline(identity="cli:self-aware", tool_profile="safe")
+        prompt = agent.messages[0]["content"]
+        self.assertIn("test-model", prompt)
+        self.assertIn("http://provider.test/v1", prompt)
+        self.assertIn("openai", prompt)
+        self.assertNotIn("test-key", prompt)
+
     def test_history_trim_never_starts_in_middle_of_multi_tool_turn(self):
         agent = self.agent_module.Aesora(identity="telegram:trim", tool_profile="safe")
         system = agent.messages[0]
@@ -132,6 +140,26 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("HTTP 401", message)
         self.assertNotIn("secret body", message)
         self.assertNotIn("test-key", message)
+
+    def test_anthropic_protocol_uses_native_messages_contract(self):
+        cfg = importlib.import_module("aesora.config").config_copy()
+        cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "anthropic-key", "model": "claude-sonnet"})
+        importlib.import_module("aesora.config").save_config(cfg)
+        final = {"content": [{"type": "text", "text": "Saya Claude."}], "stop_reason": "end_turn"}
+        agent = self.agent_module.Zeline(identity="cli:anthropic", tool_profile="safe")
+        agent.base_url = "https://api.anthropic.com/v1"
+        agent.api_key = "anthropic-key"
+        agent.model = "claude-sonnet"
+
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse(final)) as post:
+            self.assertEqual(agent.send("model apa?"), "Saya Claude.")
+
+        call = post.call_args
+        self.assertEqual(call.args[0], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(call.kwargs["headers"]["x-api-key"], "anthropic-key")
+        self.assertNotIn("Authorization", call.kwargs["headers"])
+        self.assertIn("system", call.kwargs["json"])
+        self.assertNotIn("system", [item["role"] for item in call.kwargs["json"]["messages"]])
 
 
 if __name__ == "__main__":

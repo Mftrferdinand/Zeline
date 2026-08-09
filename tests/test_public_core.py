@@ -150,6 +150,27 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertIn("web_search", names)
         self.assertIn("web_fetch", names)
 
+    def test_runtime_info_reports_non_secret_self_configuration(self):
+        cfg = self.config.config_copy()
+        cfg["provider"].update({"base_url": "https://provider.example/v1", "api_key": "never-print-this", "model": "model-x", "protocol": "openai"})
+        self.config.save_config(cfg)
+        executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+
+        result = executor.run("runtime_info", {})
+
+        self.assertIn("model-x", result)
+        self.assertIn("provider.example", result)
+        self.assertIn("openai", result)
+        self.assertNotIn("never-print-this", result)
+        self.assertIn("runtime_info", {item["function"]["name"] for item in executor.schemas})
+
+    def test_seeded_self_analysis_skill_is_available(self):
+        skills = importlib.import_module("aesora.skills")
+        skills.seed_skills()
+        content = skills.load_skill("self-analysis")
+        self.assertIn("runtime_info", content)
+        self.assertIn("API key", content)
+
     def test_web_fetch_blocks_internal_addresses(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         for url in ("http://127.0.0.1/admin", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.5/", "http://192.168.1.1/"):
