@@ -191,6 +191,65 @@ def _yes_no(prompt: str, default: bool = False) -> bool:
     return default if not answer else answer in {"y", "yes", "ya"}
 
 
+GATEWAY_OPTIONS = (
+    ("telegram", "Telegram"),
+    ("whatsapp", "WhatsApp"),
+    ("webhook", "Webhook"),
+    ("cancel", "Cancel"),
+)
+
+
+def _read_menu_key() -> str:
+    char = _read_secret_key()
+    if char in {"\r", "\n"}:
+        return "enter"
+    if char == "\x03":
+        raise KeyboardInterrupt
+    if char == "\x1b":
+        second = _read_secret_key()
+        third = _read_secret_key()
+        if second == "[" and third == "A":
+            return "up"
+        if second == "[" and third == "B":
+            return "down"
+    return ""
+
+
+def _select_gateway() -> str:
+    """Arrow-key gateway picker with numeric fallback for redirected stdin."""
+    if not sys.stdin.isatty():
+        print("Pilih gateway:")
+        for index, (_value, label) in enumerate(GATEWAY_OPTIONS, 1):
+            print(f"  {index}. {label}")
+        while True:
+            answer = input(f"Pilihan [1-{len(GATEWAY_OPTIONS)}]: ").strip()
+            if answer.isdigit() and 1 <= int(answer) <= len(GATEWAY_OPTIONS):
+                return GATEWAY_OPTIONS[int(answer) - 1][0]
+            print("  Pilihan tidak valid.")
+
+    selected = 0
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    print("Pilih gateway (↑/↓ lalu Enter):")
+    try:
+        tty.setraw(fd)
+        while True:
+            for index, (_value, label) in enumerate(GATEWAY_OPTIONS):
+                marker = "❯" if index == selected else " "
+                print(f"\r\033[K  {marker} {label}")
+            key = _read_menu_key()
+            if key == "up":
+                selected = (selected - 1) % len(GATEWAY_OPTIONS)
+            elif key == "down":
+                selected = (selected + 1) % len(GATEWAY_OPTIONS)
+            elif key == "enter":
+                return GATEWAY_OPTIONS[selected][0]
+            print(f"\033[{len(GATEWAY_OPTIONS)}A", end="", flush=True)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        print()
+
+
 def _gateway_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
     gateways = cfg.setdefault("gateways", {})
     defaults = config._defaults()["gateways"]
@@ -202,9 +261,6 @@ def _gateway_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _setup_telegram(cfg: dict[str, Any]) -> bool:
     gateway = _gateway_cfg(cfg, "telegram")
-    if not _yes_no("Aktifkan Telegram?", bool(gateway.get("enabled"))):
-        gateway["enabled"] = False
-        return False
     print("  Buat bot di @BotFather → /newbot → tempel token Bot API.")
     token = _ask("  Telegram bot token", str(gateway.get("token", "")), secret=True)
     if not token:
@@ -219,9 +275,6 @@ def _setup_telegram(cfg: dict[str, Any]) -> bool:
 
 def _setup_whatsapp(cfg: dict[str, Any]) -> bool:
     gateway = _gateway_cfg(cfg, "whatsapp")
-    if not _yes_no("Aktifkan WhatsApp (Baileys / QR pairing)?", bool(gateway.get("enabled"))):
-        gateway["enabled"] = False
-        return False
     allowed_raw = _ask("  Allowlist nomor/JID (koma, kosong = publik)", ",".join(map(str, gateway.get("allowed", []))))
     allowed = [entry.strip() for entry in allowed_raw.split(",") if entry.strip()]
     gateway.update({"enabled": True, "allowed": allowed, "tool_profile": "safe"})
@@ -230,9 +283,6 @@ def _setup_whatsapp(cfg: dict[str, Any]) -> bool:
 
 def _setup_webhook(cfg: dict[str, Any], *, reveal_token: bool = True) -> bool:
     gateway = _gateway_cfg(cfg, "webhook")
-    if not _yes_no("Aktifkan webhook HTTP lokal?", bool(gateway.get("enabled"))):
-        gateway["enabled"] = False
-        return False
     host = _ask("  Host bind (aman: 127.0.0.1)", str(gateway.get("host", "127.0.0.1")))
     port = _ask("  Port", str(gateway.get("port", 8765)))
     token = str(gateway.get("token", "")) or config.new_webhook_token()
@@ -267,33 +317,36 @@ def _step(number: int, title: str, detail: str) -> None:
 
 def cmd_setup(*, reset: bool = False) -> int:
     _print_banner()
-    print(f"==> CONFIGURE ZELINE  ·  {config.CONFIG_FILE}")
+    print(f"==> SETUP GATEWAY  ·  {config.CONFIG_FILE}")
     if reset:
         print("  Starting with clean generic defaults. Existing provider settings will be replaced.")
     cfg = _setup_config(reset=reset)
-
-    _step(1, "AGENT IDENTITY", "Choose the local name shown in the terminal.")
-    cfg["name"] = _ask("Agent name", str(cfg.get("name", "Zeline")))
-
-    _step(2, "AI PROVIDER", "Masukkan endpoint OpenAI-compatible atau Anthropic. Zeline akan mendeteksi protokol dan model. Nothing is imported automatically.")
-    provider = cfg["provider"]
-    _configure_provider(provider)
-
-    _step(3, "OPTIONAL GATEWAYS", "Skip any platform now; you can configure it later with `zeline gateway setup`.")
-    _setup_telegram(cfg)
-    _setup_whatsapp(cfg)
-    _setup_webhook(cfg)
-
-    cfg["setup_complete"] = True
+    selected = _select_gateway()
+    if selected == "cancel":
+        print("Setup dibatalkan. Jalankan `zeline` lagi untuk memilih gateway.")
+        return 0
+    configured = {
+        "telegram": _setup_telegram,
+        "whatsapp": _setup_whatsapp,
+        "webhook": _setup_webhook,
+    }[selected](cfg)
+    if not configured:
+        print("Gateway belum selesai dikonfigurasi.")
+        return 2
+    cfg["gateway_setup_complete"] = True
+    cfg["setup_complete"] = False
     config.save_config(cfg)
     copied = skills.seed_skills()
-    print(f"\n[ READY ]  Configuration saved. {copied} built-in skills added.")
-    print("  Next: zeline status  ·  zeline chat -q \"Hello\"  ·  zeline gateway list")
+    print(f"\n[ GATEWAY READY ]  {selected} disimpan. {copied} built-in skills added.")
+    print("  Berikutnya: jalankan `zeline model` untuk memilih provider dan model.")
     return 0
 
 
 def cmd_model() -> int:
     """Update provider/model only; preserve every gateway setting."""
+    if not config.GATEWAY_SETUP_COMPLETE:
+        print("[!] Pilih dan siapkan gateway dulu. Jalankan: zeline")
+        return 2
     cfg = config.stored_config_copy()
     provider = cfg["provider"]
     _configure_provider(provider)
@@ -304,8 +357,11 @@ def cmd_model() -> int:
 
 
 def cmd_chat(query: str | None = None) -> int:
+    if not config.GATEWAY_SETUP_COMPLETE:
+        print("[!] Gateway belum disiapkan. Jalankan: zeline")
+        return 2
     if not config.SETUP_COMPLETE:
-        print("[!] Setup belum selesai. Jalankan: zeline setup")
+        print("[!] Gateway sudah siap. Berikutnya jalankan: zeline model")
         return 2
     if not bool(config.PROVIDER.get("model_verified", False)):
         print("[!] Model belum diverifikasi dari provider. Jalankan: zeline model")
@@ -623,8 +679,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    # No arguments start the interactive local chat.
     if not args:
+        if not config.GATEWAY_SETUP_COMPLETE:
+            return cmd_setup(reset=False)
+        if not config.SETUP_COMPLETE or not bool(config.PROVIDER.get("model_verified", False)):
+            print("[!] Gateway sudah siap. Berikutnya jalankan: zeline model")
+            return 2
         return cmd_chat()
     parser = build_parser()
     namespace = parser.parse_args(args)

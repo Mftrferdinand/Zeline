@@ -93,18 +93,62 @@ class AesoraCliTests(unittest.TestCase):
         result = self.invoke(["gateway", "start"], expected_status=2)
         self.assertIn("tidak ada gateway aktif", result.lower())
 
+    def test_gateway_picker_moves_with_arrows_and_selects_one_option(self):
+        with mock.patch.object(self.cli.sys.stdin, "isatty", return_value=True), mock.patch.object(self.cli.sys.stdin, "fileno", return_value=0), mock.patch.object(self.cli.termios, "tcgetattr", return_value=[0]), mock.patch.object(self.cli.termios, "tcsetattr"), mock.patch.object(self.cli.tty, "setraw"), mock.patch.object(self.cli, "_read_menu_key", side_effect=["down", "enter"]):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                selected = self.cli._select_gateway()
+        self.assertEqual(selected, "whatsapp")
+        self.assertIn("Telegram", output.getvalue())
+        self.assertIn("WhatsApp", output.getvalue())
+        self.assertIn("Webhook", output.getvalue())
+        self.assertIn("Cancel", output.getvalue())
+
+    def test_setup_configures_only_selected_gateway_then_directs_model_setup(self):
+        with mock.patch.object(self.cli, "_select_gateway", return_value="telegram"), mock.patch.object(self.cli, "_setup_telegram", return_value=True) as telegram, mock.patch.object(self.cli, "_setup_whatsapp") as whatsapp, mock.patch.object(self.cli, "_setup_webhook") as webhook:
+            result = self.invoke(["setup"])
+        telegram.assert_called_once()
+        whatsapp.assert_not_called()
+        webhook.assert_not_called()
+        self.assertIn("zeline model", result.lower())
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertTrue(saved["gateway_setup_complete"])
+        self.assertFalse(saved["setup_complete"])
+
+    def test_bare_zeline_forces_gateway_setup_before_chat(self):
+        with mock.patch.object(self.cli, "cmd_setup", return_value=0) as setup, mock.patch.object(self.cli, "cmd_chat") as chat:
+            self.assertEqual(self.cli.main([]), 0)
+        setup.assert_called_once_with(reset=False)
+        chat.assert_not_called()
+
+    def test_bare_zeline_directs_model_after_gateway_setup(self):
+        cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
+        cfg["setup_complete"] = False
+        self.config.save_config(cfg)
+
+        result = self.invoke([] , expected_status=2)
+
+        self.assertIn("zeline model", result.lower())
+
+    def test_model_setup_is_blocked_until_gateway_exists(self):
+        result = self.invoke(["model"], expected_status=2)
+        self.assertIn("jalankan: zeline", result.lower())
+
     def test_chat_refuses_unconfirmed_legacy_provider_config(self):
         cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
         cfg["provider"].update({"api_key": "stale-key", "model": "stale-model"})
         cfg["setup_complete"] = False
         self.config.save_config(cfg)
 
         result = self.invoke(["chat", "-q", "hello"], expected_status=2)
 
-        self.assertIn("zeline setup", result.lower())
+        self.assertIn("zeline model", result.lower())
 
     def test_chat_refuses_model_that_was_never_verified(self):
         cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
         cfg["setup_complete"] = True
         cfg["provider"].update({"api_key": "key", "model": "gpt-4o-mini", "model_verified": False})
         self.config.save_config(cfg)
@@ -112,23 +156,6 @@ class AesoraCliTests(unittest.TestCase):
         result = self.invoke(["chat", "-q", "hello"], expected_status=2)
 
         self.assertIn("zeline model", result.lower())
-
-    def test_setup_marks_configuration_complete(self):
-        with mock.patch("builtins.input", side_effect=["Zeline", "https://api.example/v1", "demo-model", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-key"):
-            self.assertEqual(self.cli.main(["setup"]), 0)
-        saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertTrue(saved["setup_complete"])
-
-    def test_setup_secret_uses_hidden_prompt(self):
-        with mock.patch("builtins.input", side_effect=["Aesora", "https://api.example/v1", "demo-model", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value="hidden-api-key") as hidden:
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                status = self.cli.main(["setup"])
-        self.assertEqual(status, 0)
-        hidden.assert_called_once()
-        saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertEqual(saved["provider"]["api_key"], "hidden-api-key")
-        self.assertNotIn("hidden-api-key", output.getvalue())
 
     def test_secret_prompt_explains_hidden_input_and_confirms_capture(self):
         with mock.patch.object(self.cli, "_masked_secret_input", return_value="secret-value") as masked:
@@ -184,6 +211,7 @@ class AesoraCliTests(unittest.TestCase):
 
     def test_model_command_updates_provider_and_model_without_reconfiguring_gateways(self):
         cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
         cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
         self.config.save_config(cfg)
         with mock.patch("builtins.input", side_effect=["https://api.example/v1", "research-model"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
@@ -224,35 +252,6 @@ class AesoraCliTests(unittest.TestCase):
         self.assertIn("BY MFTRFERDINAND", subtitle)
         self.assertNotIn("┏", output.getvalue())
         self.assertNotIn("AESORA", output.getvalue().upper())
-
-    def test_setup_replaces_stale_provider_defaults_when_no_key_exists(self):
-        cfg = self.config.config_copy()
-        cfg["provider"].update({
-            "base_url": "http://localhost:20128/v1",
-            "api_key": "",
-            "model": "Vibe/ds/deepseek-v4-pro",
-        })
-        self.config.save_config(cfg)
-        with mock.patch("builtins.input", side_effect=["", "", "gpt-4o-mini", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value="new-key"):
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                status = self.cli.main(["setup"])
-        self.assertEqual(status, 0)
-        self.assertIn("STEP 1/3", output.getvalue())
-        self.assertIn("Nothing is imported automatically", output.getvalue())
-        saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertEqual(saved["provider"]["base_url"], "https://api.openai.com/v1")
-        self.assertEqual(saved["provider"]["model"], "gpt-4o-mini")
-
-    def test_setup_reset_starts_with_generic_provider_defaults(self):
-        cfg = self.config.config_copy()
-        cfg["provider"].update({"base_url": "http://example.invalid/v1", "api_key": "old-key", "model": "old-model"})
-        self.config.save_config(cfg)
-        with mock.patch("builtins.input", side_effect=["", "", "gpt-4o-mini", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value=""):
-            self.assertEqual(self.cli.main(["setup", "--reset"]), 0)
-        saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertEqual(saved["provider"]["base_url"], "https://api.openai.com/v1")
-        self.assertEqual(saved["provider"]["api_key"], "")
 
     def test_top_level_gateway_aliases_dispatch_to_gateway_commands(self):
         with mock.patch.object(self.cli, "cmd_gateway_start", return_value=0) as start:

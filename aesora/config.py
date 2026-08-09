@@ -99,6 +99,7 @@ def _defaults() -> dict[str, Any]:
     """Schema konfigurasi default. Jangan taruh rahasia nyata di sini."""
     return {
         "version": 1,
+        "gateway_setup_complete": False,
         "setup_complete": False,
         "name": "Zeline",
         "provider": {
@@ -249,7 +250,7 @@ def new_webhook_token() -> str:
 def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, GATEWAYS, NAME
-    global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE
+    global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -257,6 +258,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     MODEL = str(PROVIDER.get("model", DEFAULT_MODEL))
     GATEWAYS = cfg["gateways"]
     NAME = str(cfg.get("name", "Zeline"))
+    GATEWAY_SETUP_COMPLETE = bool(cfg.get("gateway_setup_complete", False))
     SETUP_COMPLETE = bool(cfg.get("setup_complete", False))
     MAX_TOOL_ROUNDS = int(cfg.get("agent", {}).get("max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS))
     MAX_SESSIONS = int(cfg.get("agent", {}).get("max_sessions", DEFAULT_MAX_SESSIONS))

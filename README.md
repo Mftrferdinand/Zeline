@@ -133,9 +133,9 @@ If you expose the webhook through a tunnel or reverse proxy, use HTTPS and keep 
 ## Command reference
 
 ```text
-zeline                         Start the local chat
-zeline chat -q "..."           Send one query
-zeline setup                   Configure the provider and gateways
+zeline                         Set up a gateway first, then open local chat
+zeline chat -q "..."           Send one query after gateway + model setup
+zeline setup                   Open the gateway picker (Telegram/WhatsApp/Webhook)
 zeline model                   Detect protocol, fetch models, and choose one
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
@@ -154,7 +154,12 @@ zeline skills                  List installed skills
 zeline memory                  Print local CLI memory
 ```
 
-During provider setup, Zeline detects OpenAI-compatible or Anthropic APIs,
+On first launch, Zeline requires one gateway selected from an arrow-key picker:
+Telegram, WhatsApp, Webhook, or Cancel. It configures only the selected gateway,
+returns to the terminal, and directs the user to `zeline model`; local chat stays
+locked until both gateway and model setup are complete.
+
+During model setup, Zeline detects OpenAI-compatible or Anthropic APIs,
 queries the provider model endpoint, and shows a numbered picker. Secret input
 renders one `*` per character while the real API key stays hidden. If a provider
 cannot list models, Zeline requires an explicit model ID instead of accepting a
