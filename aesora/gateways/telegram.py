@@ -1,4 +1,4 @@
-"""Gateway Telegram Aesora via raw Bot API long polling.
+"""Gateway Telegram Zeline via raw Bot API long polling.
 
 Tidak memakai SDK Telegram agar instalasi tetap kecil dan mudah di Termux.
 Setiap chat mendapat identity ``telegram:<chat_id>`` sendiri sehingga history
@@ -15,7 +15,7 @@ from typing import Any
 import requests
 
 from aesora import config
-from aesora.agent import AesoraError
+from aesora.agent import ZelineError
 
 API_TEMPLATE = "https://api.telegram.org/bot{token}"
 FILE_API_TEMPLATE = "https://api.telegram.org/file/bot{token}/{file_path}"
@@ -191,7 +191,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     if command in {"/start", "/help"}:
         return "/status · /models · /model <id> · /new · /restart · /stop · /logs"
     if command == "/status":
-        return f"Aesora active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
+        return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":
         return f"Current model: `{config.MODEL}`\nUse: /model provider/model-id"
     if command == "/model":
@@ -210,9 +210,9 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
         return "Your Telegram chat session was restarted."
     if command == "/stop":
         stop_event.set()
-        return "Aesora gateway is stopping. Start it again from the installation terminal with `aesora start`."
+        return "Zeline gateway is stopping. Start it again from the installation terminal with `zeline start`."
     if command == "/logs":
-        return "Check gateway logs from the installation terminal: `aesora logs`."
+        return "Check gateway logs from the installation terminal: `zeline logs`."
     return None
 
 
@@ -240,8 +240,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             tool_profile=tool_profile,
             on_tool=on_tool,
         )
-    except AesoraError as exc:
-        reply = f"Maaf, Aesora sedang bermasalah: {exc}"
+    except ZelineError as exc:
+        reply = f"Maaf, Zeline sedang bermasalah: {exc}"
     except Exception:
         print("  [telegram] unhandled agent error", flush=True)
         reply = "Maaf, terjadi error internal. Coba lagi sebentar."

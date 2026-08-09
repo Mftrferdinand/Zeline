@@ -1,10 +1,12 @@
 <p align="center">
-  <img src="assets/aesora-logo.png" alt="Aesora Agent" width="760">
+  <img src="assets/zeline-logo.png" alt="Zeline AI" width="760">
 </p>
 
-# Aesora
+# Zeline
 
-**Aesora** is a complete, lightweight, self-hosted AI agent framework for Python by Mftrferdinand.
+**Zerolinear** is an AI research lab based in Majalengka, Indonesia, building intelligent agents that learn, remember, and act.
+
+This repository contains **Zeline** — an open-source agentic AI framework by Zerolinear, created by Mftrferdinand.
 
 ## What it includes
 
@@ -29,38 +31,38 @@
 
 ```bash
 pkg install git python -y
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/aesora/main/install.sh | bash
-aesora setup
+curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zeline/main/install.sh | bash
+zeline setup
 ```
 
 ### Linux and macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/aesora/main/install.sh | bash
-aesora setup
+curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zeline/main/install.sh | bash
+zeline setup
 ```
 
 To install from a checkout instead:
 
 ```bash
-git clone https://github.com/Mftrferdinand/aesora.git
-cd aesora
+git clone https://github.com/Mftrferdinand/Zeline.git
+cd Zeline
 bash install.sh
 ```
 
-Your configuration is stored locally at `~/.aesora/config.json`. Run a quick check after setup:
+Your configuration is stored locally at `~/.zeline/config.json`. Run a quick check after setup:
 
 ```bash
-aesora doctor
-aesora gateway list
+zeline doctor
+zeline gateway list
 ```
 
 ## Use the CLI
 
 ```bash
-aesora
+zeline
 # or
-aesora chat -q "What can you do?"
+zeline chat -q "What can you do?"
 ```
 
 ## Connect a platform
@@ -70,8 +72,8 @@ aesora chat -q "What can you do?"
 Create a bot with [@BotFather](https://t.me/BotFather), then run:
 
 ```bash
-aesora gateway setup telegram
-aesora gateway start
+zeline gateway setup telegram
+zeline gateway start
 ```
 
 An empty allowlist makes the bot public. Public gateways always use the `safe` tool profile by default, so users cannot access host files or a shell.
@@ -85,7 +87,7 @@ Telegram commands:
 /model <provider/model>   Persistently switch this installation's model
 /new                      Clear the current chat history
 /restart                  Restart the current Telegram chat session
-/stop                     Stop this Aesora gateway process
+/stop                     Stop this Zeline gateway process
 /logs                     Show how to inspect gateway logs from the installation terminal
 ```
 
@@ -94,19 +96,19 @@ Attachments up to 256 KB are accepted for text, JSON, CSV, common code/config fi
 ### WhatsApp
 
 ```bash
-aesora gateway setup whatsapp
-aesora gateway start
+zeline gateway setup whatsapp
+zeline gateway start
 ```
 
-On first start, Aesora installs its Baileys bridge under `~/.aesora/wa-bridge/` and prints a QR code. In WhatsApp, open **Linked devices**, choose **Link a device**, then scan it.
+On first start, Zeline installs its Baileys bridge under `~/.zeline/wa-bridge/` and prints a QR code. In WhatsApp, open **Linked devices**, choose **Link a device**, then scan it.
 
 > This gateway uses WhatsApp multi-device through Baileys, not the Meta Business API. Make sure your use complies with WhatsApp policies.
 
 ### HTTP webhook
 
 ```bash
-aesora gateway enable webhook
-aesora gateway start
+zeline gateway enable webhook
+zeline gateway start
 ```
 
 The default listener is `127.0.0.1:8765`. It does not listen on the public internet.
@@ -117,13 +119,13 @@ curl http://127.0.0.1:8765/health
 curl -X POST http://127.0.0.1:8765/message \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer YOUR_WEBHOOK_TOKEN' \
-  -d '{"chat_id":"demo-user","text":"Hello Aesora"}'
+  -d '{"chat_id":"demo-user","text":"Hello Zeline"}'
 ```
 
 Show masked configuration with:
 
 ```bash
-aesora config show
+zeline config show
 ```
 
 If you expose the webhook through a tunnel or reverse proxy, use HTTPS and keep token authentication enabled.
@@ -131,29 +133,29 @@ If you expose the webhook through a tunnel or reverse proxy, use HTTPS and keep 
 ## Command reference
 
 ```text
-aesora                         Start the local chat
-aesora chat -q "..."           Send one query
-aesora setup                   Configure the provider and gateways
-aesora doctor                  Check dependencies and configuration
-aesora config path             Print the configuration location
-aesora config show             Print configuration with masked secrets
-aesora gateway setup [name]    Configure telegram, whatsapp, or webhook
-aesora gateway enable <name>   Enable a gateway
-aesora gateway disable <name>  Disable a gateway
-aesora gateway list            Show configured gateways
-aesora gateway token webhook   Explicitly reveal a webhook token
-aesora gateway start           Run enabled gateways in the background
-aesora gateway stop            Stop the background gateway process
-aesora gateway status          Show background gateway status
-aesora gateway log             Print gateway logs
-aesora gateway run             Run enabled gateways in the foreground
-aesora skills                  List installed skills
-aesora memory                  Print local CLI memory
+zeline                         Start the local chat
+zeline chat -q "..."           Send one query
+zeline setup                   Configure the provider and gateways
+zeline doctor                  Check dependencies and configuration
+zeline config path             Print the configuration location
+zeline config show             Print configuration with masked secrets
+zeline gateway setup [name]    Configure telegram, whatsapp, or webhook
+zeline gateway enable <name>   Enable a gateway
+zeline gateway disable <name>  Disable a gateway
+zeline gateway list            Show configured gateways
+zeline gateway token webhook   Explicitly reveal a webhook token
+zeline gateway start           Run enabled gateways in the background
+zeline gateway stop            Stop the background gateway process
+zeline gateway status          Show background gateway status
+zeline gateway log             Print gateway logs
+zeline gateway run             Run enabled gateways in the foreground
+zeline skills                  List installed skills
+zeline memory                  Print local CLI memory
 ```
 
 ## Security
 
-- Keep `~/.aesora/`, `.env`, provider keys, and bot tokens out of Git.
+- Keep `~/.zeline/`, `.env`, provider keys, and bot tokens out of Git.
 - Gateway users receive the `safe` profile by default.
 - Webhooks require a secret token and bind to loopback by default.
 - Memory is namespaced by platform identity, for example `telegram:123` or `webhook:alice`.

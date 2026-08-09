@@ -1,16 +1,16 @@
-"""Skill system Aesora dengan scope public vs private.
+"""Skill system Zeline dengan scope public vs private.
 
-Aesora dapat berjalan sebagai bot publik. Maka prosedur yang dibuat pemilik
+Zeline dapat berjalan sebagai bot publik. Maka prosedur yang dibuat pemilik
 (misalnya berisi path internal atau runbook privat) tidak boleh otomatis
 tersedia untuk orang yang chat bot.
 
 Layout data user:
 
-    ~/.aesora/skills/
+    ~/.zeline/skills/
       public/     # skill bawaan aman yang dapat dibaca gateway `safe`
       private/    # skill pemilik; hanya profile `full` CLI owner
 
-Install Aesora versi lama memakai ``~/.aesora/skills/*.md``. Saat pertama
+Install legacy memakai ``~/.aesora/skills/*.md``. Saat pertama
 kali modul ini dipakai, skill legacy dipindahkan ke ``private/`` secara
 konservatif agar tidak ada prosedur lama yang tidak sengaja terekspos.
 """

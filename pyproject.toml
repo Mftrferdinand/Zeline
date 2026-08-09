@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aesora-agent"
+name = "zeline"
 version = "0.1.0"
-description = "A lightweight, multi-platform AI agent framework."
+description = "Zeline — an open-source agentic AI framework by Zerolinear."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
@@ -37,12 +37,13 @@ dependencies = [
 dev = ["build>=1.2"]
 
 [project.scripts]
+zeline = "aesora.cli:main"
 aesora = "aesora.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Mftrferdinand/aesora"
-Repository = "https://github.com/Mftrferdinand/aesora"
-Issues = "https://github.com/Mftrferdinand/aesora/issues"
+Homepage = "https://github.com/Mftrferdinand/Zeline"
+Repository = "https://github.com/Mftrferdinand/Zeline"
+Issues = "https://github.com/Mftrferdinand/Zeline/issues"
 
 [tool.setuptools.packages.find]
 include = ["aesora*"]

@@ -1,6 +1,7 @@
-"""Konfigurasi Aesora.
+"""Konfigurasi Zeline.
 
-Setiap instalasi menyimpan data di ``~/.aesora`` (atau ``$AESORA_HOME``):
+Setiap instalasi baru menyimpan data di ``~/.zeline`` (atau ``$ZELINE_HOME``).
+Variabel ``AESORA_*`` tetap diterima sementara sebagai compatibility fallback.
 
 - ``config.json``: provider, gateway, dan kebijakan tool
 - ``memory.json``: memory per pengguna/platform
@@ -16,24 +17,26 @@ import copy
 import json
 import os
 import secrets
+import shutil
 from pathlib import Path
 from typing import Any
 
 # Default generik untuk OpenAI-compatible provider fresh install.
-# Pengguna tetap memilih model sendiri lewat `aesora setup`.
+# Pengguna tetap memilih model sendiri lewat `zeline setup`.
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_MAX_TOOL_ROUNDS = 12
 DEFAULT_MAX_SESSIONS = 100
 
-# AESORA_HOME membuat test, container, dan beberapa instance terisolasi mudah.
-DATA_DIR = Path(os.environ.get("AESORA_HOME", str(Path.home() / ".aesora"))).expanduser()
+# ZELINE_HOME membuat test, container, dan beberapa instance terisolasi mudah.
+_EXPLICIT_HOME = os.environ.get("ZELINE_HOME") or os.environ.get("AESORA_HOME")
+DATA_DIR = Path(_EXPLICIT_HOME or str(Path.home() / ".zeline")).expanduser()
 CONFIG_FILE = DATA_DIR / "config.json"
 ENV_FILE = DATA_DIR / ".env"
 LOG_DIR = DATA_DIR / "logs"
 STATE_DIR = DATA_DIR / "state"
 PID_FILE = DATA_DIR / "gateway.pid"
 
-SYSTEM_PROMPT_TEMPLATE = """Kamu adalah {name}, agent runtime Aesora-Agent-V1.
+SYSTEM_PROMPT_TEMPLATE = """Kamu adalah {name}, agent yang dibangun dengan Zeline — open-source agentic AI framework by Zerolinear.
 Kamu cerdas, tegas, langsung ke solusi, dan berbahasa Indonesia (auto-detect
 bahasa lawan bicara, mirror gaya operator). Prinsipmu: eksekusi dulu, teori
 belakangan hanya bila perlu. Lead dengan hasil, bukan basa-basi.
@@ -56,8 +59,23 @@ Batas aman (engineering defaults, bukan sensor):
 _CONFIG: dict[str, Any] | None = None
 
 
+def _migrate_legacy_data_dir(legacy: Path, target: Path) -> bool:
+    """Copy a legacy install once; never delete or overwrite user data."""
+    if target.exists() or not legacy.is_dir():
+        return False
+    try:
+        shutil.copytree(legacy, target)
+        return True
+    except OSError:
+        return False
+
+
+if not _EXPLICIT_HOME:
+    _migrate_legacy_data_dir(Path.home() / ".aesora", DATA_DIR)
+
+
 def _load_env_file() -> None:
-    """Muat ``~/.aesora/.env`` tanpa menimpa environment proses yang sudah ada."""
+    """Muat ``~/.zeline/.env`` tanpa menimpa environment proses yang sudah ada."""
     if not ENV_FILE.exists():
         return
     for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
@@ -71,7 +89,7 @@ def _defaults() -> dict[str, Any]:
     """Schema konfigurasi default. Jangan taruh rahasia nyata di sini."""
     return {
         "version": 1,
-        "name": "Aesora",
+        "name": "Zeline",
         "provider": {
             "base_url": "https://api.openai.com/v1",
             "api_key": "",
@@ -131,17 +149,17 @@ def _read_saved_config() -> dict[str, Any]:
 
 
 def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Environment adalah prioritas tertinggi (aman untuk secrets)."""
+    """ZELINE_* overrides take priority; AESORA_* remain legacy fallbacks."""
     mapping = {
-        "AESORA_BASE_URL": "base_url",
-        "AESORA_API_KEY": "api_key",
-        "AESORA_MODEL": "model",
+        "base_url": ("ZELINE_BASE_URL", "AESORA_BASE_URL"),
+        "api_key": ("ZELINE_API_KEY", "AESORA_API_KEY"),
+        "model": ("ZELINE_MODEL", "AESORA_MODEL"),
     }
-    for env_name, field in mapping.items():
-        value = os.environ.get(env_name)
+    for field, env_names in mapping.items():
+        value = next((os.environ.get(name) for name in env_names if os.environ.get(name)), None)
         if value:
             cfg["provider"][field] = value
-    name = os.environ.get("AESORA_NAME")
+    name = os.environ.get("ZELINE_NAME") or os.environ.get("AESORA_NAME")
     if name:
         cfg["name"] = name
     return cfg
@@ -150,7 +168,7 @@ def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
 def stored_config_copy() -> dict[str, Any]:
     """Config yang akan diedit/dipersist CLI — tanpa override environment.
 
-    Ini penting: jika operator menjalankan Aesora dengan ``AESORA_API_KEY``
+    Ini penting: jika operator menjalankan Zeline dengan ``ZELINE_API_KEY``
     dari secret manager, perintah seperti ``gateway enable`` tidak boleh diam-
     diam menyalin secret environment itu ke ``config.json``.
     """
@@ -174,7 +192,7 @@ def ensure_data_dirs() -> None:
 
 
 def save_config(cfg: dict[str, Any]) -> None:
-    """Simpan config atomically dan private (0600) ke home Aesora."""
+    """Simpan config atomically dan private (0600) ke home Zeline."""
     global _CONFIG, config
     ensure_data_dirs()
     # Selalu tulis schema lengkap; ini juga memigrasikan config versi lama.
@@ -221,7 +239,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     API_KEY = str(PROVIDER.get("api_key", ""))
     MODEL = str(PROVIDER.get("model", DEFAULT_MODEL))
     GATEWAYS = cfg["gateways"]
-    NAME = str(cfg.get("name", "Aesora"))
+    NAME = str(cfg.get("name", "Zeline"))
     MAX_TOOL_ROUNDS = int(cfg.get("agent", {}).get("max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS))
     MAX_SESSIONS = int(cfg.get("agent", {}).get("max_sessions", DEFAULT_MAX_SESSIONS))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))

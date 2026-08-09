@@ -25,8 +25,9 @@ if str(SOURCE_ROOT) not in sys.path:
 
 
 def fresh_aesora(home: Path):
-    """Reload package with a fully-isolated AESORA_HOME."""
-    os.environ["AESORA_HOME"] = str(home)
+    """Reload package with a fully-isolated ZELINE_HOME."""
+    os.environ["ZELINE_HOME"] = str(home)
+    os.environ.pop("AESORA_HOME", None)
     for module_name in list(sys.modules):
         if module_name == "aesora" or module_name.startswith("aesora."):
             sys.modules.pop(module_name, None)
@@ -46,6 +47,7 @@ class AesoraPublicCoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name) / "aesora-home"
+        self.old_zeline_home = os.environ.get("ZELINE_HOME")
         self.old_home = os.environ.get("AESORA_HOME")
         self.old_key = os.environ.pop("AESORA_API_KEY", None)
         self.old_base = os.environ.pop("AESORA_BASE_URL", None)
@@ -53,6 +55,10 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.config, self.memory, self.tools = fresh_aesora(self.home)
 
     def tearDown(self):
+        if self.old_zeline_home is None:
+            os.environ.pop("ZELINE_HOME", None)
+        else:
+            os.environ["ZELINE_HOME"] = self.old_zeline_home
         if self.old_home is None:
             os.environ.pop("AESORA_HOME", None)
         else:
@@ -68,8 +74,27 @@ class AesoraPublicCoreTests(unittest.TestCase):
         self.assertEqual(self.config.BASE_URL, "https://api.openai.com/v1")
         self.assertEqual(self.config.MODEL, "gpt-4o-mini")
 
-    def test_default_runtime_uses_aesora_agent_v1_persona(self):
-        self.assertIn("Aesora-Agent-V1", self.config.SYSTEM_PROMPT)
+    def test_legacy_aesora_data_is_copied_to_zeline_without_losing_secrets(self):
+        legacy = Path(self.temp.name) / ".aesora"
+        target = Path(self.temp.name) / ".zeline"
+        legacy.mkdir()
+        saved = {"provider": {"api_key": "legacy-secret", "model": "legacy-model"}}
+        (legacy / "config.json").write_text(json.dumps(saved), encoding="utf-8")
+
+        self.config._migrate_legacy_data_dir(legacy, target)
+
+        migrated = json.loads((target / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(migrated["provider"]["api_key"], "legacy-secret")
+        self.assertEqual(migrated["provider"]["model"], "legacy-model")
+        self.assertTrue((legacy / "config.json").exists())
+
+    def test_default_runtime_uses_zeline_identity(self):
+        self.assertNotIn("Aesora-Agent-V1", self.config.SYSTEM_PROMPT)
+        self.assertNotIn("AESORA-AGENT", self.config.SYSTEM_PROMPT)
+        self.assertNotIn("Aesora", self.config.SYSTEM_PROMPT)
+        self.assertIn("Zeline", self.config.SYSTEM_PROMPT)
+        self.assertIn("Zerolinear", self.config.SYSTEM_PROMPT)
+        self.assertEqual(self.config.NAME, "Zeline")
         self.assertIn("eksekusi", self.config.SYSTEM_PROMPT.lower())
 
     def test_seeded_superagent_skill_corpus_is_available_to_public_gateway(self):

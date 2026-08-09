@@ -1,4 +1,4 @@
-"""Gateway registry Aesora.
+"""Gateway registry Zeline.
 
 Gateway adalah adapter platform terpisah. Core agent tidak tahu detail Telegram,
 WhatsApp, atau HTTP webhook; adapter hanya menerjemahkan pesan platform ke
@@ -74,7 +74,7 @@ def run_all(sessions, cfg: dict[str, dict[str, Any]], names: list[str] | None = 
                 print(f"  [gateway:{adapter_name}] crash: {exc}", flush=True)
                 traceback.print_exc()
 
-        thread = threading.Thread(target=worker, daemon=True, name=f"aesora-{name}")
+        thread = threading.Thread(target=worker, daemon=True, name=f"zeline-{name}")
         thread.start()
         threads.append((name, thread))
         print(f"  [gateway:{name}] starting", flush=True)

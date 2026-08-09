@@ -1,4 +1,4 @@
-"""Tool registry Aesora.
+"""Tool registry Zeline.
 
 Prinsip penting untuk instalasi publik:
 
@@ -326,7 +326,7 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "save_skill",
-        "Simpan skill baru milik pemilik Aesora. Hanya gunakan bila pengguna lokal meminta prosedur reusable.",
+        "Simpan skill baru milik pemilik Zeline. Hanya gunakan bila pengguna lokal meminta prosedur reusable.",
         {
             "type": "object",
             "properties": {

@@ -76,15 +76,15 @@ class AesoraCliTests(unittest.TestCase):
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertFalse(saved["gateways"]["webhook"]["enabled"])
 
-    def test_gateway_token_requires_explicit_command(self):
+    def test_gateway_token_command_masks_stored_token(self):
         self.invoke(["gateway", "enable", "webhook"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         token = saved["gateways"]["webhook"]["token"]
         normal = self.invoke(["gateway", "list"])
-        revealed = self.invoke(["gateway", "token", "webhook"])
+        masked = self.invoke(["gateway", "token", "webhook"])
         self.assertNotIn(token, normal)
-        self.assertIn(token, revealed)
-        self.assertIn("rahasia", revealed.lower())
+        self.assertNotIn(token, masked)
+        self.assertIn("**", masked)
 
     def test_gateway_start_refuses_when_no_enabled_gateway(self):
         cfg = self.config.config_copy()
@@ -113,6 +113,43 @@ class AesoraCliTests(unittest.TestCase):
         self.assertIn("input hidden", hidden.call_args.args[0].lower())
         self.assertIn("saved securely", output.getvalue().lower())
         self.assertNotIn("secret-value", output.getvalue())
+
+    def test_model_command_updates_provider_and_model_without_reconfiguring_gateways(self):
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
+        self.config.save_config(cfg)
+        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "research-model"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
+            result = self.invoke(["model"])
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertIn("Model disimpan", result)
+        self.assertEqual(saved["provider"], {
+            "base_url": "https://api.example/v1",
+            "api_key": "provider-secret",
+            "model": "research-model",
+        })
+        self.assertEqual(saved["gateways"]["telegram"]["token"], "123:telegram-token")
+
+    def test_gateway_restart_stops_then_starts_with_same_selection(self):
+        with mock.patch.object(self.cli.gateway_service, "stop", return_value=(True, "stopped")) as stop, mock.patch.object(self.cli.gateway_service, "start", return_value=(True, "started")) as start:
+            result = self.invoke(["gateway", "restart", "--only", "telegram"])
+        stop.assert_called_once()
+        start.assert_called_once_with(only=["telegram"])
+        self.assertIn("started", result)
+
+    def test_zeline_wordmark_and_product_subtitle_are_precise_in_plain_mode(self):
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.cli._print_banner()
+        lines = output.getvalue().splitlines()
+        subtitle = next(line for line in lines if "ZELINE" in line)
+        wordmark = lines[1:5]
+        self.assertIn("ZERO", "\n".join(wordmark))
+        self.assertIn("LINEAR", "\n".join(wordmark))
+        self.assertEqual(len(subtitle), max(len(line) for line in wordmark))
+        self.assertIn("ZELINE · AGENTIC AI FRAMEWORK", subtitle)
+        self.assertIn("BY MFTRFERDINAND", subtitle)
+        self.assertNotIn("AESORA", output.getvalue().upper())
 
     def test_setup_replaces_stale_provider_defaults_when_no_key_exists(self):
         cfg = self.config.config_copy()
@@ -152,21 +189,24 @@ class AesoraCliTests(unittest.TestCase):
     def test_doctor_reports_missing_provider_key_without_crashing(self):
         result = self.invoke(["doctor"], expected_status=1)
         self.assertIn("api key", result.lower())
-        self.assertIn("aesora setup", result.lower())
+        self.assertIn("zeline setup", result.lower())
 
-    def test_status_alias_uses_large_aesora_agent_wordmark(self):
+    def test_cli_identity_uses_zeline_command_and_zero_linear_brand(self):
+        parser = self.cli.build_parser()
+        self.assertEqual(parser.prog, "zeline")
         result = self.invoke(["status"], expected_status=1)
-        self.assertIn("/ _ \\| _|\\__ \\ (_) |", result)
-        self.assertIn("AI AGENT FRAMEWORK", result)
+        self.assertIn("ZEROLINEAR", result)
+        self.assertIn("ZELINE · AGENTIC AI FRAMEWORK", result)
         self.assertIn("BY MFTRFERDINAND", result)
-        self.assertNotIn("SELF-HOSTED", result)
+        self.assertNotIn("AESORA", result.upper())
 
     def test_banner_falls_back_to_plain_text_when_color_is_disabled(self):
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.cli._print_banner()
-        self.assertIn("/ _ \\| _|\\__ \\ (_) |", output.getvalue())
+        self.assertIn("ZEROLINEAR", output.getvalue())
+        self.assertIn("ZELINE", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
 
 
