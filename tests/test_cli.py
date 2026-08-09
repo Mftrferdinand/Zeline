@@ -93,6 +93,22 @@ class AesoraCliTests(unittest.TestCase):
         result = self.invoke(["gateway", "start"], expected_status=2)
         self.assertIn("tidak ada gateway aktif", result.lower())
 
+    def test_chat_refuses_unconfirmed_legacy_provider_config(self):
+        cfg = self.config.config_copy()
+        cfg["provider"].update({"api_key": "stale-key", "model": "stale-model"})
+        cfg["setup_complete"] = False
+        self.config.save_config(cfg)
+
+        result = self.invoke(["chat", "-q", "hello"], expected_status=2)
+
+        self.assertIn("zeline setup", result.lower())
+
+    def test_setup_marks_configuration_complete(self):
+        with mock.patch("builtins.input", side_effect=["Zeline", "https://api.example/v1", "demo-model", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-key"):
+            self.assertEqual(self.cli.main(["setup"]), 0)
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertTrue(saved["setup_complete"])
+
     def test_setup_secret_uses_hidden_prompt(self):
         with mock.patch("builtins.input", side_effect=["Aesora", "https://api.example/v1", "demo-model", "n", "n", "n"]), mock.patch.object(self.cli.getpass, "getpass", return_value="hidden-api-key") as hidden:
             output = io.StringIO()

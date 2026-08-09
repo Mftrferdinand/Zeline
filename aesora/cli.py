@@ -187,6 +187,7 @@ def cmd_setup(*, reset: bool = False) -> int:
     _setup_whatsapp(cfg)
     _setup_webhook(cfg)
 
+    cfg["setup_complete"] = True
     config.save_config(cfg)
     copied = skills.seed_skills()
     print(f"\n[ READY ]  Configuration saved. {copied} built-in skills added.")
@@ -201,12 +202,16 @@ def cmd_model() -> int:
     provider["base_url"] = _ask("Base URL", str(provider.get("base_url", "https://api.openai.com/v1"))).rstrip("/")
     provider["api_key"] = _ask("API key", str(provider.get("api_key", "")), secret=True)
     provider["model"] = _ask("Model", str(provider.get("model", config.DEFAULT_MODEL)))
+    cfg["setup_complete"] = True
     config.save_config(cfg)
     print(f"Model disimpan: {provider['model']}")
     return 0
 
 
 def cmd_chat(query: str | None = None) -> int:
+    if not config.SETUP_COMPLETE:
+        print("[!] Setup belum selesai. Jalankan: zeline setup")
+        return 2
     if not config.API_KEY:
         print("[!] API key kosong. Jalankan: zeline setup")
         return 2
