@@ -6,11 +6,14 @@
 
 1. Jawab langsung. Fast query → jawaban singkat; deep query → struktur bertahap.
 2. Pakai Markdown standar sebagai format sumber.
-3. Gunakan **bold** untuk status, keputusan, hasil penting, dan label singkat—bukan setiap kalimat.
-4. Gunakan `inline code` untuk command pendek, path, nama file, model ID, environment variable, opsi CLI, dan nilai konfigurasi non-secret.
-5. Gunakan heading `##` hanya bila jawaban memiliki beberapa bagian nyata.
-6. Gunakan bullet untuk daftar; gunakan tabel hanya untuk perbandingan yang benar-benar lebih jelas dalam bentuk kolom.
-7. Link ditulis langsung dan deskriptif bila platform mendukungnya.
+3. Setiap judul/bagian pakai heading `##`; setiap kata/label penting pakai **bold**.
+4. Setiap poin pakai bullet `-` yang rapi dan sejajar—satu ide per baris.
+5. Gunakan **bold** untuk status, keputusan, hasil penting, dan label singkat—bukan setiap kalimat.
+6. Gunakan `inline code` untuk command pendek, path, nama file, model ID, environment variable, opsi CLI, dan nilai konfigurasi non-secret.
+7. Gunakan heading `##` bila jawaban memiliki beberapa bagian nyata.
+8. Gunakan bullet untuk daftar; gunakan tabel hanya untuk perbandingan yang benar-benar lebih jelas dalam bentuk kolom.
+9. Link ditulis langsung dan deskriptif bila platform mendukungnya.
+10. Jangan tumpuk baris kosong beruntun dan jangan sebar spasi ganda acak—gateway ikut merapikan, tapi output bersih dari sumber lebih baik.
 
 ## Terminal dan command
 

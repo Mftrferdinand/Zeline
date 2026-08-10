@@ -295,6 +295,35 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn('<pre><code class="language-html">&lt;div&gt;aman&lt;/div&gt;</code></pre>', rendered)
         self.assertNotIn("<div>aman</div>", rendered)
 
+    def test_telegram_normalizes_messy_output(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        messy = "Judul\n\n\n\n* poin satu\n+ poin dua\n•  poin tiga\nprose  dengan   spasi    ganda"
+        cleaned = telegram._normalize_markdown(messy)
+        # Baris kosong beruntun dirapatkan ke maksimal satu.
+        self.assertNotIn("\n\n\n", cleaned)
+        # Semua penanda bullet campur diseragamkan ke "- ".
+        self.assertIn("- poin satu", cleaned)
+        self.assertIn("- poin dua", cleaned)
+        self.assertIn("- poin tiga", cleaned)
+        # Spasi ganda di prose dirapikan.
+        self.assertIn("prose dengan spasi ganda", cleaned)
+
+    def test_telegram_bullets_and_headings_render_cleanly(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = "## Ringkasan\n- item satu\n- item dua"
+        rendered = telegram._markdown_to_telegram_html(source)
+        self.assertIn("<b>Ringkasan</b>", rendered)
+        # Bullet "- " menjadi "• " yang rapi di Telegram.
+        self.assertIn("• item satu", rendered)
+        self.assertIn("• item dua", rendered)
+
+    def test_telegram_normalize_preserves_code_block_content(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = "Teks\n```python\ndef f():\n    x  =  1\n    return x\n```"
+        cleaned = telegram._normalize_markdown(source)
+        # Spasi di dalam blok kode tidak boleh diutak-atik.
+        self.assertIn("    x  =  1", cleaned)
+
     def test_telegram_agent_reply_uses_html_parse_mode(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 
@@ -476,6 +505,33 @@ class ZelinePublicCoreTests(unittest.TestCase):
         names = [schema["function"]["name"] for schema in executor.schemas]
         for expected in ("read_file", "write_file", "edit_file", "patch_file", "search_files", "update_task", "run_shell"):
             self.assertIn(expected, names)
+
+    def test_safe_profile_exposes_deep_research_tool(self):
+        tools = importlib.import_module("zeline.tools")
+        executor = tools.ToolExecutor("telegram:user", profile="safe", workspace=str(self.home))
+        names = [schema["function"]["name"] for schema in executor.schemas]
+        # Riset multi-sumber tersedia untuk semua profile, termasuk gateway publik.
+        self.assertIn("deep_research", names)
+        self.assertIn("web_search", names)
+        self.assertIn("web_fetch", names)
+
+    def test_deep_research_synthesizes_multiple_sources(self):
+        tools = importlib.import_module("zeline.tools")
+        with mock.patch.object(tools, "_search_result_urls", return_value=["https://a.example", "https://b.example"]), \
+             mock.patch.object(tools, "_web_fetch", side_effect=["Isi artikel A yang panjang.", "Isi artikel B yang panjang."]):
+            out = tools._deep_research("topik riset")
+        self.assertIn("https://a.example", out)
+        self.assertIn("https://b.example", out)
+        self.assertIn("Isi artikel A", out)
+        self.assertIn("sintesis", out.lower())
+
+    def test_deep_research_falls_back_to_web_search_when_no_urls(self):
+        tools = importlib.import_module("zeline.tools")
+        with mock.patch.object(tools, "_search_result_urls", return_value=[]), \
+             mock.patch.object(tools, "_web_search", return_value="hasil pencarian ringkas") as ws:
+            out = tools._deep_research("topik")
+        ws.assert_called_once()
+        self.assertEqual(out, "hasil pencarian ringkas")
 
     def test_full_profile_patch_and_task_tools_execute_real_actions(self):
         tools = importlib.import_module("zeline.tools")

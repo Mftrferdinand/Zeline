@@ -540,11 +540,61 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
 _FENCED_CODE_RE = re.compile(r"```([A-Za-z0-9_+.-]*)\n?(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_ITALIC_RE = re.compile(r"(?<![\*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\*\w])")
+_STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
+_BULLET_RE = re.compile(r"(?m)^(\s*)[\*\+•·–—]\s+(?=\S)")
+_ORDERED_RE = re.compile(r"(?m)^(\s*)(\d+)[.)]\s+(?=\S)")
+_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+
+
+def _normalize_markdown(text: str) -> str:
+    """Rapikan output model sebelum render: buang spasi/newline berantakan,
+    seragamkan bullet, dan pertahankan blok kode apa adanya.
+
+    Model kecil sering mengembalikan trailing space, baris kosong beruntun,
+    bullet campur (``*``/``•``/``–``), dan heading tanpa spasi. Normalisasi ini
+    membuat pesan Telegram rapi tanpa mengubah makna atau isi kode.
+    """
+    if not text:
+        return text
+
+    # 1) Amankan fenced code agar tidak ikut dinormalisasi.
+    protected: list[str] = []
+
+    def _protect(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"\x00BLOCK{len(protected) - 1}\x00"
+
+    working = _FENCED_CODE_RE.sub(_protect, text)
+
+    lines = []
+    for raw in working.splitlines():
+        line = raw.rstrip()  # buang trailing whitespace
+        # Seragamkan penanda bullet menjadi "- " (indent dipertahankan).
+        line = _BULLET_RE.sub(lambda m: f"{m.group(1)}- ", line)
+        lines.append(line)
+    working = "\n".join(lines)
+
+    # 2) Rapatkan >=3 newline menjadi maksimal satu baris kosong.
+    working = re.sub(r"\n{3,}", "\n\n", working)
+
+    # 3) Beri satu baris kosong sebelum heading agar mudah dipindai.
+    working = re.sub(r"(?<=\S)\n(#{1,6}\s)", r"\n\n\1", working)
+
+    # 4) Buang spasi ganda di dalam prose (bukan di awal baris/indent).
+    working = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", working)
+
+    # 5) Kembalikan blok kode.
+    for index, block in enumerate(protected):
+        working = working.replace(f"\x00BLOCK{index}\x00", block)
+
+    return working.strip()
 
 
 def _markdown_to_telegram_html(text: str) -> str:
     """Render subset Markdown ke Telegram HTML tanpa mengizinkan HTML mentah."""
+    text = _normalize_markdown(text)
     code_blocks: list[str] = []
 
     def keep_code(match: re.Match[str]) -> str:
@@ -556,10 +606,15 @@ def _markdown_to_telegram_html(text: str) -> str:
 
     rendered = _FENCED_CODE_RE.sub(keep_code, text)
     rendered = html.escape(rendered, quote=False)
-    rendered = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", rendered)
+    # Heading → bold line (judul otomatis tebal).
+    rendered = _HEADING_RE.sub(r"<b>\1</b>", rendered)
     rendered = _LINK_RE.sub(r'<a href="\2">\1</a>', rendered)
     rendered = _INLINE_CODE_RE.sub(r"<code>\1</code>", rendered)
     rendered = _BOLD_RE.sub(r"<b>\1</b>", rendered)
+    rendered = _STRIKE_RE.sub(r"<s>\1</s>", rendered)
+    rendered = _ITALIC_RE.sub(r"<i>\1</i>", rendered)
+    # Bullet "- " → "• " agar terlihat sebagai poin rapi di Telegram.
+    rendered = re.sub(r"(?m)^(\s*)- (?=\S)", r"\1• ", rendered)
     for index, block in enumerate(code_blocks):
         rendered = rendered.replace(f"\x00CODE{index}\x00", block)
     return rendered

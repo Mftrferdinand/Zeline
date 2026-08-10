@@ -312,6 +312,83 @@ def _web_fetch(url: str) -> str:
         return f"ERROR fetch: {exc.__class__.__name__}."
 
 
+_RESULT_URL_RE = re.compile(r"https?://[^\s)]+")
+
+
+def _search_result_urls(query: str, limit: int = 4) -> list[str]:
+    """Ambil beberapa URL hasil pencarian untuk dibaca lebih dalam."""
+    try:
+        response = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+        )
+    except requests.RequestException:
+        return []
+    if not response.ok:
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r'class="result__a"[^>]*href="([^"]+)"', response.text):
+        raw = match.group(1)
+        # DuckDuckGo membungkus URL asli di parameter uddg=.
+        decoded = raw
+        marker = "uddg="
+        if marker in raw:
+            from urllib.parse import unquote
+
+            decoded = unquote(raw.split(marker, 1)[1].split("&", 1)[0])
+        parsed = urlparse(decoded)
+        host = parsed.hostname or ""
+        if parsed.scheme not in ("http", "https") or not host or _is_internal_ip(host):
+            continue
+        if decoded in seen:
+            continue
+        seen.add(decoded)
+        urls.append(decoded)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def _deep_research(query: str) -> str:
+    """Riset multi-sumber: cari, buka beberapa halaman teratas, lalu rangkum
+    poin-poin dari tiap sumber dengan sitasi URL.
+
+    Berbeda dari ``web_search`` (5 judul mentah) dan ``web_fetch`` (1 URL),
+    tool ini membaca 3-4 sumber sekaligus sehingga model bisa menyintesis
+    jawaban berbukti. Model tetap yang menyusun kesimpulan akhir.
+    """
+    query = query.strip()
+    if not query:
+        return "ERROR: query kosong."
+    urls = _search_result_urls(query, limit=4)
+    if not urls:
+        # Fallback: hasil pencarian ringkas bila daftar URL gagal diambil.
+        return _web_search(query)
+    sections: list[str] = [f"Riset untuk: {query}", ""]
+    read = 0
+    for url in urls:
+        body = _web_fetch(url)
+        if body.startswith("ERROR") or body.startswith("(halaman"):
+            continue
+        excerpt = body[:1_800].strip()
+        sections.append(f"### Sumber: {url}\n{excerpt}")
+        sections.append("")
+        read += 1
+        if read >= 3:
+            break
+    if read == 0:
+        return _web_search(query)
+    sections.append(
+        "Instruksi: sintesis poin-poin di atas menjadi jawaban ringkas & "
+        "berbukti. Sebutkan sumber (URL) untuk klaim penting. Jangan mengarang "
+        "fakta yang tidak ada di sumber."
+    )
+    return "\n".join(sections)[:14_000]
+
+
 TOOL_DEFS: list[ToolDef] = [
     ToolDef(
         "runtime_info",
@@ -372,6 +449,16 @@ TOOL_DEFS: list[ToolDef] = [
             "type": "object",
             "properties": {"url": {"type": "string", "description": "URL lengkap, misal https://example.com/artikel"}},
             "required": ["url"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "deep_research",
+        "Riset mendalam multi-sumber: cari web, buka 3 halaman teratas, dan kumpulkan kutipan berbukti untuk disintesis. Gunakan saat user minta riset, perbandingan, atau jawaban yang butuh beberapa sumber—bukan sekadar 1 fakta cepat.",
+        {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Topik atau pertanyaan riset"}},
+            "required": ["query"],
         },
         frozenset(SAFE_PROFILES),
     ),
@@ -480,6 +567,7 @@ class ToolExecutor:
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url),
+            "deep_research": lambda query: _deep_research(query),
             "read_file": lambda path: _read_file(path, self.workspace),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
             "edit_file": lambda path, old_text, new_text: _edit_file(path, old_text, new_text, self.workspace),
