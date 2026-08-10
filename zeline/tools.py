@@ -27,9 +27,9 @@ from urllib.parse import urlparse
 
 import requests
 
-from aesora import config
-from aesora import memory
-from aesora import skills
+from zeline import config
+from zeline import memory
+from zeline import skills
 
 ToolFunction = Callable[..., str]
 
@@ -94,6 +94,54 @@ def _write_file(path: str, content: str, workspace: Path) -> str:
         return f"ERROR tulis file: {exc}"
 
 
+def _edit_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
+    try:
+        target = _resolve_workspace_path(path, workspace)
+        content = target.read_text(encoding="utf-8")
+        count = content.count(old_text)
+        if count != 1:
+            return f"ERROR edit file: old_text harus unik (ditemukan {count})."
+        target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+        return f"OK, {target} diedit."
+    except Exception as exc:
+        return f"ERROR edit file: {exc}"
+
+
+def _patch_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
+    result = _edit_file(path, old_text, new_text, workspace)
+    return result.replace("diedit", "dipatch")
+
+
+def _update_task(task: str, status: str) -> str:
+    allowed = {"pending", "in_progress", "completed", "cancelled"}
+    clean_status = status.strip().lower()
+    if clean_status not in allowed:
+        return f"ERROR task: status harus salah satu {', '.join(sorted(allowed))}."
+    clean_task = task.strip()[:500]
+    if not clean_task:
+        return "ERROR task: deskripsi kosong."
+    return json.dumps({"task": clean_task, "status": clean_status}, ensure_ascii=False)
+
+
+def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
+    try:
+        matches = []
+        for target in workspace.rglob(pattern or "*"):
+            if not target.is_file() or len(matches) >= 100:
+                continue
+            try:
+                for line_number, line in enumerate(target.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                    if query.lower() in line.lower():
+                        matches.append(f"{target.relative_to(workspace)}:{line_number}: {line[:300]}")
+                        if len(matches) >= 100:
+                            break
+            except OSError:
+                continue
+        return "\n".join(matches) or "(tidak ada hasil)"
+    except Exception as exc:
+        return f"ERROR cari file: {exc}"
+
+
 def _run_shell(command: str, workspace: Path) -> str:
     """Shell owner-only. Gateway tidak menerima profile ini secara default."""
     try:
@@ -114,6 +162,25 @@ def _run_shell(command: str, workspace: Path) -> str:
         return "ERROR: perintah timeout (>60 detik)"
     except Exception as exc:
         return f"ERROR jalankan perintah: {exc}"
+
+
+def _execute_code(code: str, workspace: Path) -> str:
+    """Jalankan snippet Python owner-only tanpa interpolasi shell."""
+    if len(code) > 100_000:
+        return "ERROR: kode terlalu panjang (maksimum 100.000 karakter)."
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [os.environ.get("PYTHON", "python"), "-c", code],
+            cwd=str(workspace), capture_output=True, text=True, timeout=60,
+            env={**os.environ},
+        )
+        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(tidak ada output)"
+        return f"exit={result.returncode}\n{output[:12_000]}"
+    except subprocess.TimeoutExpired:
+        return "ERROR: kode timeout (>60 detik)"
+    except Exception as exc:
+        return f"ERROR jalankan kode: {exc}"
 
 
 WEB_TIMEOUT = 20
@@ -245,6 +312,83 @@ def _web_fetch(url: str) -> str:
         return f"ERROR fetch: {exc.__class__.__name__}."
 
 
+_RESULT_URL_RE = re.compile(r"https?://[^\s)]+")
+
+
+def _search_result_urls(query: str, limit: int = 4) -> list[str]:
+    """Ambil beberapa URL hasil pencarian untuk dibaca lebih dalam."""
+    try:
+        response = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+        )
+    except requests.RequestException:
+        return []
+    if not response.ok:
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r'class="result__a"[^>]*href="([^"]+)"', response.text):
+        raw = match.group(1)
+        # DuckDuckGo membungkus URL asli di parameter uddg=.
+        decoded = raw
+        marker = "uddg="
+        if marker in raw:
+            from urllib.parse import unquote
+
+            decoded = unquote(raw.split(marker, 1)[1].split("&", 1)[0])
+        parsed = urlparse(decoded)
+        host = parsed.hostname or ""
+        if parsed.scheme not in ("http", "https") or not host or _is_internal_ip(host):
+            continue
+        if decoded in seen:
+            continue
+        seen.add(decoded)
+        urls.append(decoded)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def _deep_research(query: str) -> str:
+    """Riset multi-sumber: cari, buka beberapa halaman teratas, lalu rangkum
+    poin-poin dari tiap sumber dengan sitasi URL.
+
+    Berbeda dari ``web_search`` (5 judul mentah) dan ``web_fetch`` (1 URL),
+    tool ini membaca 3-4 sumber sekaligus sehingga model bisa menyintesis
+    jawaban berbukti. Model tetap yang menyusun kesimpulan akhir.
+    """
+    query = query.strip()
+    if not query:
+        return "ERROR: query kosong."
+    urls = _search_result_urls(query, limit=4)
+    if not urls:
+        # Fallback: hasil pencarian ringkas bila daftar URL gagal diambil.
+        return _web_search(query)
+    sections: list[str] = [f"Riset untuk: {query}", ""]
+    read = 0
+    for url in urls:
+        body = _web_fetch(url)
+        if body.startswith("ERROR") or body.startswith("(halaman"):
+            continue
+        excerpt = body[:1_800].strip()
+        sections.append(f"### Sumber: {url}\n{excerpt}")
+        sections.append("")
+        read += 1
+        if read >= 3:
+            break
+    if read == 0:
+        return _web_search(query)
+    sections.append(
+        "Instruksi: sintesis poin-poin di atas menjadi jawaban ringkas & "
+        "berbukti. Sebutkan sumber (URL) untuk klaim penting. Jangan mengarang "
+        "fakta yang tidak ada di sumber."
+    )
+    return "\n".join(sections)[:14_000]
+
+
 TOOL_DEFS: list[ToolDef] = [
     ToolDef(
         "runtime_info",
@@ -309,6 +453,16 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "deep_research",
+        "Riset mendalam multi-sumber: cari web, buka 3 halaman teratas, dan kumpulkan kutipan berbukti untuk disintesis. Gunakan saat user minta riset, perbandingan, atau jawaban yang butuh beberapa sumber—bukan sekadar 1 fakta cepat.",
+        {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Topik atau pertanyaan riset"}},
+            "required": ["query"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "read_file",
         "Baca file teks di dalam workspace yang diizinkan.",
         {
@@ -332,6 +486,30 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "edit_file",
+        "Edit satu bagian unik pada file teks di workspace.",
+        {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "patch_file",
+        "Terapkan patch replace unik pada satu file workspace.",
+        {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "search_files",
+        "Cari teks dalam file-file workspace.",
+        {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string", "description": "Glob file, default *"}}, "required": ["query"]},
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "update_task",
+        "Laporkan perubahan status satu task coding. Panggil saat task mulai, selesai, dibatalkan, atau diganti.",
+        {"type": "object", "properties": {"task": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}}, "required": ["task", "status"]},
+        frozenset({"full"}),
+    ),
+    ToolDef(
         "save_skill",
         "Simpan skill baru milik pemilik Zeline. Hanya gunakan bila pengguna lokal meminta prosedur reusable.",
         {
@@ -342,6 +520,18 @@ TOOL_DEFS: list[ToolDef] = [
             },
             "required": ["name", "content"],
         },
+        frozenset({"full"}),
+    ),
+    ToolDef(
+        "update_skill",
+        "Patch satu bagian unik pada skill private milik operator.",
+        {"type": "object", "properties": {"name": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["name", "old_text", "new_text"]},
+        frozenset({"full"}),
+    ),
+    ToolDef(
+        "execute_code",
+        "Jalankan snippet Python di workspace operator dan kembalikan output nyata.",
+        {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
         frozenset({"full"}),
     ),
     ToolDef(
@@ -377,9 +567,16 @@ class ToolExecutor:
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url),
+            "deep_research": lambda query: _deep_research(query),
             "read_file": lambda path: _read_file(path, self.workspace),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
+            "edit_file": lambda path, old_text, new_text: _edit_file(path, old_text, new_text, self.workspace),
+            "patch_file": lambda path, old_text, new_text: _patch_file(path, old_text, new_text, self.workspace),
+            "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
+            "update_task": _update_task,
             "save_skill": skills.save_skill,
+            "update_skill": skills.update_skill,
+            "execute_code": lambda code: _execute_code(code, self.workspace),
             "run_shell": lambda command: _run_shell(command, self.workspace),
         }
 

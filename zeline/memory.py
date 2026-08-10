@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 
-from aesora import config
+from zeline import config
 
 MEMORY_DIR = config.DATA_DIR / "memory"
 LEGACY_FILE = config.DATA_DIR / "memory.json"
@@ -66,7 +66,7 @@ class MemoryStore:
         self._migrate_legacy_local_memory()
 
     def _migrate_legacy_local_memory(self) -> None:
-        """Pertahankan memory Aesora v0.1 lama untuk mode CLI lokal."""
+        """Pertahankan memory Zeline v0.1 lama untuk mode CLI lokal."""
         if self.identity == "cli:local" and not self.path.exists() and LEGACY_FILE.exists():
             items = _read(LEGACY_FILE)
             if items:

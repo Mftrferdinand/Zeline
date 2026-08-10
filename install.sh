@@ -2,17 +2,17 @@
 # Zeline agentic AI framework installer
 #
 # Pilihan penggunaan:
-#   curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zeline/main/install.sh | bash
-#   git clone https://github.com/Mftrferdinand/Zeline.git && cd Zeline && bash install.sh
+#   curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
+#   git clone https://github.com/Mftrferdinand/Zerolinear.git && cd Zerolinear && bash install.sh
 #
 # Environment opsional:
 #   ZELINE_PYTHON=python3   # executable Python yang dipakai installer
 set -euo pipefail
 
-REPO_URL="https://github.com/Mftrferdinand/Zeline.git"
+REPO_URL="https://github.com/Mftrferdinand/Zerolinear.git"
 BRANCH="main"
-PYTHON_BIN="${ZELINE_PYTHON:-${AESORA_PYTHON:-python3}}"
-INSTALL_DIR="${ZELINE_INSTALL_DIR:-${AESORA_INSTALL_DIR:-$HOME/.local/share/zeline-source}}"
+PYTHON_BIN="${ZELINE_PYTHON:-${ZELINE_PYTHON:-python3}}"
+INSTALL_DIR="${ZELINE_INSTALL_DIR:-${ZELINE_INSTALL_DIR:-$HOME/.local/share/zeline-source}}"
 TMP_DIR=""
 
 cleanup() {
@@ -56,7 +56,7 @@ echo "    Python : $($PYTHON_BIN --version)"
 
 # Jika installer dieksekusi dari repo checkout, gunakan source saat ini.
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/aesora" ]; then
+if [ -f "$SCRIPT_DIR/pyproject.toml" ] && [ -d "$SCRIPT_DIR/zeline" ]; then
   SOURCE_DIR="$SCRIPT_DIR"
   echo "    Source : local checkout ($SOURCE_DIR)"
 else
@@ -75,7 +75,7 @@ echo "==> Install/update package…"
 if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/bin" ] && [ -w "$PREFIX/bin" ]; then
   cat > "$PREFIX/bin/zeline" <<EOF
 #!/usr/bin/env sh
-exec "$PYTHON_BIN" -m aesora.cli "\$@"
+exec "$PYTHON_BIN" -m zeline.cli "\$@"
 EOF
   chmod +x "$PREFIX/bin/zeline"
   echo "    Command: $PREFIX/bin/zeline"
@@ -93,7 +93,7 @@ fi
 
 echo "==> Inisialisasi data Zeline (~/.zeline)…"
 "$PYTHON_BIN" - <<'PY'
-from aesora import skills
+from zeline import skills
 count = skills.seed_skills()
 print(f"    OK · {count} skill baru ditambahkan")
 PY
@@ -110,4 +110,4 @@ echo ""
 echo "Setelah selesai, cek:"
 echo "  zeline doctor"
 echo ""
-echo "Dokumentasi: https://github.com/Mftrferdinand/Zeline"
+echo "Dokumentasi: https://github.com/Mftrferdinand/Zerolinear"

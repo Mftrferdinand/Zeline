@@ -1,4 +1,4 @@
-"""Tests lifecycle service gateway background Aesora."""
+"""Tests lifecycle service gateway background Zeline."""
 from __future__ import annotations
 
 import importlib
@@ -17,27 +17,27 @@ if str(SOURCE_ROOT) not in sys.path:
 
 
 def fresh_service(home: Path):
-    os.environ["AESORA_HOME"] = str(home)
+    os.environ["ZELINE_HOME"] = str(home)
     for module_name in list(sys.modules):
-        if module_name == "aesora" or module_name.startswith("aesora."):
+        if module_name == "zeline" or module_name.startswith("zeline."):
             sys.modules.pop(module_name, None)
-    cfg = importlib.import_module("aesora.config")
-    service = importlib.import_module("aesora.gateway_service")
+    cfg = importlib.import_module("zeline.config")
+    service = importlib.import_module("zeline.gateway_service")
     return cfg, service
 
 
 class GatewayServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.old_home = os.environ.get("AESORA_HOME")
-        self.home = Path(self.temp.name) / "aesora-home"
+        self.old_home = os.environ.get("ZELINE_HOME")
+        self.home = Path(self.temp.name) / "zeline-home"
         self.config, self.service = fresh_service(self.home)
 
     def tearDown(self):
         if self.old_home is None:
-            os.environ.pop("AESORA_HOME", None)
+            os.environ.pop("ZELINE_HOME", None)
         else:
-            os.environ["AESORA_HOME"] = self.old_home
+            os.environ["ZELINE_HOME"] = self.old_home
         self.temp.cleanup()
 
     def test_start_records_pid_and_invokes_cli_gateway_run(self):
@@ -51,7 +51,7 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertTrue(started)
         self.assertIn("43210", message)
         command = popen.call_args.args[0]
-        self.assertEqual(command[:4], [sys.executable, "-m", "aesora.cli", "gateway"])
+        self.assertEqual(command[:4], [sys.executable, "-m", "zeline.cli", "gateway"])
         self.assertIn("run", command)
         self.assertEqual(command.count("--only"), 2)
         self.assertTrue(popen.call_args.kwargs["start_new_session"])

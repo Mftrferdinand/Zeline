@@ -8,7 +8,7 @@ Endpoint:
 Autentikasi ``POST /message`` wajib menggunakan salah satu:
 
 - ``Authorization: Bearer <webhook-token>``
-- ``X-Aesora-Token: <webhook-token>``
+- ``X-Zeline-Token: <webhook-token>``
 
 Default bind hanya ``127.0.0.1``. Untuk mengekspos ke internet, letakkan
 reverse proxy/tunnel yang HTTPS di depannya dan gunakan token yang kuat.
@@ -20,7 +20,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from aesora.agent import ZelineError
+from zeline.agent import ZelineError
 
 MAX_BODY_BYTES = 32_000
 
@@ -49,7 +49,7 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
 
 
 def _is_authorized(headers, token: str) -> bool:
-    supplied = headers.get("X-Aesora-Token", "")
+    supplied = headers.get("X-Zeline-Token", "")
     authorization = headers.get("Authorization", "")
     if authorization.lower().startswith("bearer "):
         supplied = authorization[7:].strip()

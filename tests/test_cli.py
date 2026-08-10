@@ -17,27 +17,27 @@ if str(SOURCE_ROOT) not in sys.path:
 
 
 def fresh_cli(home: Path):
-    os.environ["AESORA_HOME"] = str(home)
+    os.environ["ZELINE_HOME"] = str(home)
     for module_name in list(sys.modules):
-        if module_name == "aesora" or module_name.startswith("aesora."):
+        if module_name == "zeline" or module_name.startswith("zeline."):
             sys.modules.pop(module_name, None)
-    config = importlib.import_module("aesora.config")
-    cli = importlib.import_module("aesora.cli")
+    config = importlib.import_module("zeline.config")
+    cli = importlib.import_module("zeline.cli")
     return config, cli
 
 
-class AesoraCliTests(unittest.TestCase):
+class ZelineCliTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name) / "home"
-        self.old_home = os.environ.get("AESORA_HOME")
+        self.old_home = os.environ.get("ZELINE_HOME")
         self.config, self.cli = fresh_cli(self.home)
 
     def tearDown(self):
         if self.old_home is None:
-            os.environ.pop("AESORA_HOME", None)
+            os.environ.pop("ZELINE_HOME", None)
         else:
-            os.environ["AESORA_HOME"] = self.old_home
+            os.environ["ZELINE_HOME"] = self.old_home
         self.temp.cleanup()
 
     def invoke(self, args: list[str], expected_status: int = 0) -> str:
@@ -201,11 +201,11 @@ class AesoraCliTests(unittest.TestCase):
 
     def test_configure_provider_detects_protocol_and_uses_model_picker(self):
         provider = {"base_url": "https://api.openai.com/v1", "api_key": "", "model": "old"}
-        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "2"]), mock.patch.object(self.cli, "_masked_secret_input", return_value="secret"), mock.patch.object(self.cli, "_discover_provider_models", return_value=("anthropic", ["claude-a", "claude-b"])):
+        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "Token Harbor", "2"]), mock.patch.object(self.cli, "_masked_secret_input", return_value="secret"), mock.patch.object(self.cli, "_discover_provider_models", return_value=("anthropic", ["claude-a", "claude-b"])):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.cli._configure_provider(provider)
-        self.assertEqual(provider, {"base_url": "https://api.example/v1", "api_key": "secret", "model": "claude-b", "protocol": "anthropic", "model_verified": True})
+        self.assertEqual(provider, {"base_url": "https://api.example/v1", "api_key": "secret", "model": "claude-b", "name": "Token Harbor", "protocol": "anthropic", "model_verified": True})
         self.assertIn("Anthropic", output.getvalue())
         self.assertNotIn("secret", output.getvalue())
 
@@ -214,7 +214,7 @@ class AesoraCliTests(unittest.TestCase):
         cfg["gateway_setup_complete"] = True
         cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
         self.config.save_config(cfg)
-        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "research-model"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
+        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "My Provider", "research-model"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("Model disimpan", result)
@@ -224,7 +224,9 @@ class AesoraCliTests(unittest.TestCase):
             "base_url": "https://api.example/v1",
             "api_key": "provider-secret",
             "model": "research-model",
+            "name": "My Provider",
         })
+        self.assertEqual(saved["providers"]["my-provider"], saved["provider"])
         self.assertEqual(saved["gateways"]["telegram"]["token"], "123:telegram-token")
 
     def test_gateway_restart_stops_then_starts_with_same_selection(self):
@@ -233,6 +235,23 @@ class AesoraCliTests(unittest.TestCase):
         stop.assert_called_once()
         start.assert_called_once_with(only=["telegram"])
         self.assertIn("started", result)
+
+    def test_gateway_run_refuses_duplicate_managed_process(self):
+        cfg = self.config.config_copy()
+        cfg["provider"]["api_key"] = "test-key"
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
+        self.config.save_config(cfg)
+        with mock.patch.object(
+            self.cli.gateway_service,
+            "status",
+            return_value=(True, "Gateway berjalan (PID 43210).", {"pid": 43210}),
+        ), mock.patch.object(self.cli.os, "getpid", return_value=99999), mock.patch.object(
+            self.cli, "run_all"
+        ) as run_all:
+            result = self.invoke(["gateway", "run"], expected_status=1)
+        self.assertIn("sudah berjalan", result.lower())
+        self.assertIn("gateway stop", result.lower())
+        run_all.assert_not_called()
 
     def test_zeline_wordmark_and_product_subtitle_are_precise_in_plain_mode(self):
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
@@ -251,7 +270,7 @@ class AesoraCliTests(unittest.TestCase):
         self.assertIn("ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND", subtitle)
         self.assertIn("BY MFTRFERDINAND", subtitle)
         self.assertNotIn("┏", output.getvalue())
-        self.assertNotIn("AESORA", output.getvalue().upper())
+
 
     def test_top_level_gateway_aliases_dispatch_to_gateway_commands(self):
         with mock.patch.object(self.cli, "cmd_gateway_start", return_value=0) as start:
@@ -271,7 +290,7 @@ class AesoraCliTests(unittest.TestCase):
         self.assertIn(" _______ ___  ___  _    ___ _  _ ___   _   ___ ", result)
         self.assertIn("ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND", result)
         self.assertIn("BY MFTRFERDINAND", result)
-        self.assertNotIn("AESORA", result.upper())
+
 
     def test_banner_falls_back_to_plain_text_when_color_is_disabled(self):
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):

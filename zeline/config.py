@@ -1,7 +1,7 @@
 """Konfigurasi Zeline.
 
 Setiap instalasi baru menyimpan data di ``~/.zeline`` (atau ``$ZELINE_HOME``).
-Variabel ``AESORA_*`` tetap diterima sementara sebagai compatibility fallback.
+Konfigurasi environment menggunakan namespace ``ZELINE_*``.
 
 - ``config.json``: provider, gateway, dan kebijakan tool
 - ``memory.json``: memory per pengguna/platform
@@ -17,7 +17,6 @@ import copy
 import json
 import os
 import secrets
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,7 @@ DEFAULT_MAX_TOOL_ROUNDS = 12
 DEFAULT_MAX_SESSIONS = 100
 
 # ZELINE_HOME membuat test, container, dan beberapa instance terisolasi mudah.
-_EXPLICIT_HOME = os.environ.get("ZELINE_HOME") or os.environ.get("AESORA_HOME")
+_EXPLICIT_HOME = os.environ.get("ZELINE_HOME")
 DATA_DIR = Path(_EXPLICIT_HOME or str(Path.home() / ".zeline")).expanduser()
 CONFIG_FILE = DATA_DIR / "config.json"
 ENV_FILE = DATA_DIR / ".env"
@@ -49,6 +48,28 @@ Cara kerja:
   mengonfirmasinya. Dilarang mengarang output, tx hash, atau hasil palsu —
   kalau gagal, laporkan blocker apa adanya lalu tawarkan jalur alternatif.
 
+Memory (ingatan lintas sesi — biar tidak mengulang tanya):
+- Simpan proaktif dengan add_memory saat user menyatakan preferensi, koreksi,
+  identitas, atau fakta stabil tentang dirinya/proyek/lingkungannya. Contoh:
+  nama panggilan, gaya bahasa yang diminta, stack/tools yang dipakai, konvensi,
+  keputusan penting. Prioritas: preferensi & koreksi user > fakta lingkungan.
+- Tulis fakta ringkas & deklaratif ("User pakai Termux di Android",
+  "User minta jawaban singkat"), bukan perintah ke diri sendiri.
+- JANGAN simpan hal remeh, progres tugas sesaat, atau data yang cepat basi.
+- Kalau user mengoreksi kamu atau bilang "inget ya", itu sinyal kuat untuk
+  add_memory saat itu juga. Memory terbaik mencegah user mengulang dirinya.
+
+Format jawaban default (WAJIB rapi & mudah dipindai):
+- Setiap judul/bagian pakai heading `##`; kata & label penting pakai **bold**.
+- Setiap poin pakai bullet `-` yang rapi & sejajar, satu ide per baris.
+- Gunakan **bold** untuk status, keputusan, hasil penting, dan label singkat.
+- Gunakan `inline code` untuk command pendek, path, file, model ID, dan nama konfigurasi.
+- Command multi-baris wajib fenced code block berlabel `bash`; output terminal gunakan `text`.
+- Source code wajib fenced code block dengan bahasa yang tepat: `python`, `javascript`, `json`, `html`, `css`, dan lainnya.
+- HTML mentah dari user/tool harus di-escape atau ditaruh dalam blok `html`, bukan dirender sebagai markup chat.
+- Jangan tumpuk baris kosong, jangan spasi ganda acak, jangan bold tiap kalimat.
+- Jangan mengarang hasil terminal, HTTP, file, commit, transaksi, atau deployment; hanya klaim hasil yang sudah diverifikasi.
+
 Batas aman (engineering defaults, bukan sensor):
 - Hanya kelola aset/akun milik operator sendiri. Tolak kredensial pihak ketiga
   atau target yang bukan milik operator.
@@ -57,31 +78,6 @@ Batas aman (engineering defaults, bukan sensor):
   key) ke pihak luar."""
 
 _CONFIG: dict[str, Any] | None = None
-
-
-def _migrate_legacy_data_dir(legacy: Path, target: Path) -> bool:
-    """Copy a legacy install once; never delete or overwrite user data."""
-    if target.exists() or not legacy.is_dir():
-        return False
-    try:
-        shutil.copytree(legacy, target)
-        migrated_config = target / "config.json"
-        if migrated_config.exists():
-            saved = json.loads(migrated_config.read_text(encoding="utf-8"))
-            if isinstance(saved, dict) and str(saved.get("name", "")).strip().lower() == "aesora":
-                saved["name"] = "Zeline"
-                migrated_config.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                try:
-                    migrated_config.chmod(0o600)
-                except OSError:
-                    pass
-        return True
-    except (OSError, json.JSONDecodeError):
-        return False
-
-
-if not _EXPLICIT_HOME:
-    _migrate_legacy_data_dir(Path.home() / ".aesora", DATA_DIR)
 
 
 def _load_env_file() -> None:
@@ -109,6 +105,7 @@ def _defaults() -> dict[str, Any]:
             "api_key": "",
             "model": DEFAULT_MODEL,
         },
+        "providers": {},
         "agent": {
             "max_tool_rounds": DEFAULT_MAX_TOOL_ROUNDS,
             "max_sessions": DEFAULT_MAX_SESSIONS,
@@ -163,17 +160,17 @@ def _read_saved_config() -> dict[str, Any]:
 
 
 def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
-    """ZELINE_* overrides take priority; AESORA_* remain legacy fallbacks."""
+    """Terapkan override environment ZELINE_* ke konfigurasi."""
     mapping = {
-        "base_url": ("ZELINE_BASE_URL", "AESORA_BASE_URL"),
-        "api_key": ("ZELINE_API_KEY", "AESORA_API_KEY"),
-        "model": ("ZELINE_MODEL", "AESORA_MODEL"),
+        "base_url": "ZELINE_BASE_URL",
+        "api_key": "ZELINE_API_KEY",
+        "model": "ZELINE_MODEL",
     }
-    for field, env_names in mapping.items():
-        value = next((os.environ.get(name) for name in env_names if os.environ.get(name)), None)
+    for field, env_name in mapping.items():
+        value = os.environ.get(env_name)
         if value:
             cfg["provider"][field] = value
-    name = os.environ.get("ZELINE_NAME") or os.environ.get("AESORA_NAME")
+    name = os.environ.get("ZELINE_NAME")
     if name:
         cfg["name"] = name
     return cfg
@@ -187,8 +184,6 @@ def stored_config_copy() -> dict[str, Any]:
     diam menyalin secret environment itu ke ``config.json``.
     """
     stored = _deep_merge(_defaults(), _read_saved_config())
-    if str(stored.get("name", "")).strip().lower() == "aesora":
-        stored["name"] = "Zeline"
     return stored
 
 

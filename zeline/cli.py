@@ -25,6 +25,7 @@ import copy
 import getpass
 import json
 import os
+import re
 import signal
 import sys
 import termios
@@ -35,11 +36,11 @@ from typing import Any
 
 import requests
 
-from aesora import __version__, config, skills
-from aesora.agent import ZelineError
-from aesora.gateways import GATEWAYS, gateway_status, run_all
-from aesora import gateway_service
-from aesora.sessions import SessionStore
+from zeline import __version__, config, skills
+from zeline.agent import ZelineError
+from zeline.gateways import GATEWAYS, gateway_status, run_all
+from zeline import gateway_service
+from zeline.sessions import SessionStore
 
 
 def _terminal_color_enabled() -> bool:
@@ -170,6 +171,8 @@ def _choose_model(models: list[str], default: str = "") -> str:
 def _configure_provider(provider: dict[str, Any]) -> None:
     base_url = _ask("Base URL", str(provider.get("base_url", "https://api.openai.com/v1"))).rstrip("/")
     api_key = _ask("API key", str(provider.get("api_key", "")), secret=True)
+    default_name = str(provider.get("name", "")).strip() or base_url.split("://", 1)[-1].split("/", 1)[0]
+    provider_name = _ask("Nama provider di picker Telegram", default_name).strip()[:48]
     print("  Mendeteksi protokol dan model provider…")
     protocol, models = _discover_provider_models(base_url, api_key)
     label = "Anthropic" if protocol == "anthropic" else "OpenAI-compatible"
@@ -180,6 +183,7 @@ def _configure_provider(provider: dict[str, Any]) -> None:
         "base_url": base_url,
         "api_key": api_key,
         "model": _choose_model(models, str(provider.get("model", ""))),
+        "name": provider_name,
         "protocol": protocol,
         "model_verified": True,
     })
@@ -350,6 +354,8 @@ def cmd_model() -> int:
     cfg = config.stored_config_copy()
     provider = cfg["provider"]
     _configure_provider(provider)
+    slug = re.sub(r"[^a-z0-9]+", "-", str(provider.get("name", "provider")).lower()).strip("-") or "provider"
+    cfg.setdefault("providers", {})[slug] = copy.deepcopy(provider)
     cfg["setup_complete"] = True
     config.save_config(cfg)
     print(f"Model disimpan: {provider['model']}")
@@ -528,6 +534,14 @@ def cmd_gateway_log(lines: int = 80) -> int:
 
 
 def cmd_gateway_run(only: list[str] | None = None) -> int:
+    active, _message, state = gateway_service.status()
+    managed_pid = int((state or {}).get("pid", 0))
+    if active and managed_pid != os.getpid():
+        print(
+            f"Gateway sudah berjalan (PID {managed_pid}). "
+            "Hentikan dulu dengan `zeline gateway stop`; proses duplikat ditolak."
+        )
+        return 1
     enabled = [(name, data) for name, data in config.GATEWAYS.items() if data.get("enabled") and (not only or name in only)]
     if not enabled:
         print("Tidak ada gateway aktif. Jalankan `zeline gateway setup`.")
@@ -625,7 +639,7 @@ def cmd_skills() -> int:
 
 
 def cmd_memory() -> int:
-    from aesora.memory import list_memory
+    from zeline.memory import list_memory
 
     print(list_memory("cli:local"))
     return 0
