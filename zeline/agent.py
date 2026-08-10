@@ -84,6 +84,25 @@ class Zeline:
             }
         ]
 
+    def export_history(self) -> list[dict[str, Any]]:
+        """Salinan message history penuh (termasuk system) untuk dipersist."""
+        return copy.deepcopy(self.messages)
+
+    def load_history(self, messages: list[dict[str, Any]]) -> None:
+        """Pulihkan history dari penyimpanan, mempertahankan system prompt aktif.
+
+        System prompt selalu diambil dari instance saat ini (bisa berubah kalau
+        model/nama/skill berubah), jadi kita buang system lama dari data tersimpan
+        dan sambung sisanya di belakang system yang fresh.
+        """
+        if not messages:
+            return
+        system = self.messages[0]
+        restored = [m for m in messages if m.get("role") != "system"]
+        # Jangan mulai dari assistant/tool orphan (protocol tool-call).
+        start = next((i for i, m in enumerate(restored) if m.get("role") == "user"), 0)
+        self.messages = [system, *restored[start:]]
+
     def _call_llm(self, use_tools: bool = True) -> dict[str, Any]:
         if not self.api_key:
             raise ZelineError("API key belum dikonfigurasi. Jalankan `zeline setup`.")

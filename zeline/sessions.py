@@ -17,6 +17,7 @@ from typing import Callable
 
 from zeline import config
 from zeline.agent import Zeline
+from zeline.session_store import SessionPersistence
 
 
 @dataclass
@@ -33,10 +34,18 @@ class Session:
 
 
 class SessionStore:
-    def __init__(self, max_sessions: int | None = None):
+    def __init__(self, max_sessions: int | None = None, persistence: "SessionPersistence | None" = None):
         self.max_sessions = max(1, max_sessions or config.MAX_SESSIONS)
         self._sessions: OrderedDict[str, Session] = OrderedDict()
         self._lock = threading.RLock()
+        # Persistensi disk: history bertahan lintas restart gateway. Bisa
+        # dimatikan lewat agent.persist_sessions=false di config.
+        if persistence is not None:
+            self._persistence = persistence
+        elif getattr(config, "PERSIST_SESSIONS", True):
+            self._persistence = SessionPersistence()
+        else:
+            self._persistence = None
 
     def _evict_if_needed(self) -> None:
         while len(self._sessions) >= self.max_sessions:
@@ -53,15 +62,29 @@ class SessionStore:
             session = self._sessions.get(identity)
             if session is None:
                 self._evict_if_needed()
+                agent = Zeline(
+                    identity=identity,
+                    tool_profile=tool_profile,
+                    workspace=workspace,
+                    system_extra=system_extra,
+                )
+                title = "New Session"
+                # Pulihkan history dari disk supaya restart gateway tidak
+                # menghapus konteks percakapan sebelumnya.
+                if self._persistence is not None:
+                    try:
+                        stored, stored_title = self._persistence.load(identity)
+                        if stored:
+                            agent.load_history(stored)
+                        if stored_title:
+                            title = stored_title
+                    except Exception:
+                        pass
                 session = Session(
-                    agent=Zeline(
-                        identity=identity,
-                        tool_profile=tool_profile,
-                        workspace=workspace,
-                        system_extra=system_extra,
-                    ),
+                    agent=agent,
                     lock=threading.Lock(),
                     last_used=time.monotonic(),
+                    title=title,
                 )
                 self._sessions[identity] = session
             else:
@@ -103,6 +126,13 @@ class SessionStore:
                     take_steer=take_steer,
                 )
                 session.last_used = time.monotonic()
+                # Simpan history ke disk setelah tiap turn sukses → bertahan
+                # lintas restart gateway.
+                if self._persistence is not None:
+                    try:
+                        self._persistence.save(identity, session.agent.export_history(), session.title)
+                    except Exception:
+                        pass
                 return reply
             finally:
                 with self._lock:
@@ -131,7 +161,14 @@ class SessionStore:
             session = self._sessions.pop(identity, None)
             if session is not None:
                 session.cancel_event.set()
-            return session is not None
+        # /new atau /reset harus menghapus history disk juga, bukan cuma RAM.
+        cleared_disk = False
+        if self._persistence is not None:
+            try:
+                cleared_disk = self._persistence.reset(identity)
+            except Exception:
+                cleared_disk = False
+        return session is not None or cleared_disk
 
     def count(self) -> int:
         with self._lock:

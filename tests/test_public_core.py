@@ -115,6 +115,52 @@ class ZelinePublicCoreTests(unittest.TestCase):
             result = self.memory.MemoryStore("telegram:second").add("fakta kedua")
         self.assertIn("batas", result.lower())
 
+    def test_session_history_survives_restart(self):
+        # Simulasikan restart: buat store, simpan history, buang store, buat lagi.
+        store_mod = importlib.import_module("zeline.session_store")
+        persistence = store_mod.SessionPersistence(self.home / "sessions.db")
+        persistence.save(
+            "telegram:100",
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "budget gua 20k FundingPips"},
+                {"role": "assistant", "content": "noted 20k"},
+            ],
+            title="FundingPips 20k",
+        )
+        # 'Restart' → instance baru membaca DB yang sama.
+        reopened = store_mod.SessionPersistence(self.home / "sessions.db")
+        messages, title = reopened.load("telegram:100")
+        self.assertEqual(title, "FundingPips 20k")
+        self.assertTrue(any("FundingPips" in str(m.get("content")) for m in messages))
+        # Isolasi antar identity.
+        other, _ = reopened.load("telegram:999")
+        self.assertEqual(other, [])
+        # reset menghapus history disk.
+        self.assertTrue(reopened.reset("telegram:100"))
+        self.assertEqual(reopened.load("telegram:100"), ([], None))
+
+    def test_session_store_hydrates_agent_from_disk(self):
+        sessions_mod = importlib.import_module("zeline.sessions")
+        store_mod = importlib.import_module("zeline.session_store")
+        persistence = store_mod.SessionPersistence(self.home / "sessions.db")
+        persistence.save(
+            "telegram:100",
+            [
+                {"role": "system", "content": "sys lama"},
+                {"role": "user", "content": "inget budget 20k"},
+                {"role": "assistant", "content": "oke"},
+            ],
+            title="Budget 20k",
+        )
+        store = sessions_mod.SessionStore(persistence=persistence)
+        session = store.get_or_create("telegram:100", tool_profile="safe")
+        # Agent baru harus sudah berisi history lama, dengan system prompt FRESH.
+        self.assertEqual(session.title, "Budget 20k")
+        self.assertEqual(session.agent.messages[0]["role"], "system")
+        self.assertNotEqual(session.agent.messages[0]["content"], "sys lama")
+        self.assertTrue(any("budget 20k" in str(m.get("content")).lower() for m in session.agent.messages))
+
     def test_safe_profile_cannot_access_file_or_shell(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         names = {item["function"]["name"] for item in executor.schemas}
