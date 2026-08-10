@@ -21,25 +21,18 @@ Developed by [Zerolinear](https://zerolinear.com). Built and maintained by [Mftr
 
 ## Features
 
-| Category | What you get |
-| --- | --- |
-| **Agent core** | OpenAI-compatible agent loop with tool calling, interactive CLI, and one-shot queries |
-| **Model-agnostic** | Works with OpenAI, OpenRouter, vLLM, Ollama, and any OpenAI- or Anthropic-compatible API — swap model or provider without rebuilding |
-| **Persistent memory** | Long-term memory isolated per platform identity |
-| **Session persistence** | Conversation history stored in SQLite (`~/.zeline/sessions.db`) — survives gateway restarts |
-| **Skills** | Markdown skills (reusable procedures) loaded on demand |
-| **Messaging gateways** | Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook |
-| **Built-in tools** | Web search, web fetch, deep research, HTTP requests, file read/write/edit/search, code execution, and shell |
-| **MCP client** | Connect external MCP servers (stdio or HTTP) and expose their tools automatically |
-| **Scoped security** | `safe` / `workspace` / `full` tool profiles that gate access per surface |
-
-### Tool profiles
-
-| Profile | Access |
-| --- | --- |
-| `safe` | Memory and public skills only — default for messaging gateways |
-| `workspace` | `safe` plus files inside the owner workspace |
-| `full` | `workspace` plus shell access — intended for the local owner CLI |
+- **Agent core** — an OpenAI-compatible agent loop with tool calling, plus an interactive CLI and one-shot queries
+- **Model-agnostic** — works with OpenAI, OpenRouter, vLLM, Ollama, and any OpenAI- or Anthropic-compatible API; swap model or provider without rebuilding
+- **Persistent memory** — long-term memory isolated per platform identity
+- **Session persistence** — conversation history stored in SQLite (`~/.zeline/sessions.db`), so it survives gateway restarts
+- **Skills** — reusable Markdown procedures loaded on demand
+- **Messaging gateways** — Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook
+- **Built-in tools** — web search, web fetch, deep research, HTTP requests, file read/write/edit/search, code execution, and shell
+- **MCP client** — connect external MCP servers (stdio or HTTP) and expose their tools automatically
+- **Scoped tool profiles** — gate access per surface:
+  - `safe` — memory and public skills only; default for messaging gateways
+  - `workspace` — `safe` plus files inside the owner workspace
+  - `full` — `workspace` plus shell access; intended for the local owner CLI
 
 ## Install
 
