@@ -37,19 +37,18 @@ dependencies = [
 dev = ["build>=1.2"]
 
 [project.scripts]
-zeline = "aesora.cli:main"
-aesora = "aesora.cli:main"
+zeline = "zeline.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Mftrferdinand/Zeline"
-Repository = "https://github.com/Mftrferdinand/Zeline"
-Issues = "https://github.com/Mftrferdinand/Zeline/issues"
+Homepage = "https://github.com/Mftrferdinand/Zerolinear"
+Repository = "https://github.com/Mftrferdinand/Zerolinear"
+Issues = "https://github.com/Mftrferdinand/Zerolinear/issues"
 
 [tool.setuptools.packages.find]
-include = ["aesora*"]
+include = ["zeline*"]
 
 [tool.setuptools.package-data]
-aesora = ["skills/*.md"]
+zeline = ["skills/*.md"]
 
 [tool.setuptools]
 include-package-data = true

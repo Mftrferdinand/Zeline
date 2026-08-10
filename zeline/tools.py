@@ -27,9 +27,9 @@ from urllib.parse import urlparse
 
 import requests
 
-from aesora import config
-from aesora import memory
-from aesora import skills
+from zeline import config
+from zeline import memory
+from zeline import skills
 
 ToolFunction = Callable[..., str]
 
@@ -92,6 +92,54 @@ def _write_file(path: str, content: str, workspace: Path) -> str:
         return f"OK, {len(content)} karakter ditulis ke {target}"
     except Exception as exc:
         return f"ERROR tulis file: {exc}"
+
+
+def _edit_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
+    try:
+        target = _resolve_workspace_path(path, workspace)
+        content = target.read_text(encoding="utf-8")
+        count = content.count(old_text)
+        if count != 1:
+            return f"ERROR edit file: old_text harus unik (ditemukan {count})."
+        target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+        return f"OK, {target} diedit."
+    except Exception as exc:
+        return f"ERROR edit file: {exc}"
+
+
+def _patch_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
+    result = _edit_file(path, old_text, new_text, workspace)
+    return result.replace("diedit", "dipatch")
+
+
+def _update_task(task: str, status: str) -> str:
+    allowed = {"pending", "in_progress", "completed", "cancelled"}
+    clean_status = status.strip().lower()
+    if clean_status not in allowed:
+        return f"ERROR task: status harus salah satu {', '.join(sorted(allowed))}."
+    clean_task = task.strip()[:500]
+    if not clean_task:
+        return "ERROR task: deskripsi kosong."
+    return json.dumps({"task": clean_task, "status": clean_status}, ensure_ascii=False)
+
+
+def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
+    try:
+        matches = []
+        for target in workspace.rglob(pattern or "*"):
+            if not target.is_file() or len(matches) >= 100:
+                continue
+            try:
+                for line_number, line in enumerate(target.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                    if query.lower() in line.lower():
+                        matches.append(f"{target.relative_to(workspace)}:{line_number}: {line[:300]}")
+                        if len(matches) >= 100:
+                            break
+            except OSError:
+                continue
+        return "\n".join(matches) or "(tidak ada hasil)"
+    except Exception as exc:
+        return f"ERROR cari file: {exc}"
 
 
 def _run_shell(command: str, workspace: Path) -> str:
@@ -332,6 +380,30 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "edit_file",
+        "Edit satu bagian unik pada file teks di workspace.",
+        {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "patch_file",
+        "Terapkan patch replace unik pada satu file workspace.",
+        {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "search_files",
+        "Cari teks dalam file-file workspace.",
+        {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string", "description": "Glob file, default *"}}, "required": ["query"]},
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "update_task",
+        "Laporkan perubahan status satu task coding. Panggil saat task mulai, selesai, dibatalkan, atau diganti.",
+        {"type": "object", "properties": {"task": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}}, "required": ["task", "status"]},
+        frozenset({"full"}),
+    ),
+    ToolDef(
         "save_skill",
         "Simpan skill baru milik pemilik Zeline. Hanya gunakan bila pengguna lokal meminta prosedur reusable.",
         {
@@ -379,6 +451,10 @@ class ToolExecutor:
             "web_fetch": lambda url: _web_fetch(url),
             "read_file": lambda path: _read_file(path, self.workspace),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
+            "edit_file": lambda path, old_text, new_text: _edit_file(path, old_text, new_text, self.workspace),
+            "patch_file": lambda path, old_text, new_text: _patch_file(path, old_text, new_text, self.workspace),
+            "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
+            "update_task": _update_task,
             "save_skill": skills.save_skill,
             "run_shell": lambda command: _run_shell(command, self.workspace),
         }

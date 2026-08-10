@@ -1,4 +1,4 @@
-"""Provider OpenAI-compatible lokal minimal untuk smoke test Aesora.
+"""Provider OpenAI-compatible lokal minimal untuk smoke test Zeline.
 
 Jalankan dari test harness; hanya mengembalikan jawaban statis dan tidak
 menerima koneksi selain localhost.
@@ -18,7 +18,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         self.rfile.read(length)
         raw = json.dumps({
-            "choices": [{"message": {"role": "assistant", "content": "Mock Aesora reply."}}]
+            "choices": [{"message": {"role": "assistant", "content": "Mock Zeline reply."}}]
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

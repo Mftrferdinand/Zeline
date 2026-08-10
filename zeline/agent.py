@@ -11,9 +11,9 @@ from typing import Any, Callable
 
 import requests
 
-from aesora import config
-from aesora import skills
-from aesora.tools import ToolExecutor
+from zeline import config
+from zeline import skills
+from zeline.tools import ToolExecutor
 
 
 class ZelineError(RuntimeError):
@@ -196,6 +196,8 @@ class Zeline:
         self,
         user_input: str,
         on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        take_steer: Callable[[], str | None] | None = None,
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -205,7 +207,11 @@ class Zeline:
         self.messages.append({"role": "user", "content": text})
 
         for _ in range(config.MAX_TOOL_ROUNDS):
+            if should_stop and should_stop():
+                return "Stopped."
             message = self._call_llm()
+            if should_stop and should_stop():
+                return "Stopped."
             tool_calls = message.get("tool_calls")
             if not tool_calls:
                 content = str(message.get("content") or "").strip()
@@ -236,6 +242,9 @@ class Zeline:
                 if on_tool:
                     on_tool(name, args)
                 result = self.executor.run(name, args)
+                steer_text = take_steer() if take_steer else None
+                if steer_text:
+                    result += f"\n\n[User steering — follow this guidance now: {steer_text}]"
                 self.messages.append(
                     {
                         "role": "tool",
@@ -247,7 +256,3 @@ class Zeline:
         self._trim_history()
         return "Aku berhenti karena terlalu banyak putaran tool. Coba tugas yang lebih spesifik."
 
-
-# Compatibility aliases for integrations built before the Zeline rebrand.
-Aesora = Zeline
-AesoraError = ZelineError

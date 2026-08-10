@@ -21,7 +21,7 @@ jobs:
       - name: Run test suite
         run: python -m unittest discover -s tests -v
       - name: Compile package
-        run: python -m compileall -q aesora
+        run: python -m compileall -q zeline
 
   package:
     runs-on: ubuntu-latest
@@ -40,7 +40,7 @@ jobs:
           wheel = next(Path("dist").glob("*.whl"))
           with zipfile.ZipFile(wheel) as archive:
               names = archive.namelist()
-          blocked = [name for name in names if ".aesora" in name or "memory.json" in name or name.endswith(".env")]
+          blocked = [name for name in names if ".zeline" in name or "memory.json" in name or name.endswith(".env")]
           assert not blocked, f"local state leaked into wheel: {blocked}"
           print(wheel, "OK")
           PY

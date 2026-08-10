@@ -2,7 +2,7 @@
   <img src="assets/zeline-logo.png" alt="Zeline AI" width="760">
 </p>
 
-# Zeline
+# Zerolinear
 
 **Zerolinear** is an AI research lab based in Majalengka, Indonesia, building intelligent agents that learn, remember, and act.
 
@@ -31,22 +31,22 @@ This repository contains **Zeline** — an open-source agentic AI framework by Z
 
 ```bash
 pkg install git python -y
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zeline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
 zeline setup
 ```
 
 ### Linux and macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zeline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
 zeline setup
 ```
 
 To install from a checkout instead:
 
 ```bash
-git clone https://github.com/Mftrferdinand/Zeline.git
-cd Zeline
+git clone https://github.com/Mftrferdinand/Zerolinear.git
+cd Zerolinear
 bash install.sh
 ```
 

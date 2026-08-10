@@ -10,7 +10,7 @@ Layout data user:
       public/     # skill bawaan aman yang dapat dibaca gateway `safe`
       private/    # skill pemilik; hanya profile `full` CLI owner
 
-Install legacy memakai ``~/.aesora/skills/*.md``. Saat pertama
+Install legacy memakai ``~/.zeline/skills/*.md``. Saat pertama
 kali modul ini dipakai, skill legacy dipindahkan ke ``private/`` secara
 konservatif agar tidak ada prosedur lama yang tidak sengaja terekspos.
 """
@@ -21,7 +21,7 @@ import re
 import time
 from pathlib import Path
 
-from aesora import config
+from zeline import config
 
 SKILLS_ROOT = config.DATA_DIR / "skills"
 PUBLIC_SKILLS_DIR = SKILLS_ROOT / "public"

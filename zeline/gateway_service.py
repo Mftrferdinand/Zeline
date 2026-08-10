@@ -22,8 +22,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from aesora import config
-from aesora.gateways import validate_gateway
+from zeline import config
+from zeline.gateways import validate_gateway
 
 LOG_FILE = config.LOG_DIR / "gateway.log"
 
@@ -109,7 +109,7 @@ def _process_matches_state(state: dict[str, Any]) -> bool:
 
 
 def _command(only: list[str] | None) -> list[str]:
-    command = [sys.executable, "-m", "aesora.cli", "gateway", "run"]
+    command = [sys.executable, "-m", "zeline.cli", "gateway", "run"]
     for name in only or []:
         command.extend(["--only", name])
     return command

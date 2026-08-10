@@ -13,6 +13,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -25,13 +26,32 @@ from typing import Any
 
 import requests
 
-from aesora import config
-from aesora.agent import ZelineError
+from zeline import config
+from zeline.agent import ZelineError
 
 BRIDGE_DIR = config.DATA_DIR / "wa-bridge"
 DEFAULT_CALLBACK_PORT = 8770
 DEFAULT_BRIDGE_PORT = 8771
 MAX_BODY_BYTES = 32_000
+
+
+_FENCED_CODE_RE = re.compile(r"```[A-Za-z0-9_+.-]*\n?.*?```", re.DOTALL)
+
+
+def _markdown_to_whatsapp(text: str) -> str:
+    """Adaptasi subset Markdown umum tanpa mengubah isi fenced code."""
+    code_blocks: list[str] = []
+
+    def keep_code(match: re.Match[str]) -> str:
+        code_blocks.append(match.group(0))
+        return f"\x00CODE{len(code_blocks) - 1}\x00"
+
+    rendered = _FENCED_CODE_RE.sub(keep_code, text)
+    rendered = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"*\1*", rendered)
+    rendered = re.sub(r"\*\*(.+?)\*\*", r"*\1*", rendered, flags=re.DOTALL)
+    for index, block in enumerate(code_blocks):
+        rendered = rendered.replace(f"\x00CODE{index}\x00", block)
+    return rendered
 
 PACKAGE_JSON = {
     "name": "zeline-wa-bridge",
@@ -51,14 +71,14 @@ const baileys = require('@whiskeysockets/baileys');
 
 const makeWASocket = baileys.default;
 const { useMultiFileAuthState, DisconnectReason, Browsers } = baileys;
-const CALLBACK_URL = process.env.AESORA_WA_CALLBACK_URL || 'http://127.0.0.1:8770';
-const BRIDGE_TOKEN = process.env.AESORA_WA_BRIDGE_TOKEN || '';
-const PORT = Number(process.env.AESORA_WA_BRIDGE_PORT || '8771');
+const CALLBACK_URL = process.env.ZELINE_WA_CALLBACK_URL || 'http://127.0.0.1:8770';
+const BRIDGE_TOKEN = process.env.ZELINE_WA_BRIDGE_TOKEN || '';
+const PORT = Number(process.env.ZELINE_WA_BRIDGE_PORT || '8771');
 const MAX_BODY = 32000;
 let sock = null;
 
 function authorized(req) {
-  const supplied = req.headers['x-aesora-bridge'] || '';
+  const supplied = req.headers['x-zeline-bridge'] || '';
   return BRIDGE_TOKEN && supplied === BRIDGE_TOKEN;
 }
 
@@ -67,7 +87,7 @@ async function forwardIncoming(from, text) {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-aesora-bridge': BRIDGE_TOKEN,
+      'x-zeline-bridge': BRIDGE_TOKEN,
     },
     body: JSON.stringify({ from, text }),
   });
@@ -237,7 +257,7 @@ def _ensure_bridge() -> Path:
 
 
 def _authorized(headers, bridge_token: str) -> bool:
-    return hmac.compare_digest(str(headers.get("X-Aesora-Bridge", "")), bridge_token)
+    return hmac.compare_digest(str(headers.get("X-Zeline-Bridge", "")), bridge_token)
 
 
 def start(sessions, cfg: dict[str, Any], stop_event) -> None:
@@ -253,11 +273,11 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     tool_profile = str(cfg.get("tool_profile", "safe"))
 
     def send_to_whatsapp(to: str, text: str) -> None:
-        for part in _split_message(text):
+        for part in _split_message(_markdown_to_whatsapp(text)):
             try:
                 response = requests.post(
                     f"http://127.0.0.1:{bridge_port}/send",
-                    headers={"X-Aesora-Bridge": bridge_token},
+                    headers={"X-Zeline-Bridge": bridge_token},
                     json={"to": to, "text": part},
                     timeout=20,
                 )
@@ -315,9 +335,9 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     callback.timeout = 0.5
     env = {
         **os.environ,
-        "AESORA_WA_CALLBACK_URL": f"http://127.0.0.1:{callback_port}",
-        "AESORA_WA_BRIDGE_TOKEN": bridge_token,
-        "AESORA_WA_BRIDGE_PORT": str(bridge_port),
+        "ZELINE_WA_CALLBACK_URL": f"http://127.0.0.1:{callback_port}",
+        "ZELINE_WA_BRIDGE_TOKEN": bridge_token,
+        "ZELINE_WA_BRIDGE_PORT": str(bridge_port),
     }
     process = subprocess.Popen(
         ["node", "bridge.cjs"],

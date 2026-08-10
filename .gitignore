@@ -11,9 +11,9 @@ dist/
 .pytest_cache/
 .coverage
 
-# Local secrets and Aesora user state
+# Local secrets and Zeline user state
 .env
-.aesora/
+.zeline/
 memory.json
 *.log
 *.pid
@@ -42,5 +42,5 @@ build/
 dist/
 *.egg-info/
 
-# Local Aesora state
-.aesora/
+# Local Zeline state
+.zeline/
