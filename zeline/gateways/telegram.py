@@ -343,18 +343,26 @@ def _start_working_heartbeat(
     chat_id: int,
     done: threading.Event,
     *,
-    interval: float = 6.0,
+    interval: float = 4.0,
     status: "_LiveStatus | None" = None,
 ) -> threading.Thread:
-    """Update jam elapsed pada pesan status live secara berkala.
+    """Jaga indikator 'typing…' tetap hidup selama agent bekerja.
 
-    Tidak lagi mengirim pesan baru; hanya meng-``tick`` pesan yang sama sehingga
-    tidak ada tumpukan 'Working — N min' di chat.
+    Telegram hanya menampilkan 'typing…' ~5 detik per ``sendChatAction``. Kalau
+    model berpikir lama (atau load skill + reasoning), tanpa refresh indikator
+    hilang dan bot tampak diam/polos lalu tiba-tiba mengirim jawaban. Maka tiap
+    tick (default 4s < 5s) kita:
+      1) kirim ulang ``sendChatAction typing`` agar 'sedang mengetik' terus tampil,
+      2) ``tick()`` bubble progres yang SUDAH ada (tanpa membuat yang baru).
     """
     live = status or _LiveStatus(api, chat_id)
 
     def heartbeat() -> None:
         while not done.wait(interval):
+            try:
+                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
+            except Exception:
+                pass
             live.tick()
 
     worker = threading.Thread(target=heartbeat, name=f"zeline-heartbeat-{chat_id}", daemon=True)

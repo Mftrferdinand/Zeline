@@ -370,19 +370,21 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider lambat merespons")
         self.assertEqual(telegram._working_status_text(8), "⏳ Working — 8 s")
 
-    def test_telegram_working_heartbeat_only_refreshes_existing_bubble(self):
-        # Perilaku baru: heartbeat TIDAK membuat bubble saat cuma menunggu LLM.
-        # Kalau belum ada bubble (belum ada tool jalan), tick() tidak menembak API.
+    def test_telegram_working_heartbeat_keeps_typing_alive(self):
+        # Heartbeat harus terus mengirim 'sendChatAction typing' agar indikator
+        # 'sedang mengetik' tidak hilang saat model berpikir lama — TAPI tidak
+        # membuat bubble progres baru (tidak ada sendMessage) selama menunggu.
         telegram = importlib.import_module("zeline.gateways.telegram")
         done = threading.Event()
         with mock.patch.object(telegram, "_api_call") as api:
             live = telegram._LiveStatus("bot-api", 42, model="m")
             worker = telegram._start_working_heartbeat("bot-api", 42, done, interval=0.01, status=live)
-            time.sleep(0.03)
+            time.sleep(0.05)
             done.set()
             worker.join(timeout=1)
-        # Tidak ada bubble dibuat hanya karena menunggu (mencegah 'Processing' nyasar).
-        self.assertEqual(api.call_count, 0)
+        methods = [c.args[1] for c in api.call_args_list if len(c.args) > 1]
+        self.assertIn("sendChatAction", methods)  # typing terus di-refresh
+        self.assertNotIn("sendMessage", methods)  # tapi tidak bikin bubble 'Processing'
 
     def test_telegram_bubble_appears_only_on_tool_activity(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
