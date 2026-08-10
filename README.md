@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>Zeline</strong> — an open-source agentic AI framework by <strong>Zerolinear</strong><br>
-  Built by <a href="https://github.com/Mftrferdinand">Mftrferdinand</a>
+  <strong>Zerolinear</strong> — an AI research lab developing <strong>Zeline</strong>, an open-source agentic AI framework.<br>
+  Built and maintained by <a href="https://github.com/Mftrferdinand">Mftrferdinand</a>.
 </p>
 
 ---
