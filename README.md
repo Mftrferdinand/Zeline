@@ -1,12 +1,19 @@
 <p align="center">
-  <img src="assets/zeline-logo.png" alt="Zeline AI" width="760">
+  <img src="assets/zerolinear-logo.png" alt="Zerolinear" width="760">
 </p>
 
-# Zerolinear
+<p align="center">
+  <strong>Zeline</strong> — an open-source agentic AI framework by <strong>Zerolinear</strong><br>
+  Built by <a href="https://github.com/Mftrferdinand">Mftrferdinand</a>
+</p>
 
-**Zerolinear** is an AI research lab based in Majalengka, Indonesia, building intelligent agents that learn, remember, and act.
+---
 
-This repository contains **Zeline** — an open-source agentic AI framework by Zerolinear, created by Mftrferdinand.
+# Zeline
+
+**Zeline** is an open-source agentic AI framework: an OpenAI-compatible agent loop with tool calling, persistent memory, on-demand skills, and messaging gateways.
+
+It is developed by **Zerolinear**, an AI research lab based in Majalengka, Indonesia, building intelligent agents that learn, remember, and act. Zerolinear is built by [Mftrferdinand](https://github.com/Mftrferdinand).
 
 ## What it includes
 
