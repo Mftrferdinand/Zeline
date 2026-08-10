@@ -30,6 +30,7 @@ import requests
 from zeline import config
 from zeline import memory
 from zeline import skills
+from zeline import mcp as mcp_module
 
 ToolFunction = Callable[..., str]
 
@@ -791,6 +792,14 @@ class ToolExecutor:
         self.memory = memory.MemoryStore(self.identity)
         # Private skill hanya boleh dibaca operator local/full profile.
         self._can_read_private_skills = profile == "full"
+        # MCP hanya untuk operator (workspace/full). Server stdio menjalankan
+        # perintah lokal, jadi tidak boleh diekspos ke gateway publik (safe).
+        self.mcp: mcp_module.MCPRegistry | None = None
+        if profile in {"workspace", "full"} and getattr(config, "MCP_SERVERS", None):
+            try:
+                self.mcp = mcp_module.MCPRegistry.from_config({"mcp": {"servers": config.MCP_SERVERS}})
+            except Exception:
+                self.mcp = None
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
@@ -831,9 +840,20 @@ class ToolExecutor:
 
     @property
     def schemas(self) -> list[dict[str, Any]]:
-        return [definition.schema() for definition in TOOL_DEFS if self.profile in definition.profiles]
+        native = [definition.schema() for definition in TOOL_DEFS if self.profile in definition.profiles]
+        if self.mcp is not None:
+            try:
+                native.extend(self.mcp.schemas())
+            except Exception:
+                pass
+        return native
 
     def run(self, name: str, args: dict[str, Any]) -> str:
+        # Tool MCP di-dispatch ke registry (hanya untuk profile workspace/full).
+        if self.mcp is not None and name.startswith(mcp_module.MCP_TOOL_PREFIX):
+            if not self.mcp.has_tool(name):
+                return f"ERROR: tool MCP '{name}' tidak terdaftar."
+            return self.mcp.call(name, args)
         allowed = {definition.name for definition in TOOL_DEFS if self.profile in definition.profiles}
         if name not in allowed:
             return f"ERROR: tool '{name}' tidak diizinkan untuk profile '{self.profile}'."

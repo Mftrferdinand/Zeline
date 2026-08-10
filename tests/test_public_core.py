@@ -205,6 +205,67 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("workspace", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
         self.assertFalse((self.home / "escape.txt").exists())
 
+    def _write_fake_mcp_server(self) -> Path:
+        self.home.mkdir(parents=True, exist_ok=True)
+        script = self.home / "fake_mcp.py"
+        script.write_text(
+            "import json, sys\n"
+            "def send(o):\n"
+            "    sys.stdout.write(json.dumps(o)+'\\n'); sys.stdout.flush()\n"
+            "for line in sys.stdin:\n"
+            "    line=line.strip()\n"
+            "    if not line: continue\n"
+            "    req=json.loads(line); m=req.get('method'); rid=req.get('id')\n"
+            "    if m=='initialize': send({'jsonrpc':'2.0','id':rid,'result':{'protocolVersion':'2024-11-05','capabilities':{},'serverInfo':{'name':'fake','version':'1'}}})\n"
+            "    elif m=='notifications/initialized': pass\n"
+            "    elif m=='tools/list': send({'jsonrpc':'2.0','id':rid,'result':{'tools':[{'name':'add','description':'sum','inputSchema':{'type':'object','properties':{'a':{'type':'number'},'b':{'type':'number'}}}}]}})\n"
+            "    elif m=='tools/call':\n"
+            "        a=req['params']['arguments']; t=float(a.get('a',0))+float(a.get('b',0))\n"
+            "        send({'jsonrpc':'2.0','id':rid,'result':{'content':[{'type':'text','text':'sum='+str(t)}]}})\n"
+            "    elif rid is not None: send({'jsonrpc':'2.0','id':rid,'error':{'code':-32601,'message':'nf'}})\n",
+            encoding="utf-8",
+        )
+        return script
+
+    def test_mcp_stdio_discovery_and_call(self):
+        mcp = importlib.import_module("zeline.mcp")
+        script = self._write_fake_mcp_server()
+        server = mcp.MCPServer(name="fake", transport="stdio", command=f"{sys.executable} {script}")
+        try:
+            tools = server.list_tools()
+            names = [t["function"]["name"] for t in tools]
+            self.assertIn("mcp__fake__add", names)
+            self.assertEqual(server.call_tool("add", {"a": 2, "b": 3}), "sum=5.0")
+        finally:
+            server.close()
+
+    def test_mcp_only_available_to_operator_profiles(self):
+        mcp = importlib.import_module("zeline.mcp")
+        script = self._write_fake_mcp_server()
+        self.config.MCP_SERVERS = {"fake": {"transport": "stdio", "command": f"{sys.executable} {script}"}}
+        try:
+            # safe (gateway publik) TIDAK boleh dapat tool MCP (server = perintah lokal)
+            safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+            self.assertFalse(any(n["function"]["name"].startswith("mcp__") for n in safe.schemas))
+            self.assertIn("tidak diizinkan", safe.run("mcp__fake__add", {"a": 1, "b": 1}))
+            # full (operator) dapat + bisa dispatch
+            full = self.tools.ToolExecutor("cli:local", profile="full", workspace=self.home)
+            self.assertTrue(any(n["function"]["name"] == "mcp__fake__add" for n in full.schemas))
+            self.assertEqual(full.run("mcp__fake__add", {"a": 10, "b": 5}), "sum=15.0")
+            if full.mcp:
+                full.mcp.close()
+        finally:
+            self.config.MCP_SERVERS = {}
+
+    def test_mcp_name_helpers_and_sse_parsing(self):
+        mcp = importlib.import_module("zeline.mcp")
+        self.assertEqual(mcp.parse_tool_name("mcp__srv__tool"), ("srv", "tool"))
+        self.assertIsNone(mcp.parse_tool_name("web_search"))
+        self.assertEqual(mcp.make_tool_name("srv", "tool"), "mcp__srv__tool")
+        # SSE-framed JSON-RPC payload harus keurai
+        payload = mcp._decode_jsonrpc_payload('data: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n')
+        self.assertEqual(payload["result"], {"ok": True})
+
     def test_workspace_profile_blocks_path_escape(self):
         workspace = self.home / "workspace"
         workspace.mkdir(parents=True)

@@ -167,6 +167,9 @@ def _defaults() -> dict[str, Any]:
                 "tool_profile": "safe",
             },
         },
+        # MCP server eksternal. Tiap entry: {transport, command|url, headers, env, enabled}.
+        # Hanya operator yang boleh menambah (server stdio menjalankan perintah lokal).
+        "mcp": {"servers": {}},
     }
 
 
@@ -278,6 +281,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
+    global MCP_SERVERS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -291,6 +295,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     MAX_SESSIONS = int(cfg.get("agent", {}).get("max_sessions", DEFAULT_MAX_SESSIONS))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
+    MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
     SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(name=NAME)
 
 

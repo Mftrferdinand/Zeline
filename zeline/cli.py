@@ -511,6 +511,83 @@ def cmd_chat(query: str | None = None) -> int:
             print(f"\033[31m[error] {exc}\033[0m\n")
 
 
+def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "") -> int:
+    """Kelola MCP server: add / list / remove / test."""
+    from zeline import mcp as mcp_module
+
+    if action == "list":
+        servers = config.stored_config_copy().get("mcp", {}).get("servers", {})
+        if not servers:
+            print("Belum ada MCP server. Tambah dengan: zeline mcp add <nama> --command '...' atau --url '...'")
+            return 0
+        print("MCP server:")
+        for server_name, spec in servers.items():
+            state = "aktif" if spec.get("enabled", True) else "mati"
+            kind = spec.get("transport") or ("http" if spec.get("url") else "stdio")
+            target = spec.get("url") or spec.get("command") or "?"
+            print(f"  - {server_name:<16} [{kind}] {state}  {target}")
+        return 0
+
+    if action == "add":
+        if not name:
+            print("Butuh nama server. Contoh: zeline mcp add filesystem --command 'npx -y @modelcontextprotocol/server-filesystem ~/'")
+            return 2
+        if not command and not url:
+            print("Butuh --command (stdio) atau --url (http).")
+            return 2
+        cfg = config.stored_config_copy()
+        servers = cfg.setdefault("mcp", {}).setdefault("servers", {})
+        spec: dict[str, Any] = {"enabled": True}
+        if url:
+            spec.update({"transport": "http", "url": url})
+        else:
+            spec.update({"transport": "stdio", "command": command})
+        servers[name] = spec
+        config.save_config(cfg)
+        print(f"MCP server '{name}' ditambahkan. Tes dengan: zeline mcp test {name}")
+        return 0
+
+    if action == "remove":
+        if not name:
+            print("Butuh nama server yang mau dihapus.")
+            return 2
+        cfg = config.stored_config_copy()
+        servers = cfg.get("mcp", {}).get("servers", {})
+        if name not in servers:
+            print(f"MCP server '{name}' tidak ditemukan.")
+            return 2
+        servers.pop(name)
+        config.save_config(cfg)
+        print(f"MCP server '{name}' dihapus.")
+        return 0
+
+    if action == "test":
+        servers = config.stored_config_copy().get("mcp", {}).get("servers", {})
+        targets = {name: servers[name]} if name and name in servers else servers
+        if not targets:
+            print("Tidak ada server untuk dites.")
+            return 2
+        registry = mcp_module.MCPRegistry.from_config({"mcp": {"servers": targets}})
+        total = 0
+        for server_name, server in registry.servers.items():
+            try:
+                tools = server.list_tools()
+                print(f"  ✓ {server_name}: {len(tools)} tool")
+                for schema in tools[:20]:
+                    fn = schema["function"]
+                    print(f"      - {fn['name']}: {str(fn.get('description',''))[:70]}")
+                total += len(tools)
+            except Exception as exc:
+                print(f"  ✗ {server_name}: {exc.__class__.__name__}: {exc}")
+            finally:
+                server.close()
+        print(f"Total {total} tool MCP siap dipakai.")
+        return 0
+
+    print(f"Aksi MCP tidak dikenal: {action}. Pilihan: add, list, remove, test.")
+    return 2
+
+
 def cmd_gateway_setup(name: str | None = None) -> int:
     cfg = config.stored_config_copy()
     if name and name not in GATEWAYS:
@@ -769,6 +846,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_parser = subparsers.add_parser("config", help="lihat lokasi/konfigurasi aman")
     config_parser.add_argument("action", choices=["path", "show"])
+
+    mcp_parser = subparsers.add_parser("mcp", help="kelola MCP server (tool eksternal)")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
+    mcp_add = mcp_sub.add_parser("add", help="tambah MCP server")
+    mcp_add.add_argument("name")
+    mcp_add.add_argument("--command", dest="mcp_cmd", default="", help="perintah server stdio, mis. 'npx -y @modelcontextprotocol/server-filesystem ~/'")
+    mcp_add.add_argument("--url", default="", help="URL server HTTP streamable")
+    mcp_sub.add_parser("list", help="daftar MCP server")
+    mcp_remove = mcp_sub.add_parser("remove", help="hapus MCP server")
+    mcp_remove.add_argument("name")
+    mcp_test = mcp_sub.add_parser("test", help="tes koneksi & daftar tool")
+    mcp_test.add_argument("name", nargs="?")
+
     subparsers.add_parser("doctor", aliases=["status"], help="cek dependency dan konfigurasi")
     subparsers.add_parser("skills", aliases=["skill"], help="list skill")
     subparsers.add_parser("memory", help="lihat memory CLI lokal")
@@ -837,6 +927,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_gateway_log()
     if command == "config":
         return cmd_config(namespace.action)
+    if command == "mcp":
+        mcp_action = namespace.mcp_command or "list"
+        return cmd_mcp(
+            mcp_action,
+            getattr(namespace, "name", None),
+            command=getattr(namespace, "mcp_cmd", ""),
+            url=getattr(namespace, "url", ""),
+        )
     if command in {"skills", "skill"}:
         return cmd_skills()
     if command == "memory":
