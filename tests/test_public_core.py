@@ -571,14 +571,18 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_search_terminal_has_no_title_and_uses_light_emoji(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        # Perintah shell pencarian: tanpa 'Zeline Terminal', tanpa label Bash, pakai 🟢.
+        # Perintah shell pencarian: tanpa 'Zeline Terminal', tanpa label Bash,
+        # header lampu 🔴🟡🟢 di dalam blok terminal, command langsung.
         search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
         self.assertNotIn("Zeline Terminal", search)
         self.assertNotIn("Bash", search)
-        self.assertTrue(search.startswith("🟢"))
-        # Perintah coding biasa tetap bergaya terminal penuh.
+        self.assertIn("🔴🟡🟢", search)
+        self.assertIn("<pre>", search)
+        self.assertIn("python -searching ftmo -v", search)
+        # Perintah coding biasa tetap bergaya terminal penuh dengan judul.
         coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
         self.assertIn("🖥️ Zeline Terminal", coding)
+        self.assertNotIn("🔴🟡🟢", coding)
 
     def test_telegram_web_progress_hides_raw_links(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
