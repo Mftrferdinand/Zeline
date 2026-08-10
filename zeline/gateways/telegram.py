@@ -124,32 +124,56 @@ def _working_status_text(elapsed_seconds: float, *, iteration: int | None = None
     return f"⏳ Working — {clock}{slow}"
 
 
+def _provider_wait_text(wait_seconds: float, model: str = "") -> str:
+    """Header khusus fase menunggu respons provider (LLM sedang berpikir).
+
+    Hanya ini yang boleh menyebut 'Working/menunggu model' — bukan saat tool
+    (Reading/Searching) sedang jalan, karena itu bagian cepat.
+    """
+    who = f" {model}" if model else ""
+    detail = " (provider lambat/overload, atau model sedang berpikir)" if wait_seconds >= 30 else ""
+    return f"⏳ Menunggu{who} — {int(wait_seconds)}s belum ada respons{detail}"
+
+
 class _LiveStatus:
     """Satu pesan Telegram yang di-edit berulang (bukan spam pesan baru).
 
-    Menampilkan feed aktivitas ringkas (beberapa aksi terakhir) + jam elapsed
-    dalam satu bubble, meniru gaya live Hermes. Aman untuk dipakai dari worker
-    heartbeat dan callback tool secara bersamaan (dilindungi lock).
+    Dua fase:
+      - ``waiting``: menunggu respons LLM → header 'Menunggu model — Ns'.
+      - ``tool``: sedang menjalankan tool → hanya feed aktivitas bersih,
+        tanpa label 'Working' (bagian ini cepat, bukan sumber delay).
+    Aman dipakai dari worker heartbeat dan callback tool (dilindungi lock).
     """
 
-    def __init__(self, api: str, chat_id: int, *, max_lines: int = 6):
+    def __init__(self, api: str, chat_id: int, *, max_lines: int = 6, model: str = ""):
         self.api = api
         self.chat_id = chat_id
         self.max_lines = max_lines
+        self.model = model
         self.message_id: int | None = None
         self.lines: list[str] = []
-        self.started = time.monotonic()
+        self.phase = "waiting"
+        self.phase_started = time.monotonic()
         self._last_text: str | None = None
         self._lock = threading.Lock()
 
     def _render(self) -> str:
-        header = _working_status_text(time.monotonic() - self.started)
+        now = time.monotonic()
         recent = self.lines[-self.max_lines:]
-        return header + ("\n\n" + "\n".join(recent) if recent else "")
+        feed = ("\n" + "\n".join(recent)) if recent else ""
+        if self.phase == "waiting":
+            wait = now - self.phase_started
+            # Diam dulu selama <8s; delay pendek tidak perlu diumumkan.
+            if wait < 8 and not recent:
+                return "⚙️ Memproses…"
+            header = _provider_wait_text(wait, self.model) if wait >= 8 else "⚙️ Memproses…"
+            return header + feed
+        # Fase tool: feed bersih tanpa label Working.
+        return "⚙️ Bekerja…" + feed
 
-    def _push_locked(self) -> None:
+    def _push_locked(self, force: bool = False) -> None:
         text = self._render()
-        if text == self._last_text:
+        if text == self._last_text and not force:
             return
         self._last_text = text
         if self.message_id is None:
@@ -165,9 +189,20 @@ class _LiveStatus:
                 message_id=self.message_id, text=text, parse_mode="HTML",
             )
 
+    def set_waiting(self) -> None:
+        """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir)."""
+        with self._lock:
+            self.phase = "waiting"
+            self.phase_started = time.monotonic()
+
     def add(self, line: str) -> None:
         with self._lock:
-            self.lines.append(line)
+            self.phase = "tool"
+            self.phase_started = time.monotonic()
+            # Dedupe: jangan tampilkan baris identik beruntun (mis. fetch domain
+            # yang sama berulang) agar feed tetap bersih.
+            if not self.lines or self.lines[-1] != line:
+                self.lines.append(line)
             self._push_locked()
 
     def tick(self) -> None:
@@ -901,8 +936,7 @@ def _build_document_prompt(filename: str, file_text: str, caption: str = "") -> 
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
     done = threading.Event()
-    live = _LiveStatus(api, chat_id)
-    live.add("⌛ memulai...")  # buat satu bubble live pertama
+    live = _LiveStatus(api, chat_id, model=getattr(config, "MODEL", ""))
     heartbeat = _start_working_heartbeat(api, chat_id, done, status=live)
 
     def on_tool(_name, _args):
@@ -915,9 +949,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         result_text = _tool_result_text(_name, _args, result)
         if result_text:
             live.add(result_text.replace("\n", " ")[:200])
+        # Setelah tool selesai, kita kembali menunggu respons model.
+        live.set_waiting()
 
     def on_iteration(current, maximum):
-        pass  # iterasi internal tidak lagi ditampilkan sebagai pesan terpisah
+        # Awal tiap iterasi = mulai menunggu respons provider.
+        live.set_waiting()
 
     try:
         reply = sessions.send(

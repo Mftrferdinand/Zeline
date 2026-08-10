@@ -578,9 +578,46 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_live_status_shows_elapsed_and_slow_provider(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        # Delay panjang dilaporkan sebagai provider lambat, bukan iterasi internal.
-        self.assertEqual(telegram._working_status_text(365), "⏳ Working — 6 min 5 s · provider lambat merespons")
-        self.assertEqual(telegram._working_status_text(40), "⏳ Working — 40 s")
+        # Header 'menunggu provider' hanya untuk fase nunggu respons LLM.
+        wait = telegram._provider_wait_text(45, "tabi/claude")
+        self.assertIn("Menunggu tabi/claude", wait)
+        self.assertIn("45s", wait)
+        self.assertIn("provider lambat", wait)
+        # Delay pendek tidak menakut-nakuti dengan label overload.
+        self.assertNotIn("provider lambat", telegram._provider_wait_text(12))
+
+    def test_telegram_live_status_no_working_label_during_tool_phase(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        def fake_api(_api, method, **kwargs):
+            if method == "sendMessage":
+                return {"ok": True, "result": {"message_id": 999}}
+            return {"ok": True}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
+            live = telegram._LiveStatus("bot-api", 1, model="tabi/claude")
+            live.add("🌐 Reading https://ftmo.com/en/")
+            rendered = live._render()
+        # Saat tool jalan, TIDAK ada label 'Working/Menunggu' — feed bersih saja.
+        self.assertNotIn("Working", rendered)
+        self.assertNotIn("Menunggu", rendered)
+        self.assertIn("🌐 Reading", rendered)
+
+    def test_telegram_live_status_dedupes_repeated_lines(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        def fake_api(_api, method, **kwargs):
+            if method == "sendMessage":
+                return {"ok": True, "result": {"message_id": 999}}
+            return {"ok": True}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
+            live = telegram._LiveStatus("bot-api", 1)
+            live.add("🌐 Reading https://ftmo.com")
+            live.add("🌐 Reading https://ftmo.com")  # duplikat beruntun
+            live.add("🌐 Reading https://ftmo.com/en")
+        # Baris identik beruntun tidak digandakan.
+        self.assertEqual(live.lines, ["🌐 Reading https://ftmo.com", "🌐 Reading https://ftmo.com/en"])
 
     def test_telegram_collapses_tool_activity_into_single_live_message(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -592,7 +629,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 kwargs["on_tool"]("web_fetch", {"url": "https://investopedia.com"})
                 return "hasil riset"
 
-        # sendMessage mengembalikan message_id agarupdate berikutnya memakai editMessageText.
+        # sendMessage mengembalikan message_id agar update berikutnya memakai editMessageText.
         def fake_api(_api, method, **kwargs):
             if method == "sendMessage":
                 return {"ok": True, "result": {"message_id": 999}}
@@ -602,13 +639,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="riset ftmo", tool_profile="safe")
 
         methods = [c.args[1] for c in api.call_args_list if len(c.args) > 1]
-        # Feed aktivitas TIDAK menambah pesan baru per tool: satu bubble live di-edit.
+        # Hanya satu bubble live dibuat (sendMessage pertama), sisanya editMessageText.
         live_sends = [
             c for c in api.call_args_list
-            if len(c.args) > 1 and c.args[1] == "sendMessage" and "Working" in str(c.kwargs.get("text", ""))
+            if len(c.args) > 1 and c.args[1] == "sendMessage" and "hasil riset" not in str(c.kwargs.get("text", ""))
         ]
-        self.assertEqual(len(live_sends), 1)  # hanya satu bubble live dibuat
-        self.assertIn("editMessageText", methods)  # sisanya update via edit
+        self.assertEqual(len(live_sends), 1)
+        self.assertIn("editMessageText", methods)  # update via edit
         self.assertIn("deleteMessage", methods)  # bubble live dibersihkan di akhir
         # Jawaban final tetap terkirim.
         finals = [
