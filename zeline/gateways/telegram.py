@@ -60,18 +60,32 @@ def _tool_names_for_profile(profile: str) -> list[str]:
     return [definition.name for definition in TOOL_DEFS if profile in definition.profiles]
 
 
-def _terminal_progress(command: str) -> str:
-    """Hermes-style terminal preview with Zeline's monitor/title treatment."""
+def _terminal_progress(command: str, *, search: bool = False) -> str:
+    """Preview terminal. Untuk perintah pencarian: tanpa judul 'Zeline Terminal'
+    dan pakai lampu 🟢 (bukan label Bash). Untuk coding: tetap bergaya terminal."""
     escaped = html.escape(command.strip()[:1500], quote=False)
+    if search:
+        return f"🟢 <pre>{escaped}</pre>"
     return f"🖥️ Zeline Terminal\n<pre>{escaped}</pre>"
 
 
+def _is_search_command(command: str) -> bool:
+    """True bila perintah shell bertujuan pencarian/riset informasi."""
+    low = command.lower()
+    return any(k in low for k in ("search", "researching", "curl ", "jina.ai", "duckduckgo", "google.com/search"))
+
+
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
-    """Render one distinct HTML-safe progress message per real tool call."""
+    """Render one distinct HTML-safe progress message per real tool call.
+
+    Fase kerja (present-progressive): 🔎 Searching / 🔍 Researching.
+    Tidak pernah menampilkan URL/link mentah ke user — cukup topik/kueri.
+    """
     if name == "load_skill":
         return f"📚 Reading skill {html.escape(str(arguments.get('name', ''))[:100])}"
     if name == "run_shell":
-        return _terminal_progress(str(arguments.get("command", "")))
+        command = str(arguments.get("command", ""))
+        return _terminal_progress(command, search=_is_search_command(command))
     if name == "execute_code":
         code = str(arguments.get("code", "")).strip()
         first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
@@ -98,13 +112,28 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         task = html.escape(str(arguments.get("task", ""))[:300], quote=False)
         return f"📋 Updating tasks\n<code>{status}</code> · {task}"
     if name == "web_search":
-        return f"🔎 Searching web: {html.escape(str(arguments.get('query', ''))[:200], quote=False)}"
+        return f"🔎 Searching web: {html.escape(str(arguments.get('query', ''))[:120], quote=False)}"
     if name == "web_fetch":
-        return f"🌐 Reading {html.escape(str(arguments.get('url', ''))[:200], quote=False)}"
+        # Jangan tampilkan URL mentah ke user — cukup label bersih.
+        return "📖 Membaca sumber web…"
     if name == "deep_research":
-        return f"🔬 Researching: {html.escape(str(arguments.get('query', ''))[:200], quote=False)}"
+        return f"🔍 Researching: {html.escape(str(arguments.get('query', ''))[:120], quote=False)}"
     preview = html.escape(", ".join(f"{key}={str(value)[:80]}" for key, value in arguments.items()), quote=False)
     return f"🔧 {html.escape(name)}" + (f"\n<code>{preview}</code>" if preview else "")
+
+
+def _finalize_line(line: str) -> str:
+    """Ubah baris fase-kerja menjadi bentuk 'selesai' (Searching→Reading)."""
+    replacements = (
+        ("🔎 Searching web:", "📖 Reading web:"),
+        ("🔎 Searching files for", "📖 Read files for"),
+        ("🔍 Researching:", "📖 Researched:"),
+        ("📖 Membaca sumber web…", "📖 Sumber web dibaca"),
+    )
+    for old, new in replacements:
+        if line.startswith(old):
+            return new + line[len(old):]
+    return line
 
 
 def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
@@ -230,8 +259,8 @@ class _LiveStatus:
                 )
                 self.message_id = None
                 return
-            body = "\n".join(self.lines[-self.max_lines:])
-            final = f"✅ Selesai\n{body}"
+            body = "\n".join(_finalize_line(line) for line in self.lines[-self.max_lines:])
+            final = f"⌛️ Selesai\n{body}"
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=final, parse_mode="HTML",
