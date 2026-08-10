@@ -99,6 +99,10 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return f"📋 Updating tasks\n<code>{status}</code> · {task}"
     if name == "web_search":
         return f"🔎 Searching web: {html.escape(str(arguments.get('query', ''))[:200], quote=False)}"
+    if name == "web_fetch":
+        return f"🌐 Reading {html.escape(str(arguments.get('url', ''))[:200], quote=False)}"
+    if name == "deep_research":
+        return f"🔬 Researching: {html.escape(str(arguments.get('query', ''))[:200], quote=False)}"
     preview = html.escape(", ".join(f"{key}={str(value)[:80]}" for key, value in arguments.items()), quote=False)
     return f"🔧 {html.escape(name)}" + (f"\n<code>{preview}</code>" if preview else "")
 
@@ -111,11 +115,74 @@ def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str 
 
 
 def _working_status_text(elapsed_seconds: float, *, iteration: int | None = None, maximum: int | None = None) -> str:
-    minutes = max(1, int(elapsed_seconds // 60))
-    if iteration is None or maximum is None:
-        return f"⏳ Working — {minutes} min — waiting for provider response"
-    slow = "provider is slow; " if elapsed_seconds >= 300 else ""
-    return f"⏳ Working — {minutes} min — iteration {iteration}/{maximum}, {slow}waiting for response"
+    """Header status live. Delay dilaporkan sebagai provider lambat (dari elapsed
+    monotonic nyata), bukan klaim bahwa agent sedang sibuk."""
+    minutes = int(elapsed_seconds // 60)
+    seconds = int(elapsed_seconds % 60)
+    clock = f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
+    slow = " · provider lambat merespons" if elapsed_seconds >= 120 else ""
+    return f"⏳ Working — {clock}{slow}"
+
+
+class _LiveStatus:
+    """Satu pesan Telegram yang di-edit berulang (bukan spam pesan baru).
+
+    Menampilkan feed aktivitas ringkas (beberapa aksi terakhir) + jam elapsed
+    dalam satu bubble, meniru gaya live Hermes. Aman untuk dipakai dari worker
+    heartbeat dan callback tool secara bersamaan (dilindungi lock).
+    """
+
+    def __init__(self, api: str, chat_id: int, *, max_lines: int = 6):
+        self.api = api
+        self.chat_id = chat_id
+        self.max_lines = max_lines
+        self.message_id: int | None = None
+        self.lines: list[str] = []
+        self.started = time.monotonic()
+        self._last_text: str | None = None
+        self._lock = threading.Lock()
+
+    def _render(self) -> str:
+        header = _working_status_text(time.monotonic() - self.started)
+        recent = self.lines[-self.max_lines:]
+        return header + ("\n\n" + "\n".join(recent) if recent else "")
+
+    def _push_locked(self) -> None:
+        text = self._render()
+        if text == self._last_text:
+            return
+        self._last_text = text
+        if self.message_id is None:
+            payload = _api_call(
+                self.api, "sendMessage", chat_id=self.chat_id,
+                text=text, parse_mode="HTML",
+            )
+            if payload and isinstance(payload.get("result"), dict):
+                self.message_id = payload["result"].get("message_id")
+        else:
+            _api_call(
+                self.api, "editMessageText", chat_id=self.chat_id,
+                message_id=self.message_id, text=text, parse_mode="HTML",
+            )
+
+    def add(self, line: str) -> None:
+        with self._lock:
+            self.lines.append(line)
+            self._push_locked()
+
+    def tick(self) -> None:
+        with self._lock:
+            self._push_locked()
+
+    def clear(self) -> None:
+        """Hapus pesan status agar tidak menyisakan indikator 'Working'."""
+        with self._lock:
+            if self.message_id is not None:
+                _api_call(
+                    self.api, "deleteMessage",
+                    chat_id=self.chat_id, message_id=self.message_id,
+                )
+                self.message_id = None
 
 
 def _start_working_heartbeat(
@@ -123,23 +190,19 @@ def _start_working_heartbeat(
     chat_id: int,
     done: threading.Event,
     *,
-    interval: float = 60.0,
-    progress: dict[str, int] | None = None,
+    interval: float = 6.0,
+    status: "_LiveStatus | None" = None,
 ) -> threading.Thread:
-    """Kirim status berkala tanpa menghalangi turn agent."""
-    started = time.monotonic()
+    """Update jam elapsed pada pesan status live secara berkala.
+
+    Tidak lagi mengirim pesan baru; hanya meng-``tick`` pesan yang sama sehingga
+    tidak ada tumpukan 'Working — N min' di chat.
+    """
+    live = status or _LiveStatus(api, chat_id)
 
     def heartbeat() -> None:
         while not done.wait(interval):
-            state = dict(progress or {})
-            _api_call(
-                api, "sendMessage", chat_id=chat_id,
-                text=_working_status_text(
-                    time.monotonic() - started,
-                    iteration=state.get("iteration"),
-                    maximum=state.get("maximum"),
-                ),
-            )
+            live.tick()
 
     worker = threading.Thread(target=heartbeat, name=f"zeline-heartbeat-{chat_id}", daemon=True)
     worker.start()
@@ -838,23 +901,23 @@ def _build_document_prompt(filename: str, file_text: str, caption: str = "") -> 
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
     done = threading.Event()
-    progress: dict[str, int] = {}
-    heartbeat = _start_working_heartbeat(api, chat_id, done, progress=progress)
+    live = _LiveStatus(api, chat_id)
+    live.add("⌛ memulai...")  # buat satu bubble live pertama
+    heartbeat = _start_working_heartbeat(api, chat_id, done, status=live)
 
     def on_tool(_name, _args):
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
-        _api_call(
-            api, "sendMessage", chat_id=chat_id,
-            text=_tool_progress_text(_name, _args), parse_mode="HTML",
-        )
+        # Tambahkan satu baris ringkas ke feed live, bukan pesan baru.
+        line = _tool_progress_text(_name, _args).replace("\n", " ")[:200]
+        live.add(line)
 
     def on_tool_result(_name, _args, result):
         result_text = _tool_result_text(_name, _args, result)
         if result_text:
-            _api_call(api, "sendMessage", chat_id=chat_id, text=result_text, parse_mode="HTML")
+            live.add(result_text.replace("\n", " ")[:200])
 
     def on_iteration(current, maximum):
-        progress.update(iteration=current, maximum=maximum)
+        pass  # iterasi internal tidak lagi ditampilkan sebagai pesan terpisah
 
     try:
         reply = sessions.send(
@@ -873,6 +936,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     finally:
         done.set()
         heartbeat.join(timeout=0.2)
+        live.clear()  # buang bubble live sebelum kirim jawaban final
     for part in _split_message(reply):
         _api_call(
             api,
