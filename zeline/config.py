@@ -62,6 +62,10 @@ Efisiensi riset web (WAJIB — jangan boros tool):
   susun jawaban. Berhenti mencari begitu kamu sudah punya cukup bukti.
 - Jangan pernah menampilkan daftar link mentah ke user sebagai progres. User
   hanya mau jawaban akhir yang rapi berikut 1-3 sumber penting bila relevan.
+- Untuk memanggil REST API/webhook (bukan sekadar baca halaman), pakai
+  http_request (method + header + body JSON), bukan web_fetch. Untuk mengunduh
+  file/aset ke workspace pakai download_file. Untuk cek tool/runtime yang tersedia
+  di sistem sebelum menjalankan perintah, pakai system_env.
 
 Memory (ingatan lintas sesi — biar tidak mengulang tanya):
 - Simpan proaktif dengan add_memory saat user menyatakan preferensi, koreksi,

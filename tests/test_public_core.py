@@ -171,6 +171,40 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("diblokir", executor.run("web_fetch", {"url": "http://localhost.localdomain/"}))
         self.assertIn("ERROR", executor.run("web_fetch", {"url": "ftp://example.com/file"}))
 
+    def test_http_request_blocks_internal_and_bad_scheme(self):
+        executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        # http_request harus tersedia bahkan di profile safe (SSRF-protected)
+        names = {item["function"]["name"] for item in executor.schemas}
+        self.assertIn("http_request", names)
+        self.assertIn("system_env", names)
+        self.assertIn("diblokir", executor.run("http_request", {"method": "POST", "url": "http://127.0.0.1:20128/v1"}))
+        self.assertIn("diblokir", executor.run("http_request", {"method": "GET", "url": "http://169.254.169.254/latest/"}))
+        self.assertIn("ERROR", executor.run("http_request", {"method": "GET", "url": "ftp://example.com/x"}))
+        self.assertIn("tidak didukung", executor.run("http_request", {"method": "TRACE", "url": "https://example.com"}))
+
+    def test_http_request_rejects_bad_headers_json(self):
+        executor = self.tools.ToolExecutor("cli:local", profile="safe", workspace=self.home)
+        self.assertIn("ERROR", executor.run("http_request", {"method": "GET", "url": "https://example.com", "headers": "{not json"}))
+
+    def test_system_env_reports_environment_without_secrets(self):
+        executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        result = executor.run("system_env", {})
+        self.assertIn("OS", result)
+        self.assertIn("Python", result)
+        self.assertIn("Tool terpasang", result)
+
+    def test_download_file_is_workspace_gated_and_ssrf_protected(self):
+        # safe profile TIDAK boleh punya download_file (nulis ke disk)
+        safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        self.assertNotIn("download_file", {item["function"]["name"] for item in safe.schemas})
+        # workspace profile punya, tapi SSRF + path escape diblokir
+        workspace = self.home / "dl-ws"
+        workspace.mkdir(parents=True)
+        executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=workspace)
+        self.assertIn("diblokir", executor.run("download_file", {"url": "http://169.254.169.254/x", "path": "meta.txt"}))
+        self.assertIn("workspace", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
+        self.assertFalse((self.home / "escape.txt").exists())
+
     def test_workspace_profile_blocks_path_escape(self):
         workspace = self.home / "workspace"
         workspace.mkdir(parents=True)
