@@ -196,6 +196,8 @@ class Zeline:
         self,
         user_input: str,
         on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+        on_tool_result: Callable[[str, dict[str, Any], str], None] | None = None,
+        on_iteration: Callable[[int, int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         take_steer: Callable[[], str | None] | None = None,
     ) -> str:
@@ -206,9 +208,11 @@ class Zeline:
             return "Pesan terlalu panjang (maksimum 16.000 karakter)."
         self.messages.append({"role": "user", "content": text})
 
-        for _ in range(config.MAX_TOOL_ROUNDS):
+        for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
                 return "Stopped."
+            if on_iteration:
+                on_iteration(iteration, config.MAX_TOOL_ROUNDS)
             message = self._call_llm()
             if should_stop and should_stop():
                 return "Stopped."
@@ -242,6 +246,8 @@ class Zeline:
                 if on_tool:
                     on_tool(name, args)
                 result = self.executor.run(name, args)
+                if on_tool_result:
+                    on_tool_result(name, args, result)
                 steer_text = take_steer() if take_steer else None
                 if steer_text:
                     result += f"\n\n[User steering — follow this guidance now: {steer_text}]"

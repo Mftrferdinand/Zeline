@@ -78,6 +78,33 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(second_payload["messages"][-1]["tool_call_id"], "call-memory-1")
         self.assertIn("User suka teh", agent.executor.memory.formatted())
 
+    def test_agent_reports_real_iteration_and_tool_result_events(self):
+        first = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "call-memory-event", "type": "function",
+                    "function": {"name": "add_memory", "arguments": '{"fact":"event nyata"}'},
+                }],
+            }}],
+        }
+        second = {"choices": [{"message": {"role": "assistant", "content": "selesai"}}]}
+        agent = self.agent_module.Zeline(identity="telegram:event", tool_profile="safe")
+        iterations, results = [], []
+
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(first), FakeResponse(second)]):
+            reply = agent.send(
+                "kerjakan",
+                on_iteration=lambda current, maximum: iterations.append((current, maximum)),
+                on_tool_result=lambda name, args, result: results.append((name, args, result)),
+            )
+
+        self.assertEqual(reply, "selesai")
+        self.assertEqual(iterations, [(1, self.agent_module.config.MAX_TOOL_ROUNDS), (2, self.agent_module.config.MAX_TOOL_ROUNDS)])
+        self.assertEqual(results[0][0], "add_memory")
+        self.assertEqual(results[0][1], {"fact": "event nyata"})
+        self.assertIn("disimpan", results[0][2])
+
     def test_safe_agent_never_advertises_shell_tool_to_provider(self):
         final = {"choices": [{"message": {"role": "assistant", "content": "Halo."}}]}
         agent = self.agent_module.Zeline(identity="telegram:999", tool_profile="safe")

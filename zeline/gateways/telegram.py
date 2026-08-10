@@ -15,6 +15,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -32,6 +33,9 @@ SUPPORTED_TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".json", ".csv", ".log"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 MAX_ARCHIVE_ENTRIES = 512
 MAX_ARCHIVE_TEXT_BYTES = 256 * 1024
+REPOSITORY_FILE = config.DATA_DIR / "repository.md"
+REPOSITORY_HEADER = "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n"
+_URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 
 
 def _telegram_commands() -> list[dict[str, str]]:
@@ -40,6 +44,11 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "start", "description": "Start Zeline"},
         {"command": "model", "description": "Switch model"},
         {"command": "status", "description": "Show runtime status"},
+        {"command": "repository", "description": "Download repository archive"},
+        {"command": "savetask", "description": "Save the current task"},
+        {"command": "updatetask", "description": "Update task by project or link"},
+        {"command": "completedtask", "description": "Mark task as finished"},
+        {"command": "deletetask", "description": "Delete task by project or link"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
         {"command": "steer", "description": "Steer the active turn"},
@@ -51,29 +60,10 @@ def _tool_names_for_profile(profile: str) -> list[str]:
     return [definition.name for definition in TOOL_DEFS if profile in definition.profiles]
 
 
-def _macos_terminal_card(command: str) -> str:
-    """Render macOS-style terminal; Bash centered by exact character width."""
-    lines = command.splitlines() or [""]
-    longest = max((len(line) for line in lines), default=0)
-    width = min(54, max(34, longest + 4))
-    if width % 2:
-        width += 1
-    title = "Bash"
-    left = (width - len(title)) // 2
-    header = f"{'●  ●  ●':<{left}}{title}".ljust(width)
-    rule = "─" * width
-    body = []
-    for index, line in enumerate(lines):
-        prefix = "$ " if index == 0 else "> "
-        available = max(1, width - len(prefix))
-        while len(line) > available:
-            body.append(prefix + line[:available])
-            line = line[available:]
-            prefix = "  "
-            available = width - len(prefix)
-        body.append(prefix + line)
-    raw = "\n".join((rule, header, rule, *body, rule))
-    return f"🖥️ Zeline Terminal\n<pre>{html.escape(raw, quote=False)}</pre>"
+def _terminal_progress(command: str) -> str:
+    """Hermes-style terminal preview with Zeline's monitor/title treatment."""
+    escaped = html.escape(command.strip()[:1500], quote=False)
+    return f"🖥️ Zeline Terminal\n<pre>{escaped}</pre>"
 
 
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
@@ -81,11 +71,19 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "load_skill":
         return f"📚 Reading skill {html.escape(str(arguments.get('name', ''))[:100])}"
     if name == "run_shell":
-        command = str(arguments.get("command", "")).strip()[:1500]
-        return _macos_terminal_card(command)
+        return _terminal_progress(str(arguments.get("command", "")))
+    if name == "execute_code":
+        code = str(arguments.get("code", "")).strip()
+        first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
+        return f"🐍 Running code from <code>{first}</code>..."
+    if name == "update_skill":
+        skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
+        return f"📝 Updating skill <code>{skill_name}</code>"
     path = html.escape(str(arguments.get("path", ""))[:300], quote=False)
     if name == "read_file":
-        return f"📖 Reading <code>{path}</code>"
+        offset = max(1, int(arguments.get("offset", 1) or 1))
+        limit = max(1, int(arguments.get("limit", 500) or 500))
+        return f"📖 Reading <code>{path}</code> L{offset}-{offset + limit - 1}"
     if name == "write_file":
         return f"✍️ Writing <code>{path}</code>"
     if name == "edit_file":
@@ -94,7 +92,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return f"🩹 Patching <code>{path}</code>"
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
-        return f"🔍 Searching files\n<code>{query}</code>"
+        return f"🔎 Searching files for <code>{query}</code>"
     if name == "update_task":
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
         task = html.escape(str(arguments.get("task", ""))[:300], quote=False)
@@ -105,18 +103,43 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     return f"🔧 {html.escape(name)}" + (f"\n<code>{preview}</code>" if preview else "")
 
 
-def _working_status_text(elapsed_seconds: float) -> str:
+def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
+    """Render hanya hasil nyata yang bernilai sebagai progress terpisah."""
+    if name == "update_skill" and not result.startswith("ERROR"):
+        return f"📒 Self-improvement review: {html.escape(result[:1000], quote=False)}"
+    return None
+
+
+def _working_status_text(elapsed_seconds: float, *, iteration: int | None = None, maximum: int | None = None) -> str:
     minutes = max(1, int(elapsed_seconds // 60))
-    return f"⏳ Working — {minutes} min — waiting for provider response"
+    if iteration is None or maximum is None:
+        return f"⏳ Working — {minutes} min — waiting for provider response"
+    slow = "provider is slow; " if elapsed_seconds >= 300 else ""
+    return f"⏳ Working — {minutes} min — iteration {iteration}/{maximum}, {slow}waiting for response"
 
 
-def _start_working_heartbeat(api: str, chat_id: int, done: threading.Event, *, interval: float = 60.0) -> threading.Thread:
+def _start_working_heartbeat(
+    api: str,
+    chat_id: int,
+    done: threading.Event,
+    *,
+    interval: float = 60.0,
+    progress: dict[str, int] | None = None,
+) -> threading.Thread:
     """Kirim status berkala tanpa menghalangi turn agent."""
     started = time.monotonic()
 
     def heartbeat() -> None:
         while not done.wait(interval):
-            _api_call(api, "sendMessage", chat_id=chat_id, text=_working_status_text(time.monotonic() - started))
+            state = dict(progress or {})
+            _api_call(
+                api, "sendMessage", chat_id=chat_id,
+                text=_working_status_text(
+                    time.monotonic() - started,
+                    iteration=state.get("iteration"),
+                    maximum=state.get("maximum"),
+                ),
+            )
 
     worker = threading.Thread(target=heartbeat, name=f"zeline-heartbeat-{chat_id}", daemon=True)
     worker.start()
@@ -209,6 +232,127 @@ def _discover_models() -> list[str]:
         return [config.MODEL] if config.MODEL else []
 
 
+def _provider_label() -> str:
+    """Nama provider aman untuk status; tidak pernah menampilkan credential."""
+    provider = config.stored_config_copy().get("provider", {})
+    name = str(provider.get("name", "")).strip()
+    return name or (urlparse(config.BASE_URL).hostname or "unknown")
+
+
+def _new_session_text() -> str:
+    return (
+        "🌟 Session reset! Starting fresh.\n"
+        f"✦ Model : {config.MODEL}\n"
+        f"✦ Provider : {_provider_label()}\n"
+        "✦ Context : 0 tokens\n"
+        f"✦ Endpoint : {config.BASE_URL}\n"
+        "✦ Tip : Use /status to check this session."
+    )
+
+
+def _ensure_repository() -> Path:
+    REPOSITORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not REPOSITORY_FILE.exists():
+        REPOSITORY_FILE.write_text(REPOSITORY_HEADER, encoding="utf-8")
+    return REPOSITORY_FILE
+
+
+def _short_task_title(raw: str) -> str:
+    clean = re.sub(r"\s+", " ", raw).strip(" .-|#")
+    if not clean or clean.lower() == "new session":
+        return "Untitled Task"
+    return " ".join(clean.split()[:4]).title()[:60].replace("|", "-")
+
+
+def _task_link(messages: list[str], chat_id: int, message_id: int) -> tuple[str, str]:
+    for text in reversed(messages):
+        match = _URL_RE.search(text)
+        if match:
+            url = match.group(0).rstrip(".,;:!?")
+            return urlparse(url).netloc or url, url
+    return "Telegram message", f"tg://openmessage?user_id={chat_id}&message_id={message_id}"
+
+
+def _task_row(snapshot: dict[str, object], chat_id: int, message_id: int) -> str:
+    title = _short_task_title(str(snapshot.get("title") or ""))
+    raw_messages = snapshot.get("messages", [])
+    messages = [str(item) for item in raw_messages] if isinstance(raw_messages, list) else []
+    label, url = _task_link(messages, chat_id, message_id)
+    return f"| 🟡 | {title} | [{label}]({url}) |\n"
+
+
+def _repository_rows() -> tuple[Path, list[str]]:
+    path = _ensure_repository()
+    rows = [line + "\n" for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("| 🟡 |") or line.startswith("| 🟢 |")]
+    return path, rows
+
+
+def _write_repository_rows(path: Path, rows: list[str]) -> None:
+    path.write_text(REPOSITORY_HEADER + "".join(rows), encoding="utf-8")
+
+
+def _matching_row_indexes(rows: list[str], query: str) -> list[int]:
+    needle = query.casefold().strip()
+    return [index for index, row in enumerate(rows) if needle and needle in row.casefold()]
+
+
+def _save_task(snapshot: dict[str, object] | None, chat_id: int, message_id: int) -> str:
+    if not snapshot:
+        return "no_task"
+    path, rows = _repository_rows()
+    row = _task_row(snapshot, chat_id, message_id)
+    # Save hanya untuk entri pertama: nama atau URL yang sama dianggap duplikat.
+    title = row.split("|", 4)[2].strip().casefold()
+    url_match = re.search(r"\]\(([^)]+)\)", row)
+    url = url_match.group(1).casefold() if url_match else ""
+    if any(title in existing.casefold() or (url and url in existing.casefold()) for existing in rows):
+        return "duplicate"
+    rows.append(row)
+    _write_repository_rows(path, rows)
+    return "saved"
+
+
+def _update_task(query: str, snapshot: dict[str, object] | None, chat_id: int, message_id: int) -> str:
+    if not snapshot:
+        return "no_task"
+    path, rows = _repository_rows()
+    matches = _matching_row_indexes(rows, query)
+    if not matches:
+        return "not_found"
+    if len(matches) > 1:
+        return "ambiguous"
+    rows[matches[0]] = _task_row(snapshot, chat_id, message_id)
+    _write_repository_rows(path, rows)
+    return "updated"
+
+
+def _delete_task(query: str) -> str:
+    path, rows = _repository_rows()
+    matches = _matching_row_indexes(rows, query)
+    if not matches:
+        return "not_found"
+    if len(matches) > 1:
+        return "ambiguous"
+    rows.pop(matches[0])
+    _write_repository_rows(path, rows)
+    return "deleted"
+
+
+def _complete_task(query: str) -> str:
+    path, rows = _repository_rows()
+    matches = _matching_row_indexes(rows, query)
+    if not matches:
+        return "not_found"
+    if len(matches) > 1:
+        return "ambiguous"
+    index = matches[0]
+    if rows[index].startswith("| 🟢 |"):
+        return "already_completed"
+    rows[index] = rows[index].replace("| 🟡 |", "| 🟢 |", 1)
+    _write_repository_rows(path, rows)
+    return "completed"
+
+
 def _handle_command_update(
     api: str,
     text: str,
@@ -218,6 +362,7 @@ def _handle_command_update(
     *,
     stop_event,
     tool_profile: str,
+    message_id: int = 0,
 ) -> bool:
     """Handle command yang perlu payload Telegram selain teks biasa."""
     command, _, args = text.partition(" ")
@@ -239,17 +384,70 @@ def _handle_command_update(
         _api_call(
             api, "sendMessage", chat_id=chat_id,
             text=(
-                "📊 Zeline Gateway Status\n\n"
-                f"Session ID: {status['session_id']}\n"
-                f"Title: {status['title']}\n"
-                f"Created: {status['created']}\n"
-                f"Last Activity: {status['last_activity']}\n"
-                f"Model: {status['model']}\n"
-                f"Context: {status['context']}\n"
-                f"Agent Running: {'Yes' if status['agent_running'] else 'No'}\n\n"
-                "Connected Platforms: Telegram"
-            ),
+                "╭─ <b>Zeline Gateway Status</b>\n"
+                f"├ Session ID : <code>{html.escape(str(status['session_id']))}</code>\n"
+                f"├ Provider : <code>{html.escape(_provider_label())}</code>\n"
+                f"├ Model : <code>{html.escape(str(status['model']))}</code>\n"
+                f"├ Title : {html.escape(str(status['title']))}\n"
+                f"├ Context : {html.escape(str(status['context']))}\n"
+                f"├ Agent Running : {'Yes' if status['agent_running'] else 'No'}\n"
+                "├ Platform : Telegram\n"
+                "╰───────────────"
+            ), parse_mode="HTML",
         )
+        return True
+    if command == "/repository":
+        repository = _ensure_repository()
+        if not _send_document(api, chat_id, repository):
+            _api_call(api, "sendMessage", chat_id=chat_id, text="Gagal mengirim repository archive.")
+        return True
+    if command == "/savetask":
+        snapshot = sessions.task_snapshot(identity)
+        result = _save_task(snapshot, chat_id, message_id)
+        reply = {
+            "saved": "Task saved to repository.md.",
+            "duplicate": "Task already exists. Use /updatetask <project or link>.",
+            "no_task": "No task to save. Start a task first.",
+        }[result]
+        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
+        return True
+    if command == "/updatetask":
+        if not args:
+            reply = "Usage: /updatetask <project or link>"
+        else:
+            result = _update_task(args, sessions.task_snapshot(identity), chat_id, message_id)
+            reply = {
+                "updated": "Task updated in repository.md.",
+                "not_found": "Task not found. Mention its project name or link.",
+                "ambiguous": "Multiple tasks matched. Use a more specific project name or link.",
+                "no_task": "No current task data available for the update.",
+            }[result]
+        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
+        return True
+    if command == "/completedtask":
+        if not args:
+            reply = "Usage: /completedtask <project or link>"
+        else:
+            result = _complete_task(args)
+            reply = {
+                "completed": "Task marked as finished in repository.md.",
+                "already_completed": "Task is already marked as finished.",
+                "not_found": "Task not found. Mention its project name or link.",
+                "ambiguous": "Multiple tasks matched. Use a more specific project name or link.",
+            }[result]
+        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
+        return True
+    if command == "/deletetask":
+        if not args:
+            reply = "Usage: /deletetask <project or link>"
+        else:
+            result = _delete_task(args)
+            reply = {
+                "deleted": "Task deleted from repository.md.",
+                "not_found": "Task not found. Mention its project name or link.",
+                "ambiguous": "Multiple tasks matched. Use a more specific project name or link.",
+            }[result]
+        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
         return True
     if command == "/model" and not args.strip():
         providers = _configured_providers()
@@ -257,14 +455,16 @@ def _handle_command_update(
         _api_call(api, "sendMessage", chat_id=chat_id, text=picker_text, reply_markup=markup)
         return True
     if command == "/stop":
+        status = sessions.status(identity)
         stopped = sessions.stop(identity)
-        reply = "Stopped the active turn." if stopped else "No active turn to stop."
+        title = str(status.get("title") or "Active task").strip()
+        reply = f"❄️ {title}" if stopped else "No active task to stop."
         _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
         return True
     if command == "/new":
         sessions.stop(identity)
         sessions.reset(identity)
-        _api_call(api, "sendMessage", chat_id=chat_id, text="New session started.")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=_new_session_text())
         return True
     if command == "/steer":
         if not args:
@@ -401,6 +601,22 @@ def _api_call(api: str, method: str, *, timeout: int = 65, **params: Any) -> dic
     except (requests.RequestException, ValueError) as exc:
         print(f"  [telegram] {method} gagal: {exc.__class__.__name__}", flush=True)
     return None
+
+
+def _send_document(api: str, chat_id: int, path: Path) -> bool:
+    """Kirim dokumen Telegram tanpa caption atau pesan teks kedua."""
+    try:
+        with path.open("rb") as document:
+            response = requests.post(
+                f"{api}/sendDocument",
+                data={"chat_id": str(chat_id)},
+                files={"document": (path.name, document, "text/markdown")},
+                timeout=65,
+            )
+        payload = response.json()
+        return bool(response.ok and payload.get("ok"))
+    except (OSError, requests.RequestException, ValueError):
+        return False
 
 
 def _split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -567,7 +783,8 @@ def _build_document_prompt(filename: str, file_text: str, caption: str = "") -> 
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
     done = threading.Event()
-    heartbeat = _start_working_heartbeat(api, chat_id, done)
+    progress: dict[str, int] = {}
+    heartbeat = _start_working_heartbeat(api, chat_id, done, progress=progress)
 
     def on_tool(_name, _args):
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
@@ -576,12 +793,22 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             text=_tool_progress_text(_name, _args), parse_mode="HTML",
         )
 
+    def on_tool_result(_name, _args, result):
+        result_text = _tool_result_text(_name, _args, result)
+        if result_text:
+            _api_call(api, "sendMessage", chat_id=chat_id, text=result_text, parse_mode="HTML")
+
+    def on_iteration(current, maximum):
+        progress.update(iteration=current, maximum=maximum)
+
     try:
         reply = sessions.send(
             identity=identity,
             text=text,
             tool_profile=tool_profile,
             on_tool=on_tool,
+            on_tool_result=on_tool_result,
+            on_iteration=on_iteration,
         )
     except ZelineError as exc:
         reply = f"Maaf, Zeline sedang bermasalah: {exc}"
@@ -693,6 +920,7 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                         handled = _handle_command_update(
                             api, text, sessions, identity, chat_id_int,
                             stop_event=stop_event, tool_profile=tool_profile,
+                            message_id=int(message.get("message_id") or 0),
                         )
                         if not handled:
                             command_reply = _handle_command(text, sessions, identity, stop_event=stop_event)

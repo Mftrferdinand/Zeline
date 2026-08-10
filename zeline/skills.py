@@ -173,6 +173,25 @@ def save_skill(name: str, content: str) -> str:
     return f"OK, skill private '{normalized}' disimpan."
 
 
+def update_skill(name: str, old_text: str, new_text: str) -> str:
+    """Patch satu bagian unik skill private milik operator."""
+    _ensure_dirs()
+    try:
+        normalized = _safe_name(name)
+    except ValueError as exc:
+        return f"ERROR skill: {exc}"
+    target = PRIVATE_SKILLS_DIR / f"{normalized}.md"
+    if not target.is_file():
+        return f"ERROR: skill private '{normalized}' tidak ditemukan."
+    content = target.read_text(encoding="utf-8")
+    count = content.count(old_text)
+    if count != 1:
+        return f"ERROR update skill: old_text harus unik (ditemukan {count})."
+    target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+    _chmod_private(target, 0o600)
+    return f"Patched SKILL.md in skill '{normalized}' (1 replacement)."
+
+
 def skills_block(include_private: bool = False) -> str:
     """Daftar token-cheap untuk system prompt sesuai otorisasi session."""
     available = list_skill_entries(include_private=include_private)

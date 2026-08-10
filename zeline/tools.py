@@ -164,6 +164,25 @@ def _run_shell(command: str, workspace: Path) -> str:
         return f"ERROR jalankan perintah: {exc}"
 
 
+def _execute_code(code: str, workspace: Path) -> str:
+    """Jalankan snippet Python owner-only tanpa interpolasi shell."""
+    if len(code) > 100_000:
+        return "ERROR: kode terlalu panjang (maksimum 100.000 karakter)."
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [os.environ.get("PYTHON", "python"), "-c", code],
+            cwd=str(workspace), capture_output=True, text=True, timeout=60,
+            env={**os.environ},
+        )
+        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(tidak ada output)"
+        return f"exit={result.returncode}\n{output[:12_000]}"
+    except subprocess.TimeoutExpired:
+        return "ERROR: kode timeout (>60 detik)"
+    except Exception as exc:
+        return f"ERROR jalankan kode: {exc}"
+
+
 WEB_TIMEOUT = 20
 WEB_MAX_BYTES = 200_000
 WEB_MAX_RESULTS = 5
@@ -417,6 +436,18 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"full"}),
     ),
     ToolDef(
+        "update_skill",
+        "Patch satu bagian unik pada skill private milik operator.",
+        {"type": "object", "properties": {"name": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["name", "old_text", "new_text"]},
+        frozenset({"full"}),
+    ),
+    ToolDef(
+        "execute_code",
+        "Jalankan snippet Python di workspace operator dan kembalikan output nyata.",
+        {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+        frozenset({"full"}),
+    ),
+    ToolDef(
         "run_shell",
         "Jalankan perintah shell di workspace pemilik. Hanya untuk operator lokal yang berwenang.",
         {
@@ -456,6 +487,8 @@ class ToolExecutor:
             "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
             "update_task": _update_task,
             "save_skill": skills.save_skill,
+            "update_skill": skills.update_skill,
+            "execute_code": lambda code: _execute_code(code, self.workspace),
             "run_shell": lambda command: _run_shell(command, self.workspace),
         }
 
