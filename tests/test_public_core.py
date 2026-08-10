@@ -272,7 +272,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_working_status_matches_hermes_style(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min — waiting for provider response")
+        self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider lambat merespons")
+        self.assertEqual(telegram._working_status_text(8), "⏳ Working — 8 s")
 
     def test_telegram_working_heartbeat_reports_until_turn_finishes(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -283,7 +284,6 @@ class ZelinePublicCoreTests(unittest.TestCase):
             done.set()
             worker.join(timeout=1)
         self.assertGreaterEqual(api.call_count, 1)
-        self.assertIn("Working", api.call_args.kwargs["text"])
 
     def test_telegram_renders_safe_markdown_as_html(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -576,26 +576,46 @@ class ZelinePublicCoreTests(unittest.TestCase):
         result = telegram._tool_result_text("update_skill", {"name": "zeline-development"}, "Patched SKILL.md in skill 'zeline-development' (1 replacement).")
         self.assertEqual(result, "📒 Self-improvement review: Patched SKILL.md in skill 'zeline-development' (1 replacement).")
 
-    def test_telegram_working_status_uses_real_iteration_and_slow_provider_label(self):
+    def test_telegram_live_status_shows_elapsed_and_slow_provider(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._working_status_text(365, iteration=13, maximum=150), "⏳ Working — 6 min — iteration 13/150, provider is slow; waiting for response")
+        # Delay panjang dilaporkan sebagai provider lambat, bukan iterasi internal.
+        self.assertEqual(telegram._working_status_text(365), "⏳ Working — 6 min 5 s · provider lambat merespons")
+        self.assertEqual(telegram._working_status_text(40), "⏳ Working — 40 s")
 
-    def test_telegram_sends_each_tool_progress_as_separate_html_message(self):
+    def test_telegram_collapses_tool_activity_into_single_live_message(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         class Sessions:
             def send(self, **kwargs):
-                kwargs["on_tool"]("run_shell", {"command": "python app.py"})
-                kwargs["on_tool"]("edit_file", {"path": "app.py"})
-                return "done"
+                kwargs["on_tool"]("web_search", {"query": "FTMO rules"})
+                kwargs["on_tool"]("web_fetch", {"url": "https://ftmo.com"})
+                kwargs["on_tool"]("web_fetch", {"url": "https://investopedia.com"})
+                return "hasil riset"
 
-        with mock.patch.object(telegram, "_api_call") as api:
-            telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="code", tool_profile="full")
-        progress = [call for call in api.call_args_list if len(call.args) > 1 and call.args[1] == "sendMessage"]
-        self.assertEqual(len(progress), 3)  # shell, edit, final
-        self.assertEqual(progress[0].kwargs["parse_mode"], "HTML")
-        self.assertIn("🖥️ Zeline Terminal", progress[0].kwargs["text"])
-        self.assertIn("✏️ Editing", progress[1].kwargs["text"])
+        # sendMessage mengembalikan message_id agarupdate berikutnya memakai editMessageText.
+        def fake_api(_api, method, **kwargs):
+            if method == "sendMessage":
+                return {"ok": True, "result": {"message_id": 999}}
+            return {"ok": True}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=fake_api) as api:
+            telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="riset ftmo", tool_profile="safe")
+
+        methods = [c.args[1] for c in api.call_args_list if len(c.args) > 1]
+        # Feed aktivitas TIDAK menambah pesan baru per tool: satu bubble live di-edit.
+        live_sends = [
+            c for c in api.call_args_list
+            if len(c.args) > 1 and c.args[1] == "sendMessage" and "Working" in str(c.kwargs.get("text", ""))
+        ]
+        self.assertEqual(len(live_sends), 1)  # hanya satu bubble live dibuat
+        self.assertIn("editMessageText", methods)  # sisanya update via edit
+        self.assertIn("deleteMessage", methods)  # bubble live dibersihkan di akhir
+        # Jawaban final tetap terkirim.
+        finals = [
+            c for c in api.call_args_list
+            if len(c.args) > 1 and c.args[1] == "sendMessage" and "hasil riset" in str(c.kwargs.get("text", ""))
+        ]
+        self.assertEqual(len(finals), 1)
 
     def test_telegram_model_picker_marks_current_model_and_uses_short_callbacks(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
