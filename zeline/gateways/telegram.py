@@ -237,7 +237,14 @@ class _LiveStatus:
             header = "⏳ Processing..."
         return header + feed
 
-    def _push_locked(self, force: bool = False) -> None:
+    def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
+        # Bubble progres HANYA dibuat saat ada aktivitas tool nyata (search/coding/
+        # fetch). Selama sekadar menunggu respons LLM, jangan pernah membuat bubble
+        # baru — indikator 'typing…' native Telegram sudah cukup. Ini mencegah
+        # (a) 'Processing' muncul di pertanyaan ringan tanpa tool, dan
+        # (b) bubble muncul lalu hilang ketika finalize tidak menemukan aktivitas.
+        if self.message_id is None and not allow_create:
+            return
         text = self._render()
         if text == self._last_text and not force:
             return
@@ -256,10 +263,17 @@ class _LiveStatus:
             )
 
     def set_waiting(self) -> None:
-        """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir)."""
+        """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir).
+
+        Fase menunggu TIDAK pernah membuat bubble baru — kalau bubble sudah ada
+        (karena tool sempat jalan), header-nya di-refresh; kalau belum ada,
+        dibiarkan kosong supaya pertanyaan ringan tanpa tool tidak memunculkan
+        'Processing'.
+        """
         with self._lock:
             self.phase = "waiting"
             self.phase_started = time.monotonic()
+            self._push_locked(allow_create=False)
 
     def add(self, line: str) -> None:
         line = line.strip()
@@ -280,11 +294,14 @@ class _LiveStatus:
                     self.lines.append(line)
             elif not self.lines or self.lines[-1] != line:
                 self.lines.append(line)
-            self._push_locked()
+            # Ada aktivitas tool nyata → di sinilah bubble progres boleh dibuat.
+            self._push_locked(allow_create=True)
 
     def tick(self) -> None:
+        # Heartbeat hanya me-refresh bubble yang SUDAH ada; tidak pernah membuat
+        # bubble baru saat cuma menunggu LLM.
         with self._lock:
-            self._push_locked()
+            self._push_locked(allow_create=False)
 
     def finalize(self) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.

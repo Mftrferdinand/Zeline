@@ -214,8 +214,10 @@ class ZelineCliTests(unittest.TestCase):
         cfg["gateway_setup_complete"] = True
         cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
         self.config.save_config(cfg)
-        # Menu flow: 'a' (add) -> base_url, name, model -> 'q' (quit)
-        with mock.patch("builtins.input", side_effect=["a", "https://api.example/v1", "My Provider", "research-model", "q"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
+        # Arrow-menu fallback (non-TTY) pakai nomor. Tanpa provider tersimpan,
+        # menu = [1]Add [2]Remove [3]Cancel. Pilih 1 (Add) -> isi provider.
+        # Setelah add ada 1 provider: menu = [1]MyProvider [2]Add [3]Remove [4]Cancel -> 4.
+        with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("ditambahkan", result)
@@ -240,8 +242,10 @@ class ZelineCliTests(unittest.TestCase):
         cfg["provider"] = dict(active)
         cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
         self.config.save_config(cfg)
-        # Menu flow: 'r' (remove) -> pick 2 (Beta, non-active) -> 'q'
-        with mock.patch("builtins.input", side_effect=["r", "2", "q"]):
+        # Menu awal = [1]Alpha [2]Beta [3]Add [4]Remove [5]Cancel.
+        # 4 (Remove) -> 2 (Beta, non-aktif). Setelah hapus tinggal Alpha:
+        # menu = [1]Alpha [2]Add [3]Remove [4]Cancel -> 4 (Cancel).
+        with mock.patch("builtins.input", side_effect=["4", "2", "4"]):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("dihapus", result)
@@ -258,8 +262,9 @@ class ZelineCliTests(unittest.TestCase):
         cfg["provider"] = dict(active)
         cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
         self.config.save_config(cfg)
-        # Try to remove #1 (Alpha, active) -> refused
-        with mock.patch("builtins.input", side_effect=["r", "1", "q"]):
+        # Menu = [1]Alpha [2]Beta [3]Add [4]Remove [5]Cancel.
+        # Pilih 4 (Remove) -> 1 (Alpha, aktif) -> ditolak -> 5 (Cancel).
+        with mock.patch("builtins.input", side_effect=["4", "1", "5"]):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("aktif", result.lower())

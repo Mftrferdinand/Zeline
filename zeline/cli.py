@@ -157,15 +157,14 @@ def _choose_model(models: list[str], default: str = "") -> str:
             if selected:
                 return selected
             print("  Model ID wajib diisi karena provider tidak menyediakan daftar model.")
-    print("  Model tersedia:")
-    for index, model in enumerate(models, 1):
-        marker = " (aktif)" if model == default else ""
-        print(f"    {index:>2}. {model}{marker}")
-    while True:
-        choice = input(f"Pilih model [1-{len(models)}]: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(models):
-            return models[int(choice) - 1]
-        print("  Pilihan tidak valid.")
+    # Picker cursor panah; default disorot lebih dulu. Fallback nomor di non-TTY.
+    labels = [f"{model}{'  (aktif)' if model == default else ''}" for model in models]
+    start = next((i for i, m in enumerate(models) if m == default), 0)
+    choice = _arrow_menu("Pilih model:", labels, start=start)
+    if choice == -1:
+        # Batal = pertahankan model default kalau ada, else item pertama.
+        return default or models[0]
+    return models[choice]
 
 
 def _configure_provider(provider: dict[str, Any]) -> None:
@@ -216,6 +215,11 @@ def _read_menu_key() -> str:
             return "up"
         if second == "[" and third == "B":
             return "down"
+        # ESC ditekan sendiri (tanpa sekuens panah) = batal.
+        if second == "" and third == "":
+            return "cancel"
+    if char in {"q", "Q"}:
+        return "cancel"
     return ""
 
 
@@ -409,47 +413,94 @@ def _model_remove_provider(cfg: dict[str, Any]) -> None:
     print(f"  ✓ Provider '{removed.get('name', slug)}' dihapus.")
 
 
+def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
+    """Picker cursor panah ↑/↓ + Enter. Kembalikan index terpilih, -1 bila batal.
+
+    Fallback ke input nomor bila stdin bukan TTY (mis. stdin di-redirect saat tes
+    atau automation). ESC / Ctrl-C = batal (-1).
+    """
+    if not options:
+        return -1
+    if not sys.stdin.isatty():
+        print(title)
+        for index, label in enumerate(options, 1):
+            print(f"  {index}. {label}")
+        while True:
+            answer = input(f"Pilihan [1-{len(options)}] (kosong = batal): ").strip()
+            if not answer:
+                return -1
+            if answer.isdigit() and 1 <= int(answer) <= len(options):
+                return int(answer) - 1
+            print("  Pilihan tidak valid.")
+
+    selected = max(0, min(start, len(options) - 1))
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    print(title + "  (↑/↓ lalu Enter, Esc = batal)")
+    try:
+        tty.setraw(fd)
+        while True:
+            for index, label in enumerate(options):
+                marker = "❯" if index == selected else " "
+                print(f"\r\033[K  {marker} {label}")
+            key = _read_menu_key()
+            if key == "up":
+                selected = (selected - 1) % len(options)
+            elif key == "down":
+                selected = (selected + 1) % len(options)
+            elif key == "enter":
+                return selected
+            elif key == "cancel":
+                return -1
+            print(f"\033[{len(options)}A", end="", flush=True)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        print()
+
+
 def cmd_model() -> int:
-    """Menu provider/model: ganti model, tambah provider, hapus provider."""
+    """Menu provider/model dengan picker cursor panah (↑/↓ + Enter)."""
     if not config.GATEWAY_SETUP_COMPLETE:
         print("[!] Pilih dan siapkan gateway dulu. Jalankan: zeline")
         return 2
     cfg = config.stored_config_copy()
     while True:
-        _print_provider_list(cfg)
-        print(
-            "\n  Aksi:\n"
-            "    [nomor] pilih provider & ganti model\n"
-            "    a       add provider\n"
-            "    r       remove provider\n"
-            "    q       selesai"
-        )
-        action = input("  Pilih: ").strip().lower()
-        if action in {"q", "quit", "exit", ""}:
+        providers = cfg.get("providers", {})
+        slugs = list(providers.keys())
+        active = _active_slug(cfg)
+        # Baris provider + aksi, semua bisa dipilih pakai cursor.
+        rows: list[str] = []
+        for slug in slugs:
+            item = providers[slug]
+            mark = " (aktif)" if slug == active else ""
+            rows.append(f"{item.get('name', slug)} · {item.get('model', '?')}{mark}")
+        idx_add = len(rows)
+        rows.append("➕ Add provider")
+        idx_remove = len(rows)
+        rows.append("🗑  Remove provider")
+        idx_cancel = len(rows)
+        rows.append("✗ Cancel")
+
+        choice = _arrow_menu("Provider & model:", rows)
+        if choice == -1 or choice == idx_cancel:
             print("Selesai.")
             return 0
-        if action == "a":
+        if choice == idx_add:
             _model_add_provider(cfg)
-        elif action == "r":
+        elif choice == idx_remove:
             _model_remove_provider(cfg)
-        elif action.isdigit():
-            slugs = list(cfg.get("providers", {}).keys())
-            if 1 <= int(action) <= len(slugs):
-                slug = slugs[int(action) - 1]
-                provider = copy.deepcopy(cfg["providers"][slug])
-                print(f"  Mengambil daftar model dari {provider.get('name', slug)}…")
-                _protocol, models = _discover_provider_models(str(provider.get("base_url", "")), str(provider.get("api_key", "")))
-                provider["model"] = _choose_model(models, str(provider.get("model", "")))
-                provider["model_verified"] = True
-                cfg["providers"][slug] = copy.deepcopy(provider)
-                cfg["provider"] = copy.deepcopy(provider)
-                cfg["setup_complete"] = True
-                config.save_config(cfg)
-                print(f"  ✓ Aktif: {provider.get('name', slug)} · model {provider['model']}")
-            else:
-                print("  Nomor tidak valid.")
-        else:
-            print("  Aksi tidak dikenal.")
+        elif 0 <= choice < len(slugs):
+            slug = slugs[choice]
+            provider = copy.deepcopy(providers[slug])
+            print(f"  Mengambil daftar model dari {provider.get('name', slug)}…")
+            _protocol, models = _discover_provider_models(str(provider.get("base_url", "")), str(provider.get("api_key", "")))
+            provider["model"] = _choose_model(models, str(provider.get("model", "")))
+            provider["model_verified"] = True
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            cfg["provider"] = copy.deepcopy(provider)
+            cfg["setup_complete"] = True
+            config.save_config(cfg)
+            print(f"  ✓ Aktif: {provider.get('name', slug)} · model {provider['model']}")
         cfg = config.stored_config_copy()
 
 
