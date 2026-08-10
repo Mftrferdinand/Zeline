@@ -10,9 +10,17 @@
 
 # Zeline
 
-**Zeline** is an open-source agentic AI framework: an OpenAI-compatible agent loop with tool calling, persistent memory, on-demand skills, and messaging gateways.
+Zerolinear develops **Zeline** — an open-source agentic AI framework built and maintained by [Mftrferdinand](https://github.com/Mftrferdinand). Zeline is designed as a flexible foundation for building autonomous AI agents that can reason, use tools, interact with external systems, and carry out complex workflows with minimal supervision.
 
-It is developed by **Zerolinear**, an AI research lab based in Majalengka, Indonesia, building intelligent agents that learn, remember, and act. Zerolinear is built by [Mftrferdinand](https://github.com/Mftrferdinand).
+Rather than being tied to a single model, provider, or infrastructure, Zeline is built around flexibility. Connect your preferred AI models and OpenAI-compatible endpoints, configure different providers, integrate tools, and extend the framework around the way you want your agents to work. Models and providers can be changed without rebuilding the entire system, keeping the underlying agent architecture portable and adaptable.
+
+Zeline is built for more than simple conversations. The framework is designed around agents that can take action — working with tools, executing multi-step tasks, interacting with APIs and external services, and operating as persistent systems across different environments. Its modular architecture makes it possible to expand capabilities without turning the core framework into a tightly coupled stack.
+
+Run Zeline locally for development, deploy it to your own server or cloud infrastructure, and connect it to the interfaces you use to interact with your agents. The goal is to keep control in the hands of the developer: your models, your tools, your infrastructure, and your data.
+
+Open-source, model-agnostic, extensible, and developer-first. Zeline is being built as the agentic foundation of Zerolinear — an evolving framework for experimenting with and building capable autonomous AI systems without unnecessary platform lock-in.
+
+Developed by Zerolinear. Built and maintained by Mftrferdinand.
 
 ## What it includes
 
