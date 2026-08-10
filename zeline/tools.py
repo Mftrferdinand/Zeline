@@ -183,7 +183,7 @@ def _execute_code(code: str, workspace: Path) -> str:
         return f"ERROR jalankan kode: {exc}"
 
 
-WEB_TIMEOUT = 20
+WEB_TIMEOUT = 10
 WEB_MAX_BYTES = 200_000
 WEB_MAX_RESULTS = 5
 _UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Mobile Safari/537.36"
@@ -353,38 +353,51 @@ def _search_result_urls(query: str, limit: int = 4) -> list[str]:
 
 
 def _deep_research(query: str) -> str:
-    """Riset multi-sumber: cari, buka beberapa halaman teratas, lalu rangkum
-    poin-poin dari tiap sumber dengan sitasi URL.
+    """Riset multi-sumber: cari, buka beberapa halaman teratas secara paralel,
+    lalu rangkum poin-poin dari tiap sumber dengan sitasi URL.
 
     Berbeda dari ``web_search`` (5 judul mentah) dan ``web_fetch`` (1 URL),
-    tool ini membaca 3-4 sumber sekaligus sehingga model bisa menyintesis
-    jawaban berbukti. Model tetap yang menyusun kesimpulan akhir.
+    tool ini membaca beberapa sumber sekaligus (paralel, jauh lebih cepat)
+    sehingga model bisa menyintesis jawaban berbukti tanpa banyak putaran tool.
     """
     query = query.strip()
     if not query:
         return "ERROR: query kosong."
-    urls = _search_result_urls(query, limit=4)
+    urls = _search_result_urls(query, limit=3)
     if not urls:
         # Fallback: hasil pencarian ringkas bila daftar URL gagal diambil.
         return _web_search(query)
+
+    # Fetch paralel agar tidak menunggu tiap halaman berurutan (yang bikin lama).
+    import concurrent.futures
+
+    bodies: dict[str, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(_web_fetch, url): url for url in urls}
+        for future in concurrent.futures.as_completed(futures, timeout=WEB_TIMEOUT + 5):
+            url = futures[future]
+            try:
+                bodies[url] = future.result()
+            except Exception:
+                bodies[url] = "ERROR"
+
     sections: list[str] = [f"Riset untuk: {query}", ""]
     read = 0
-    for url in urls:
-        body = _web_fetch(url)
+    for url in urls:  # pertahankan urutan relevansi
+        body = bodies.get(url, "ERROR")
         if body.startswith("ERROR") or body.startswith("(halaman"):
             continue
         excerpt = body[:1_800].strip()
         sections.append(f"### Sumber: {url}\n{excerpt}")
         sections.append("")
         read += 1
-        if read >= 3:
-            break
     if read == 0:
         return _web_search(query)
     sections.append(
         "Instruksi: sintesis poin-poin di atas menjadi jawaban ringkas & "
         "berbukti. Sebutkan sumber (URL) untuk klaim penting. Jangan mengarang "
-        "fakta yang tidak ada di sumber."
+        "fakta yang tidak ada di sumber. Jangan panggil tool lagi bila data ini "
+        "sudah cukup menjawab."
     )
     return "\n".join(sections)[:14_000]
 
