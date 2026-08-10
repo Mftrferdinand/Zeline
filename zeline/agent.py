@@ -84,7 +84,7 @@ class Zeline:
             }
         ]
 
-    def _call_llm(self) -> dict[str, Any]:
+    def _call_llm(self, use_tools: bool = True) -> dict[str, Any]:
         if not self.api_key:
             raise ZelineError("API key belum dikonfigurasi. Jalankan `zeline setup`.")
         if not self.base_url or not self.model:
@@ -99,11 +99,12 @@ class Zeline:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": copy.deepcopy(self.messages),
-            "tools": self.executor.schemas,
-            "tool_choice": "auto",
             "temperature": 0.7,
             "stream": False,
         }
+        if use_tools:
+            payload["tools"] = self.executor.schemas
+            payload["tool_choice"] = "auto"
 
         if self.protocol == "anthropic":
             endpoint = f"{self.base_url}/messages"
@@ -136,9 +137,10 @@ class Zeline:
                 "model": self.model,
                 "system": str(self.messages[0].get("content", "")),
                 "messages": messages,
-                "tools": [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in self.executor.schemas],
                 "max_tokens": 4096,
             }
+            if use_tools:
+                payload["tools"] = [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in self.executor.schemas]
 
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
@@ -259,6 +261,44 @@ class Zeline:
                     }
                 )
 
+        # Putaran tool habis. Jangan menyerah tanpa jawaban: paksa satu panggilan
+        # terakhir TANPA tool agar model menyintesis data yang sudah dikumpulkan.
+        answer = self._force_final_answer(should_stop)
         self._trim_history()
-        return "Aku berhenti karena terlalu banyak putaran tool. Coba tugas yang lebih spesifik."
+        return answer
+
+    def _force_final_answer(self, should_stop: Callable[[], bool] | None = None) -> str:
+        """Minta jawaban final tanpa tool setelah batas putaran tercapai.
+
+        Tanpa ini, tugas riset yang butuh banyak fetch akan berakhir dengan
+        pesan 'terlalu banyak putaran' tanpa hasil. Di sini model dipaksa
+        merangkum bukti yang sudah ada menjadi jawaban.
+        """
+        if should_stop and should_stop():
+            return "Stopped."
+        self.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Batas pemakaian tool tercapai. Berdasarkan semua informasi "
+                    "yang sudah kamu kumpulkan sejauh ini, tulis jawaban final "
+                    "terbaik sekarang untuk pertanyaan awalku. Jangan memanggil "
+                    "tool lagi. Kalau ada bagian yang belum sempat diverifikasi, "
+                    "sebutkan singkat, tapi tetap berikan jawaban yang berguna."
+                ),
+            }
+        )
+        try:
+            message = self._call_llm(use_tools=False)
+        except ZelineError:
+            return (
+                "Aku sudah mengumpulkan banyak data tapi butuh lebih banyak "
+                "langkah untuk merampungkannya. Coba persempit pertanyaannya ya."
+            )
+        content = str(message.get("content") or "").strip()
+        self.messages.append({"role": "assistant", "content": content})
+        return content or (
+            "Aku sudah mengumpulkan banyak data tapi belum bisa merangkumnya. "
+            "Coba persempit pertanyaannya ya."
+        )
 

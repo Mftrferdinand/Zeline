@@ -168,6 +168,31 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("secret body", message)
         self.assertNotIn("test-key", message)
 
+    def test_tool_round_limit_forces_final_answer_without_tools(self):
+        # Provider selalu minta tool (tidak pernah berhenti), sampai batas putaran.
+        tool_message = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "call-loop", "type": "function",
+                    "function": {"name": "add_memory", "arguments": '{"fact":"loop"}'},
+                }],
+            }}],
+        }
+        # Panggilan terakhir (tanpa tool) mengembalikan jawaban sintesis.
+        final = {"choices": [{"message": {"role": "assistant", "content": "Ini rangkuman akhir."}}]}
+        agent = self.agent_module.Zeline(identity="telegram:loop", tool_profile="safe")
+        rounds = self.agent_module.config.MAX_TOOL_ROUNDS
+        responses = [FakeResponse(tool_message) for _ in range(rounds)] + [FakeResponse(final)]
+
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=responses) as post:
+            reply = agent.send("riset panjang")
+
+        # Bukan lagi pesan menyerah; model dipaksa menjawab.
+        self.assertEqual(reply, "Ini rangkuman akhir.")
+        # Panggilan terakhir tidak menyertakan daftar tools.
+        self.assertNotIn("tools", post.call_args_list[-1].kwargs["json"])
+
     def test_anthropic_protocol_uses_native_messages_contract(self):
         cfg = importlib.import_module("zeline.config").config_copy()
         cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "anthropic-key", "model": "claude-sonnet"})
