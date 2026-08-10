@@ -61,11 +61,12 @@ def _tool_names_for_profile(profile: str) -> list[str]:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal. Untuk perintah pencarian: tanpa judul 'Zeline Terminal'
-    dan pakai lampu 🟢 (bukan label Bash). Untuk coding: tetap bergaya terminal."""
+    """Preview terminal. Untuk perintah pencarian (web/skill/lokal): header lampu
+    macOS 🔴🟡🟢 (menggantikan label 'Bash'), command langsung di dalam blok
+    terminal, tanpa judul 'Zeline Terminal'. Untuk coding: gaya terminal penuh."""
     escaped = html.escape(command.strip()[:1500], quote=False)
     if search:
-        return f"🟢 <pre>{escaped}</pre>"
+        return f"<pre>🔴🟡🟢\n{escaped}</pre>"
     return f"🖥️ Zeline Terminal\n<pre>{escaped}</pre>"
 
 
