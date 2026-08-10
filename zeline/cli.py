@@ -500,7 +500,9 @@ def cmd_model() -> int:
             cfg["provider"] = copy.deepcopy(provider)
             cfg["setup_complete"] = True
             config.save_config(cfg)
-            print(f"  ✓ Aktif: {provider.get('name', slug)} · model {provider['model']}")
+            active_name = str(provider.get("name", slug))
+            active_model = str(provider["model"])
+            print(f"  ✓ Aktif: {active_name} · model {active_model}")
         cfg = config.stored_config_copy()
 
 
