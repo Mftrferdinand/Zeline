@@ -61,12 +61,15 @@ def _tool_names_for_profile(profile: str) -> list[str]:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal. Untuk perintah pencarian (web/skill/lokal): header lampu
-    macOS 🔴🟡🟢 (menggantikan label 'Bash'), command langsung di dalam blok
-    terminal, tanpa judul 'Zeline Terminal'. Untuk coding: gaya terminal penuh."""
+    """Preview terminal.
+
+    Pencarian (web/skill/lokal): blok terminal biasa (monospace), tanpa emoji
+    dan tanpa judul 'Zeline Terminal' — command langsung di dalam blok. Untuk
+    coding: blok terminal penuh dengan judul.
+    """
     escaped = html.escape(command.strip()[:1500], quote=False)
     if search:
-        return f"<pre>🔴🟡🟢\n{escaped}</pre>"
+        return f"<pre>{escaped}</pre>"
     return f"🖥️ Zeline Terminal\n<pre>{escaped}</pre>"
 
 
@@ -94,6 +97,9 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "update_skill":
         skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
         return f"📝 Updating skill <code>{skill_name}</code>"
+    if name == "save_skill":
+        skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
+        return f"💡 Saving skill <code>{skill_name}</code>"
     path = html.escape(str(arguments.get("path", ""))[:300], quote=False)
     if name == "read_file":
         offset = max(1, int(arguments.get("offset", 1) or 1))
@@ -107,29 +113,59 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return f"🩹 Patching <code>{path}</code>"
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
-        return f"🔎 Searching files for <code>{query}</code>"
+        return f"🔎 Searching {query}"
     if name == "update_task":
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
         task = html.escape(str(arguments.get("task", ""))[:300], quote=False)
         return f"📋 Updating tasks\n<code>{status}</code> · {task}"
     if name == "web_search":
-        return f"🔎 Searching web: {html.escape(str(arguments.get('query', ''))[:120], quote=False)}"
+        # Searching hanya penanda ringkas: subjek utama (kata pertama) + '…'.
+        # Detail lengkap muncul di baris Researching, bukan di sini.
+        query = str(arguments.get("query", "")).strip()
+        subject = html.escape((query.split() or [""])[0][:40], quote=False)
+        return f"🔎 Searching {subject}…" if subject else "🔎 Searching…"
     if name == "web_fetch":
-        # Jangan tampilkan URL mentah ke user — cukup label bersih.
-        return "📖 Membaca sumber web…"
+        # Baca sumber web tidak ditampilkan sebagai baris terpisah (biar bersih).
+        return ""
     if name == "deep_research":
-        return f"🔍 Researching: {html.escape(str(arguments.get('query', ''))[:120], quote=False)}"
+        return f"🔍 Researching {html.escape(str(arguments.get('query', ''))[:100], quote=False)}"
     preview = html.escape(", ".join(f"{key}={str(value)[:80]}" for key, value in arguments.items()), quote=False)
     return f"🔧 {html.escape(name)}" + (f"\n<code>{preview}</code>" if preview else "")
 
 
+def _progress_category(line: str) -> str | None:
+    """Kategori baris feed untuk collapse. None = baris unik (jangan digabung)."""
+    if line.startswith("📚"):
+        return "skill"
+    if line.startswith("🔎"):
+        return "search"
+    if line.startswith("🔍"):
+        return "research"
+    if line.startswith("📖"):
+        return "read"
+    return None
+
+
+# Urutan tampilan tetap agar feed rapi & logis, apa pun urutan model memanggil
+# tool: baca skill → searching → researching → membaca hasil → lainnya.
+_CATEGORY_ORDER = {"skill": 0, "search": 1, "research": 2, "read": 3}
+
+
+def _ordered_lines(lines: list[str]) -> list[str]:
+    """Urutkan baris feed berdasarkan kategori tetap, stabil untuk kategori lain."""
+    def key(item: tuple[int, str]) -> tuple[int, int]:
+        index, line = item
+        category = _progress_category(line)
+        rank = _CATEGORY_ORDER.get(category, 99) if category else 99
+        return (rank, index)
+    return [line for _index, line in sorted(enumerate(lines), key=key)]
+
+
 def _finalize_line(line: str) -> str:
-    """Ubah baris fase-kerja menjadi bentuk 'selesai' (Searching→Reading)."""
+    """Ubah baris fase-kerja menjadi bentuk 'selesai' — semua jadi '📖 Reading'."""
     replacements = (
-        ("🔎 Searching web:", "📖 Reading web:"),
-        ("🔎 Searching files for", "📖 Read files for"),
-        ("🔍 Researching:", "📖 Researched:"),
-        ("📖 Membaca sumber web…", "📖 Sumber web dibaca"),
+        ("🔎 Searching", "📖 Reading"),
+        ("🔍 Researching", "📖 Reading"),
     )
     for old, new in replacements:
         if line.startswith(old):
@@ -139,8 +175,8 @@ def _finalize_line(line: str) -> str:
 
 def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
     """Render hanya hasil nyata yang bernilai sebagai progress terpisah."""
-    if name == "update_skill" and not result.startswith("ERROR"):
-        return f"📒 Self-improvement review: {html.escape(result[:1000], quote=False)}"
+    if name in {"update_skill", "save_skill"} and not result.startswith("ERROR"):
+        return f"📒 Self-improvement: {html.escape(result[:1000], quote=False)}"
     return None
 
 
@@ -188,21 +224,18 @@ class _LiveStatus:
         self._lock = threading.Lock()
 
     def _render(self) -> str:
-        now = time.monotonic()
-        recent = self.lines[-self.max_lines:]
-        feed = ("\n" + "\n".join(recent)) if recent else ""
+        ordered = _ordered_lines(self.lines)[-self.max_lines:]
+        feed = ("\n" + "\n".join(ordered)) if ordered else ""
+        # Header konsisten '⏳ Processing...'. Delay panjang diberi catatan provider.
         if self.phase == "waiting":
-            wait = now - self.phase_started
-            # Diam dulu selama <8s; delay pendek tidak perlu diumumkan.
-            if wait < 8:
-                # Jangan buat bubble kosong kalau belum ada aktivitas.
-                return ("⚙️ Memproses…" + feed) if recent else "⚙️ Memproses…"
-            header = _provider_wait_text(wait, self.model)
-            return header + feed
-        # Fase tool: kalau sudah ada aktivitas, tampilkan feed-nya (tanpa header
-        # waktu). Kalau belum ada baris sama sekali, jangan tampilkan
-        # "Bekerja…" kosong — cukup placeholder ringan.
-        return feed.lstrip("\n") if recent else "⚙️ Memproses…"
+            wait = time.monotonic() - self.phase_started
+            if wait >= 30 and self.model:
+                header = f"⏳ Processing… ({self.model} lambat merespons)"
+            else:
+                header = "⏳ Processing..."
+        else:
+            header = "⏳ Processing..."
+        return header + feed
 
     def _push_locked(self, force: bool = False) -> None:
         text = self._render()
@@ -229,12 +262,23 @@ class _LiveStatus:
             self.phase_started = time.monotonic()
 
     def add(self, line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
         with self._lock:
             self.phase = "tool"
             self.phase_started = time.monotonic()
-            # Dedupe: jangan tampilkan baris identik beruntun (mis. fetch domain
-            # yang sama berulang) agar feed tetap bersih.
-            if not self.lines or self.lines[-1] != line:
+            category = _progress_category(line)
+            if category is not None:
+                # Collapse: cukup SATU baris per kategori (mis. semua Searching
+                # digabung jadi satu baris terbaru), biar feed tidak menumpuk.
+                for index, existing in enumerate(self.lines):
+                    if _progress_category(existing) == category:
+                        self.lines[index] = line
+                        break
+                else:
+                    self.lines.append(line)
+            elif not self.lines or self.lines[-1] != line:
                 self.lines.append(line)
             self._push_locked()
 
@@ -245,10 +289,9 @@ class _LiveStatus:
     def finalize(self) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
 
-        Tidak dihapus (biar user tetap lihat alurnya), tapi header 'Menunggu/
-        Memproses' dibuang dan diberi penanda selesai. Kalau tidak ada aktivitas
-        tool sama sekali (jawaban langsung), bubble dihapus agar tidak menyisakan
-        pesan kosong.
+        Header berubah jadi '⏳ Successful' dan baris fase-kerja jadi bentuk
+        selesai (Searching→Reading). Kalau tidak ada aktivitas tool sama sekali
+        (jawaban langsung), bubble dihapus agar tidak menyisakan pesan kosong.
         """
         with self._lock:
             if self.message_id is None:
@@ -260,8 +303,8 @@ class _LiveStatus:
                 )
                 self.message_id = None
                 return
-            body = "\n".join(_finalize_line(line) for line in self.lines[-self.max_lines:])
-            final = f"⌛️ Selesai\n{body}"
+            body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
+            final = f"⏳ Successful\n{body}"
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=final, parse_mode="HTML",
