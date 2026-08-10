@@ -23,7 +23,7 @@ from typing import Any
 # Default generik untuk OpenAI-compatible provider fresh install.
 # Pengguna tetap memilih model sendiri lewat `zeline setup`.
 DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_MAX_TOOL_ROUNDS = 12
+DEFAULT_MAX_TOOL_ROUNDS = 20
 DEFAULT_MAX_SESSIONS = 100
 
 # ZELINE_HOME membuat test, container, dan beberapa instance terisolasi mudah.
