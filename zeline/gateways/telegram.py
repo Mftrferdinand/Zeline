@@ -164,12 +164,15 @@ class _LiveStatus:
         if self.phase == "waiting":
             wait = now - self.phase_started
             # Diam dulu selama <8s; delay pendek tidak perlu diumumkan.
-            if wait < 8 and not recent:
-                return "⚙️ Memproses…"
-            header = _provider_wait_text(wait, self.model) if wait >= 8 else "⚙️ Memproses…"
+            if wait < 8:
+                # Jangan buat bubble kosong kalau belum ada aktivitas.
+                return ("⚙️ Memproses…" + feed) if recent else "⚙️ Memproses…"
+            header = _provider_wait_text(wait, self.model)
             return header + feed
-        # Fase tool: feed bersih tanpa label Working.
-        return "⚙️ Bekerja…" + feed
+        # Fase tool: kalau sudah ada aktivitas, tampilkan feed-nya (tanpa header
+        # waktu). Kalau belum ada baris sama sekali, jangan tampilkan
+        # "Bekerja…" kosong — cukup placeholder ringan.
+        return feed.lstrip("\n") if recent else "⚙️ Memproses…"
 
     def _push_locked(self, force: bool = False) -> None:
         text = self._render()
@@ -209,8 +212,33 @@ class _LiveStatus:
         with self._lock:
             self._push_locked()
 
+    def finalize(self) -> None:
+        """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
+
+        Tidak dihapus (biar user tetap lihat alurnya), tapi header 'Menunggu/
+        Memproses' dibuang dan diberi penanda selesai. Kalau tidak ada aktivitas
+        tool sama sekali (jawaban langsung), bubble dihapus agar tidak menyisakan
+        pesan kosong.
+        """
+        with self._lock:
+            if self.message_id is None:
+                return
+            if not self.lines:
+                _api_call(
+                    self.api, "deleteMessage",
+                    chat_id=self.chat_id, message_id=self.message_id,
+                )
+                self.message_id = None
+                return
+            body = "\n".join(self.lines[-self.max_lines:])
+            final = f"✅ Selesai\n{body}"
+            _api_call(
+                self.api, "editMessageText", chat_id=self.chat_id,
+                message_id=self.message_id, text=final, parse_mode="HTML",
+            )
+
     def clear(self) -> None:
-        """Hapus pesan status agar tidak menyisakan indikator 'Working'."""
+        """Hapus pesan status. Dipakai bila turn dibatalkan/error tanpa hasil."""
         with self._lock:
             if self.message_id is not None:
                 _api_call(
@@ -956,6 +984,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         # Awal tiap iterasi = mulai menunggu respons provider.
         live.set_waiting()
 
+    ok = False
     try:
         reply = sessions.send(
             identity=identity,
@@ -965,6 +994,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             on_tool_result=on_tool_result,
             on_iteration=on_iteration,
         )
+        ok = True
     except ZelineError as exc:
         reply = f"Maaf, Zeline sedang bermasalah: {exc}"
     except Exception:
@@ -973,7 +1003,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     finally:
         done.set()
         heartbeat.join(timeout=0.2)
-        live.clear()  # buang bubble live sebelum kirim jawaban final
+        if ok:
+            # Kunci bubble progres sebagai catatan alur (tidak dihapus), lalu
+            # kirim jawaban final sebagai pesan baru terpisah.
+            live.finalize()
+        else:
+            live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
     for part in _split_message(reply):
         _api_call(
             api,
