@@ -183,10 +183,16 @@ def _execute_code(code: str, workspace: Path) -> str:
         return f"ERROR jalankan kode: {exc}"
 
 
-WEB_TIMEOUT = 10
+WEB_TIMEOUT = 12
+# (connect, read) tuple — connect di-cap ketat agar tidak menggantung saat
+# host lambat/diblokir; read sedikit lebih longgar untuk halaman besar.
+SEARCH_TIMEOUT = (4, 6)
 WEB_MAX_BYTES = 200_000
 WEB_MAX_RESULTS = 5
-_UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Mobile Safari/537.36"
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+# Reader proxy: cepat & tahan blokir dari jaringan mobile/Termux (DuckDuckGo
+# langsung sering timeout/HTTP 000). Semua pencarian & fetch lewat sini dulu.
+_JINA_READER = "https://r.jina.ai/"
 
 
 def _is_internal_ip(host: str) -> bool:
@@ -224,62 +230,120 @@ def _html_to_text(raw: bytes) -> str:
     return text.strip()
 
 
-def _web_search(query: str) -> str:
-    """Cari web via DuckDuckGo HTML; fallback Google News RSS."""
-    query = query.strip()
-    if not query:
-        return "ERROR: query kosong."
-    try:
-        response = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": _UA},
-            timeout=WEB_TIMEOUT,
-        )
-        if response.ok:
-            results = []
-            for match in re.finditer(
-                r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?(?:result__snippet"[^>]*>(.*?)</a>)?',
-                response.text,
-                re.S,
-            ):
-                url, title, snippet = match.group(1), match.group(2), match.group(3) or ""
-                title = re.sub(r"(?s)<[^>]+>", "", title).strip()
-                snippet = re.sub(r"(?s)<[^>]+>", "", snippet).strip()
-                results.append(f"- {title}\n  {url}\n  {snippet[:300]}")
-                if len(results) >= WEB_MAX_RESULTS:
-                    break
-            if results:
-                return "\n".join(results)
-    except requests.RequestException:
-        pass
-    # Fallback: Google News RSS tanpa API key.
+def _parse_ddg_html(html_text: str) -> list[str]:
+    """Ambil hasil (judul + url + snippet) dari HTML DuckDuckGo."""
+    results: list[str] = []
+    for match in re.finditer(
+        r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?(?:result__snippet"[^>]*>(.*?)</a>)?',
+        html_text,
+        re.S,
+    ):
+        url, title, snippet = match.group(1), match.group(2), match.group(3) or ""
+        title = re.sub(r"(?s)<[^>]+>", "", title).strip()
+        snippet = re.sub(r"(?s)<[^>]+>", "", snippet).strip()
+        if title:
+            results.append(f"- {title}\n  {snippet[:300]}")
+        if len(results) >= WEB_MAX_RESULTS:
+            break
+    return results
+
+
+def _search_gnews(query: str) -> list[tuple[str, str]]:
+    """Google News RSS — paling andal & cepat dari Termux (200, <1s).
+    Kembalikan [(judul, link)]."""
     try:
         response = requests.get(
             "https://news.google.com/rss/search",
-            params={"q": query, "hl": "id", "gl": "ID", "ceid": "ID:id"},
+            params={"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"},
             headers={"User-Agent": _UA},
-            timeout=WEB_TIMEOUT,
+            timeout=SEARCH_TIMEOUT,
         )
-        if response.ok:
-            root = ET.fromstring(response.content)
-            entries = []
-            for item in root.iter("item"):
-                title = (item.findtext("title") or "").strip()
-                link = item.findtext("link") or ""
-                if title:
-                    entries.append(f"- {title}\n  {link}")
-                if len(entries) >= WEB_MAX_RESULTS:
-                    break
-            if entries:
-                return "\n".join(entries)
+        if not response.ok:
+            return []
+        root = ET.fromstring(response.content)
+        out: list[tuple[str, str]] = []
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            if title:
+                out.append((title, link))
+            if len(out) >= WEB_MAX_RESULTS:
+                break
+        return out
     except (requests.RequestException, ET.ParseError):
-        pass
-    return "ERROR: tidak dapat mencari web (pencarian gagal). Coba lagi nanti."
+        return []
+
+
+def _search_wikipedia(query: str) -> list[tuple[str, str]]:
+    """Wikipedia search API — cepat & stabil (200, <1s). Bagus untuk entitas."""
+    try:
+        response = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "query", "list": "search", "srsearch": query,
+                    "format": "json", "srlimit": WEB_MAX_RESULTS},
+            headers={"User-Agent": _UA},
+            timeout=SEARCH_TIMEOUT,
+        )
+        if not response.ok:
+            return []
+        hits = response.json().get("query", {}).get("search", [])
+        out: list[tuple[str, str]] = []
+        for h in hits:
+            title = h.get("title", "").strip()
+            if title:
+                url = "https://en.wikipedia.org/wiki/" + title.replace(" ", "_")
+                snippet = re.sub(r"<[^>]+>", "", h.get("snippet", "")).strip()
+                out.append((f"{title} — {snippet[:120]}" if snippet else title, url))
+            if len(out) >= WEB_MAX_RESULTS:
+                break
+        return out
+    except (requests.RequestException, ValueError):
+        return []
+
+
+def _search_jina_ddg(query: str) -> list[tuple[str, str]]:
+    """DuckDuckGo via reader proxy. Cepat bila tidak kena 403; sering gagal."""
+    from urllib.parse import quote, unquote
+    try:
+        response = requests.get(
+            _JINA_READER + f"https://duckduckgo.com/html/?q={quote(query)}",
+            headers={"User-Agent": _UA},
+            timeout=SEARCH_TIMEOUT,
+        )
+        if not response.ok or not response.text.strip():
+            return []
+        out: list[tuple[str, str]] = []
+        # Judul: '## [judul](link)'. URL asli DDG di parameter uddg=.
+        for m in re.finditer(r"#+\s*\[([^\]]+)\]\(([^)]+)\)", response.text):
+            title = m.group(1).strip()
+            raw = m.group(2)
+            url = unquote(raw.split("uddg=", 1)[1].split("&", 1)[0]) if "uddg=" in raw else raw
+            if title and url.startswith("http"):
+                out.append((title, url))
+            if len(out) >= WEB_MAX_RESULTS:
+                break
+        return out
+    except requests.RequestException:
+        return []
+
+
+def _web_search(query: str) -> str:
+    """Cari web dari jaringan Termux (DuckDuckGo langsung mati/SSL-fail).
+    Urutan andal: jina→DDG (bila hidup) → Google News RSS → Wikipedia.
+    Selalu fail-fast; tidak pernah menggantung lama."""
+    query = query.strip()
+    if not query:
+        return "ERROR: query kosong."
+    for engine in (_search_jina_ddg, _search_gnews, _search_wikipedia):
+        results = engine(query)
+        if results:
+            return "\n".join(f"- {title}" for title, _url in results)
+    return "ERROR: tidak dapat mencari web (semua sumber gagal). Coba lagi nanti."
 
 
 def _web_fetch(url: str) -> str:
-    """Buka URL publik dan kembalikan teksnya. URL internal diblokir (SSRF)."""
+    """Buka URL publik dan kembalikan teksnya. URL internal diblokir (SSRF).
+    Utamakan reader proxy (cepat & tahan blokir); fallback fetch langsung."""
     url = url.strip()
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -287,6 +351,19 @@ def _web_fetch(url: str) -> str:
     host = parsed.hostname or ""
     if not host or _is_internal_ip(host):
         return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+    # 1) Reader proxy: mengembalikan teks/markdown bersih, jarang kena blokir.
+    try:
+        response = requests.get(
+            _JINA_READER + url,
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+        )
+        if response.ok and response.text.strip():
+            text = response.text
+            return text[:12_000] + ("\n... [dipotong]" if len(text) > 12_000 else "")
+    except requests.RequestException:
+        pass
+    # 2) Fallback: fetch langsung.
     try:
         response = requests.get(
             url,
@@ -312,83 +389,67 @@ def _web_fetch(url: str) -> str:
         return f"ERROR fetch: {exc.__class__.__name__}."
 
 
-_RESULT_URL_RE = re.compile(r"https?://[^\s)]+")
-
-
 def _search_result_urls(query: str, limit: int = 4) -> list[str]:
-    """Ambil beberapa URL hasil pencarian untuk dibaca lebih dalam."""
-    try:
-        response = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": _UA},
-            timeout=WEB_TIMEOUT,
-        )
-    except requests.RequestException:
-        return []
-    if not response.ok:
-        return []
+    """Kumpulkan URL hasil (untuk deep_research) dari sumber yang andal.
+    Hanya URL yang benar-benar bisa di-fetch (bukan redirect Google News)."""
     urls: list[str] = []
     seen: set[str] = set()
-    for match in re.finditer(r'class="result__a"[^>]*href="([^"]+)"', response.text):
-        raw = match.group(1)
-        # DuckDuckGo membungkus URL asli di parameter uddg=.
-        decoded = raw
-        marker = "uddg="
-        if marker in raw:
-            from urllib.parse import unquote
-
-            decoded = unquote(raw.split(marker, 1)[1].split("&", 1)[0])
-        parsed = urlparse(decoded)
-        host = parsed.hostname or ""
-        if parsed.scheme not in ("http", "https") or not host or _is_internal_ip(host):
-            continue
-        if decoded in seen:
-            continue
-        seen.add(decoded)
-        urls.append(decoded)
-        if len(urls) >= limit:
+    for engine in (_search_jina_ddg, _search_wikipedia):
+        for _title, url in engine(query):
+            if not url or not url.startswith("http"):
+                continue
+            parsed = urlparse(url)
+            host = parsed.hostname or ""
+            if not host or _is_internal_ip(host):
+                continue
+            # Lewati proxy & redirect yang tidak bisa dibaca langsung.
+            if any(bad in host for bad in ("jina.ai", "duckduckgo.com", "news.google.com")):
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            urls.append(url)
+            if len(urls) >= limit:
+                return urls
+        if urls:
             break
     return urls
 
 
 def _deep_research(query: str) -> str:
-    """Riset multi-sumber: cari, buka beberapa halaman teratas secara paralel,
-    lalu rangkum poin-poin dari tiap sumber dengan sitasi URL.
-
-    Berbeda dari ``web_search`` (5 judul mentah) dan ``web_fetch`` (1 URL),
-    tool ini membaca beberapa sumber sekaligus (paralel, jauh lebih cepat)
-    sehingga model bisa menyintesis jawaban berbukti tanpa banyak putaran tool.
-    """
+    """Riset multi-sumber: cari URL teratas, baca 2-3 sumber PARALEL via reader
+    proxy, lalu kumpulkan kutipan untuk disintesis. Dibatasi ketat agar cepat."""
     query = query.strip()
     if not query:
         return "ERROR: query kosong."
     urls = _search_result_urls(query, limit=3)
     if not urls:
-        # Fallback: hasil pencarian ringkas bila daftar URL gagal diambil.
+        # Tidak dapat URL → pakai hasil web_search ringkas saja (cepat).
         return _web_search(query)
 
-    # Fetch paralel agar tidak menunggu tiap halaman berurutan (yang bikin lama).
     import concurrent.futures
 
     bodies: dict[str, str] = {}
+    # Batas total waktu keras agar tidak pernah menggantung lama.
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         futures = {pool.submit(_web_fetch, url): url for url in urls}
-        for future in concurrent.futures.as_completed(futures, timeout=WEB_TIMEOUT + 5):
-            url = futures[future]
-            try:
-                bodies[url] = future.result()
-            except Exception:
-                bodies[url] = "ERROR"
+        try:
+            for future in concurrent.futures.as_completed(futures, timeout=14):
+                url = futures[future]
+                try:
+                    bodies[url] = future.result()
+                except Exception:
+                    bodies[url] = "ERROR"
+        except concurrent.futures.TimeoutError:
+            pass  # ambil yang sudah selesai; sisanya dilewati
 
     sections: list[str] = [f"Riset untuk: {query}", ""]
     read = 0
-    for url in urls:  # pertahankan urutan relevansi
-        body = bodies.get(url, "ERROR")
-        if body.startswith("ERROR") or body.startswith("(halaman"):
+    for url in urls:
+        body = bodies.get(url, "")
+        if not body or body.startswith("ERROR") or body.startswith("(halaman"):
             continue
-        excerpt = body[:1_800].strip()
-        sections.append(f"### Sumber: {url}\n{excerpt}")
+        sections.append(f"### Sumber: {url}\n{body[:1_800].strip()}")
         sections.append("")
         read += 1
     if read == 0:
@@ -396,8 +457,7 @@ def _deep_research(query: str) -> str:
     sections.append(
         "Instruksi: sintesis poin-poin di atas menjadi jawaban ringkas & "
         "berbukti. Sebutkan sumber (URL) untuk klaim penting. Jangan mengarang "
-        "fakta yang tidak ada di sumber. Jangan panggil tool lagi bila data ini "
-        "sudah cukup menjawab."
+        "fakta yang tidak ada di sumber. Jangan panggil tool lagi bila cukup."
     )
     return "\n".join(sections)[:14_000]
 
