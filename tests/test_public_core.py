@@ -646,13 +646,44 @@ class ZelinePublicCoreTests(unittest.TestCase):
         ]
         self.assertEqual(len(live_sends), 1)
         self.assertIn("editMessageText", methods)  # update via edit
-        self.assertIn("deleteMessage", methods)  # bubble live dibersihkan di akhir
-        # Jawaban final tetap terkirim.
+        # Bubble progres DIKUNCI sebagai catatan alur (✅ Selesai), bukan dihapus.
+        self.assertNotIn("deleteMessage", methods)
+        finalized = [
+            c for c in api.call_args_list
+            if len(c.args) > 1 and c.args[1] == "editMessageText" and "✅ Selesai" in str(c.kwargs.get("text", ""))
+        ]
+        self.assertEqual(len(finalized), 1)
+        # Jawaban final terkirim sebagai pesan terpisah.
         finals = [
             c for c in api.call_args_list
             if len(c.args) > 1 and c.args[1] == "sendMessage" and "hasil riset" in str(c.kwargs.get("text", ""))
         ]
         self.assertEqual(len(finals), 1)
+
+    def test_telegram_direct_answer_removes_empty_progress_bubble(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        class Sessions:
+            def send(self, **kwargs):
+                return "jawaban langsung"  # tanpa tool sama sekali
+
+        def fake_api(_api, method, **kwargs):
+            if method == "sendMessage":
+                return {"ok": True, "result": {"message_id": 999}}
+            return {"ok": True}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=fake_api) as api:
+            telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="hai", tool_profile="safe")
+
+        methods = [c.args[1] for c in api.call_args_list if len(c.args) > 1]
+        # Tanpa aktivitas tool, tidak ada bubble "✅ Selesai" kosong; kalaupun
+        # sempat terbuat, dihapus. Jawaban final tetap terkirim.
+        finals = [
+            c for c in api.call_args_list
+            if len(c.args) > 1 and c.args[1] == "sendMessage" and "jawaban langsung" in str(c.kwargs.get("text", ""))
+        ]
+        self.assertEqual(len(finals), 1)
+        self.assertNotIn("✅ Selesai", str(api.call_args_list))
 
     def test_telegram_model_picker_marks_current_model_and_uses_short_callbacks(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
