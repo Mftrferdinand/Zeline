@@ -102,12 +102,36 @@ class GatewayServiceTests(unittest.TestCase):
     def test_stop_sends_sigterm_and_removes_state(self):
         self.config.ensure_data_dirs()
         self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}))
-        with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), mock.patch.object(self.service.os, "kill") as kill:
-            stopped, message = self.service.stop(wait_seconds=0)
+        # guard True, then grace-loop sees process gone → graceful stop, no SIGKILL.
+        with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), mock.patch.object(self.service.os, "getpgid", return_value=12345), mock.patch.object(self.service.os, "killpg") as killpg:
+            stopped, message = self.service.stop(wait_seconds=5, grace_seconds=5)
+        self.assertTrue(stopped)
+        killpg.assert_called_once_with(12345, signal.SIGTERM)
+        self.assertIn("dihentikan", message.lower())
+        self.assertNotIn("sigkill", message.lower())
+        self.assertFalse(self.config.PID_FILE.exists())
+
+    def test_stop_escalates_to_sigkill_when_sigterm_ignored(self):
+        self.config.ensure_data_dirs()
+        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}))
+        # matches: initial guard True, grace-loop skipped (grace=0), post-SIGKILL check False.
+        with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), mock.patch.object(self.service.os, "getpgid", return_value=12345), mock.patch.object(self.service.os, "killpg") as killpg:
+            stopped, message = self.service.stop(wait_seconds=1, grace_seconds=0)
+        self.assertTrue(stopped)
+        signals = [call.args[1] for call in killpg.call_args_list]
+        self.assertIn(signal.SIGTERM, signals)
+        self.assertIn(signal.SIGKILL, signals)
+        self.assertIn("sigkill", message.lower())
+        self.assertFalse(self.config.PID_FILE.exists())
+
+    def test_stop_falls_back_to_os_kill_without_process_group(self):
+        self.config.ensure_data_dirs()
+        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}))
+        with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), mock.patch.object(self.service.os, "getpgid", side_effect=ProcessLookupError), mock.patch.object(self.service.os, "kill") as kill:
+            stopped, message = self.service.stop(wait_seconds=5, grace_seconds=5)
         self.assertTrue(stopped)
         kill.assert_called_once_with(12345, signal.SIGTERM)
         self.assertIn("dihentikan", message.lower())
-        self.assertFalse(self.config.PID_FILE.exists())
 
     def test_log_tail_is_empty_without_log_file(self):
         self.assertEqual(self.service.tail_log(), "(belum ada log gateway)")

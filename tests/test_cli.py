@@ -209,15 +209,16 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("Anthropic", output.getvalue())
         self.assertNotIn("secret", output.getvalue())
 
-    def test_model_command_updates_provider_and_model_without_reconfiguring_gateways(self):
+    def test_model_command_adds_provider_and_activates_without_touching_gateways(self):
         cfg = self.config.config_copy()
         cfg["gateway_setup_complete"] = True
         cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
         self.config.save_config(cfg)
-        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "My Provider", "research-model"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
+        # Menu flow: 'a' (add) -> base_url, name, model -> 'q' (quit)
+        with mock.patch("builtins.input", side_effect=["a", "https://api.example/v1", "My Provider", "research-model", "q"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertIn("Model disimpan", result)
+        self.assertIn("ditambahkan", result)
         self.assertEqual(saved["provider"], {
             "protocol": "openai",
             "model_verified": True,
@@ -228,6 +229,42 @@ class ZelineCliTests(unittest.TestCase):
         })
         self.assertEqual(saved["providers"]["my-provider"], saved["provider"])
         self.assertEqual(saved["gateways"]["telegram"]["token"], "123:telegram-token")
+
+    def test_model_command_removes_non_active_provider(self):
+        cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
+        cfg["setup_complete"] = True
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
+        active = {"protocol": "openai", "model_verified": True, "base_url": "https://a.example/v1", "api_key": "k1", "model": "m1", "name": "Alpha"}
+        spare = {"protocol": "openai", "model_verified": True, "base_url": "https://b.example/v1", "api_key": "k2", "model": "m2", "name": "Beta"}
+        cfg["provider"] = dict(active)
+        cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
+        self.config.save_config(cfg)
+        # Menu flow: 'r' (remove) -> pick 2 (Beta, non-active) -> 'q'
+        with mock.patch("builtins.input", side_effect=["r", "2", "q"]):
+            result = self.invoke(["model"])
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertIn("dihapus", result)
+        self.assertNotIn("beta", saved["providers"])
+        self.assertIn("alpha", saved["providers"])
+        self.assertEqual(saved["provider"]["name"], "Alpha")
+
+    def test_model_command_refuses_to_remove_active_provider(self):
+        cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
+        cfg["setup_complete"] = True
+        active = {"protocol": "openai", "model_verified": True, "base_url": "https://a.example/v1", "api_key": "k1", "model": "m1", "name": "Alpha"}
+        spare = {"protocol": "openai", "model_verified": True, "base_url": "https://b.example/v1", "api_key": "k2", "model": "m2", "name": "Beta"}
+        cfg["provider"] = dict(active)
+        cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
+        self.config.save_config(cfg)
+        # Try to remove #1 (Alpha, active) -> refused
+        with mock.patch("builtins.input", side_effect=["r", "1", "q"]):
+            result = self.invoke(["model"])
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertIn("aktif", result.lower())
+        self.assertIn("alpha", saved["providers"])
+        self.assertIn("beta", saved["providers"])
 
     def test_gateway_restart_stops_then_starts_with_same_selection(self):
         with mock.patch.object(self.cli.gateway_service, "stop", return_value=(True, "stopped")) as stop, mock.patch.object(self.cli.gateway_service, "start", return_value=(True, "started")) as start:

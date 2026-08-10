@@ -346,20 +346,111 @@ def cmd_setup(*, reset: bool = False) -> int:
     return 0
 
 
+def _provider_slug(provider: dict[str, Any]) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(provider.get("name", "provider")).lower()).strip("-") or "provider"
+
+
+def _active_slug(cfg: dict[str, Any]) -> str:
+    """Slug provider aktif berdasarkan base_url + name (bukan sekadar nama)."""
+    active = cfg.get("provider", {})
+    for slug, item in cfg.get("providers", {}).items():
+        if item.get("base_url") == active.get("base_url") and item.get("name") == active.get("name"):
+            return str(slug)
+    return _provider_slug(active)
+
+
+def _print_provider_list(cfg: dict[str, Any]) -> list[str]:
+    """Tampilkan provider tersimpan; kembalikan daftar slug terurut."""
+    providers = cfg.get("providers", {})
+    active = _active_slug(cfg)
+    slugs = list(providers.keys())
+    print("\n  Provider tersimpan:")
+    if not slugs:
+        print("    (belum ada)")
+    for index, slug in enumerate(slugs, 1):
+        item = providers[slug]
+        marker = " (aktif)" if slug == active else ""
+        print(f"    {index:>2}. {item.get('name', slug)} · {item.get('model', '?')}{marker}")
+    return slugs
+
+
+def _model_add_provider(cfg: dict[str, Any]) -> None:
+    """Tambah provider baru; jadikan aktif setelah verifikasi model."""
+    provider: dict[str, Any] = {}
+    _configure_provider(provider)
+    slug = _provider_slug(provider)
+    cfg.setdefault("providers", {})[slug] = copy.deepcopy(provider)
+    cfg["provider"] = copy.deepcopy(provider)
+    cfg["setup_complete"] = True
+    config.save_config(cfg)
+    print(f"  ✓ Provider '{provider.get('name', slug)}' ditambahkan & diaktifkan · model {provider['model']}")
+
+
+def _model_remove_provider(cfg: dict[str, Any]) -> None:
+    """Hapus provider tersimpan; provider aktif tidak boleh dihapus."""
+    slugs = _print_provider_list(cfg)
+    if len(slugs) <= 1:
+        print("  Minimal satu provider harus tersisa; tidak ada yang dihapus.")
+        return
+    active = _active_slug(cfg)
+    choice = input(f"  Hapus provider nomor [1-{len(slugs)}] (Enter = batal): ").strip()
+    if not choice:
+        print("  Dibatalkan.")
+        return
+    if not (choice.isdigit() and 1 <= int(choice) <= len(slugs)):
+        print("  Pilihan tidak valid.")
+        return
+    slug = slugs[int(choice) - 1]
+    if slug == active:
+        print("  Provider itu sedang aktif. Ganti provider aktif dulu sebelum menghapusnya.")
+        return
+    removed = cfg["providers"].pop(slug)
+    config.save_config(cfg)
+    print(f"  ✓ Provider '{removed.get('name', slug)}' dihapus.")
+
+
 def cmd_model() -> int:
-    """Update provider/model only; preserve every gateway setting."""
+    """Menu provider/model: ganti model, tambah provider, hapus provider."""
     if not config.GATEWAY_SETUP_COMPLETE:
         print("[!] Pilih dan siapkan gateway dulu. Jalankan: zeline")
         return 2
     cfg = config.stored_config_copy()
-    provider = cfg["provider"]
-    _configure_provider(provider)
-    slug = re.sub(r"[^a-z0-9]+", "-", str(provider.get("name", "provider")).lower()).strip("-") or "provider"
-    cfg.setdefault("providers", {})[slug] = copy.deepcopy(provider)
-    cfg["setup_complete"] = True
-    config.save_config(cfg)
-    print(f"Model disimpan: {provider['model']}")
-    return 0
+    while True:
+        _print_provider_list(cfg)
+        print(
+            "\n  Aksi:\n"
+            "    [nomor] pilih provider & ganti model\n"
+            "    a       add provider\n"
+            "    r       remove provider\n"
+            "    q       selesai"
+        )
+        action = input("  Pilih: ").strip().lower()
+        if action in {"q", "quit", "exit", ""}:
+            print("Selesai.")
+            return 0
+        if action == "a":
+            _model_add_provider(cfg)
+        elif action == "r":
+            _model_remove_provider(cfg)
+        elif action.isdigit():
+            slugs = list(cfg.get("providers", {}).keys())
+            if 1 <= int(action) <= len(slugs):
+                slug = slugs[int(action) - 1]
+                provider = copy.deepcopy(cfg["providers"][slug])
+                print(f"  Mengambil daftar model dari {provider.get('name', slug)}…")
+                _protocol, models = _discover_provider_models(str(provider.get("base_url", "")), str(provider.get("api_key", "")))
+                provider["model"] = _choose_model(models, str(provider.get("model", "")))
+                provider["model_verified"] = True
+                cfg["providers"][slug] = copy.deepcopy(provider)
+                cfg["provider"] = copy.deepcopy(provider)
+                cfg["setup_complete"] = True
+                config.save_config(cfg)
+                print(f"  ✓ Aktif: {provider.get('name', slug)} · model {provider['model']}")
+            else:
+                print("  Nomor tidak valid.")
+        else:
+            print("  Aksi tidak dikenal.")
+        cfg = config.stored_config_copy()
 
 
 def cmd_chat(query: str | None = None) -> int:
