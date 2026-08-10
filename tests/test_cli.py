@@ -209,15 +209,18 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("Anthropic", output.getvalue())
         self.assertNotIn("secret", output.getvalue())
 
-    def test_model_command_updates_provider_and_model_without_reconfiguring_gateways(self):
+    def test_model_command_adds_provider_and_activates_without_touching_gateways(self):
         cfg = self.config.config_copy()
         cfg["gateway_setup_complete"] = True
         cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
         self.config.save_config(cfg)
-        with mock.patch("builtins.input", side_effect=["https://api.example/v1", "My Provider", "research-model"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
+        # Arrow-menu fallback (non-TTY) pakai nomor. Tanpa provider tersimpan,
+        # menu = [1]Add [2]Remove [3]Cancel. Pilih 1 (Add) -> isi provider.
+        # Setelah add ada 1 provider: menu = [1]MyProvider [2]Add [3]Remove [4]Cancel -> 4.
+        with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertIn("Model disimpan", result)
+        self.assertIn("ditambahkan", result)
         self.assertEqual(saved["provider"], {
             "protocol": "openai",
             "model_verified": True,
@@ -228,6 +231,45 @@ class ZelineCliTests(unittest.TestCase):
         })
         self.assertEqual(saved["providers"]["my-provider"], saved["provider"])
         self.assertEqual(saved["gateways"]["telegram"]["token"], "123:telegram-token")
+
+    def test_model_command_removes_non_active_provider(self):
+        cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
+        cfg["setup_complete"] = True
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:telegram-token"})
+        active = {"protocol": "openai", "model_verified": True, "base_url": "https://a.example/v1", "api_key": "k1", "model": "m1", "name": "Alpha"}
+        spare = {"protocol": "openai", "model_verified": True, "base_url": "https://b.example/v1", "api_key": "k2", "model": "m2", "name": "Beta"}
+        cfg["provider"] = dict(active)
+        cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
+        self.config.save_config(cfg)
+        # Menu awal = [1]Alpha [2]Beta [3]Add [4]Remove [5]Cancel.
+        # 4 (Remove) -> 2 (Beta, non-aktif). Setelah hapus tinggal Alpha:
+        # menu = [1]Alpha [2]Add [3]Remove [4]Cancel -> 4 (Cancel).
+        with mock.patch("builtins.input", side_effect=["4", "2", "4"]):
+            result = self.invoke(["model"])
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertIn("dihapus", result)
+        self.assertNotIn("beta", saved["providers"])
+        self.assertIn("alpha", saved["providers"])
+        self.assertEqual(saved["provider"]["name"], "Alpha")
+
+    def test_model_command_refuses_to_remove_active_provider(self):
+        cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
+        cfg["setup_complete"] = True
+        active = {"protocol": "openai", "model_verified": True, "base_url": "https://a.example/v1", "api_key": "k1", "model": "m1", "name": "Alpha"}
+        spare = {"protocol": "openai", "model_verified": True, "base_url": "https://b.example/v1", "api_key": "k2", "model": "m2", "name": "Beta"}
+        cfg["provider"] = dict(active)
+        cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
+        self.config.save_config(cfg)
+        # Menu = [1]Alpha [2]Beta [3]Add [4]Remove [5]Cancel.
+        # Pilih 4 (Remove) -> 1 (Alpha, aktif) -> ditolak -> 5 (Cancel).
+        with mock.patch("builtins.input", side_effect=["4", "1", "5"]):
+            result = self.invoke(["model"])
+        saved = __import__("json").loads((self.home / "config.json").read_text())
+        self.assertIn("aktif", result.lower())
+        self.assertIn("alpha", saved["providers"])
+        self.assertIn("beta", saved["providers"])
 
     def test_gateway_restart_stops_then_starts_with_same_selection(self):
         with mock.patch.object(self.cli.gateway_service, "stop", return_value=(True, "stopped")) as stop, mock.patch.object(self.cli.gateway_service, "start", return_value=(True, "started")) as start:

@@ -62,6 +62,10 @@ Efisiensi riset web (WAJIB — jangan boros tool):
   susun jawaban. Berhenti mencari begitu kamu sudah punya cukup bukti.
 - Jangan pernah menampilkan daftar link mentah ke user sebagai progres. User
   hanya mau jawaban akhir yang rapi berikut 1-3 sumber penting bila relevan.
+- Untuk memanggil REST API/webhook (bukan sekadar baca halaman), pakai
+  http_request (method + header + body JSON), bukan web_fetch. Untuk mengunduh
+  file/aset ke workspace pakai download_file. Untuk cek tool/runtime yang tersedia
+  di sistem sebelum menjalankan perintah, pakai system_env.
 
 Memory (ingatan lintas sesi — biar tidak mengulang tanya):
 - Simpan proaktif dengan add_memory saat user menyatakan preferensi, koreksi,
@@ -137,6 +141,9 @@ def _defaults() -> dict[str, Any]:
         "agent": {
             "max_tool_rounds": DEFAULT_MAX_TOOL_ROUNDS,
             "max_sessions": DEFAULT_MAX_SESSIONS,
+            # Simpan history percakapan ke ~/.zeline/sessions.db supaya restart
+            # gateway tidak menghapus konteks (bot tidak "tiba-tiba lupa").
+            "persist_sessions": True,
         },
         "tools": {
             # CLI dimiliki operator lokal; gateway publik harus safe secara default.
@@ -163,6 +170,9 @@ def _defaults() -> dict[str, Any]:
                 "tool_profile": "safe",
             },
         },
+        # MCP server eksternal. Tiap entry: {transport, command|url, headers, env, enabled}.
+        # Hanya operator yang boleh menambah (server stdio menjalankan perintah lokal).
+        "mcp": {"servers": {}},
     }
 
 
@@ -274,6 +284,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
+    global MCP_SERVERS, PERSIST_SESSIONS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -285,8 +296,10 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     SETUP_COMPLETE = bool(cfg.get("setup_complete", False))
     MAX_TOOL_ROUNDS = int(cfg.get("agent", {}).get("max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS))
     MAX_SESSIONS = int(cfg.get("agent", {}).get("max_sessions", DEFAULT_MAX_SESSIONS))
+    PERSIST_SESSIONS = bool(cfg.get("agent", {}).get("persist_sessions", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
+    MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
     SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(name=NAME)
 
 

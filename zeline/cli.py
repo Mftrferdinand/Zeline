@@ -157,15 +157,14 @@ def _choose_model(models: list[str], default: str = "") -> str:
             if selected:
                 return selected
             print("  Model ID wajib diisi karena provider tidak menyediakan daftar model.")
-    print("  Model tersedia:")
-    for index, model in enumerate(models, 1):
-        marker = " (aktif)" if model == default else ""
-        print(f"    {index:>2}. {model}{marker}")
-    while True:
-        choice = input(f"Pilih model [1-{len(models)}]: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(models):
-            return models[int(choice) - 1]
-        print("  Pilihan tidak valid.")
+    # Picker cursor panah; default disorot lebih dulu. Fallback nomor di non-TTY.
+    labels = [f"{model}{'  (aktif)' if model == default else ''}" for model in models]
+    start = next((i for i, m in enumerate(models) if m == default), 0)
+    choice = _arrow_menu("Pilih model:", labels, start=start)
+    if choice == -1:
+        # Batal = pertahankan model default kalau ada, else item pertama.
+        return default or models[0]
+    return models[choice]
 
 
 def _configure_provider(provider: dict[str, Any]) -> None:
@@ -216,6 +215,11 @@ def _read_menu_key() -> str:
             return "up"
         if second == "[" and third == "B":
             return "down"
+        # ESC ditekan sendiri (tanpa sekuens panah) = batal.
+        if second == "" and third == "":
+            return "cancel"
+    if char in {"q", "Q"}:
+        return "cancel"
     return ""
 
 
@@ -346,20 +350,160 @@ def cmd_setup(*, reset: bool = False) -> int:
     return 0
 
 
+def _provider_slug(provider: dict[str, Any]) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(provider.get("name", "provider")).lower()).strip("-") or "provider"
+
+
+def _active_slug(cfg: dict[str, Any]) -> str:
+    """Slug provider aktif berdasarkan base_url + name (bukan sekadar nama)."""
+    active = cfg.get("provider", {})
+    for slug, item in cfg.get("providers", {}).items():
+        if item.get("base_url") == active.get("base_url") and item.get("name") == active.get("name"):
+            return str(slug)
+    return _provider_slug(active)
+
+
+def _print_provider_list(cfg: dict[str, Any]) -> list[str]:
+    """Tampilkan provider tersimpan; kembalikan daftar slug terurut."""
+    providers = cfg.get("providers", {})
+    active = _active_slug(cfg)
+    slugs = list(providers.keys())
+    print("\n  Provider tersimpan:")
+    if not slugs:
+        print("    (belum ada)")
+    for index, slug in enumerate(slugs, 1):
+        item = providers[slug]
+        marker = " (aktif)" if slug == active else ""
+        print(f"    {index:>2}. {item.get('name', slug)} · {item.get('model', '?')}{marker}")
+    return slugs
+
+
+def _model_add_provider(cfg: dict[str, Any]) -> None:
+    """Tambah provider baru; jadikan aktif setelah verifikasi model."""
+    provider: dict[str, Any] = {}
+    _configure_provider(provider)
+    slug = _provider_slug(provider)
+    cfg.setdefault("providers", {})[slug] = copy.deepcopy(provider)
+    cfg["provider"] = copy.deepcopy(provider)
+    cfg["setup_complete"] = True
+    config.save_config(cfg)
+    print(f"  ✓ Provider '{provider.get('name', slug)}' ditambahkan & diaktifkan · model {provider['model']}")
+
+
+def _model_remove_provider(cfg: dict[str, Any]) -> None:
+    """Hapus provider tersimpan; provider aktif tidak boleh dihapus."""
+    slugs = _print_provider_list(cfg)
+    if len(slugs) <= 1:
+        print("  Minimal satu provider harus tersisa; tidak ada yang dihapus.")
+        return
+    active = _active_slug(cfg)
+    choice = input(f"  Hapus provider nomor [1-{len(slugs)}] (Enter = batal): ").strip()
+    if not choice:
+        print("  Dibatalkan.")
+        return
+    if not (choice.isdigit() and 1 <= int(choice) <= len(slugs)):
+        print("  Pilihan tidak valid.")
+        return
+    slug = slugs[int(choice) - 1]
+    if slug == active:
+        print("  Provider itu sedang aktif. Ganti provider aktif dulu sebelum menghapusnya.")
+        return
+    removed = cfg["providers"].pop(slug)
+    config.save_config(cfg)
+    print(f"  ✓ Provider '{removed.get('name', slug)}' dihapus.")
+
+
+def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
+    """Picker cursor panah ↑/↓ + Enter. Kembalikan index terpilih, -1 bila batal.
+
+    Fallback ke input nomor bila stdin bukan TTY (mis. stdin di-redirect saat tes
+    atau automation). ESC / Ctrl-C = batal (-1).
+    """
+    if not options:
+        return -1
+    if not sys.stdin.isatty():
+        print(title)
+        for index, label in enumerate(options, 1):
+            print(f"  {index}. {label}")
+        while True:
+            answer = input(f"Pilihan [1-{len(options)}] (kosong = batal): ").strip()
+            if not answer:
+                return -1
+            if answer.isdigit() and 1 <= int(answer) <= len(options):
+                return int(answer) - 1
+            print("  Pilihan tidak valid.")
+
+    selected = max(0, min(start, len(options) - 1))
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    print(title + "  (↑/↓ lalu Enter, Esc = batal)")
+    try:
+        tty.setraw(fd)
+        while True:
+            for index, label in enumerate(options):
+                marker = "❯" if index == selected else " "
+                print(f"\r\033[K  {marker} {label}")
+            key = _read_menu_key()
+            if key == "up":
+                selected = (selected - 1) % len(options)
+            elif key == "down":
+                selected = (selected + 1) % len(options)
+            elif key == "enter":
+                return selected
+            elif key == "cancel":
+                return -1
+            print(f"\033[{len(options)}A", end="", flush=True)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+        print()
+
+
 def cmd_model() -> int:
-    """Update provider/model only; preserve every gateway setting."""
+    """Menu provider/model dengan picker cursor panah (↑/↓ + Enter)."""
     if not config.GATEWAY_SETUP_COMPLETE:
         print("[!] Pilih dan siapkan gateway dulu. Jalankan: zeline")
         return 2
     cfg = config.stored_config_copy()
-    provider = cfg["provider"]
-    _configure_provider(provider)
-    slug = re.sub(r"[^a-z0-9]+", "-", str(provider.get("name", "provider")).lower()).strip("-") or "provider"
-    cfg.setdefault("providers", {})[slug] = copy.deepcopy(provider)
-    cfg["setup_complete"] = True
-    config.save_config(cfg)
-    print(f"Model disimpan: {provider['model']}")
-    return 0
+    while True:
+        providers = cfg.get("providers", {})
+        slugs = list(providers.keys())
+        active = _active_slug(cfg)
+        # Baris provider + aksi, semua bisa dipilih pakai cursor.
+        rows: list[str] = []
+        for slug in slugs:
+            item = providers[slug]
+            mark = " (aktif)" if slug == active else ""
+            rows.append(f"{item.get('name', slug)} · {item.get('model', '?')}{mark}")
+        idx_add = len(rows)
+        rows.append("➕ Add provider")
+        idx_remove = len(rows)
+        rows.append("🗑  Remove provider")
+        idx_cancel = len(rows)
+        rows.append("✗ Cancel")
+
+        choice = _arrow_menu("Provider & model:", rows)
+        if choice == -1 or choice == idx_cancel:
+            print("Selesai.")
+            return 0
+        if choice == idx_add:
+            _model_add_provider(cfg)
+        elif choice == idx_remove:
+            _model_remove_provider(cfg)
+        elif 0 <= choice < len(slugs):
+            slug = slugs[choice]
+            provider = copy.deepcopy(providers[slug])
+            print(f"  Mengambil daftar model dari {provider.get('name', slug)}…")
+            _protocol, models = _discover_provider_models(str(provider.get("base_url", "")), str(provider.get("api_key", "")))
+            provider["model"] = _choose_model(models, str(provider.get("model", "")))
+            provider["model_verified"] = True
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            cfg["provider"] = copy.deepcopy(provider)
+            cfg["setup_complete"] = True
+            config.save_config(cfg)
+            active_name = str(provider.get("name", slug))
+            active_model = str(provider["model"])
+            print(f"  ✓ Aktif: {active_name} · model {active_model}")
+        cfg = config.stored_config_copy()
 
 
 def cmd_chat(query: str | None = None) -> int:
@@ -418,6 +562,83 @@ def cmd_chat(query: str | None = None) -> int:
             print(f"\033[35m{config.NAME} ›\033[0m {answer}\n")
         except ZelineError as exc:
             print(f"\033[31m[error] {exc}\033[0m\n")
+
+
+def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "") -> int:
+    """Kelola MCP server: add / list / remove / test."""
+    from zeline import mcp as mcp_module
+
+    if action == "list":
+        servers = config.stored_config_copy().get("mcp", {}).get("servers", {})
+        if not servers:
+            print("Belum ada MCP server. Tambah dengan: zeline mcp add <nama> --command '...' atau --url '...'")
+            return 0
+        print("MCP server:")
+        for server_name, spec in servers.items():
+            state = "aktif" if spec.get("enabled", True) else "mati"
+            kind = spec.get("transport") or ("http" if spec.get("url") else "stdio")
+            target = spec.get("url") or spec.get("command") or "?"
+            print(f"  - {server_name:<16} [{kind}] {state}  {target}")
+        return 0
+
+    if action == "add":
+        if not name:
+            print("Butuh nama server. Contoh: zeline mcp add filesystem --command 'npx -y @modelcontextprotocol/server-filesystem ~/'")
+            return 2
+        if not command and not url:
+            print("Butuh --command (stdio) atau --url (http).")
+            return 2
+        cfg = config.stored_config_copy()
+        servers = cfg.setdefault("mcp", {}).setdefault("servers", {})
+        spec: dict[str, Any] = {"enabled": True}
+        if url:
+            spec.update({"transport": "http", "url": url})
+        else:
+            spec.update({"transport": "stdio", "command": command})
+        servers[name] = spec
+        config.save_config(cfg)
+        print(f"MCP server '{name}' ditambahkan. Tes dengan: zeline mcp test {name}")
+        return 0
+
+    if action == "remove":
+        if not name:
+            print("Butuh nama server yang mau dihapus.")
+            return 2
+        cfg = config.stored_config_copy()
+        servers = cfg.get("mcp", {}).get("servers", {})
+        if name not in servers:
+            print(f"MCP server '{name}' tidak ditemukan.")
+            return 2
+        servers.pop(name)
+        config.save_config(cfg)
+        print(f"MCP server '{name}' dihapus.")
+        return 0
+
+    if action == "test":
+        servers = config.stored_config_copy().get("mcp", {}).get("servers", {})
+        targets = {name: servers[name]} if name and name in servers else servers
+        if not targets:
+            print("Tidak ada server untuk dites.")
+            return 2
+        registry = mcp_module.MCPRegistry.from_config({"mcp": {"servers": targets}})
+        total = 0
+        for server_name, server in registry.servers.items():
+            try:
+                tools = server.list_tools()
+                print(f"  ✓ {server_name}: {len(tools)} tool")
+                for schema in tools[:20]:
+                    fn = schema["function"]
+                    print(f"      - {fn['name']}: {str(fn.get('description',''))[:70]}")
+                total += len(tools)
+            except Exception as exc:
+                print(f"  ✗ {server_name}: {exc.__class__.__name__}: {exc}")
+            finally:
+                server.close()
+        print(f"Total {total} tool MCP siap dipakai.")
+        return 0
+
+    print(f"Aksi MCP tidak dikenal: {action}. Pilihan: add, list, remove, test.")
+    return 2
 
 
 def cmd_gateway_setup(name: str | None = None) -> int:
@@ -678,6 +899,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_parser = subparsers.add_parser("config", help="lihat lokasi/konfigurasi aman")
     config_parser.add_argument("action", choices=["path", "show"])
+
+    mcp_parser = subparsers.add_parser("mcp", help="kelola MCP server (tool eksternal)")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
+    mcp_add = mcp_sub.add_parser("add", help="tambah MCP server")
+    mcp_add.add_argument("name")
+    mcp_add.add_argument("--command", dest="mcp_cmd", default="", help="perintah server stdio, mis. 'npx -y @modelcontextprotocol/server-filesystem ~/'")
+    mcp_add.add_argument("--url", default="", help="URL server HTTP streamable")
+    mcp_sub.add_parser("list", help="daftar MCP server")
+    mcp_remove = mcp_sub.add_parser("remove", help="hapus MCP server")
+    mcp_remove.add_argument("name")
+    mcp_test = mcp_sub.add_parser("test", help="tes koneksi & daftar tool")
+    mcp_test.add_argument("name", nargs="?")
+
     subparsers.add_parser("doctor", aliases=["status"], help="cek dependency dan konfigurasi")
     subparsers.add_parser("skills", aliases=["skill"], help="list skill")
     subparsers.add_parser("memory", help="lihat memory CLI lokal")
@@ -746,6 +980,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_gateway_log()
     if command == "config":
         return cmd_config(namespace.action)
+    if command == "mcp":
+        mcp_action = namespace.mcp_command or "list"
+        return cmd_mcp(
+            mcp_action,
+            getattr(namespace, "name", None),
+            command=getattr(namespace, "mcp_cmd", ""),
+            url=getattr(namespace, "url", ""),
+        )
     if command in {"skills", "skill"}:
         return cmd_skills()
     if command == "memory":

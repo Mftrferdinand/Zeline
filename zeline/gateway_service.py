@@ -200,8 +200,38 @@ def status() -> tuple[bool, str, dict[str, Any] | None]:
     return True, f"Gateway berjalan (PID {pid}; {target}).", state
 
 
-def stop(wait_seconds: float = 8.0) -> tuple[bool, str]:
-    """Minta gateway berhenti secara anggun, lalu bersihkan state bila mati."""
+def _signal_process(pid: int, sig: int) -> bool:
+    """Kirim signal ke SELURUH process group child bila memungkinkan.
+
+    ``start()`` memakai ``start_new_session=True`` sehingga child menjadi
+    process-group leader. Mengirim ke grup (``killpg``) menjangkau thread poller
+    dan subprocess yang di-spawn gateway — inilah yang bikin SIGTERM tunggal
+    sering gagal di Termux. Fallback ke ``os.kill`` bila pgid tak terbaca.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False
+
+
+def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, str]:
+    """Hentikan gateway: SIGTERM → (grace) → SIGKILL otomatis, lalu bersihkan state.
+
+    Di Termux ``runtime.stop()`` kerap menggantung sehingga SIGTERM saja tidak
+    mematikan proses. Kita naikkan ke SIGKILL setelah ``grace_seconds`` dan kirim
+    ke seluruh process group, sehingga ``gateway stop`` tidak lagi meninggalkan
+    proses zombie.
+    """
     state = _load_state()
     if not state:
         _remove_state()
@@ -210,25 +240,36 @@ def stop(wait_seconds: float = 8.0) -> tuple[bool, str]:
     if not _process_matches_state(state):
         _remove_state()
         return False, "Gateway tidak berjalan (state PID bukan process Zeline yang cocok dibersihkan)."
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        _remove_state()
-        return False, "Gateway sudah berhenti."
-    except PermissionError:
+
+    if not _signal_process(pid, signal.SIGTERM):
+        # Proses sudah hilang atau tak bisa di-signal.
+        if not _process_matches_state(state):
+            _remove_state()
+            return True, "Gateway sudah berhenti."
         return False, f"Tidak punya izin menghentikan PID {pid}."
 
-    deadline = time.monotonic() + max(0.0, wait_seconds)
-    while time.monotonic() < deadline:
-        # Jika child mati ATAU PID dipakai ulang, state lama tidak lagi cocok.
+    # Fase 1: tunggu shutdown anggun setelah SIGTERM.
+    grace_deadline = time.monotonic() + max(0.0, grace_seconds)
+    while time.monotonic() < grace_deadline:
         if not _process_matches_state(state):
             _remove_state()
             return True, "Gateway dihentikan."
         time.sleep(0.1)
+
+    # Fase 2: eskalasi ke SIGKILL (seluruh process group).
+    escalated = _signal_process(pid, signal.SIGKILL)
+    kill_deadline = time.monotonic() + max(0.5, wait_seconds - grace_seconds)
+    while time.monotonic() < kill_deadline:
+        if not _process_matches_state(state):
+            _remove_state()
+            suffix = " (perlu SIGKILL)" if escalated else ""
+            return True, f"Gateway dihentikan{suffix}."
+        time.sleep(0.1)
+
     if not _process_matches_state(state):
         _remove_state()
-        return True, "Gateway dihentikan."
-    return False, f"SIGTERM sudah dikirim ke PID {pid}, tetapi proses belum berhenti. Cek log: {LOG_FILE}"
+        return True, "Gateway dihentikan (perlu SIGKILL)."
+    return False, f"PID {pid} tidak mati bahkan setelah SIGKILL. Cek manual: ps | grep zeline. Log: {LOG_FILE}"
 
 
 def tail_log(lines: int = 80) -> str:

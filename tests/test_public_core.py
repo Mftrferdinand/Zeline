@@ -115,6 +115,52 @@ class ZelinePublicCoreTests(unittest.TestCase):
             result = self.memory.MemoryStore("telegram:second").add("fakta kedua")
         self.assertIn("batas", result.lower())
 
+    def test_session_history_survives_restart(self):
+        # Simulasikan restart: buat store, simpan history, buang store, buat lagi.
+        store_mod = importlib.import_module("zeline.session_store")
+        persistence = store_mod.SessionPersistence(self.home / "sessions.db")
+        persistence.save(
+            "telegram:100",
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "budget gua 20k FundingPips"},
+                {"role": "assistant", "content": "noted 20k"},
+            ],
+            title="FundingPips 20k",
+        )
+        # 'Restart' → instance baru membaca DB yang sama.
+        reopened = store_mod.SessionPersistence(self.home / "sessions.db")
+        messages, title = reopened.load("telegram:100")
+        self.assertEqual(title, "FundingPips 20k")
+        self.assertTrue(any("FundingPips" in str(m.get("content")) for m in messages))
+        # Isolasi antar identity.
+        other, _ = reopened.load("telegram:999")
+        self.assertEqual(other, [])
+        # reset menghapus history disk.
+        self.assertTrue(reopened.reset("telegram:100"))
+        self.assertEqual(reopened.load("telegram:100"), ([], None))
+
+    def test_session_store_hydrates_agent_from_disk(self):
+        sessions_mod = importlib.import_module("zeline.sessions")
+        store_mod = importlib.import_module("zeline.session_store")
+        persistence = store_mod.SessionPersistence(self.home / "sessions.db")
+        persistence.save(
+            "telegram:100",
+            [
+                {"role": "system", "content": "sys lama"},
+                {"role": "user", "content": "inget budget 20k"},
+                {"role": "assistant", "content": "oke"},
+            ],
+            title="Budget 20k",
+        )
+        store = sessions_mod.SessionStore(persistence=persistence)
+        session = store.get_or_create("telegram:100", tool_profile="safe")
+        # Agent baru harus sudah berisi history lama, dengan system prompt FRESH.
+        self.assertEqual(session.title, "Budget 20k")
+        self.assertEqual(session.agent.messages[0]["role"], "system")
+        self.assertNotEqual(session.agent.messages[0]["content"], "sys lama")
+        self.assertTrue(any("budget 20k" in str(m.get("content")).lower() for m in session.agent.messages))
+
     def test_safe_profile_cannot_access_file_or_shell(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         names = {item["function"]["name"] for item in executor.schemas}
@@ -170,6 +216,101 @@ class ZelinePublicCoreTests(unittest.TestCase):
             self.assertIn("diblokir", executor.run("web_fetch", {"url": url}))
         self.assertIn("diblokir", executor.run("web_fetch", {"url": "http://localhost.localdomain/"}))
         self.assertIn("ERROR", executor.run("web_fetch", {"url": "ftp://example.com/file"}))
+
+    def test_http_request_blocks_internal_and_bad_scheme(self):
+        executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        # http_request harus tersedia bahkan di profile safe (SSRF-protected)
+        names = {item["function"]["name"] for item in executor.schemas}
+        self.assertIn("http_request", names)
+        self.assertIn("system_env", names)
+        self.assertIn("diblokir", executor.run("http_request", {"method": "POST", "url": "http://127.0.0.1:20128/v1"}))
+        self.assertIn("diblokir", executor.run("http_request", {"method": "GET", "url": "http://169.254.169.254/latest/"}))
+        self.assertIn("ERROR", executor.run("http_request", {"method": "GET", "url": "ftp://example.com/x"}))
+        self.assertIn("tidak didukung", executor.run("http_request", {"method": "TRACE", "url": "https://example.com"}))
+
+    def test_http_request_rejects_bad_headers_json(self):
+        executor = self.tools.ToolExecutor("cli:local", profile="safe", workspace=self.home)
+        self.assertIn("ERROR", executor.run("http_request", {"method": "GET", "url": "https://example.com", "headers": "{not json"}))
+
+    def test_system_env_reports_environment_without_secrets(self):
+        executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        result = executor.run("system_env", {})
+        self.assertIn("OS", result)
+        self.assertIn("Python", result)
+        self.assertIn("Tool terpasang", result)
+
+    def test_download_file_is_workspace_gated_and_ssrf_protected(self):
+        # safe profile TIDAK boleh punya download_file (nulis ke disk)
+        safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        self.assertNotIn("download_file", {item["function"]["name"] for item in safe.schemas})
+        # workspace profile punya, tapi SSRF + path escape diblokir
+        workspace = self.home / "dl-ws"
+        workspace.mkdir(parents=True)
+        executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=workspace)
+        self.assertIn("diblokir", executor.run("download_file", {"url": "http://169.254.169.254/x", "path": "meta.txt"}))
+        self.assertIn("workspace", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
+        self.assertFalse((self.home / "escape.txt").exists())
+
+    def _write_fake_mcp_server(self) -> Path:
+        self.home.mkdir(parents=True, exist_ok=True)
+        script = self.home / "fake_mcp.py"
+        script.write_text(
+            "import json, sys\n"
+            "def send(o):\n"
+            "    sys.stdout.write(json.dumps(o)+'\\n'); sys.stdout.flush()\n"
+            "for line in sys.stdin:\n"
+            "    line=line.strip()\n"
+            "    if not line: continue\n"
+            "    req=json.loads(line); m=req.get('method'); rid=req.get('id')\n"
+            "    if m=='initialize': send({'jsonrpc':'2.0','id':rid,'result':{'protocolVersion':'2024-11-05','capabilities':{},'serverInfo':{'name':'fake','version':'1'}}})\n"
+            "    elif m=='notifications/initialized': pass\n"
+            "    elif m=='tools/list': send({'jsonrpc':'2.0','id':rid,'result':{'tools':[{'name':'add','description':'sum','inputSchema':{'type':'object','properties':{'a':{'type':'number'},'b':{'type':'number'}}}}]}})\n"
+            "    elif m=='tools/call':\n"
+            "        a=req['params']['arguments']; t=float(a.get('a',0))+float(a.get('b',0))\n"
+            "        send({'jsonrpc':'2.0','id':rid,'result':{'content':[{'type':'text','text':'sum='+str(t)}]}})\n"
+            "    elif rid is not None: send({'jsonrpc':'2.0','id':rid,'error':{'code':-32601,'message':'nf'}})\n",
+            encoding="utf-8",
+        )
+        return script
+
+    def test_mcp_stdio_discovery_and_call(self):
+        mcp = importlib.import_module("zeline.mcp")
+        script = self._write_fake_mcp_server()
+        server = mcp.MCPServer(name="fake", transport="stdio", command=f"{sys.executable} {script}")
+        try:
+            tools = server.list_tools()
+            names = [t["function"]["name"] for t in tools]
+            self.assertIn("mcp__fake__add", names)
+            self.assertEqual(server.call_tool("add", {"a": 2, "b": 3}), "sum=5.0")
+        finally:
+            server.close()
+
+    def test_mcp_only_available_to_operator_profiles(self):
+        mcp = importlib.import_module("zeline.mcp")
+        script = self._write_fake_mcp_server()
+        self.config.MCP_SERVERS = {"fake": {"transport": "stdio", "command": f"{sys.executable} {script}"}}
+        try:
+            # safe (gateway publik) TIDAK boleh dapat tool MCP (server = perintah lokal)
+            safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+            self.assertFalse(any(n["function"]["name"].startswith("mcp__") for n in safe.schemas))
+            self.assertIn("tidak diizinkan", safe.run("mcp__fake__add", {"a": 1, "b": 1}))
+            # full (operator) dapat + bisa dispatch
+            full = self.tools.ToolExecutor("cli:local", profile="full", workspace=self.home)
+            self.assertTrue(any(n["function"]["name"] == "mcp__fake__add" for n in full.schemas))
+            self.assertEqual(full.run("mcp__fake__add", {"a": 10, "b": 5}), "sum=15.0")
+            if full.mcp:
+                full.mcp.close()
+        finally:
+            self.config.MCP_SERVERS = {}
+
+    def test_mcp_name_helpers_and_sse_parsing(self):
+        mcp = importlib.import_module("zeline.mcp")
+        self.assertEqual(mcp.parse_tool_name("mcp__srv__tool"), ("srv", "tool"))
+        self.assertIsNone(mcp.parse_tool_name("web_search"))
+        self.assertEqual(mcp.make_tool_name("srv", "tool"), "mcp__srv__tool")
+        # SSE-framed JSON-RPC payload harus keurai
+        payload = mcp._decode_jsonrpc_payload('data: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n')
+        self.assertEqual(payload["result"], {"ok": True})
 
     def test_workspace_profile_blocks_path_escape(self):
         workspace = self.home / "workspace"
@@ -275,15 +416,32 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider lambat merespons")
         self.assertEqual(telegram._working_status_text(8), "⏳ Working — 8 s")
 
-    def test_telegram_working_heartbeat_reports_until_turn_finishes(self):
+    def test_telegram_working_heartbeat_keeps_typing_alive(self):
+        # Heartbeat harus terus mengirim 'sendChatAction typing' agar indikator
+        # 'sedang mengetik' tidak hilang saat model berpikir lama — TAPI tidak
+        # membuat bubble progres baru (tidak ada sendMessage) selama menunggu.
         telegram = importlib.import_module("zeline.gateways.telegram")
         done = threading.Event()
         with mock.patch.object(telegram, "_api_call") as api:
-            worker = telegram._start_working_heartbeat("bot-api", 42, done, interval=0.01)
-            time.sleep(0.025)
+            live = telegram._LiveStatus("bot-api", 42, model="m")
+            worker = telegram._start_working_heartbeat("bot-api", 42, done, interval=0.01, status=live)
+            time.sleep(0.05)
             done.set()
             worker.join(timeout=1)
-        self.assertGreaterEqual(api.call_count, 1)
+        methods = [c.args[1] for c in api.call_args_list if len(c.args) > 1]
+        self.assertIn("sendChatAction", methods)  # typing terus di-refresh
+        self.assertNotIn("sendMessage", methods)  # tapi tidak bikin bubble 'Processing'
+
+    def test_telegram_bubble_appears_only_on_tool_activity(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        sent = []
+        with mock.patch.object(telegram, "_api_call", side_effect=lambda a, m, **k: sent.append(m) or {"result": {"message_id": 7}}):
+            live = telegram._LiveStatus("bot-api", 42, model="m")
+            live.set_waiting()   # menunggu LLM → tidak boleh bikin bubble
+            live.tick()          # heartbeat → tidak boleh bikin bubble
+            self.assertEqual([m for m in sent if m == "sendMessage"], [])
+            live.add("🔎 Searching bitcoin")  # tool jalan → bubble muncul sekarang
+            self.assertIn("sendMessage", sent)
 
     def test_telegram_renders_safe_markdown_as_html(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -294,6 +452,24 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("<code>zeline doctor</code>", rendered)
         self.assertIn('<pre><code class="language-html">&lt;div&gt;aman&lt;/div&gt;</code></pre>', rendered)
         self.assertNotIn("<div>aman</div>", rendered)
+
+    def test_telegram_converts_markdown_table_to_labeled_list(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = (
+            "| Tipe | Harga | Sifat |\n"
+            "|---|---|---|\n"
+            "| Zero 50k | ~$299 | Permanen |\n"
+            "| 1-Step 50k | ~$319 | Permanen |"
+        )
+        rendered = telegram._markdown_to_telegram_html(source)
+        # Tidak boleh ada pipe tabel mentah yang bocor ke output.
+        self.assertNotIn("|---", rendered)
+        self.assertNotIn("| Harga |", rendered)
+        # Baris pertama jadi judul tebal, kolom lain jadi 'Header: nilai'.
+        self.assertIn("<b>Zero 50k</b>", rendered)
+        self.assertIn("Harga: ~$299", rendered)
+        self.assertIn("Sifat: Permanen", rendered)
+        self.assertIn("<b>1-Step 50k</b>", rendered)
 
     def test_telegram_normalizes_messy_output(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

@@ -30,6 +30,7 @@ import requests
 from zeline import config
 from zeline import memory
 from zeline import skills
+from zeline import mcp as mcp_module
 
 ToolFunction = Callable[..., str]
 
@@ -183,12 +184,137 @@ def _execute_code(code: str, workspace: Path) -> str:
         return f"ERROR jalankan kode: {exc}"
 
 
+def _http_request(method: str, url: str, headers: str = "", body: str = "") -> str:
+    """Panggil REST API dengan method bebas (GET/POST/PUT/PATCH/DELETE).
+
+    Beda dari web_fetch (baca halaman): ini untuk memanggil API/webhook dengan
+    header + body JSON. SSRF-protected: alamat internal diblokir setelah resolusi
+    DNS, sama seperti web_fetch. Diinspirasi tool http_request awas-agent, ditulis
+    ulang di Python dengan proteksi jaringan privat.
+    """
+    method = (method or "GET").strip().upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        return f"ERROR: method HTTP tidak didukung: {method}"
+    url = (url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "ERROR: URL harus http/https yang valid."
+    host = parsed.hostname or ""
+    if not host or _is_internal_ip(host):
+        return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+    hdrs: dict[str, str] = {"User-Agent": _UA}
+    if headers.strip():
+        try:
+            parsed_hdrs = json.loads(headers)
+            if not isinstance(parsed_hdrs, dict):
+                return "ERROR: headers harus objek JSON {\"Key\": \"Value\"}."
+            hdrs.update({str(k): str(v) for k, v in parsed_hdrs.items()})
+        except json.JSONDecodeError as exc:
+            return f"ERROR: headers bukan JSON valid: {exc}"
+    data = body.encode("utf-8") if body else None
+    if data and "content-type" not in {k.lower() for k in hdrs}:
+        stripped = body.lstrip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            hdrs["Content-Type"] = "application/json"
+    try:
+        response = requests.request(
+            method, url, headers=hdrs, data=data, timeout=WEB_TIMEOUT, allow_redirects=True,
+        )
+    except requests.RequestException as exc:
+        return f"ERROR request: {exc.__class__.__name__}: {exc}"
+    text = response.text or ""
+    if len(text) > 8_000:
+        text = text[:8_000] + "\n... [dipotong]"
+    ctype = response.headers.get("Content-Type", "")
+    return f"Status: {response.status_code} {response.reason}\nContent-Type: {ctype}\n\n{text}".strip()
+
+
+def _download_file(url: str, path: str, workspace: Path) -> str:
+    """Unduh file (biner/teks) dari URL publik ke dalam workspace.
+
+    SSRF-protected & path dikurung di dalam workspace. Diinspirasi tool
+    download_file awas-agent. Berguna untuk ambil release/aset/dataset tanpa
+    harus lewat run_shell curl.
+    """
+    url = (url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "ERROR: URL harus http/https yang valid."
+    host = parsed.hostname or ""
+    if not host or _is_internal_ip(host):
+        return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True) as response:
+            if not response.ok:
+                return f"ERROR: HTTP {response.status_code} {response.reason}."
+            size = 0
+            with open(dest, "wb") as handle:
+                for chunk in response.iter_content(65536):
+                    handle.write(chunk)
+                    size += len(chunk)
+                    if size > DOWNLOAD_MAX_BYTES:
+                        handle.close()
+                        dest.unlink(missing_ok=True)
+                        return f"ERROR: file melebihi batas {DOWNLOAD_MAX_BYTES // (1024*1024)} MB."
+    except requests.RequestException as exc:
+        return f"ERROR download: {exc.__class__.__name__}: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, terunduh: {rel} ({_format_size(size)})"
+
+
+def _format_size(num_bytes: int) -> str:
+    for unit, factor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+        if num_bytes >= factor:
+            return f"{num_bytes / factor:.1f} {unit}"
+    return f"{num_bytes} B"
+
+
+def _system_env() -> str:
+    """Ringkasan lingkungan sistem: OS/arch, tool/runtime terpasang, port lokal aktif.
+
+    Diinspirasi tool system_env awas-agent. Membantu model memutuskan perintah
+    yang tersedia (python vs python3, ada node/git/docker?) sebelum menjalankannya.
+    """
+    import platform as _platform
+    import shutil as _shutil
+
+    lines = ["Lingkungan Sistem", ""]
+    lines.append(f"- OS: {_platform.system()} {_platform.release()}")
+    lines.append(f"- Arch: {_platform.machine()}")
+    lines.append(f"- CPU: {os.cpu_count()} core")
+    lines.append(f"- Python: {_platform.python_version()}")
+    lines.append("")
+    lines.append("Tool terpasang:")
+    for tool in ("python", "python3", "pip", "node", "npm", "go", "gcc", "make", "git", "docker", "curl", "ffmpeg"):
+        found = _shutil.which(tool)
+        lines.append(f"- {tool}: {found or 'tidak ada'}")
+    lines.append("")
+    lines.append("Port lokal aktif (umum):")
+    active = []
+    for port in (22, 80, 443, 3000, 5000, 8000, 8080, 8081, 8089, 8092, 20128):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.05)
+        try:
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                active.append(port)
+        finally:
+            sock.close()
+    lines.append("- " + (", ".join(str(p) for p in active) if active else "tidak ada yang terdeteksi"))
+    return "\n".join(lines)
+
+
 WEB_TIMEOUT = 12
 # (connect, read) tuple — connect di-cap ketat agar tidak menggantung saat
 # host lambat/diblokir; read sedikit lebih longgar untuk halaman besar.
 SEARCH_TIMEOUT = (4, 6)
 WEB_MAX_BYTES = 200_000
 WEB_MAX_RESULTS = 5
+DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB cap untuk download_file
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 # Reader proxy: cepat & tahan blokir dari jaringan mobile/Termux (DuckDuckGo
 # langsung sering timeout/HTTP 000). Semua pencarian & fetch lewat sini dulu.
@@ -536,6 +662,27 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "http_request",
+        "Panggil REST API/webhook dengan method bebas (GET/POST/PUT/PATCH/DELETE), header, dan body JSON. Beda dari web_fetch yang cuma baca halaman GET. Alamat jaringan internal otomatis diblokir.",
+        {
+            "type": "object",
+            "properties": {
+                "method": {"type": "string", "description": "GET, POST, PUT, PATCH, DELETE"},
+                "url": {"type": "string", "description": "URL endpoint http/https"},
+                "headers": {"type": "string", "description": "Header sebagai JSON, mis. {\"Authorization\": \"Bearer x\"}. Opsional."},
+                "body": {"type": "string", "description": "Body request (JSON/teks). Opsional."},
+            },
+            "required": ["method", "url"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "system_env",
+        "Tampilkan info lingkungan: OS/arch/CPU, runtime & tool yang terpasang (python/node/go/git/docker/ffmpeg), dan port lokal aktif. Panggil sebelum menjalankan perintah untuk tahu tool apa yang tersedia.",
+        {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "read_file",
         "Baca file teks di dalam workspace yang diizinkan.",
         {
@@ -574,6 +721,19 @@ TOOL_DEFS: list[ToolDef] = [
         "search_files",
         "Cari teks dalam file-file workspace.",
         {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string", "description": "Glob file, default *"}}, "required": ["query"]},
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "download_file",
+        "Unduh file dari URL publik (http/https) ke dalam workspace. Untuk aset/release/dataset. Alamat internal diblokir; batas 50 MB.",
+        {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL file yang mau diunduh"},
+                "path": {"type": "string", "description": "Path tujuan relatif di workspace"},
+            },
+            "required": ["url", "path"],
+        },
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
@@ -632,6 +792,14 @@ class ToolExecutor:
         self.memory = memory.MemoryStore(self.identity)
         # Private skill hanya boleh dibaca operator local/full profile.
         self._can_read_private_skills = profile == "full"
+        # MCP hanya untuk operator (workspace/full). Server stdio menjalankan
+        # perintah lokal, jadi tidak boleh diekspos ke gateway publik (safe).
+        self.mcp: mcp_module.MCPRegistry | None = None
+        if profile in {"workspace", "full"} and getattr(config, "MCP_SERVERS", None):
+            try:
+                self.mcp = mcp_module.MCPRegistry.from_config({"mcp": {"servers": config.MCP_SERVERS}})
+            except Exception:
+                self.mcp = None
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
@@ -641,11 +809,14 @@ class ToolExecutor:
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url),
             "deep_research": lambda query: _deep_research(query),
+            "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
+            "system_env": lambda: _system_env(),
             "read_file": lambda path: _read_file(path, self.workspace),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
             "edit_file": lambda path, old_text, new_text: _edit_file(path, old_text, new_text, self.workspace),
             "patch_file": lambda path, old_text, new_text: _patch_file(path, old_text, new_text, self.workspace),
             "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
+            "download_file": lambda url, path: _download_file(url, path, self.workspace),
             "update_task": _update_task,
             "save_skill": skills.save_skill,
             "update_skill": skills.update_skill,
@@ -669,9 +840,20 @@ class ToolExecutor:
 
     @property
     def schemas(self) -> list[dict[str, Any]]:
-        return [definition.schema() for definition in TOOL_DEFS if self.profile in definition.profiles]
+        native = [definition.schema() for definition in TOOL_DEFS if self.profile in definition.profiles]
+        if self.mcp is not None:
+            try:
+                native.extend(self.mcp.schemas())
+            except Exception:
+                pass
+        return native
 
     def run(self, name: str, args: dict[str, Any]) -> str:
+        # Tool MCP di-dispatch ke registry (hanya untuk profile workspace/full).
+        if self.mcp is not None and name.startswith(mcp_module.MCP_TOOL_PREFIX):
+            if not self.mcp.has_tool(name):
+                return f"ERROR: tool MCP '{name}' tidak terdaftar."
+            return self.mcp.call(name, args)
         allowed = {definition.name for definition in TOOL_DEFS if self.profile in definition.profiles}
         if name not in allowed:
             return f"ERROR: tool '{name}' tidak diizinkan untuk profile '{self.profile}'."

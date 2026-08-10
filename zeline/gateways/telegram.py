@@ -237,7 +237,14 @@ class _LiveStatus:
             header = "⏳ Processing..."
         return header + feed
 
-    def _push_locked(self, force: bool = False) -> None:
+    def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
+        # Bubble progres HANYA dibuat saat ada aktivitas tool nyata (search/coding/
+        # fetch). Selama sekadar menunggu respons LLM, jangan pernah membuat bubble
+        # baru — indikator 'typing…' native Telegram sudah cukup. Ini mencegah
+        # (a) 'Processing' muncul di pertanyaan ringan tanpa tool, dan
+        # (b) bubble muncul lalu hilang ketika finalize tidak menemukan aktivitas.
+        if self.message_id is None and not allow_create:
+            return
         text = self._render()
         if text == self._last_text and not force:
             return
@@ -256,10 +263,17 @@ class _LiveStatus:
             )
 
     def set_waiting(self) -> None:
-        """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir)."""
+        """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir).
+
+        Fase menunggu TIDAK pernah membuat bubble baru — kalau bubble sudah ada
+        (karena tool sempat jalan), header-nya di-refresh; kalau belum ada,
+        dibiarkan kosong supaya pertanyaan ringan tanpa tool tidak memunculkan
+        'Processing'.
+        """
         with self._lock:
             self.phase = "waiting"
             self.phase_started = time.monotonic()
+            self._push_locked(allow_create=False)
 
     def add(self, line: str) -> None:
         line = line.strip()
@@ -280,11 +294,14 @@ class _LiveStatus:
                     self.lines.append(line)
             elif not self.lines or self.lines[-1] != line:
                 self.lines.append(line)
-            self._push_locked()
+            # Ada aktivitas tool nyata → di sinilah bubble progres boleh dibuat.
+            self._push_locked(allow_create=True)
 
     def tick(self) -> None:
+        # Heartbeat hanya me-refresh bubble yang SUDAH ada; tidak pernah membuat
+        # bubble baru saat cuma menunggu LLM.
         with self._lock:
-            self._push_locked()
+            self._push_locked(allow_create=False)
 
     def finalize(self) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
@@ -326,18 +343,26 @@ def _start_working_heartbeat(
     chat_id: int,
     done: threading.Event,
     *,
-    interval: float = 6.0,
+    interval: float = 4.0,
     status: "_LiveStatus | None" = None,
 ) -> threading.Thread:
-    """Update jam elapsed pada pesan status live secara berkala.
+    """Jaga indikator 'typing…' tetap hidup selama agent bekerja.
 
-    Tidak lagi mengirim pesan baru; hanya meng-``tick`` pesan yang sama sehingga
-    tidak ada tumpukan 'Working — N min' di chat.
+    Telegram hanya menampilkan 'typing…' ~5 detik per ``sendChatAction``. Kalau
+    model berpikir lama (atau load skill + reasoning), tanpa refresh indikator
+    hilang dan bot tampak diam/polos lalu tiba-tiba mengirim jawaban. Maka tiap
+    tick (default 4s < 5s) kita:
+      1) kirim ulang ``sendChatAction typing`` agar 'sedang mengetik' terus tampil,
+      2) ``tick()`` bubble progres yang SUDAH ada (tanpa membuat yang baru).
     """
     live = status or _LiveStatus(api, chat_id)
 
     def heartbeat() -> None:
         while not done.wait(interval):
+            try:
+                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
+            except Exception:
+                pass
             live.tick()
 
     worker = threading.Thread(target=heartbeat, name=f"zeline-heartbeat-{chat_id}", daemon=True)
@@ -745,6 +770,60 @@ _LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 _BULLET_RE = re.compile(r"(?m)^(\s*)[\*\+•·–—]\s+(?=\S)")
 _ORDERED_RE = re.compile(r"(?m)^(\s*)(\d+)[.)]\s+(?=\S)")
 _HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+
+
+def _split_table_row(line: str) -> list[str]:
+    """Pecah satu baris tabel markdown jadi sel-sel (buang pipe tepi & spasi)."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _convert_tables(text: str) -> str:
+    """Ubah tabel Markdown (yang tidak dirender Telegram) jadi daftar berlabel.
+
+    Telegram TIDAK punya tabel; baris `| a | b |` muncul mentah dan terlihat
+    berantakan. Tiap baris data diubah jadi blok: sel pertama sebagai judul tebal,
+    sisanya sebagai `Header: nilai` — rapi & enak dibaca di mobile.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        # Kandidat tabel: baris ber-pipe diikuti baris separator (---|---).
+        if "|" in line and i + 1 < n and _TABLE_SEP_RE.match(lines[i + 1]):
+            headers = _split_table_row(line)
+            j = i + 2
+            rows: list[list[str]] = []
+            while j < n and "|" in lines[j] and lines[j].strip():
+                rows.append(_split_table_row(lines[j]))
+                j += 1
+            # Render tiap baris data sebagai blok berlabel.
+            for row in rows:
+                # Judul blok = sel pertama (kalau ada isinya).
+                title = row[0] if row else ""
+                if title:
+                    out.append(f"**{title}**")
+                for col in range(1, len(headers)):
+                    head = headers[col] if col < len(headers) else ""
+                    val = row[col] if col < len(row) else ""
+                    if head or val:
+                        out.append(f"- {head}: {val}" if head else f"- {val}")
+                out.append("")  # pemisah antar baris
+            if rows:
+                if out and out[-1] == "":
+                    out.pop()
+                i = j
+                continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
 
 
 def _normalize_markdown(text: str) -> str:
@@ -766,6 +845,9 @@ def _normalize_markdown(text: str) -> str:
         return f"\x00BLOCK{len(protected) - 1}\x00"
 
     working = _FENCED_CODE_RE.sub(_protect, text)
+
+    # 0) Ubah tabel Markdown → daftar berlabel (Telegram tidak punya tabel).
+    working = _convert_tables(working)
 
     lines = []
     for raw in working.splitlines():
