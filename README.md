@@ -10,13 +10,12 @@
 
 # Zeline
 
-Zeline is an open-source agentic AI framework developed by [Zerolinear](https://zerolinear.com). It's a flexible foundation for building autonomous AI agents that can reason, use tools, interact with external systems, and carry out complex, multi-step workflows with minimal supervision.
+Zeline is an open-source agentic AI framework developed by [Zerolinear](https://zerolinear.com).  
+It's a flexible foundation for building autonomous AI agents that can reason, use tools, interact with external systems, and carry out complex, multi-step workflows with minimal supervision.
 
 Rather than being tied to a single model, provider, or infrastructure, Zeline is built around flexibility. Connect your preferred AI models and OpenAI-compatible endpoints, configure providers, integrate tools, and extend the framework to fit how you want your agents to work — models and providers can be swapped without rebuilding the system, keeping the agent architecture portable and adaptable.
 
-Run it locally for development or deploy it to your own server or cloud, and connect it to the interfaces you use. The goal is to keep control in the developer's hands: your models, your tools, your infrastructure, and your data.
-
-**Open-source, model-agnostic, extensible, and developer-first.**
+Run it locally for development or deploy it to your own server or cloud, and connect it to the interfaces you use. The goal is to keep control in the developer's hands: your models, your tools, your infrastructure, your data. Open-source, model-agnostic, extensible, and developer-first.
 
 Developed by [Zerolinear](https://zerolinear.com). Built and maintained by [Mftrferdinand](https://mftrferdinand.com).
 
