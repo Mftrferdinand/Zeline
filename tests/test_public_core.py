@@ -569,6 +569,33 @@ class ZelinePublicCoreTests(unittest.TestCase):
         task = telegram._tool_progress_text("update_task", {"task": "Run tests", "status": "in_progress"})
         self.assertEqual(task, "📋 Updating tasks\n<code>in_progress</code> · Run tests")
 
+    def test_telegram_search_terminal_has_no_title_and_uses_light_emoji(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # Perintah shell pencarian: tanpa 'Zeline Terminal', tanpa label Bash, pakai 🟢.
+        search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
+        self.assertNotIn("Zeline Terminal", search)
+        self.assertNotIn("Bash", search)
+        self.assertTrue(search.startswith("🟢"))
+        # Perintah coding biasa tetap bergaya terminal penuh.
+        coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
+        self.assertIn("🖥️ Zeline Terminal", coding)
+
+    def test_telegram_web_progress_hides_raw_links(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # web_fetch tidak menampilkan URL mentah.
+        fetched = telegram._tool_progress_text("web_fetch", {"url": "https://ftmo.com/en/"})
+        self.assertNotIn("ftmo.com", fetched)
+        self.assertNotIn("http", fetched)
+        # web_search hanya tampilkan kueri, research pakai 🔍.
+        self.assertTrue(telegram._tool_progress_text("web_search", {"query": "FTMO rules"}).startswith("🔎 Searching web:"))
+        self.assertTrue(telegram._tool_progress_text("deep_research", {"query": "FTMO"}).startswith("🔍 Researching:"))
+
+    def test_telegram_finalize_line_converts_searching_to_reading(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        self.assertEqual(telegram._finalize_line("🔎 Searching web: FTMO"), "📖 Reading web: FTMO")
+        self.assertEqual(telegram._finalize_line("🔍 Researching: FTMO"), "📖 Researched: FTMO")
+        self.assertEqual(telegram._finalize_line("📖 Membaca sumber web…"), "📖 Sumber web dibaca")
+
     def test_telegram_progress_supports_code_skill_and_self_improvement(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("execute_code", {"code": "from pathlib import Path\nprint(Path.home())"}), "🐍 Running code from <code>from pathlib import Path</code>...")
@@ -646,11 +673,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         ]
         self.assertEqual(len(live_sends), 1)
         self.assertIn("editMessageText", methods)  # update via edit
-        # Bubble progres DIKUNCI sebagai catatan alur (✅ Selesai), bukan dihapus.
+        # Bubble progres DIKUNCI sebagai catatan alur (⌛️ Selesai), bukan dihapus.
         self.assertNotIn("deleteMessage", methods)
         finalized = [
             c for c in api.call_args_list
-            if len(c.args) > 1 and c.args[1] == "editMessageText" and "✅ Selesai" in str(c.kwargs.get("text", ""))
+            if len(c.args) > 1 and c.args[1] == "editMessageText" and "⌛️ Selesai" in str(c.kwargs.get("text", ""))
         ]
         self.assertEqual(len(finalized), 1)
         # Jawaban final terkirim sebagai pesan terpisah.
@@ -683,7 +710,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             if len(c.args) > 1 and c.args[1] == "sendMessage" and "jawaban langsung" in str(c.kwargs.get("text", ""))
         ]
         self.assertEqual(len(finals), 1)
-        self.assertNotIn("✅ Selesai", str(api.call_args_list))
+        self.assertNotIn("⌛️ Selesai", str(api.call_args_list))
 
     def test_telegram_model_picker_marks_current_model_and_uses_short_callbacks(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
