@@ -19,20 +19,27 @@ Run it locally for development or deploy it to your own server or cloud, and con
 
 Developed by [Zerolinear](https://zerolinear.com). Built and maintained by [Mftrferdinand](https://mftrferdinand.com).
 
-## What it includes
+## Features
 
-- An OpenAI-compatible agent loop with tool calling
-- Provider support for OpenAI, OpenRouter, vLLM, Ollama, and compatible APIs
-- Persistent memory isolated by platform identity
-- Markdown skills loaded on demand
-- Interactive CLI and one-shot queries
-- Telegram Bot API long polling, bot commands, and attachment intake
-- WhatsApp pairing through Baileys and a QR code
-- An authenticated local HTTP webhook
-- Scoped tool profiles:
-  - `safe`: memory and public skill access only; default for messaging gateways
-  - `workspace`: `safe` plus files inside the owner workspace
-  - `full`: `workspace` plus shell access; intended for the local owner CLI
+| Category | What you get |
+| --- | --- |
+| **Agent core** | OpenAI-compatible agent loop with tool calling, interactive CLI, and one-shot queries |
+| **Model-agnostic** | Works with OpenAI, OpenRouter, vLLM, Ollama, and any OpenAI- or Anthropic-compatible API — swap model or provider without rebuilding |
+| **Persistent memory** | Long-term memory isolated per platform identity |
+| **Session persistence** | Conversation history stored in SQLite (`~/.zeline/sessions.db`) — survives gateway restarts |
+| **Skills** | Markdown skills (reusable procedures) loaded on demand |
+| **Messaging gateways** | Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook |
+| **Built-in tools** | Web search, web fetch, deep research, HTTP requests, file read/write/edit/search, code execution, and shell |
+| **MCP client** | Connect external MCP servers (stdio or HTTP) and expose their tools automatically |
+| **Scoped security** | `safe` / `workspace` / `full` tool profiles that gate access per surface |
+
+### Tool profiles
+
+| Profile | Access |
+| --- | --- |
+| `safe` | Memory and public skills only — default for messaging gateways |
+| `workspace` | `safe` plus files inside the owner workspace |
+| `full` | `workspace` plus shell access — intended for the local owner CLI |
 
 ## Install
 
