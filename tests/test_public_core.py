@@ -407,6 +407,24 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn('<pre><code class="language-html">&lt;div&gt;aman&lt;/div&gt;</code></pre>', rendered)
         self.assertNotIn("<div>aman</div>", rendered)
 
+    def test_telegram_converts_markdown_table_to_labeled_list(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = (
+            "| Tipe | Harga | Sifat |\n"
+            "|---|---|---|\n"
+            "| Zero 50k | ~$299 | Permanen |\n"
+            "| 1-Step 50k | ~$319 | Permanen |"
+        )
+        rendered = telegram._markdown_to_telegram_html(source)
+        # Tidak boleh ada pipe tabel mentah yang bocor ke output.
+        self.assertNotIn("|---", rendered)
+        self.assertNotIn("| Harga |", rendered)
+        # Baris pertama jadi judul tebal, kolom lain jadi 'Header: nilai'.
+        self.assertIn("<b>Zero 50k</b>", rendered)
+        self.assertIn("Harga: ~$299", rendered)
+        self.assertIn("Sifat: Permanen", rendered)
+        self.assertIn("<b>1-Step 50k</b>", rendered)
+
     def test_telegram_normalizes_messy_output(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         messy = "Judul\n\n\n\n* poin satu\n+ poin dua\n•  poin tiga\nprose  dengan   spasi    ganda"
