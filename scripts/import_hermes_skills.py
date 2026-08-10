@@ -28,6 +28,9 @@ import sys
 HERMES_SKILLS = os.path.expanduser("~/.hermes/skills")
 ZELINE_PUBLIC = os.path.expanduser("~/.zeline/skills/public")
 
+# Sumber default; bisa dioverride lewat --src (mis. repo lain: openclaw, awas, dsb).
+SOURCE_DIR = HERMES_SKILLS
+
 # Tool Hermes yang TIDAK ada di Zeline → diganti kalimat netral supaya model
 # tidak menganggapnya tersedia.
 TOOL_REWRITES = {
@@ -40,8 +43,9 @@ TOOL_REWRITES = {
 # Tool yang cukup dianotasi (masih relevan konsepnya) — ditandai sebagai N/A.
 TOOL_UNSUPPORTED_NOTE = ["clarify", "cronjob", "vision_analyze", "text_to_speech", "process("]
 
-# Scrub branding Hermes → Zeline. Skill yang di-import TIDAK boleh menyebut Hermes:
-# ini repo/agent milik user (Zeline), bukan Hermes. Urutan penting (spesifik dulu).
+# Scrub branding Hermes/OpenClaw → Zeline. Skill yang di-import TIDAK boleh
+# menyebut framework asalnya: ini repo/agent milik user (Zeline). Urutan penting
+# (spesifik dulu, kata dasar terakhir).
 BRAND_SCRUBS = [
     (r"Hermes Agent", "Zeline"),
     (r"HermesAgent", "ZelineAgent"),
@@ -55,6 +59,14 @@ BRAND_SCRUBS = [
     (r"\bhermes\b", "zeline"),
     (r"\bHermes\b", "Zeline"),
     (r"\bHERMES\b", "ZELINE"),
+    # OpenClaw branding
+    (r"OPENCLAW_", "ZELINE_"),
+    (r"OpenClaw", "Zeline"),
+    (r"openclaw", "zeline"),
+    (r"ClawHub", "the skill hub"),
+    (r"clawhub", "skillhub"),
+    (r"~/\.claw\b", "~/.zeline"),
+    (r"\bthe lobster way\b", "the Zeline way"),
 ]
 
 REF_INLINE_LIMIT = 12_000  # char; reference lebih besar dari ini hanya diringkas judulnya
@@ -193,11 +205,13 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="timpa file tujuan bila sudah ada")
     ap.add_argument("--dry", action="store_true", help="jangan tulis, cuma laporkan")
     ap.add_argument("--ref-limit", type=int, default=REF_INLINE_LIMIT, help="batas char untuk inline reference")
+    ap.add_argument("--src", default=SOURCE_DIR, help="direktori sumber skill (default ~/.hermes/skills; bisa repo lain)")
     args = ap.parse_args()
 
     REF_INLINE_LIMIT = args.ref_limit
+    source_dir = os.path.expanduser(args.src)
 
-    all_md = glob.glob(os.path.join(HERMES_SKILLS, "**", "SKILL.md"), recursive=True)
+    all_md = glob.glob(os.path.join(source_dir, "**", "SKILL.md"), recursive=True)
     by_name = {}
     for p in all_md:
         fm, _ = _parse_frontmatter(open(p, encoding="utf-8", errors="replace").read())
