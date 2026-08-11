@@ -15,10 +15,6 @@
   <a href="README.zh.md"><img src="https://img.shields.io/badge/LANG-中文-1E3A8A?style=for-the-badge&labelColor=334155"></a>
 </p>
 
-<p align="center">
-  <strong>Zeline Agentic AI</strong> — oleh Zerolinear, sebuah lab riset AI.
-</p>
-
 ---
 
 # Zeline
