@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/DOCS-ZELINE.ZEROLINEAR.COM-38BDF8?style=for-the-badge&labelColor=334155"></a>
+  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/DOCS-ZELINE.ZEROLINEAR.COM-7DD3FC?style=for-the-badge&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/TELEGRAM-0A84FF?style=for-the-badge&labelColor=334155&logo=telegram&logoColor=white"></a>
   <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/BUILT%20BY-ZEROLINEAR.COM-1D4ED8?style=for-the-badge&labelColor=334155"></a>
   <br>
-  <a href="../LICENSE"><img src="https://img.shields.io/badge/LICENSE-MIT-38BDF8?style=for-the-badge&labelColor=334155"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/badge/LICENSE-MIT-7DD3FC?style=for-the-badge&labelColor=334155"></a>
   <a href="../README.md"><img src="https://img.shields.io/badge/LANG-EN-0A84FF?style=for-the-badge&labelColor=334155"></a>
   <a href="README.id.md"><img src="https://img.shields.io/badge/LANG-ID-1D4ED8?style=for-the-badge&labelColor=334155"></a>
   <a href="README.zh.md"><img src="https://img.shields.io/badge/LANG-中文-1E3A8A?style=for-the-badge&labelColor=334155"></a>
