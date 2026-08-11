@@ -3,6 +3,10 @@
 </p>
 
 <p align="center">
+  <strong>Zeline Agentic AI</strong> — 由 Zerolinear 打造，一个 AI 研究实验室。
+</p>
+
+<p align="center">
   <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/DOCS-ZELINE.ZEROLINEAR.COM-7DD3FC?style=for-the-badge&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/TELEGRAM-0A84FF?style=for-the-badge&labelColor=334155&logo=telegram&logoColor=white"></a>
   <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/BUILT%20BY-ZEROLINEAR.COM-1D4ED8?style=for-the-badge&labelColor=334155"></a>
