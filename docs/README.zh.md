@@ -3,20 +3,18 @@
 </p>
 
 <p align="center">
-  <strong>Zeline Agentic AI</strong> — 由 AI 研究实验室 Zerolinear 打造。
-</p>
-
-<p align="center">
   <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/DOCS-ZELINE.ZEROLINEAR.COM-38BDF8?style=for-the-badge&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/TELEGRAM-0A84FF?style=for-the-badge&labelColor=334155&logo=telegram&logoColor=white"></a>
   <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/BUILT%20BY-ZEROLINEAR.COM-1D4ED8?style=for-the-badge&labelColor=334155"></a>
-</p>
-
-<p align="center">
+  <br>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/LICENSE-MIT-38BDF8?style=for-the-badge&labelColor=334155"></a>
   <a href="../README.md"><img src="https://img.shields.io/badge/LANG-EN-0A84FF?style=for-the-badge&labelColor=334155"></a>
   <a href="README.id.md"><img src="https://img.shields.io/badge/LANG-ID-1D4ED8?style=for-the-badge&labelColor=334155"></a>
   <a href="README.zh.md"><img src="https://img.shields.io/badge/LANG-中文-1E3A8A?style=for-the-badge&labelColor=334155"></a>
+</p>
+
+<p align="center">
+  <strong>Zeline Agentic AI</strong> — 由 Zerolinear 打造，一个 AI 研究实验室。
 </p>
 
 ---
