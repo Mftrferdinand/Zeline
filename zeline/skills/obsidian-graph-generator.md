@@ -86,22 +86,22 @@ Must use `terminal()` not `execute_code()` + `write_file()` for anything over 50
 3. **Filename length cap**: keep under 40 chars.
 4. **Deduplicate**: maintain `used_names` set, check before writing.
 5. **Category files must exist first** — Obsidian shows broken links otherwise.
-6. **Description language**: match user's preferred language (Indonesian for the user).
+6. **Description language**: match the requested output language (Indonesian is common).
 7. **Device path**: Android vault path is under `/storage/emulated/0/`, not home dir.
 
-## User Preference: Curated Over Bulk
+## Preference: Curated Over Bulk
 
-**Critical lesson from session 2026-07-03:** the user (icibos) explicitly rejected 500+ generic randomly-generated nodes and asked to "hapus aja semuanya, buat data asli aja" — meaning restore to the original 92 Zeline skill files only.
+**Key lesson:** prefer curated real data over bulk generic nodes. A request to remove all generated nodes and rebuild from real data means restore to the original 92 Zeline skill files only.
 
 ### Behavior Rules
-1. **Default to original skill set (92 files)** unless user explicitly asks for bulk generation.
+1. **Default to original skill set (92 files)** unless bulk generation is explicitly requested.
 2. If asked for 500 themed skills, use real-sounding sub-skill names (Web3 + Daily Work) not random prefix+root+suffix.
-3. User will likely say "ganti web3 dan daily aja" — meaning KEEP the originals (92) and ADD themed ones, not replace.
-4. If user says "hapus" — clean up generics but keep ALL original Zeline skills.
+3. A request to "swap in Web3 and daily" typically means KEEP the originals (92) and ADD themed ones, not replace.
+4. A request to "delete" should clean up generics but keep ALL original Zeline skills.
 
-## User Preference: Interactive Over Code
+## Preference: Interactive Over Code
 
-**Critical lesson (2026-07-03):** the user (icibos) rejected code editing via terminal/nano — wants drag/rename/add/delete from browser UI only. Default deliverable for any graph request:
+**Key lesson:** prefer editing via a browser UI (drag/rename/add/delete) over code editing through terminal/nano. Default deliverable for any graph request:
 
 ### Decision Flow
 
@@ -279,7 +279,7 @@ See `references/vite-react-flow-template-integration.md` for cloning the officia
 
 ## Themed Sub-Skill Generation (Web3 + Daily Work)
 
-When user asks for themed skills (not random generic), use real-sounding sub-skill names per category. This differs from the generic prefix+root+suffix approach.
+When a themed skill set is requested (not random generic), use real-sounding sub-skill names per category. This differs from the generic prefix+root+suffix approach.
 
 ### Strategy
 
@@ -337,7 +337,7 @@ When you need more names than mapped, generate from: `{category_prefix}-{middle}
 
 ## Cleanup Procedure
 
-When user says "hapus" or "reset":
+When a "delete" or "reset" is requested:
 
 ```python
 import os

@@ -93,7 +93,7 @@ Slide 9: CTA (save + share)
 
 ---
 
-## Airdrop Campaign Template (Kakak-style format)
+## Airdrop Campaign Template
 
 ```
 New Airdrops : [Name Project]

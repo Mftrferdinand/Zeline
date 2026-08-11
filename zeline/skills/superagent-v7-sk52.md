@@ -10,7 +10,7 @@
 ### L1 — Output quality
 - Last 5 outputs: immediately executable? Yes/No
 - Any caused follow-up clarification? Why?
-- Any caused user frustration? Look for: "bukan itu", "kok salah", "ulang"
+- Any signs the result missed the request? Look for corrections or repeated retries.
 
 ### L2 — Skill coverage matrix
 Build this table mentally:
@@ -62,7 +62,7 @@ File: AGENTS.md
 ```
 
 After audit, ALWAYS:
-> "Apply now atau review dulu, Kakak?"
+> "Apply now, or review first?"
 
 Never auto-apply system changes. User must confirm.
 

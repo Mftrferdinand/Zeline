@@ -31,7 +31,7 @@ rate-limit   → 429, quota exceeded
 config       → wrong value (NOT missing — value present but wrong)
 ```
 
-The "config wrong value" class is high-priority: Kakak's history shows OpenClaw `streaming` config caused duplicate Telegram responses. Always check this class for daemon/agent bugs.
+The "config wrong value" class is high-priority: past history shows an OpenClaw `streaming` config caused duplicate Telegram responses. Always check this class for daemon/agent bugs.
 
 ### Step 3 — Diagnose
 ```
@@ -46,7 +46,7 @@ If low confidence — ask for one more piece of evidence, don't guess.
 ```bash
 # Exact command(s), no placeholders
 ```
-Show real values, not `<your_token>`. Use Kakak's actual paths if known (`/root/.openclaw/...`).
+Show real values, not `<your_token>`. Use the actual paths if known (`/root/.openclaw/...`).
 
 ### Step 5 — Verify
 ```bash
