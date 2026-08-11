@@ -387,7 +387,7 @@ def _model_add_provider(cfg: dict[str, Any]) -> None:
     cfg["provider"] = copy.deepcopy(provider)
     cfg["setup_complete"] = True
     config.save_config(cfg)
-    print(f"  ✓ Provider '{provider.get('name', slug)}' ditambahkan & diaktifkan · model {provider['model']}")
+    print(f"  Provider '{provider.get('name', slug)}' ditambahkan & diaktifkan - model {provider['model']}")
 
 
 def _model_remove_provider(cfg: dict[str, Any]) -> None:
@@ -410,7 +410,68 @@ def _model_remove_provider(cfg: dict[str, Any]) -> None:
         return
     removed = cfg["providers"].pop(slug)
     config.save_config(cfg)
-    print(f"  ✓ Provider '{removed.get('name', slug)}' dihapus.")
+    print(f"  Provider '{removed.get('name', slug)}' dihapus.")
+
+
+def _model_view_provider(cfg: dict[str, Any]) -> None:
+    """Lihat provider tersimpan; pilih satu untuk ganti model atau API key."""
+    providers = cfg.get("providers", {})
+    slugs = list(providers.keys())
+    if not slugs:
+        print("  Belum ada provider tersimpan. Gunakan 'Add url provider' dulu.")
+        return
+    active = _active_slug(cfg)
+    labels = []
+    for slug in slugs:
+        item = providers[slug]
+        mark = "  (aktif)" if slug == active else ""
+        labels.append(f"{item.get('name', slug)} - {item.get('model', '?')}{mark}")
+    labels.append("Cancel")
+    choice = _arrow_menu("View provider:", labels)
+    if choice == -1 or choice == len(slugs):
+        return
+    slug = slugs[choice]
+    provider = copy.deepcopy(providers[slug])
+    while True:
+        name = str(provider.get("name", slug))
+        print(f"\n  Provider: {name}")
+        print(f"  Base URL: {provider.get('base_url', '?')}")
+        print(f"  Model   : {provider.get('model', '?')}")
+        print(f"  API key : {config.mask_secret(str(provider.get('api_key', '')))}")
+        action = _arrow_menu(
+            "Aksi provider:",
+            ["Set as active", "Change model", "Change API key", "Cancel"],
+        )
+        if action == -1 or action == 3:
+            return
+        if action == 0:  # Set as active
+            provider["model_verified"] = True
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            cfg["provider"] = copy.deepcopy(provider)
+            cfg["setup_complete"] = True
+            config.save_config(cfg)
+            print(f"  Aktif: {name} - model {provider.get('model', '?')}")
+            return
+        if action == 1:  # Change model
+            print(f"  Mengambil daftar model dari {name}...")
+            _protocol, models = _discover_provider_models(
+                str(provider.get("base_url", "")), str(provider.get("api_key", ""))
+            )
+            provider["model"] = _choose_model(models, str(provider.get("model", "")))
+            provider["model_verified"] = True
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            if slug == _active_slug(cfg):
+                cfg["provider"] = copy.deepcopy(provider)
+            config.save_config(cfg)
+            print(f"  Model diperbarui: {provider['model']}")
+        elif action == 2:  # Change API key
+            new_key = _ask("API key", str(provider.get("api_key", "")), secret=True)
+            provider["api_key"] = new_key
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            if slug == _active_slug(cfg):
+                cfg["provider"] = copy.deepcopy(provider)
+            config.save_config(cfg)
+            print("  API key diperbarui.")
 
 
 def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
@@ -465,21 +526,14 @@ def cmd_model() -> int:
         return 2
     cfg = config.stored_config_copy()
     while True:
-        providers = cfg.get("providers", {})
-        slugs = list(providers.keys())
-        active = _active_slug(cfg)
-        # Baris provider + aksi, semua bisa dipilih pakai cursor.
-        rows: list[str] = []
-        for slug in slugs:
-            item = providers[slug]
-            mark = " (aktif)" if slug == active else ""
-            rows.append(f"{item.get('name', slug)} · {item.get('model', '?')}{mark}")
-        idx_add = len(rows)
-        rows.append("➕ Add provider")
-        idx_remove = len(rows)
-        rows.append("🗑  Remove provider")
-        idx_cancel = len(rows)
-        rows.append("✗ Cancel")
+        # Menu aksi (tanpa emoji): tambah/hapus/lihat provider, atau batal.
+        rows = [
+            "Add url provider",
+            "Remove provider",
+            "View provider",
+            "Cancel",
+        ]
+        idx_add, idx_remove, idx_view, idx_cancel = 0, 1, 2, 3
 
         choice = _arrow_menu("Provider & model:", rows)
         if choice == -1 or choice == idx_cancel:
@@ -489,20 +543,8 @@ def cmd_model() -> int:
             _model_add_provider(cfg)
         elif choice == idx_remove:
             _model_remove_provider(cfg)
-        elif 0 <= choice < len(slugs):
-            slug = slugs[choice]
-            provider = copy.deepcopy(providers[slug])
-            print(f"  Mengambil daftar model dari {provider.get('name', slug)}…")
-            _protocol, models = _discover_provider_models(str(provider.get("base_url", "")), str(provider.get("api_key", "")))
-            provider["model"] = _choose_model(models, str(provider.get("model", "")))
-            provider["model_verified"] = True
-            cfg["providers"][slug] = copy.deepcopy(provider)
-            cfg["provider"] = copy.deepcopy(provider)
-            cfg["setup_complete"] = True
-            config.save_config(cfg)
-            active_name = str(provider.get("name", slug))
-            active_model = str(provider["model"])
-            print(f"  ✓ Aktif: {active_name} · model {active_model}")
+        elif choice == idx_view:
+            _model_view_provider(cfg)
         cfg = config.stored_config_copy()
 
 

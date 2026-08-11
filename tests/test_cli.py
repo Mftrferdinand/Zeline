@@ -242,10 +242,9 @@ class ZelineCliTests(unittest.TestCase):
         cfg["provider"] = dict(active)
         cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
         self.config.save_config(cfg)
-        # Menu awal = [1]Alpha [2]Beta [3]Add [4]Remove [5]Cancel.
-        # 4 (Remove) -> 2 (Beta, non-aktif). Setelah hapus tinggal Alpha:
-        # menu = [1]Alpha [2]Add [3]Remove [4]Cancel -> 4 (Cancel).
-        with mock.patch("builtins.input", side_effect=["4", "2", "4"]):
+        # Menu = [1]Add url provider [2]Remove provider [3]View provider [4]Cancel.
+        # 2 (Remove) -> 2 (Beta, non-aktif). Setelah hapus balik ke menu -> 4 (Cancel).
+        with mock.patch("builtins.input", side_effect=["2", "2", "4"]):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("dihapus", result)
@@ -262,9 +261,9 @@ class ZelineCliTests(unittest.TestCase):
         cfg["provider"] = dict(active)
         cfg["providers"] = {"alpha": dict(active), "beta": dict(spare)}
         self.config.save_config(cfg)
-        # Menu = [1]Alpha [2]Beta [3]Add [4]Remove [5]Cancel.
-        # Pilih 4 (Remove) -> 1 (Alpha, aktif) -> ditolak -> 5 (Cancel).
-        with mock.patch("builtins.input", side_effect=["4", "1", "5"]):
+        # Menu = [1]Add url provider [2]Remove provider [3]View provider [4]Cancel.
+        # 2 (Remove) -> 1 (Alpha, aktif) -> ditolak -> balik ke menu -> 4 (Cancel).
+        with mock.patch("builtins.input", side_effect=["2", "1", "4"]):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("aktif", result.lower())
