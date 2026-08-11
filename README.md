@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/DOCS-ZELINE.ZEROLINEAR.COM-0A84FF?style=for-the-badge&labelColor=334155"></a>
-  <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/TELEGRAM-T.ME%2FZEROLINEAR-38BDF8?style=for-the-badge&labelColor=334155&logo=telegram&logoColor=white"></a>
+  <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/TELEGRAM-38BDF8?style=for-the-badge&labelColor=334155&logo=telegram&logoColor=white"></a>
   <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/BUILT%20BY-ZEROLINEAR.COM-1D4ED8?style=for-the-badge&labelColor=334155"></a>
 </p>
 
