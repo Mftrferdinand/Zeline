@@ -94,6 +94,34 @@ class ZelinePublicCoreTests(unittest.TestCase):
         content = skill_system.load_skill("superagent-v7-sk0")
         self.assertIn("Skill Registry", content)
 
+    def test_folder_based_skill_is_seeded_listed_and_loaded(self):
+        """Skill berformat folder (SKILL.md + file pendukung) ikut ter-seed,
+        muncul di daftar, dan bisa dimuat lengkap dengan referensi filenya."""
+        skill_system = importlib.import_module("zeline.skills")
+        # Buat skill folder di sumber bundled (dir skills/ paket).
+        source_root = Path(skill_system.__file__).resolve().parent / "skills"
+        folder = source_root / "folder-demo-skill"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "SKILL.md").write_text(
+            "---\nname: folder-demo-skill\ndescription: Demo folder skill.\n---\n\n# Folder Demo\n\nLangkah utama di sini.\n",
+            encoding="utf-8",
+        )
+        refs = folder / "references"
+        refs.mkdir(exist_ok=True)
+        (refs / "extra.md").write_text("Detail tambahan.\n", encoding="utf-8")
+        try:
+            skill_system.seed_skills()
+            names = [name for _scope, name, _title, _desc in skill_system.list_skill_entries()]
+            self.assertIn("folder-demo-skill", names)
+            content = skill_system.load_skill("folder-demo-skill")
+            self.assertIn("Langkah utama di sini", content)
+            # Daftar file pendukung ikut disertakan agar agent tahu bisa membacanya.
+            self.assertIn("references/extra.md", content)
+        finally:
+            import shutil
+
+            shutil.rmtree(folder, ignore_errors=True)
+
     def test_memory_isolated_between_platform_users(self):
         one = self.memory.MemoryStore("telegram:100")
         two = self.memory.MemoryStore("telegram:200")
