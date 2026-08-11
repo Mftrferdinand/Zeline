@@ -70,24 +70,77 @@ def _ensure_dirs() -> None:
 
 
 def seed_skills() -> int:
-    """Copy bundled public skill tanpa menimpa skill yang sudah dikustom."""
+    """Copy bundled public skill tanpa menimpa skill yang sudah dikustom.
+
+    Mendukung dua bentuk sumber:
+    - flat  : ``skills/<name>.md``
+    - folder : ``skills/<name>/SKILL.md`` (+ references/scripts/assets)
+    """
     _ensure_dirs()
     source = Path(__file__).resolve().parent / "skills"
     if not source.exists():
         return 0
     copied = 0
+    # 1) skill flat: satu file .md langsung di root skills/
     for item in source.glob("*.md"):
         destination = PUBLIC_SKILLS_DIR / item.name
         if not destination.exists():
             destination.write_text(item.read_text(encoding="utf-8"), encoding="utf-8")
             _chmod_private(destination, 0o600)
             copied += 1
+    # 2) skill folder: subdirektori berisi SKILL.md (+ file pendukung).
+    for sub in sorted(source.iterdir()):
+        if not sub.is_dir():
+            continue
+        if not (sub / "SKILL.md").is_file():
+            continue
+        destination = PUBLIC_SKILLS_DIR / sub.name
+        if not destination.exists():
+            _copy_skill_tree(sub, destination)
+            copied += 1
     return copied
+
+
+def _copy_skill_tree(src: Path, dst: Path) -> None:
+    """Salin satu folder skill (SKILL.md + file pendukung) secara aman.
+
+    Symlink diabaikan agar tidak ada path yang keluar dari folder tujuan.
+    """
+    for root, dirs, files in os.walk(src):
+        # Jangan ikuti symlink direktori.
+        dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
+        rel = Path(root).relative_to(src)
+        target_dir = dst / rel
+        target_dir.mkdir(parents=True, exist_ok=True)
+        _chmod_private(target_dir)
+        for name in files:
+            source_file = Path(root) / name
+            if source_file.is_symlink():
+                continue
+            target_file = target_dir / name
+            try:
+                target_file.write_bytes(source_file.read_bytes())
+                _chmod_private(target_file, 0o600)
+            except OSError:
+                pass
 
 
 def _parse(markdown: str) -> tuple[str, str]:
     title, description = "", ""
-    for line in markdown.splitlines():
+    lines = markdown.splitlines()
+    # YAML frontmatter (skill folder standar): --- name: .. description: .. ---
+    if lines and lines[0].strip() == "---":
+        for index in range(1, len(lines)):
+            stripped = lines[index].strip()
+            if stripped == "---":
+                break
+            lower = stripped.lower()
+            if not title and lower.startswith("name:"):
+                title = stripped.split(":", 1)[1].strip().strip("\"'")
+            elif not description and lower.startswith("description:"):
+                description = stripped.split(":", 1)[1].strip().strip("\"'")
+    # Format Zeline klasik: '# Judul' + '> deskripsi'
+    for line in lines:
         stripped = line.strip()
         if not title and stripped.startswith("# "):
             title = stripped[2:].strip()
@@ -98,6 +151,19 @@ def _parse(markdown: str) -> tuple[str, str]:
     return title, description
 
 
+def _iter_skill_units(directory: Path) -> list[tuple[str, Path]]:
+    """Kembalikan ``(name, skill_md_path)`` untuk skill flat maupun folder."""
+    units: list[tuple[str, Path]] = []
+    if not directory.exists():
+        return units
+    for item in sorted(directory.glob("*.md")):
+        units.append((item.stem, item))
+    for sub in sorted(directory.iterdir()):
+        if sub.is_dir() and (sub / "SKILL.md").is_file():
+            units.append((sub.name, sub / "SKILL.md"))
+    return units
+
+
 def list_skill_entries(include_private: bool = True) -> list[tuple[str, str, str, str]]:
     """Return ``(scope, name, title, description)`` entries."""
     _ensure_dirs()
@@ -106,9 +172,9 @@ def list_skill_entries(include_private: bool = True) -> list[tuple[str, str, str
     if include_private:
         locations.append(("private", PRIVATE_SKILLS_DIR))
     for scope, directory in locations:
-        for item in sorted(directory.glob("*.md")):
-            title, description = _parse(item.read_text(encoding="utf-8", errors="replace"))
-            result.append((scope, item.stem, title or item.stem, description or "(tanpa deskripsi)"))
+        for name, skill_md in _iter_skill_units(directory):
+            title, description = _parse(skill_md.read_text(encoding="utf-8", errors="replace"))
+            result.append((scope, name, title or name, description or "(tanpa deskripsi)"))
     return result
 
 
@@ -118,7 +184,10 @@ def list_skills(include_private: bool = True) -> list[tuple[str, str, str]]:
 
 
 def _find_skill(name: str, include_private: bool) -> Path | None | str:
-    """Find one safe stem; return error string on ambiguous fuzzy matching."""
+    """Find one safe skill; return error string on ambiguous fuzzy matching.
+
+    Mengembalikan Path ke file .md (flat) atau ke SKILL.md di dalam folder.
+    """
     try:
         normalized = _safe_name(name)
     except ValueError as exc:
@@ -127,22 +196,34 @@ def _find_skill(name: str, include_private: bool) -> Path | None | str:
     directories = [PUBLIC_SKILLS_DIR]
     if include_private:
         directories.insert(0, PRIVATE_SKILLS_DIR)
+    # 1) exact match: flat .md dulu, lalu folder/SKILL.md.
     for directory in directories:
         exact = directory / f"{normalized}.md"
         if exact.is_file():
             return exact
+        folder = directory / normalized / "SKILL.md"
+        if folder.is_file():
+            return folder
+    # 2) fuzzy match berdasar nama unit skill.
     candidates: list[Path] = []
     for directory in directories:
-        candidates.extend(path for path in directory.glob("*.md") if normalized in path.stem.lower())
+        for unit_name, skill_md in _iter_skill_units(directory):
+            if normalized in unit_name.lower():
+                candidates.append(skill_md)
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:
-        return "ERROR skill ambigu: " + ", ".join(path.stem for path in candidates[:8])
+        names = [p.parent.name if p.name == "SKILL.md" else p.stem for p in candidates[:8]]
+        return "ERROR skill ambigu: " + ", ".join(names)
     return None
 
 
 def load_skill(name: str, include_private: bool = False) -> str:
-    """Muat skill scope yang diizinkan. Input bukan path filesystem."""
+    """Muat skill scope yang diizinkan. Input bukan path filesystem.
+
+    Untuk skill folder, isi SKILL.md dikembalikan plus daftar file pendukung
+    (references/scripts/assets) agar agent tahu file yang bisa dibaca.
+    """
     _ensure_dirs()
     found = _find_skill(name, include_private=include_private)
     if isinstance(found, str):
@@ -153,7 +234,21 @@ def load_skill(name: str, include_private: bool = False) -> str:
         except ValueError:
             normalized = name.strip()
         return f"ERROR: skill '{normalized}' tidak ditemukan."
-    return found.read_text(encoding="utf-8", errors="replace")
+    content = found.read_text(encoding="utf-8", errors="replace")
+    # Skill folder: sertakan daftar file pendukung relatif ke folder skill.
+    if found.name == "SKILL.md":
+        skill_dir = found.parent
+        extras: list[str] = []
+        for path in sorted(skill_dir.rglob("*")):
+            if path.is_file() and path != found and not path.is_symlink():
+                extras.append(str(path.relative_to(skill_dir)))
+        if extras:
+            listing = "\n".join(f"- {skill_dir}/{rel}" for rel in extras)
+            content += (
+                "\n\n---\n### File pendukung skill ini (baca dengan read_file bila perlu):\n"
+                + listing
+            )
+    return content
 
 
 def save_skill(name: str, content: str) -> str:

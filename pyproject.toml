@@ -48,7 +48,7 @@ Issues = "https://github.com/Mftrferdinand/Zerolinear/issues"
 include = ["zeline*"]
 
 [tool.setuptools.package-data]
-zeline = ["skills/*.md"]
+zeline = ["skills/*.md", "skills/**/*"]
 
 [tool.setuptools]
 include-package-data = true
