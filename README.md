@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Zerolinear</strong> — an AI research lab for open-source agentic AI frameworks.
+  <strong>Zeline Agentic AI</strong> — by Zerolinear, an AI research lab.
 </p>
 
 ---
@@ -17,7 +17,7 @@ Rather than being tied to a single model, provider, or infrastructure, Zeline is
 
 Run it locally for development or deploy it to your own server or cloud, and connect it to the interfaces you use. The goal is to keep control in the developer's hands: your models, your tools, your infrastructure, your data. Open-source, model-agnostic, extensible, and developer-first.
 
-Developed by [Zerolinear](https://zerolinear.com). Built and maintained by [Mftrferdinand](https://mftrferdinand.com).
+Zeline — a [Zerolinear](https://zerolinear.com) project, led by [Mftrferdinand](https://mftrferdinand.com).
 
 ## Features
 
