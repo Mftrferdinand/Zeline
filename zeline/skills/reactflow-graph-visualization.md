@@ -206,9 +206,9 @@ am start -a android.intent.action.VIEW -d "http://127.0.0.1:8080/Graph.html"
 
 **Do NOT use `termux-open`** — may fail to find handler. Always prefer `am start` + HTTP server.
 
-### User Preference: Interactive Editor Over Coding
+### Preference: Interactive Editor Over Coding
 
-**Critical lesson (2026-07-03):** the user (icibos) rejected code editing via terminal/nano, saying "gamau codding mau geser geser ganti nama aja bisa?" — wants drag/rename/add/delete from browser UI only.
+**Key lesson:** prefer editing via a browser UI (drag/rename/add/delete) over code editing through terminal/nano — the default deliverable is a browser-based editor.
 
 ### Decision Flow for Graph Requests
 

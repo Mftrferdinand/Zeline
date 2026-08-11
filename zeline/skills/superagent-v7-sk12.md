@@ -225,4 +225,4 @@ if (buffer.length) await processBatch(buffer);
 [DONE] ok=287 fail=13 → errors-1748150400.json
 ```
 
-Always report: total, success, fail, error file path. Kakak wants the number, not the story.
+Always report: total, success, fail, error file path. Report the numbers, not the narrative.

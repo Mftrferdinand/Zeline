@@ -372,7 +372,7 @@ Then scan ABI for any `payable` function with `mint` in name → try those.
 
 ---
 
-## Speed mode (Kakak's "tanpa mikir")
+## Speed mode ("no-deliberation")
 Default behavior: **fire and forget**.
 - Skip confirmation prompts
 - Auto-pick first viable mint function
@@ -397,7 +397,7 @@ If user says "hati-hati" / "simulate first" / "cek dulu" → enable dry-run mode
 
 ---
 
-## Failure modes Kakak should know
+## Failure modes to know about
 - **`execution reverted: NotEnabled`** → public mint not active yet, check `saleActive()` or wait
 - **`InsufficientFunds`** → price miscalculated, retry with verbose price detection
 - **`AlreadyMinted`** → wallet hit per-wallet cap, switch wallet
