@@ -1,8 +1,6 @@
 <p align="center">
   <img src="assets/zerolinear-logo.png" alt="Zerolinear" width="760">
-</p>
-
-<p align="center">
+  <br>
   <strong>Zeline Agentic AI</strong> — by Zerolinear, an AI research lab.
 </p>
 

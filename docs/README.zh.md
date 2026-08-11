@@ -1,8 +1,6 @@
 <p align="center">
   <img src="../assets/zerolinear-logo.png" alt="Zerolinear" width="760">
-</p>
-
-<p align="center">
+  <br>
   <strong>Zeline Agentic AI</strong> — 由 Zerolinear 打造，一个 AI 研究实验室。
 </p>
 
