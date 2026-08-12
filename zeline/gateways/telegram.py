@@ -129,6 +129,8 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return ""
     if name == "deep_research":
         return f"🔍 Researching {html.escape(str(arguments.get('query', ''))[:100], quote=False)}"
+    if name == "analyze_media":
+        return "🖼 Looking at image"
     preview = html.escape(", ".join(f"{key}={str(value)[:80]}" for key, value in arguments.items()), quote=False)
     return f"🔧 {html.escape(name)}" + (f"\n<code>{preview}</code>" if preview else "")
 
@@ -1128,6 +1130,56 @@ def _build_document_prompt(filename: str, file_text: str, caption: str = "") -> 
     return f"{prefix}{file_text[:available]}{suffix}"
 
 
+# Direktori tempat media masuk (foto/voice/video) disimpan agar tool bisa membacanya.
+MEDIA_INBOX = config.DATA_DIR / "media-inbox"
+
+
+def _download_media_file(api: str, token: str, file_id: str, suffix: str) -> tuple[Path | None, str | None]:
+    """Unduh media (foto/voice/video) Telegram ke media-inbox lokal.
+
+    Mengembalikan (path, None) sukses atau (None, pesan_error).
+    """
+    meta = _api_call(api, "getFile", timeout=20, file_id=file_id)
+    file_path = str((meta or {}).get("result", {}).get("file_path") or "")
+    if not file_path:
+        return None, "Could not get Telegram file metadata."
+    try:
+        response = requests.get(FILE_API_TEMPLATE.format(token=token, file_path=file_path), timeout=60)
+        if not response.ok or len(response.content) > TELEGRAM_TEXT_FILE_LIMIT:
+            return None, "Could not download the media safely."
+    except requests.RequestException as exc:
+        return None, f"Could not download the media: {exc.__class__.__name__}."
+    try:
+        MEDIA_INBOX.mkdir(parents=True, exist_ok=True)
+        ext = Path(file_path).suffix or suffix
+        dest = MEDIA_INBOX / f"{file_id[:24]}{ext}"
+        dest.write_bytes(response.content)
+    except OSError as exc:
+        return None, f"Could not save the media: {exc.__class__.__name__}."
+    return dest, None
+
+
+def _build_image_prompt(path: Path, caption: str = "") -> str:
+    """Prompt agen untuk gambar: arahkan pakai analyze_media pada path lokal."""
+    ask = caption.strip() or "Describe what you see and anything notable."
+    return (
+        f"User sent an image via Telegram, saved at `{path}`. "
+        f"Use the analyze_media tool with path_or_url=\"{path}\" to look at it, "
+        f"then answer the user. Request/caption: {ask}"
+    )
+
+
+def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
+    """Prompt agen untuk audio/video: jelaskan jalur transkrip/ekstraksi frame."""
+    ask = caption.strip() or "(no caption)"
+    return (
+        f"User sent a {kind} via Telegram, saved at `{path}`. You can inspect it with "
+        f"the analyze_media tool (path_or_url=\"{path}\") which will explain the correct "
+        f"handling ({kind} needs transcription or frame extraction, not direct vision). "
+        f"Caption/request: {ask}"
+    )
+
+
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
     done = threading.Event()
@@ -1262,6 +1314,9 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
             text = str(message.get("text") or "").strip()
             caption = str(message.get("caption") or "").strip()
             document = message.get("document") or {}
+            photos = message.get("photo") or []
+            voice = message.get("voice") or message.get("audio") or {}
+            video = message.get("video") or message.get("video_note") or {}
 
             try:
                 if chat_id is None:
@@ -1297,6 +1352,29 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                         continue
                     prompt = _build_document_prompt(filename, file_text or "", caption)
                     _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+                elif photos:
+                    # Ambil resolusi terbesar (elemen terakhir) untuk kualitas vision.
+                    largest = photos[-1] if isinstance(photos, list) else {}
+                    dest, error = _download_media_file(api, token, str(largest.get("file_id") or ""), ".jpg")
+                    if error or dest is None:
+                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the image.")
+                        continue
+                    prompt = _build_image_prompt(dest, caption)
+                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+                elif voice:
+                    dest, error = _download_media_file(api, token, str(voice.get("file_id") or ""), ".ogg")
+                    if error or dest is None:
+                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the audio.")
+                        continue
+                    prompt = _build_media_notice_prompt("audio", dest, caption)
+                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+                elif video:
+                    dest, error = _download_media_file(api, token, str(video.get("file_id") or ""), ".mp4")
+                    if error or dest is None:
+                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the video.")
+                        continue
+                    prompt = _build_media_notice_prompt("video", dest, caption)
+                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
                 elif caption:
                     _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=caption, tool_profile=tool_profile)
                 else:
@@ -1304,7 +1382,7 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                         api,
                         "sendMessage",
                         chat_id=chat_id_int,
-                        text="Pesan ini belum bisa diproses. Kirim teks biasa atau file .txt/.md.",
+                        text="Pesan ini belum bisa diproses. Kirim teks, gambar, voice/video, atau file .txt/.md.",
                     )
             finally:
                 # Simpan setelah handler selesai agar restart tidak kehilangan update.

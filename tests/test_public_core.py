@@ -267,6 +267,26 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("Python", result)
         self.assertIn("Tool terpasang", result)
 
+    def test_analyze_media_is_owner_gated_and_validates_input(self):
+        # safe profile (gateway publik) TIDAK boleh punya analyze_media.
+        safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        self.assertNotIn("analyze_media", {item["function"]["name"] for item in safe.schemas})
+        # workspace/full punya tool-nya.
+        ws = self.home / "media-ws"
+        ws.mkdir(parents=True, exist_ok=True)
+        executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=ws)
+        self.assertIn("analyze_media", {item["function"]["name"] for item in executor.schemas})
+        # URL internal diblokir.
+        self.assertIn("diblokir", executor.run("analyze_media", {"path_or_url": "http://169.254.169.254/x.png"}))
+        # File audio → diarahkan ke transkrip, bukan mengarang isi.
+        audio = ws / "clip.ogg"
+        audio.write_bytes(b"fakeaudio")
+        self.assertIn("audio", executor.run("analyze_media", {"path_or_url": "clip.ogg"}).lower())
+        # File video → diarahkan ke ekstraksi frame.
+        vid = ws / "clip.mp4"
+        vid.write_bytes(b"fakevideo")
+        self.assertIn("video", executor.run("analyze_media", {"path_or_url": "clip.mp4"}).lower())
+
     def test_download_file_is_workspace_gated_and_ssrf_protected(self):
         # safe profile TIDAK boleh punya download_file (nulis ke disk)
         safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)

@@ -86,6 +86,10 @@ Efisiensi riset web (WAJIB — jangan boros tool):
   http_request (method + header + body JSON), bukan web_fetch. Untuk mengunduh
   file/aset ke workspace pakai download_file. Untuk cek tool/runtime yang tersedia
   di sistem sebelum menjalankan perintah, pakai system_env.
+- Untuk MELIHAT gambar (screenshot, foto, diagram) yang dikirim/ditunjuk user,
+  pakai analyze_media (path file di workspace atau URL). Untuk audio/video, tool
+  itu menjelaskan langkah benar (transkrip / ekstraksi frame) — jangan mengarang
+  isi media yang belum kamu lihat/dengar.
 
 Memory (ingatan lintas sesi — biar tidak mengulang tanya):
 - Simpan proaktif dengan add_memory saat user menyatakan preferensi, koreksi,
