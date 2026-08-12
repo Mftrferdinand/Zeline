@@ -1276,8 +1276,12 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
         try:
             response = requests.get(
                 f"{api}/getUpdates",
-                params={"offset": offset, "timeout": 25, "allowed_updates": json.dumps(["message", "callback_query"])},
-                timeout=35,
+                # Long-poll dipersingkat (10s) agar shutdown responsif: begitu
+                # stop_event di-set, loop keluar dalam <=10s alih-alih menggantung
+                # sampai 25-35s (penyebab `gateway stop` sering nyangkut lalu
+                # butuh SIGKILL). Read-timeout diberi margin di atas long-poll.
+                params={"offset": offset, "timeout": 10, "allowed_updates": json.dumps(["message", "callback_query"])},
+                timeout=20,
             )
             payload = response.json()
             if not response.ok or not payload.get("ok"):

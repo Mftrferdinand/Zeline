@@ -68,7 +68,35 @@ else
 fi
 
 echo "==> Install/update package…"
-"$PYTHON_BIN" -m pip install --user --upgrade "$SOURCE_DIR"
+# pip harus ada; sebagian sistem (mis. macOS baru, beberapa distro) perlu ensurepip.
+if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+  echo "    pip belum ada, mencoba ensurepip…"
+  "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+  echo "[x] pip tidak tersedia untuk $PYTHON_BIN. Install pip dulu (mis. 'python3 -m ensurepip' atau paket pip OS-mu)." >&2
+  exit 1
+fi
+
+# Instalasi lintas-OS yang tahan PEP 668 (externally-managed-environment):
+# 1) coba `pip install --user` (Termux/Linux user-site normal),
+# 2) kalau ditolak env yang dikelola OS (macOS Homebrew / Debian baru), ulangi
+#    dengan `--break-system-packages` supaya tidak butuh sudo/venv manual.
+pip_install() {
+  "$PYTHON_BIN" -m pip install --user --upgrade "$SOURCE_DIR" "$@"
+}
+install_log="$(pip_install 2>&1)" && install_ok=1 || install_ok=0
+if [ "$install_ok" != 1 ]; then
+  if printf '%s' "$install_log" | grep -qiE "externally-managed-environment|externally managed"; then
+    echo "    Environment dikelola OS (PEP 668) → mengulang dengan --break-system-packages…"
+    install_log="$(pip_install --break-system-packages 2>&1)" && install_ok=1 || install_ok=0
+  fi
+fi
+if [ "$install_ok" != 1 ]; then
+  printf '%s\n' "$install_log" >&2
+  echo "[x] Gagal memasang paket Zeline. Lihat pesan pip di atas." >&2
+  exit 1
+fi
 
 # Termux sering tidak memasukkan ~/.local/bin ke PATH. Jika PREFIX/bin bisa
 # ditulis, pasang wrapper kecil agar command `zeline` tersedia langsung.

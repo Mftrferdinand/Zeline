@@ -93,6 +93,59 @@ def _process_start_ticks(pid: int) -> str | None:
         return None
 
 
+def _ps_field(pid: int, fmt: str) -> str | None:
+    """Baca satu kolom ``ps`` untuk PID (fallback lintas-OS, mis. macOS/BSD).
+
+    ``/proc`` tidak ada di macOS, jadi identitas process diambil dari ``ps``.
+    ``lstart`` (waktu mulai absolut) stabil sepanjang umur process dan berubah
+    untuk process baru — cocok sebagai identitas seperti starttime di Linux.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", f"{fmt}="],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _process_start_token(pid: int) -> str | None:
+    """Identitas start process yang stabil & lintas-OS.
+
+    Urutan: ``/proc/<pid>/stat`` (Linux/Android) → ``ps -o lstart`` (macOS/BSD).
+    Prefix (``ticks:``/``lstart:``) dipertahankan supaya token dari mesin yang
+    sama selalu konsisten antara ``start`` dan ``stop``.
+    """
+    ticks = _process_start_ticks(pid)
+    if ticks is not None:
+        return f"ticks:{ticks}"
+    lstart = _ps_field(pid, "lstart")
+    if lstart is not None:
+        return f"lstart:{lstart}"
+    return None
+
+
+def _process_looks_like_zeline(pid: int) -> bool:
+    """Verifikasi ringan bahwa PID adalah process gateway Zeline (bukan PID daur-ulang).
+
+    Baca command line dari ``/proc/<pid>/cmdline`` (Linux/Android) atau ``ps -o
+    args`` (macOS/BSD). Dipakai sebagai lapis keamanan tambahan sebelum SIGKILL.
+    """
+    cmdline = ""
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        cmdline = ""
+    if not cmdline:
+        cmdline = _ps_field(pid, "args") or _ps_field(pid, "command") or ""
+    cmdline = cmdline.replace("\x00", " ").lower()
+    return "zeline" in cmdline
+
+
 def _process_matches_state(state: dict[str, Any]) -> bool:
     """True hanya bila PID masih child Zeline yang persis sama.
 
@@ -101,11 +154,20 @@ def _process_matches_state(state: dict[str, Any]) -> bool:
     service manager menghentikan process lain yang kebetulan memakai PID lama.
     """
     pid = int(state["pid"])
-    expected_ticks = str(state.get("start_ticks", ""))
-    if not expected_ticks or not _pid_alive(pid):
+    if not _pid_alive(pid):
         return False
-    actual_ticks = _process_start_ticks(pid)
-    return actual_ticks is not None and actual_ticks == expected_ticks
+    # Token baru (lintas-OS) diutamakan; state lama menyimpan ``start_ticks`` saja.
+    expected_token = str(state.get("start_token", ""))
+    if expected_token:
+        actual_token = _process_start_token(pid)
+        return actual_token is not None and actual_token == expected_token
+    expected_ticks = str(state.get("start_ticks", ""))
+    if expected_ticks:
+        actual_ticks = _process_start_ticks(pid)
+        return actual_ticks is not None and actual_ticks == expected_ticks
+    # State tanpa identitas apa pun: verifikasi via command line agar tetap bisa
+    # dihentikan (fail-closed hanya bila process jelas bukan Zeline).
+    return _process_looks_like_zeline(pid)
 
 
 def _command(only: list[str] | None) -> list[str]:
@@ -164,18 +226,16 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
             pass
         return False, f"Gagal start gateway: {exc}"
 
+    # Identitas process lintas-OS: Linux/Android pakai /proc starttime, macOS/BSD
+    # pakai `ps -o lstart`. Bila keduanya gagal (jarang), simpan tanpa token —
+    # stop() masih bisa menghentikan lewat verifikasi command line, jadi tidak
+    # perlu membunuh child yang baru sukses dijalankan.
+    start_token = _process_start_token(process.pid)
     start_ticks = _process_start_ticks(process.pid)
-    if start_ticks is None:
-        # Jangan menyimpan PID yang tidak dapat diikat ke identity process.
-        # Child tetap dihentikan agar tidak meninggalkan gateway tak-terkelola.
-        try:
-            os.kill(process.pid, signal.SIGTERM)
-        except OSError:
-            pass
-        return False, "Gateway start gagal: tidak dapat memverifikasi identity process child."
     state = {
         "pid": process.pid,
-        "start_ticks": start_ticks,
+        "start_token": start_token or "",
+        "start_ticks": start_ticks or "",
         "only": only,
         "started_at": time.time(),
         "command": _command(only),
