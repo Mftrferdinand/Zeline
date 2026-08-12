@@ -37,6 +37,11 @@ REPOSITORY_FILE = config.DATA_DIR / "repository.md"
 REPOSITORY_HEADER = "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n"
 _URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 
+# Cache katalog /models per base_url agar picker /model tidak memanggil network
+# berkali-kali (tap provider lalu render model). TTL pendek supaya tetap fresh.
+_MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_MODELS_CACHE_TTL = 300.0  # detik
+
 
 def _telegram_commands() -> list[dict[str, str]]:
     """Menu command ringkas seperti surface Telegram Hermes."""
@@ -436,15 +441,26 @@ def _provider_picker_payload(providers: list[dict[str, str]], current_slug: str)
 
 
 def _discover_provider_models(provider: dict[str, str]) -> list[str]:
+    # Cache per base_url (TTL) supaya tap provider → tap model tidak memicu
+    # dua network call ke /models. Tanpa ini picker terasa lambat 1-3 menit
+    # kalau provider (mis. 9Router yang proxy ke upstream) sedang lemot.
+    base = provider.get("base_url", "").rstrip("/")
+    now = time.monotonic()
+    cached = _MODELS_CACHE.get(base)
+    if cached and now - cached[0] < _MODELS_CACHE_TTL:
+        return cached[1]
     try:
         response = requests.get(
             f"{provider.get('base_url', '').rstrip('/')}/models",
             headers={"Authorization": f"Bearer {provider.get('api_key', '')}"},
-            timeout=20,
+            timeout=12,
         )
         payload = response.json() if response.ok else {}
         models = [str(item.get("id", "")).strip() for item in payload.get("data", []) if isinstance(item, dict) and item.get("id")]
-        return list(dict.fromkeys(models)) or ([provider.get("model", "")] if provider.get("model") else [])
+        result = list(dict.fromkeys(models)) or ([provider.get("model", "")] if provider.get("model") else [])
+        if result:
+            _MODELS_CACHE[base] = (now, result)
+        return result
     except (requests.RequestException, ValueError):
         return [provider.get("model", "")] if provider.get("model") else []
 
@@ -738,7 +754,12 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
     message = callback.get("message") or {}
     chat_id = int((message.get("chat") or {}).get("id", 0))
     message_id = int(message.get("message_id", 0))
-    _api_call(api, "answerCallbackQuery", callback_query_id=callback_id)
+    # Callback query sudah di-answer di polling loop sebelum thread ini dispawn
+    # (menghentikan spinner tombol dengan cepat). Answer kedua di sini tidak
+    # perlu; Telegram akan mengabaikannya. Dibiarkan sebagai no-op defensif bila
+    # fungsi dipanggil langsung dari jalur lain.
+    if callback_id:
+        _api_call(api, "answerCallbackQuery", timeout=10, callback_query_id=callback_id)
     if data == "model:cancel":
         _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Model selection cancelled.")
         return
@@ -1318,7 +1339,18 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 callback_user_id = (callback.get("from") or {}).get("id")
                 try:
                     if callback_chat_id is not None and callback_user_id is not None and _allowed(int(callback_user_id), allowed):
-                        _handle_callback(api, callback, sessions)
+                        # Jawab callback SEGERA (hentikan spinner "loading" di
+                        # tombol Telegram), lalu proses di thread agar loop
+                        # polling tidak ter-blok — inilah yang bikin tap
+                        # provider/model terasa lama 1-3 menit sebelumnya.
+                        if callback.get("id"):
+                            _api_call(api, "answerCallbackQuery", timeout=10, callback_query_id=str(callback["id"]))
+                        threading.Thread(
+                            target=_handle_callback,
+                            args=(api, dict(callback), sessions),
+                            daemon=True,
+                            name="zeline-callback",
+                        ).start()
                     elif callback.get("id"):
                         _api_call(api, "answerCallbackQuery", callback_query_id=str(callback["id"]), text="Access denied.", show_alert=True)
                 finally:

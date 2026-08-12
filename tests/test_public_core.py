@@ -1004,6 +1004,27 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # Callbacks stay index-based and within Telegram's 64-byte limit.
         self.assertLessEqual(max(len(b["callback_data"]) for b in buttons), 64)
 
+    def test_discover_provider_models_uses_cache_to_avoid_repeat_calls(self):
+        # Picker taps provider then model → without cache that's 2 network calls.
+        # Second call within TTL must hit the cache (no second HTTP request).
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        telegram._MODELS_CACHE.clear()
+        provider = {"base_url": "https://prov.example/v1", "api_key": "k", "model": "m"}
+
+        class FakeResp:
+            ok = True
+            def json(self):
+                return {"data": [{"id": "a"}, {"id": "b"}]}
+
+        with mock.patch.object(telegram.requests, "get", return_value=FakeResp()) as get:
+            first = telegram._discover_provider_models(provider)
+            second = telegram._discover_provider_models(provider)
+        self.assertEqual(first, ["a", "b"])
+        self.assertEqual(second, ["a", "b"])
+        # Only ONE HTTP call despite two lookups → cache works.
+        self.assertEqual(get.call_count, 1)
+        telegram._MODELS_CACHE.clear()
+
     def test_telegram_model_root_picker_lists_named_providers_first(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         providers = [
