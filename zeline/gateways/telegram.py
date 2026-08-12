@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import requests
 
 from zeline import config
+from zeline import skill_publish
 from zeline.agent import ZelineError
 
 API_TEMPLATE = "https://api.telegram.org/bot{token}"
@@ -66,6 +67,7 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
         {"command": "steer", "description": "Steer the active turn"},
+        {"command": "promoteskill", "description": "Review & publish a skill to the repo"},
     ]
 
 
@@ -110,7 +112,7 @@ def _terminal_progress(command: str, *, search: bool = False) -> str:
     escaped = html.escape(command.strip()[:1500], quote=False)
     if search:
         return f"<pre>{escaped}</pre>"
-    return f"🖥️ Zeline Terminal\n<pre>{escaped}</pre>"
+    return f"📺 Zeline Terminal\n<pre>{escaped}</pre>"
 
 
 def _is_search_command(command: str) -> bool:
@@ -119,11 +121,25 @@ def _is_search_command(command: str) -> bool:
     return any(k in low for k in ("search", "researching", "curl ", "jina.ai", "duckduckgo", "google.com/search"))
 
 
+def _short_path(path: str) -> str:
+    """Tampilkan hanya nama file (basename), bukan path lokal panjang.
+
+    User minta feed baca-file ringkas: '📖 Reading agent.py', bukan
+    '📖 Reading /data/data/com.termux/files/home/....'. Selalu ambil segmen
+    terakhir dari path.
+    """
+    cleaned = str(path).strip().rstrip("/")
+    if not cleaned:
+        return ""
+    return cleaned.rsplit("/", 1)[-1]
+
+
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     """Render one distinct HTML-safe progress message per real tool call.
 
-    Fase kerja (present-progressive): 🔎 Searching / 🔍 Researching.
-    Tidak pernah menampilkan URL/link mentah ke user — cukup topik/kueri.
+    Ikon & label (English) mengikuti preferensi operator. Web search & deep
+    research di-collapse jadi satu baris; aksi file (read/write/edit) selalu
+    tampil per pemanggilan supaya user lihat SEMUA yang dikerjakan.
     """
     if name == "load_skill":
         return f"📚 Reading skill {html.escape(str(arguments.get('name', ''))[:100])}"
@@ -140,35 +156,42 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "save_skill":
         skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
         return f"💡 Saving skill <code>{skill_name}</code>"
-    path = html.escape(str(arguments.get("path", ""))[:300], quote=False)
+    if name in {"add_memory", "remove_memory"}:
+        return "🧠 Memory save"
+    if name == "system_env":
+        return "🧰 System_env"
+    path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
     if name == "read_file":
-        offset = max(1, int(arguments.get("offset", 1) or 1))
-        limit = max(1, int(arguments.get("limit", 500) or 500))
-        return f"📖 Reading <code>{path}</code> L{offset}-{offset + limit - 1}"
+        # Zeline read_file membaca seluruh file (tanpa offset/limit); rentang
+        # baris hanya ditampilkan bila argumen offset/limit memang dikirim.
+        if "offset" in arguments or "limit" in arguments:
+            offset = max(1, int(arguments.get("offset", 1) or 1))
+            limit = max(1, int(arguments.get("limit", 500) or 500))
+            return f"📖 Reading <code>{path}</code> L{offset}-{offset + limit - 1}"
+        return f"📖 Reading <code>{path}</code>"
     if name == "write_file":
-        return f"✍️ Writing <code>{path}</code>"
+        return f"📝 Writing <code>{path}</code>"
     if name == "edit_file":
-        return f"✏️ Editing <code>{path}</code>"
+        return f"🎬 Editing <code>{path}</code>"
     if name == "patch_file":
-        return f"🩹 Patching <code>{path}</code>"
+        return f"🎬 Editing <code>{path}</code>"
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
-        return f"🔎 Searching {query}"
+        return f"🔎 Searching files {query}"
     if name == "update_task":
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
         task = html.escape(str(arguments.get("task", ""))[:300], quote=False)
         return f"📋 Updating tasks\n<code>{status}</code> · {task}"
     if name == "web_search":
-        # Searching hanya penanda ringkas: subjek utama (kata pertama) + '…'.
-        # Detail lengkap muncul di baris Researching, bukan di sini.
+        # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
         subject = html.escape((query.split() or [""])[0][:40], quote=False)
-        return f"🔎 Searching {subject}…" if subject else "🔎 Searching…"
+        return f"🌐 Searching {subject}…" if subject else "🌐 Searching…"
     if name == "web_fetch":
         # Baca sumber web tidak ditampilkan sebagai baris terpisah (biar bersih).
         return ""
     if name == "deep_research":
-        return f"🔍 Researching {html.escape(str(arguments.get('query', ''))[:100], quote=False)}"
+        return f"🪩 Researching {html.escape(str(arguments.get('query', ''))[:100], quote=False)}"
     if name == "analyze_media":
         return "🖼 Looking at image"
     preview = html.escape(", ".join(f"{key}={str(value)[:80]}" for key, value in arguments.items()), quote=False)
@@ -178,14 +201,14 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
 def _progress_category(line: str) -> str | None:
     """Kategori baris feed untuk collapse. None = baris unik (jangan digabung).
 
-    HANYA search/research yang di-collapse (repetitif & sering banyak query mirip).
-    Aksi coding (baca/tulis/edit file, shell, run code) TIDAK di-collapse — tiap
-    file & command harus kelihatan sendiri supaya user lihat SEMUA yang dikerjakan,
-    bukan cuma satu baris ringkasan.
+    HANYA web search & deep research yang di-collapse jadi SATU baris (repetitif,
+    sering banyak query mirip). Aksi file (📖 Reading / 📝 Writing / 🎬 Editing),
+    shell, run code TIDAK di-collapse — tiap file & command tampil sendiri supaya
+    user lihat SEMUA yang dikerjakan, bukan cuma satu ringkasan.
     """
-    if line.startswith("🔎"):
+    if line.startswith("🌐"):
         return "search"
-    if line.startswith("🔍"):
+    if line.startswith("🪩"):
         return "research"
     return None
 
@@ -206,22 +229,54 @@ def _ordered_lines(lines: list[str]) -> list[str]:
 
 
 def _finalize_line(line: str) -> str:
-    """Ubah baris fase-kerja menjadi bentuk 'selesai' — semua jadi '📖 Reading'."""
+    """Ubah baris fase-kerja jadi bentuk 'selesai'.
+
+    Web search & deep research (yang di-collapse jadi satu baris) diringkas jadi
+    satu penanda '📖 Reading data/other'. Baris file (📖 Reading <file>) dibiarkan
+    apa adanya supaya SEMUA file yang dibaca tetap terlihat.
+    """
     replacements = (
-        ("🔎 Searching", "📖 Reading"),
-        ("🔍 Researching", "📖 Reading"),
+        ("🌐 Searching", "📖 Reading data/other"),
+        ("🪩 Researching", "📖 Reading data/other"),
     )
     for old, new in replacements:
         if line.startswith(old):
-            return new + line[len(old):]
+            return new
     return line
 
 
 def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
     """Render hanya hasil nyata yang bernilai sebagai progress terpisah."""
     if name in {"update_skill", "save_skill"} and not result.startswith("ERROR"):
-        return f"📒 Self-improvement: {html.escape(result[:1000], quote=False)}"
+        return f"📒 Improvement: {html.escape(result[:1000], quote=False)}"
     return None
+
+
+def _format_agent_error(message: str) -> str:
+    """Beri ikon yang tepat untuk pesan error agent (English).
+
+    🪫 dipakai HANYA untuk yang artinya 'limit' (kuota/credit/panjang habis):
+    - Auth/kuota provider (HTTP 401/403/429) → 🪫 401, 403, 429
+    - Batas panjang teks/konteks            → 🪫 Limit Text/Context
+    Selain itu:
+    - Timeout / stream interrupted → ⚠️ Read Timeout
+    - Sisanya (bukan limit)        → ❌ Zeline hit a problem
+    """
+    low = message.lower()
+    if "timed out" in low or "did not respond" in low or ("stream" in low and "interrupted" in low):
+        return f"⚠️ Read Timeout — {message}"
+    if (
+        "http 401" in low
+        or "http 403" in low
+        or "http 429" in low
+        or "unauthorized" in low
+        or "rate limited" in low
+        or "out of credits" in low
+    ):
+        return f"🪫 401, 403, 429 — {message}"
+    if "too long" in low or "maksimum" in low or ("context" in low and "limit" in low) or "terlalu panjang" in low:
+        return f"🪫 Limit Text/Context — {message}"
+    return f"❌ Zeline hit a problem — {message}"
 
 
 def _working_status_text(elapsed_seconds: float, *, iteration: int | None = None, maximum: int | None = None) -> str:
@@ -270,15 +325,15 @@ class _LiveStatus:
     def _render(self) -> str:
         ordered = _ordered_lines(self.lines)[-self.max_lines:]
         feed = ("\n" + "\n".join(ordered)) if ordered else ""
-        # Header konsisten '⏳ Processing...'. Delay panjang diberi catatan provider.
+        # Header konsisten '⏰ Processing'. Delay panjang diberi catatan provider.
         if self.phase == "waiting":
             wait = time.monotonic() - self.phase_started
             if wait >= 30 and self.model:
-                header = f"⏳ Processing… ({self.model} is slow to respond)"
+                header = f"⏰ Processing ({self.model} is slow to respond)"
             else:
-                header = "⏳ Processing..."
+                header = "⏰ Processing"
         else:
-            header = "⏳ Processing..."
+            header = "⏰ Processing"
         return header + feed
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
@@ -365,7 +420,7 @@ class _LiveStatus:
                 self.message_id = None
                 return
             body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
-            final = f"⏳ Successful\n{body}"
+            final = f"✅ Successful\n{body}"
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=final, parse_mode="HTML",
@@ -399,7 +454,7 @@ class _LiveStatus:
                 body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
                 _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
-                    message_id=self.message_id, text=f"⏳ Successful\n{body}", parse_mode="HTML",
+                    message_id=self.message_id, text=f"✅ Successful\n{body}", parse_mode="HTML",
                 )
             else:
                 _api_call(
@@ -555,10 +610,97 @@ def _discover_models() -> list[str]:
 
 
 def _provider_label() -> str:
-    """Nama provider aman untuk status; tidak pernah menampilkan credential."""
+    """Safe provider name for status; never exposes credentials."""
     provider = config.stored_config_copy().get("provider", {})
     name = str(provider.get("name", "")).strip()
     return name or (urlparse(config.BASE_URL).hostname or "unknown")
+
+
+def _fetch_model_capabilities(provider: dict[str, str] | None, model_id: str) -> dict[str, Any]:
+    """Return the raw capabilities/metadata dict for one model id, or {}.
+
+    Uses the active provider's ``/models`` catalog (9Router-style entries carry
+    ``capabilities`` with contextWindow/maxOutput/vision/tools/reasoning). Safe:
+    returns an empty dict on any network/parse error so the caller can degrade
+    gracefully.
+    """
+    base = (provider or {}).get("base_url") if provider else config.BASE_URL
+    key = (provider or {}).get("api_key") if provider else config.API_KEY
+    base = str(base or "").rstrip("/")
+    if not base:
+        return {}
+    try:
+        response = requests.get(
+            f"{base}/models",
+            headers={"Authorization": f"Bearer {key or ''}"},
+            timeout=12,
+        )
+        if not response.ok:
+            return {}
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    for item in payload.get("data", []):
+        if isinstance(item, dict) and str(item.get("id", "")).strip() == model_id:
+            return item
+    return {}
+
+
+def _format_token_count(value: Any) -> str | None:
+    """Human-friendly token count: 1000000 -> '1M', 128000 -> '128K'."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if number >= 1_000_000 and number % 1_000_000 == 0:
+        return f"{number // 1_000_000}M"
+    if number >= 1_000:
+        trimmed = number / 1_000
+        return f"{trimmed:.0f}K" if trimmed == int(trimmed) else f"{trimmed:.1f}K"
+    return str(number)
+
+
+def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
+    """Build the English model-switch confirmation with capability details."""
+    provider_name = provider.get("name", provider.get("slug", "")) if provider else _provider_label()
+    lines = [
+        "✅ <b>Model switched</b>",
+        f"├ Model    : <code>{html.escape(selected)}</code>",
+        f"├ Provider : <code>{html.escape(str(provider_name))}</code>",
+    ]
+
+    meta = _fetch_model_capabilities(provider, selected)
+    caps = meta.get("capabilities") if isinstance(meta, dict) else None
+    caps = caps if isinstance(caps, dict) else {}
+
+    context_window = _format_token_count(caps.get("contextWindow"))
+    max_output = _format_token_count(caps.get("maxOutput"))
+    if context_window:
+        lines.append(f"├ Context  : {context_window} tokens")
+    if max_output:
+        lines.append(f"├ Max out  : {max_output} tokens")
+
+    # Compact capability flags — only show the ones that are true.
+    flags: list[str] = []
+    if caps.get("vision"):
+        flags.append("vision")
+    if caps.get("tools"):
+        flags.append("tools")
+    if caps.get("reasoning"):
+        flags.append("reasoning")
+    if caps.get("search"):
+        flags.append("search")
+    if caps.get("pdf"):
+        flags.append("pdf")
+    if flags:
+        lines.append(f"├ Supports : {', '.join(flags)}")
+
+    lines.append("╰ Saved globally · conversation context preserved.")
+    return "\n".join(lines)
 
 
 def _new_session_text() -> str:
@@ -794,7 +936,7 @@ def _handle_command_update(
         if summary:
             _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=f"📒 Self-improvement:\n{html.escape(summary[:1500], quote=False)}",
+                text=f"📒 Improvement:\n{html.escape(summary[:1500], quote=False)}",
                 parse_mode="HTML",
             )
         sessions.reset(identity)
@@ -813,7 +955,122 @@ def _handle_command_update(
                 text=args, tool_profile=tool_profile,
             )
         return True
+    if command == "/promoteskill":
+        # Publikasi skill ke repo dengan approval + scan sensitif. Hanya
+        # bermakna untuk owner (profile full); selain itu tolak halus.
+        if tool_profile != "full":
+            _api_call(api, "sendMessage", chat_id=chat_id, text="Perintah ini hanya untuk operator Zeline.")
+            return True
+        if not args:
+            _api_call(api, "sendMessage", chat_id=chat_id, text="Usage: /promoteskill <nama-skill>")
+            return True
+        _handle_promote_skill(api, chat_id, args.strip())
+        return True
     return False
+
+
+def _promote_preview_text(plan: "skill_publish.PublishPlan") -> str:
+    """Bangun bubble review: laporan scrub + scan + potongan isi skill."""
+    lines = [f"📤 <b>Publish skill:</b> <code>{html.escape(plan.name)}</code>", ""]
+    if plan.scrub_count:
+        lines.append(f"🧽 <b>Scrub identitas:</b> {plan.scrub_count} penggantian")
+        for sample in plan.scrub_samples[:6]:
+            lines.append(f"  • {html.escape(sample)}")
+    else:
+        lines.append("🧽 <b>Scrub identitas:</b> tidak ada yang perlu diganti")
+    lines.append("")
+    if plan.findings:
+        lines.append(f"🚫 <b>Scan sensitif: {len(plan.findings)} temuan — publish DIBLOKIR</b>")
+        for finding in plan.findings[:12]:
+            lines.append(
+                f"  • L{finding.layer} {html.escape(finding.label)} "
+                f"(baris {finding.line_no}): <code>{html.escape(finding.excerpt)}</code>"
+            )
+        lines.append("")
+        lines.append("Bersihkan baris di atas dari skill dulu, lalu jalankan /promoteskill lagi.")
+    else:
+        lines.append("✅ <b>Scan sensitif 3-lapis:</b> BERSIH (tidak ada rahasia/identitas/infra bocor)")
+        lines.append("")
+        lines.append("<b>Isi skill yang akan dipublik (sudah discrub):</b>")
+    return "\n".join(lines)
+
+
+def _handle_promote_skill(api: str, chat_id: int, name: str) -> None:
+    plan = skill_publish.prepare(name)
+    if not plan.ok and plan.error:
+        _api_call(api, "sendMessage", chat_id=chat_id, text=f"Gagal memuat skill: {plan.error}")
+        return
+
+    _api_call(api, "sendMessage", chat_id=chat_id, text=_promote_preview_text(plan), parse_mode="HTML")
+
+    # Ada temuan → berhenti, tidak ada tombol Publish.
+    if plan.findings:
+        return
+
+    # Tampilkan isi skill (dipecah aman) supaya owner bisa baca sebelum approve.
+    for part in _split_message(f"```\n{plan.scrubbed}\n```"):
+        _api_call(api, "sendMessage", chat_id=chat_id, text=_markdown_to_telegram_html(part), parse_mode="HTML")
+
+    # Simpan konten yang sudah discrub agar callback bisa publish tanpa scan ulang.
+    token = _stash_publish_payload(name, plan.scrubbed)
+    markup = {
+        "inline_keyboard": [[
+            {"text": "✅ Publish", "callback_data": f"pub:ok:{token}"},
+            {"text": "❌ Batal", "callback_data": f"pub:no:{token}"},
+        ]]
+    }
+    _api_call(
+        api, "sendMessage", chat_id=chat_id,
+        text=f"Publish skill <code>{html.escape(name)}</code> ke repo Zerolinear?",
+        parse_mode="HTML", reply_markup=markup,
+    )
+
+
+# Stash payload publish (nama + konten discrub) supaya callback_data tetap pendek
+# (<=64 byte): kita simpan konten di memori proses dan hanya kirim token pendek.
+_PUBLISH_STASH: dict[str, tuple[str, str]] = {}
+_PUBLISH_STASH_LOCK = threading.Lock()
+_PUBLISH_STASH_SEQ = 0
+
+
+def _stash_publish_payload(name: str, scrubbed: str) -> str:
+    global _PUBLISH_STASH_SEQ
+    with _PUBLISH_STASH_LOCK:
+        _PUBLISH_STASH_SEQ += 1
+        token = str(_PUBLISH_STASH_SEQ)
+        _PUBLISH_STASH[token] = (name, scrubbed)
+        # Jaga stash kecil: buang entri lama bila menumpuk.
+        if len(_PUBLISH_STASH) > 32:
+            for stale in list(_PUBLISH_STASH)[:-16]:
+                _PUBLISH_STASH.pop(stale, None)
+    return token
+
+
+def _pop_publish_payload(token: str) -> tuple[str, str] | None:
+    with _PUBLISH_STASH_LOCK:
+        return _PUBLISH_STASH.pop(token, None)
+
+
+def _handle_publish_callback(api: str, chat_id: int, message_id: int, data: str) -> None:
+    """Proses tap tombol Publish/Batal. push nyata hanya di jalur 'pub:ok'."""
+    parts = data.split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    token = parts[2] if len(parts) > 2 else ""
+    if action == "no":
+        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="❌ Publish dibatalkan. Tidak ada yang di-push.")
+        _pop_publish_payload(token)
+        return
+    payload = _pop_publish_payload(token)
+    if payload is None:
+        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Sesi publish sudah kedaluwarsa. Jalankan /promoteskill lagi.")
+        return
+    name, scrubbed = payload
+    _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=f"⏳ Mem-publish '{name}' ke repo…")
+    try:
+        result = skill_publish.publish(name, scrubbed)
+    except Exception as exc:  # pragma: no cover - defensif
+        result = f"GAGAL publish ({exc.__class__.__name__}): {exc}"
+    _api_call(api, "sendMessage", chat_id=chat_id, text=result)
 
 
 def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
@@ -830,6 +1087,9 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
         _api_call(api, "answerCallbackQuery", timeout=10, callback_query_id=callback_id)
     if data == "model:cancel":
         _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Model selection cancelled.")
+        return
+    if data.startswith("pub:"):
+        _handle_publish_callback(api, chat_id, message_id, data)
         return
     providers = _configured_providers()
     if data == "provider:back":
@@ -872,8 +1132,7 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
         cfg["provider"]["model"] = selected
     config.save_config(cfg)
     sessions.switch_provider(f"telegram:{chat_id}")
-    provider_line = f"\nProvider: {provider.get('name', provider['slug'])}" if provider else ""
-    _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=f"Model switched to: {selected}{provider_line}\nSaved globally. Konteks percakapan tetap dijaga.")
+    _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=_model_switch_text(selected, provider), parse_mode="HTML")
 
 
 _FENCED_CODE_RE = re.compile(r"```([A-Za-z0-9_+.-]*)\n?(.*?)```", re.DOTALL)
@@ -1334,7 +1593,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
         # Ganti model = ganti otak saja; konteks percakapan tetap dijaga.
         if hasattr(sessions, "switch_provider"):
             sessions.switch_provider(identity)
-        return f"Model updated: `{args}`. Konteks percakapan tetap dijaga."
+        return f"Model updated: `{args}`. Conversation context preserved."
     if command == "/new":
         sessions.reset(identity)
         return "New chat started."
@@ -1466,10 +1725,10 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         )
         ok = True
     except ZelineError as exc:
-        reply = f"⚠️ Zeline hit a problem: {exc}"
+        reply = _format_agent_error(str(exc))
     except Exception as exc:
         print(f"  [telegram] unhandled agent error: {exc.__class__.__name__}: {exc}", flush=True)
-        reply = f"⚠️ Zeline hit an unexpected internal error ({exc.__class__.__name__}). Please try again in a moment."
+        reply = f"🪫 Zeline hit a problem — an unexpected internal error ({exc.__class__.__name__}). Please try again in a moment."
     finally:
         done.set()
         heartbeat.join(timeout=0.2)
@@ -1502,7 +1761,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             if summary:
                 _api_call(
                     api, "sendMessage", chat_id=chat_id,
-                    text=f"📒 Self-improvement:\n{html.escape(summary[:1500], quote=False)}",
+                    text=f"📒 Improvement:\n{html.escape(summary[:1500], quote=False)}",
                     parse_mode="HTML",
                 )
         threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
