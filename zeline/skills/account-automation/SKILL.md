@@ -113,6 +113,79 @@ Requirements:
 For balance/reward tasks, per account: `Username / Yesterday (before) /
 Now (after)` in `$` (credit ÷ conversion), never raw credits.
 
+## Full account lifecycle (the ecosystem — how the skills connect)
+
+"Manage my accounts" spans a whole lifecycle. This skill is the **index**;
+each stage has a specialized skill. Walk them in order:
+
+```
+0. CREATE ACCOUNT (from nothing)        → skill: temp-email-automation
+   temp mail (mail.tm) → signup form → poll inbox for OTP/verify link →
+   confirm. Handles Cloudflare (raw-socket bypass) + Turnstile (2Captcha)
+   + SPA sites (Selenium/Chromium). Reads OTP itself, no user needed.
+
+1. ONBOARDING BONUS                     → skill: temp-email-automation
+   right after signup: enable "free models", claim welcome gift ($5),
+   apply invite/aff code. Do these BEFORE creating the API key — they're
+   separate onboarding actions, not optional.
+
+2. EXTRACT CREDENTIAL                   → skill: temp-email-automation
+   grab the API key / token (often shown once — capture immediately),
+   or the referral link, or wallet address. Store locally, gitignored.
+
+3. RECURRING VALUE                      → skill: newapi-daily-checkin
+   daily check-in / claim rewards on token panels. Fee-safe: check
+   `checked_in_today` before solving captcha. Reports $ before/after.
+
+4. ONGOING MANAGEMENT                   → THIS skill (account-automation)
+   push to GitHub, call service APIs, rotate keys, recreate expired
+   keys, run any API/CLI action on the account.
+```
+
+So when the user says "buatin akun di web X pakai temp mail, ambil OTP,
+login, ambil API key / ref / checkin" — that's stages 0→3, all already
+doable. Load `temp-email-automation` for 0-2, `newapi-daily-checkin` for
+3, and this skill for the GitHub/API management layer.
+
+### What the agent CAN do end-to-end today (no user in the loop)
+- Generate a fresh inbox, sign up, **read the OTP/verify email itself**,
+  complete verification.
+- Solve the signup/login Turnstile via 2Captcha.
+- Claim onboarding bonuses + apply referral codes.
+- Extract and store the API key.
+- Do daily check-ins across many accounts.
+- Manage GitHub (push/PR/merge) and any REST API.
+
+### What still needs the user or a PC/VPS (be honest about these)
+- **Sites with only OAuth signup** (Google/GitHub consent, no email+pass):
+  each account needs a real logged-in Google/GitHub session — not
+  mass-automatable; do it with the user, one at a time.
+- **X/Twitter & JS-only logins with no API**: need the Phase-2 browser
+  tool on a PC/VPS (Termux can't drive Chromium reliably for these).
+- **Payment / MFA / KYC steps**: always loop the user in; never bypass.
+
+### Registration etiquette (from temp-email-automation)
+When asked to register, START immediately (open page, fill email, click
+next) — don't pre-list hypothetical blockers. Only report a blocker if
+you actually hit it. The user may want a partial flow (stop at
+verification-email) — respect that. Ask for a missing input in one line,
+then execute.
+
+## Related skills (load as needed)
+- `temp-email-automation` — signup, temp mail, OTP capture, Cloudflare/
+  Turnstile bypass, API-key extraction, mass registration.
+- `newapi-daily-checkin` — daily reward check-in on one-api/New-API
+  panels (GoRouter, TabiToken, any fork).
+- `github-pr-workflow` / `github-auth` — GitHub specifics.
+
+## Deep references (in this skill)
+- `references/browser-automation-playbook.md` — full browser/web
+  automation playbook: engines & drivers, Selenium-on-Termux recipe,
+  session persistence (the key technique), Cloudflare/Turnstile tiers,
+  anti-detection, rate-limit reality, building a Zeline browser tool.
+- `references/zeline-browser-tool-roadmap.md` — step-by-step plan to add
+  a Playwright `browser` tool to Zeline (owner-gated).
+
 ## Pitfalls
 - `UID` is read-only in bash — use `UUID` for a user-id variable.
 - Don't batch-solve captchas then use them later — they expire.
