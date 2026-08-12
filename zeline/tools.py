@@ -357,15 +357,30 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
             f"{config.BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
             json=payload,
-            timeout=90,
+            timeout=180,
         )
-    except requests.RequestException as exc:
-        return f"ERROR: failed to reach vision provider: {exc.__class__.__name__}."
-    if not response.ok:
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout):
         return (
-            f"ERROR: vision provider HTTP {response.status_code}. "
-            "The active model may not support image input — switch to a vision-capable model."
+            f"ERROR: the vision model '{config.MODEL}' did not respond within 180s (timed out). "
+            "The model/route is likely overloaded — try again, or switch to a faster vision-capable model with /model."
         )
+    except requests.exceptions.ConnectionError:
+        return f"ERROR: could not connect to the vision provider at {config.BASE_URL}. Check the router/proxy is running."
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the vision provider ({exc.__class__.__name__}). Try again."
+    if not response.ok:
+        hint = ""
+        if response.status_code in (401, 403):
+            hint = " — the API key is invalid or unauthorized."
+        elif response.status_code == 404:
+            hint = f" — the model '{config.MODEL}' was not found or does not accept image input; switch to a vision-capable model with /model."
+        elif response.status_code == 429:
+            hint = " — rate limited or out of credits on the provider."
+        elif response.status_code >= 500:
+            hint = " — the provider is having a server-side problem; try again shortly."
+        else:
+            hint = " — the active model may not support image input; switch to a vision-capable model."
+        return f"ERROR: vision provider HTTP {response.status_code}{hint}"
     try:
         answer = str(response.json()["choices"][0]["message"]["content"] or "").strip()
     except (KeyError, IndexError, TypeError, ValueError):
