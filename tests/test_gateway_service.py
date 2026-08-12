@@ -136,6 +136,58 @@ class GatewayServiceTests(unittest.TestCase):
     def test_log_tail_is_empty_without_log_file(self):
         self.assertEqual(self.service.tail_log(), "(belum ada log gateway)")
 
+    def test_start_token_falls_back_to_ps_lstart_on_macos(self):
+        # Simulasikan macOS/BSD: /proc tidak ada (starttime None) → pakai ps lstart.
+        with mock.patch.object(self.service, "_process_start_ticks", return_value=None), \
+             mock.patch.object(self.service, "_ps_field", return_value="Wed Aug 12 05:00:00 2026"):
+            token = self.service._process_start_token(4321)
+        self.assertEqual(token, "lstart:Wed Aug 12 05:00:00 2026")
+
+    def test_matches_state_uses_token_and_survives_missing_proc(self):
+        # State baru berbasis start_token harus cocok lewat _process_start_token
+        # meski /proc tidak tersedia (macOS), asalkan token identik.
+        self.config.ensure_data_dirs()
+        self.config.PID_FILE.write_text(json.dumps({"pid": 555, "start_token": "lstart:X", "only": []}))
+        state = self.service._load_state()
+        with mock.patch.object(self.service, "_pid_alive", return_value=True), \
+             mock.patch.object(self.service, "_process_start_token", return_value="lstart:X"):
+            self.assertTrue(self.service._process_matches_state(state))
+        # Token beda → bukan process yang sama (PID reuse), fail-closed.
+        with mock.patch.object(self.service, "_pid_alive", return_value=True), \
+             mock.patch.object(self.service, "_process_start_token", return_value="lstart:Y"):
+            self.assertFalse(self.service._process_matches_state(state))
+
+    def test_matches_state_without_identity_verifies_via_cmdline(self):
+        # State lama tanpa token/ticks → verifikasi lewat command line (harus
+        # mengandung 'zeline') agar gateway tetap bisa dihentikan.
+        self.config.ensure_data_dirs()
+        self.config.PID_FILE.write_text(json.dumps({"pid": 606, "only": []}))
+        state = self.service._load_state()
+        with mock.patch.object(self.service, "_pid_alive", return_value=True), \
+             mock.patch.object(self.service, "_process_looks_like_zeline", return_value=True):
+            self.assertTrue(self.service._process_matches_state(state))
+        with mock.patch.object(self.service, "_pid_alive", return_value=True), \
+             mock.patch.object(self.service, "_process_looks_like_zeline", return_value=False):
+            self.assertFalse(self.service._process_matches_state(state))
+
+    def test_start_still_records_pid_when_identity_unavailable(self):
+        # Bila /proc DAN ps sama-sama gagal (token None), start tidak boleh
+        # membunuh child yang baru sukses — cukup simpan PID tanpa token.
+        cfg = self.config.config_copy()
+        cfg["gateways"]["webhook"].update({"enabled": True, "token": "test-webhook-token-long-enough"})
+        self.config.save_config(cfg)
+        process = mock.Mock(pid=51515)
+        with mock.patch.object(self.service.subprocess, "Popen", return_value=process), \
+             mock.patch.object(self.service, "_process_start_token", return_value=None), \
+             mock.patch.object(self.service, "_process_start_ticks", return_value=None), \
+             mock.patch.object(self.service.os, "kill") as kill:
+            started, message = self.service.start(only=["webhook"])
+        self.assertTrue(started)
+        self.assertIn("51515", message)
+        kill.assert_not_called()
+        state = json.loads(self.config.PID_FILE.read_text())
+        self.assertEqual(state["pid"], 51515)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
