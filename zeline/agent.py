@@ -99,6 +99,9 @@ class Zeline:
                 ),
             }
         ]
+        # Jejak aktivitas turn terakhir → dipakai untuk memutuskan apakah sesi
+        # cukup "berbobot" untuk dijalankan refleksi self-improvement.
+        self.last_turn_tool_calls: int = 0
 
     def export_history(self) -> list[dict[str, Any]]:
         """Salinan message history penuh (termasuk system) untuk dipersist."""
@@ -244,6 +247,7 @@ class Zeline:
         if len(text) > 16_000:
             return "Pesan terlalu panjang (maksimum 16.000 karakter)."
         self.messages.append({"role": "user", "content": text})
+        self.last_turn_tool_calls = 0
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
@@ -262,6 +266,7 @@ class Zeline:
 
             if not isinstance(tool_calls, list):
                 raise ZelineError("Format tool call dari provider tidak valid.")
+            self.last_turn_tool_calls += len(tool_calls)
 
             # Urutan ini wajib untuk OpenAI-compatible tool calling.
             self.messages.append(
@@ -356,4 +361,72 @@ class Zeline:
             "Aku sudah mengumpulkan banyak data tapi belum bisa merangkumnya. "
             "Coba persempit pertanyaannya ya."
         )
+
+    def reflect(self, min_tool_calls: int = 5) -> str | None:
+        """Self-improvement review di akhir sesi penting (profile full saja).
+
+        Menyuruh model meninjau percakapan yang baru saja terjadi lalu, bila ada
+        prosedur reusable / pelajaran nyata, MENYIMPAN atau MEMPERBAIKI skill via
+        tool save_skill/update_skill. Hanya dijalankan untuk sesi yang cukup
+        berbobot (>= ``min_tool_calls`` tool call) supaya obrolan ringan tidak
+        memicu skill sampah. Mengembalikan ringkasan tindakan, atau None bila
+        tidak ada yang perlu disimpan / sesi terlalu ringan.
+        """
+        if self.executor.profile != "full":
+            return None
+        if self.last_turn_tool_calls < min_tool_calls:
+            return None
+        # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
+        # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
+        saved_messages = copy.deepcopy(self.messages)
+        self.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "REFLEKSI SELF-IMPROVEMENT (internal, jangan tampilkan ke user). "
+                    "Tinjau singkat percakapan barusan. Apakah ada prosedur reusable, "
+                    "alur kerja non-trivial, atau error tricky yang berhasil diatasi dan "
+                    "layak jadi skill? "
+                    "- Kalau YA dan belum ada skill-nya: panggil save_skill (nama jelas, "
+                    "isi: kapan dipakai, langkah bernomor + command persis, pitfalls). "
+                    "- Kalau skill yang dipakai ternyata kurang/salah: panggil update_skill "
+                    "untuk memperbaikinya. "
+                    "- Kalau TIDAK ada yang layak disimpan: jangan panggil tool apa pun dan "
+                    "jawab persis 'NO_ACTION'. "
+                    "Jangan menyimpan hal sepele/sekali-pakai atau rahasia."
+                ),
+            }
+        )
+        actions: list[str] = []
+        try:
+            for _ in range(3):  # maksimal beberapa langkah tool untuk refleksi
+                message = self._call_llm()
+                tool_calls = message.get("tool_calls")
+                if not tool_calls or not isinstance(tool_calls, list):
+                    break
+                self.messages.append(
+                    {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
+                )
+                for tool_call in tool_calls:
+                    function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                    name = str(function.get("name", ""))
+                    try:
+                        args = json.loads(function.get("arguments") or "{}")
+                        if not isinstance(args, dict):
+                            args = {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = self.executor.run(name, args)
+                    if name in {"save_skill", "update_skill"} and not result.startswith("ERROR"):
+                        actions.append(result)
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}
+                    )
+        except ZelineError:
+            actions = actions  # refleksi bersifat best-effort; error diabaikan
+        finally:
+            # Buang jejak refleksi dari history utama supaya tidak mengganggu
+            # konteks percakapan berikutnya.
+            self.messages = saved_messages
+        return "\n".join(actions) if actions else None
 

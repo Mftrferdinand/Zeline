@@ -687,6 +687,18 @@ def _handle_command_update(
         return True
     if command == "/new":
         sessions.stop(identity)
+        # Self-improvement review sebelum konteks dibuang: sesi berbobot bisa
+        # menyimpan/memperbaiki skill. Best-effort, tidak menghalangi reset.
+        try:
+            summary = sessions.reflect(identity)
+        except Exception:
+            summary = None
+        if summary:
+            _api_call(
+                api, "sendMessage", chat_id=chat_id,
+                text=f"📒 Self-improvement:\n{html.escape(summary[:1500], quote=False)}",
+                parse_mode="HTML",
+            )
         sessions.reset(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=_new_session_text())
         return True

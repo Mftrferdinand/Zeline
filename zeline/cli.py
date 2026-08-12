@@ -548,6 +548,19 @@ def cmd_model() -> int:
         cfg = config.stored_config_copy()
 
 
+def _run_reflection(sessions: "SessionStore") -> None:
+    """Self-improvement review saat sesi CLI ditutup (best-effort, non-fatal).
+
+    Menampilkan skill yang tersimpan/diperbarui bila ada; diam bila tidak ada.
+    """
+    try:
+        summary = sessions.reflect("cli:local")
+    except Exception:
+        summary = None
+    if summary:
+        print(f"\n\033[90m📒 Self-improvement:\n{summary}\033[0m")
+
+
 def cmd_chat(query: str | None = None) -> int:
     if not config.GATEWAY_SETUP_COMPLETE:
         print("[!] Gateway belum disiapkan. Jalankan: zeline")
@@ -592,11 +605,13 @@ def cmd_chat(query: str | None = None) -> int:
         try:
             text = input("\033[36mkamu ›\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
+            _run_reflection(sessions)
             print("\nSampai jumpa!")
             return 0
         if not text:
             continue
         if text.lower() in {"keluar", "exit", "quit", "q"}:
+            _run_reflection(sessions)
             print("Sampai jumpa!")
             return 0
         try:
