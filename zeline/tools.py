@@ -357,15 +357,30 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
             f"{config.BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
             json=payload,
-            timeout=90,
+            timeout=180,
         )
-    except requests.RequestException as exc:
-        return f"ERROR: failed to reach vision provider: {exc.__class__.__name__}."
-    if not response.ok:
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout):
         return (
-            f"ERROR: vision provider HTTP {response.status_code}. "
-            "The active model may not support image input — switch to a vision-capable model."
+            f"ERROR: the vision model '{config.MODEL}' did not respond within 180s (timed out). "
+            "The model/route is likely overloaded — try again, or switch to a faster vision-capable model with /model."
         )
+    except requests.exceptions.ConnectionError:
+        return f"ERROR: could not connect to the vision provider at {config.BASE_URL}. Check the router/proxy is running."
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the vision provider ({exc.__class__.__name__}). Try again."
+    if not response.ok:
+        hint = ""
+        if response.status_code in (401, 403):
+            hint = " — the API key is invalid or unauthorized."
+        elif response.status_code == 404:
+            hint = f" — the model '{config.MODEL}' was not found or does not accept image input; switch to a vision-capable model with /model."
+        elif response.status_code == 429:
+            hint = " — rate limited or out of credits on the provider."
+        elif response.status_code >= 500:
+            hint = " — the provider is having a server-side problem; try again shortly."
+        else:
+            hint = " — the active model may not support image input; switch to a vision-capable model."
+        return f"ERROR: vision provider HTTP {response.status_code}{hint}"
     try:
         answer = str(response.json()["choices"][0]["message"]["content"] or "").strip()
     except (KeyError, IndexError, TypeError, ValueError):
@@ -552,17 +567,68 @@ def _search_jina_ddg(query: str) -> list[tuple[str, str]]:
         return []
 
 
+def _decode_bing_redirect(url: str) -> str:
+    """Bing membungkus URL hasil di redirect `bing.com/ck/a?...&u=a1<base64url>`.
+    Ekstrak & decode ke URL aslinya; kalau gagal, kembalikan apa adanya."""
+    match = re.search(r"[?&]u=a1([A-Za-z0-9_\-]+)", url)
+    if not match:
+        return url
+    encoded = match.group(1)
+    encoded += "=" * (-len(encoded) % 4)
+    try:
+        return base64.urlsafe_b64decode(encoded).decode("utf-8", "replace")
+    except (ValueError, UnicodeDecodeError):
+        return url
+
+
+def _search_bing_jina(query: str) -> list[tuple[str, str]]:
+    """SERP umum via Bing yang dirender reader proxy (server-side, tahan blokir).
+
+    Ini mesin utama untuk kueri sehari-hari: mengembalikan hasil web nyata yang
+    relevan (bukan cuma berita/wiki). Hasil Bing berupa link redirect ck/a yang
+    di-decode balik ke URL asli.
+    """
+    from urllib.parse import quote
+    try:
+        response = requests.get(
+            _JINA_READER + f"https://www.bing.com/search?q={quote(query)}",
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+        )
+        if not response.ok or not response.text.strip():
+            return []
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"#+\s*\[([^\]]+)\]\((https?://www\.bing\.com/ck/a[^)]+)\)", response.text):
+            title = re.sub(r"\*+", "", match.group(1)).strip()
+            url = _decode_bing_redirect(match.group(2))
+            if not title or not url.startswith("http"):
+                continue
+            domain = re.sub(r"^https?://", "", url).split("/", 1)[0]
+            if domain in seen:
+                continue
+            seen.add(domain)
+            out.append((title, url))
+            if len(out) >= WEB_MAX_RESULTS:
+                break
+        return out
+    except requests.RequestException:
+        return []
+
+
 def _web_search(query: str) -> str:
     """Cari web dari jaringan Termux (DuckDuckGo langsung mati/SSL-fail).
-    Urutan andal: jina→DDG (bila hidup) → Google News RSS → Wikipedia.
+    Urutan andal: jina→Bing (SERP umum, paling relevan untuk kueri harian) →
+    jina→DDG → Google News RSS → Wikipedia. Bing lewat reader proxy dirender
+    server-side jadi tahan blokir jaringan mobile/Termux.
     Selalu fail-fast; tidak pernah menggantung lama."""
     query = query.strip()
     if not query:
         return "ERROR: query kosong."
-    for engine in (_search_jina_ddg, _search_gnews, _search_wikipedia):
+    for engine in (_search_bing_jina, _search_jina_ddg, _search_gnews, _search_wikipedia):
         results = engine(query)
         if results:
-            return "\n".join(f"- {title}" for title, _url in results)
+            return "\n".join(f"- {title}\n  {url}" for title, url in results)
     return "ERROR: tidak dapat mencari web (semua sumber gagal). Coba lagi nanti."
 
 

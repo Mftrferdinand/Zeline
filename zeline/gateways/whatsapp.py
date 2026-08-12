@@ -299,10 +299,10 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 tool_profile=tool_profile,
             )
         except ZelineError as exc:
-            reply = f"Maaf, Zeline sedang bermasalah: {exc}"
-        except Exception:
-            print("  [whatsapp] unhandled agent error", flush=True)
-            reply = "Maaf, terjadi error internal. Coba lagi sebentar."
+            reply = f"⚠️ Zeline hit a problem: {exc}"
+        except Exception as exc:
+            print(f"  [whatsapp] unhandled agent error: {exc.__class__.__name__}: {exc}", flush=True)
+            reply = f"⚠️ Zeline hit an unexpected internal error ({exc.__class__.__name__}). Please try again in a moment."
         send_to_whatsapp(jid, reply)
 
     class CallbackHandler(BaseHTTPRequestHandler):

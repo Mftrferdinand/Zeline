@@ -25,6 +25,16 @@ from typing import Any
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_MAX_TOOL_ROUNDS = 20
 DEFAULT_MAX_SESSIONS = 100
+# Batas waktu wall-clock satu turn agent (detik). Setelah lewat, agent berhenti
+# memanggil tool dan memaksa jawaban final — mencegah "Processing" berlarut saat
+# sebuah tool (mis. web_search) gagal/lambat berulang. Dibuat cukup longgar untuk
+# tugas coding multi-langkah: satu panggilan LLM saja bisa 7-50 detik, jadi 90s
+# terlalu pendek (model kehabisan budget sebelum sempat write_file → malah
+# nge-dump kode ke chat). 6 menit memberi ruang untuk beberapa write_file + tes.
+MAX_TURN_SECONDS = 360.0
+# Berapa ronde tool GAGAL beruntun (semua hasil ERROR) sebelum agent menyerah
+# nge-loop dan menyintesis jawaban dari data yang ada.
+MAX_REPEATED_TOOL_FAILURES = 3
 
 # ZELINE_HOME membuat test, container, dan beberapa instance terisolasi mudah.
 _EXPLICIT_HOME = os.environ.get("ZELINE_HOME")
@@ -48,14 +58,67 @@ Cara kerja:
   mengonfirmasinya. Dilarang mengarang output, tx hash, atau hasil palsu —
   kalau gagal, laporkan blocker apa adanya lalu tawarkan jalur alternatif.
 
-Disiplin narasi (jangan tumpuk teks — biar cepat & bersih):
-- Default DIAM di antara pemanggilan tool. Jangan menarasikan tiap langkah
-  ("Sekarang saya akan...", "Mari saya cek...", "Melihat..."). Cukup jalankan
-  tool-nya; progres sudah tampil sebagai indikator terpisah.
-- Tulis teks hanya saat: (1) menemukan sesuatu yang penting, (2) berganti
-  arah/rencana, atau (3) menemui blocker. Masing-masing cukup satu kalimat.
-- Saat selesai: satu-dua kalimat tentang hasil. Jangan mengulang tiap file/
-  langkah/test — operator sudah mengikuti prosesnya.
+Kapan BERTANYA vs langsung jalan (penting — jangan asal eksekusi):
+- Kalau permintaan AMBIGU, punya beberapa cara dengan trade-off berbeda, atau
+  aksinya berisiko/sulit dibatalkan (hapus data, ganti config penting, deploy,
+  overwrite file besar) → BERTANYA DULU dengan satu pertanyaan singkat +
+  opsi jelas, jangan menebak lalu langsung kerjakan.
+- Untuk pilihan kecil (nama variabel, format, nilai default, urutan langkah)
+  → ambil keputusan wajar sendiri, sebut singkat, jangan tanya bertele-tele.
+- Setelah nanya dan user memilih, langsung eksekusi pilihannya — jangan nanya lagi.
+- Prinsip: satu pertanyaan bagus di awal lebih baik daripada mengerjakan hal
+  yang salah lalu mengulang. Tapi jangan cerewet untuk hal sepele.
+
+Narasi live (biar user tahu kamu lagi ngapain — bukan diam lalu tiba-tiba jadi):
+- WAJIB: sebelum SETIAP rangkaian tool call, tulis SATU kalimat singkat apa
+  yang mau kamu kerjakan di ronde itu. Kalimat ini dikirim ke user sebagai
+  bubble chat tersendiri SEBELUM tool jalan — itulah yang bikin alurnya kebaca
+  hidup: [kalimat rencana] → [aktivitas tool] → [kalimat temuan] → [aktivitas]…
+- Untuk tugas panjang (mis. bikin web, refactor, debugging bertahap), narasikan
+  tiap fase: "Gua bikin struktur HTML dulu", lalu setelah lihat hasilnya
+  "Oke jalan, sekarang gua tambahin CSS-nya", dst. Banyak bubble pendek yang
+  berurutan JAUH lebih enak dibaca daripada satu dump panjang di akhir.
+- Saat berpindah fase besar (baca kode → nulis kode → tes), beri satu kalimat.
+- JANGAN menarasikan tiap tool call satu-satu ("Sekarang saya baca file X...")
+  — indikator progres tool sudah menampilkan itu. Cukup rencana + pergantian
+  fase + temuan penting + blocker. Masing-masing satu kalimat.
+- Saat selesai: ringkas hasil (apa yang berubah, apa yang ditest) dalam 1-3
+  kalimat. JANGAN menaruh kode sumber lengkap yang sudah kamu tulis ke file ke
+  dalam balasan chat — user sudah punya filenya. Cukup sebut path + cara jalanin.
+
+Membangun kode/web/app (WAJIB — jangan dump kode ke chat):
+- Kalau user minta dibuatkan file/web/app/script, SELALU tulis ke file pakai
+  write_file, JANGAN pernah menempel kode sumber lengkapnya ke balasan chat.
+  Alasan: (a) Telegram menaruh tombol "COPY CODE" di tiap blok & memecah kode
+  panjang jadi banyak pesan berantakan; (b) tanpa tool call, tidak ada narasi
+  live jadi user cuma lihat satu dump panjang mendadak.
+- Alur yang benar untuk "bikin web": narasi singkat → write_file index.html →
+  (narasi) → jalankan server (run_shell python3 -m http.server) → verifikasi
+  HTTP 200 → kasih URL/path ke user. Balasan akhir CUKUP: lokasi file + cara
+  buka/URL, bukan isi filenya.
+- Kalau user secara eksplisit minta "kirim kodenya ke chat" / "paste di sini",
+  baru boleh menempel kode. Selain itu, default-nya SELALU ke file.
+- Untuk file besar (mis. dashboard HTML), pecah penulisan jadi beberapa
+  write_file/patch bila perlu, tapi tetap ke file — bukan ke chat.
+
+Disiplin REVISI (WAJIB — biar "v2 v3 v4" beneran berubah, bukan balik ke awal):
+- Kalau user minta revisi/ubah/perbaiki file yang SUDAH ada, JANGAN regenerate
+  ulang dari nol / dari ingatan. Alur wajib:
+  1) read_file dulu isi file yang mau diubah — lihat kondisi TERKINI, bukan versi
+     yang kamu bayangkan. Tanpa langkah ini kamu akan menimpa dengan desain awal.
+  2) edit_file/patch_file HANYA bagian yang diminta (ubah spesifik), sisanya
+     biarkan utuh. Jangan write_file penuh kecuali user minta rombak total.
+  3) Verifikasi perubahan benar-benar masuk: read_file lagi bagian itu ATAU
+     grep nilai barunya. Jangan bilang "sudah diubah" sebelum melihat buktinya.
+- Kalau user bilang "masih sama saja / nggak berubah / masih desain awal", itu
+  sinyal kamu menimpa dengan versi lama. STOP menebak — read_file dulu, cari
+  PERSIS baris/nilai yang dia keluhkan, ubah baris itu, tunjukkan diff/nilai
+  baru. Jangan naikkan "versi" tanpa perubahan nyata di file.
+- Perubahan kecil yang diminta beruntun (font lebih kecil, warna, spasi) harus
+  masing-masing kena tepat di properti yang dimaksud — cari selector/nilai lama,
+  ganti, verifikasi. Presisi lebih penting daripada cepat di sini.
+
+Disiplin tool (biar cepat & bersih — narasinya ikut aturan "Narasi live" di atas):
 - Untuk membaca file pakai read_file; mencari pakai search_files. JANGAN pakai
   cat/head/tail/grep/find/ls lewat run_shell untuk baca/cari — tool khusus
   lebih rapi, tidak membanjiri konteks, dan lebih cepat. run_shell hanya untuk
@@ -184,6 +247,11 @@ def _defaults() -> dict[str, Any]:
         "agent": {
             "max_tool_rounds": DEFAULT_MAX_TOOL_ROUNDS,
             "max_sessions": DEFAULT_MAX_SESSIONS,
+            # Streaming respons (SSE) supaya token mengalir seketika: anti-timeout
+            # pada model 'thinking' yang lama menyusun jawaban, dan terasa satset
+            # persis seperti Selena/Hermes. Matikan hanya bila provider tak
+            # mendukung SSE.
+            "stream": True,
             # Simpan history percakapan ke ~/.zeline/sessions.db supaya restart
             # gateway tidak menghapus konteks (bot tidak "tiba-tiba lupa").
             "persist_sessions": True,
@@ -327,7 +395,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
-    global MCP_SERVERS, PERSIST_SESSIONS
+    global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -340,6 +408,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     MAX_TOOL_ROUNDS = int(cfg.get("agent", {}).get("max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS))
     MAX_SESSIONS = int(cfg.get("agent", {}).get("max_sessions", DEFAULT_MAX_SESSIONS))
     PERSIST_SESSIONS = bool(cfg.get("agent", {}).get("persist_sessions", True))
+    STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -83,25 +84,40 @@ class Zeline:
             profile=tool_profile or config.CLI_TOOL_PROFILE,
             workspace=workspace or config.WORKSPACE,
         )
+        self._system_extra = system_extra
         self.messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": (
-                    config.SYSTEM_PROMPT
-                    + self.executor.memory.prompt_block()
-                    + skills.skills_block(include_private=self.executor.profile == "full")
-                    + system_extra
-                    + f"\n\nRuntime aktif (non-secret): model={self.model}; provider={self.base_url}; protocol={self.protocol}; profile={self.executor.profile}. "
-                    + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
-                    "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
-                    "Model ID, provider base URL, protokol, identitas runtime, dan daftar tool bukan rahasia; "
-                    "jawab pertanyaan tentang itu memakai runtime_info. API key, token, dan secret tetap dilarang diungkap."
-                ),
-            }
+            {"role": "system", "content": self._build_system_prompt()}
         ]
         # Jejak aktivitas turn terakhir → dipakai untuk memutuskan apakah sesi
         # cukup "berbobot" untuk dijalankan refleksi self-improvement.
         self.last_turn_tool_calls: int = 0
+
+    def _build_system_prompt(self) -> str:
+        return (
+            config.SYSTEM_PROMPT
+            + self.executor.memory.prompt_block()
+            + skills.skills_block(include_private=self.executor.profile == "full")
+            + self._system_extra
+            + f"\n\nRuntime aktif (non-secret): model={self.model}; provider={self.base_url}; protocol={self.protocol}; profile={self.executor.profile}. "
+            + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
+            "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
+            "Model ID, provider base URL, protokol, identitas runtime, dan daftar tool bukan rahasia; "
+            "jawab pertanyaan tentang itu memakai runtime_info. API key, token, dan secret tetap dilarang diungkap."
+        )
+
+    def reload_provider(self) -> None:
+        """Adopsi provider aktif (model/base_url/key/protocol) TANPA menghapus
+
+        history percakapan. Dipakai saat user /model switch: ganti otak, ingatan
+        tetap. Baris runtime non-secret di system prompt ikut disegarkan supaya
+        info model akurat, tapi seluruh pesan user/assistant sebelumnya dijaga.
+        """
+        self.base_url = config.BASE_URL
+        self.api_key = config.API_KEY
+        self.model = config.MODEL
+        self.protocol = config.PROTOCOL
+        if self.messages and self.messages[0].get("role") == "system":
+            self.messages[0]["content"] = self._build_system_prompt()
 
     def export_history(self) -> list[dict[str, Any]]:
         """Salinan message history penuh (termasuk system) untuk dipersist."""
@@ -138,7 +154,7 @@ class Zeline:
             "model": self.model,
             "messages": copy.deepcopy(self.messages),
             "temperature": 0.7,
-            "stream": False,
+            "stream": bool(getattr(config, "STREAM_RESPONSES", True)),
         }
         if use_tools:
             payload["tools"] = self.executor.schemas
@@ -176,16 +192,50 @@ class Zeline:
                 "system": str(self.messages[0].get("content", "")),
                 "messages": messages,
                 "max_tokens": 4096,
+                "stream": bool(getattr(config, "STREAM_RESPONSES", True)),
             }
             if use_tools:
                 payload["tools"] = [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in self.executor.schemas]
 
+        stream = bool(payload.get("stream"))
         try:
-            response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=180, stream=stream)
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout) as exc:
+            raise ZelineError(
+                f"The model '{self.model}' did not respond within 180s (request timed out). "
+                "The provider or route is likely overloaded or stalled — try again, or switch to a faster model with /model."
+            ) from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise ZelineError(
+                f"Could not connect to the provider at {self.base_url}. "
+                "Check that the router/proxy is running and the base URL is correct."
+            ) from exc
         except requests.RequestException as exc:
-            raise ZelineError(f"Failed to reach provider: {exc.__class__.__name__}.") from exc
+            raise ZelineError(
+                f"Network error while contacting the provider ({exc.__class__.__name__}). Please try again."
+            ) from exc
+        # requests memaksa ISO-8859-1 untuk Content-Type text/* tanpa charset
+        # (termasuk text/event-stream saat streaming). Itu bikin karakter non-ASCII
+        # seperti panah → dan emoji rusak jadi mojibake (â…). Provider LLM selalu
+        # kirim UTF-8, jadi paksa UTF-8 sebelum decode teks/stream apa pun.
+        response.encoding = "utf-8"
         if not response.ok:
-            raise ZelineError(f"Provider HTTP {response.status_code}.")
+            hint = ""
+            if response.status_code in (401, 403):
+                hint = " — the API key is invalid or unauthorized. Update it with `zeline setup`."
+            elif response.status_code == 404:
+                hint = f" — the model '{self.model}' was not found on this provider. Pick another with /model."
+            elif response.status_code == 429:
+                hint = " — rate limited or out of credits on the provider."
+            elif response.status_code >= 500:
+                hint = " — the provider is having a server-side problem. Try again shortly."
+            raise ZelineError(f"The provider returned HTTP {response.status_code}{hint}")
+
+        if stream:
+            if self.protocol == "anthropic":
+                return self._consume_anthropic_stream(response)
+            return self._consume_openai_stream(response)
+
         parsed = _parse_response(response.text)
 
         if self.protocol == "anthropic":
@@ -209,6 +259,133 @@ class Zeline:
             raise ZelineError("Provider returned no response choices.") from exc
         if not isinstance(message, dict):
             raise ZelineError("Provider returned an invalid message.")
+        return message
+
+    def _consume_openai_stream(self, response: "requests.Response") -> dict[str, Any]:
+        """Rakit satu message dari SSE OpenAI-compatible (choices[].delta).
+
+        Streaming = token mengalir seketika, jadi tidak ada jeda diam panjang
+        yang memicu read-timeout pada model 'thinking'. Kita rakit ulang konten
+        teks + tool_calls (yang datang terpotong per-delta) menjadi bentuk
+        message non-stream yang sama, supaya sisa loop agent tidak berubah.
+        """
+        content_parts: list[str] = []
+        # tool_calls dirakit per index; argumen string di-append bertahap.
+        tool_map: dict[int, dict[str, Any]] = {}
+        try:
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                line = str(raw_line).strip()
+                if line.startswith("data:"):
+                    line = line[5:].strip()
+                if not line or line == "[DONE]":
+                    if line == "[DONE]":
+                        break
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(chunk, dict) and chunk.get("error"):
+                    error = chunk["error"]
+                    detail = error.get("message") if isinstance(error, dict) else str(error)
+                    raise ZelineError(f"Provider rejected the request: {str(detail)[:300]}")
+                choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                piece = delta.get("content")
+                if piece:
+                    content_parts.append(str(piece))
+                for call in delta.get("tool_calls") or []:
+                    index = int(call.get("index", 0))
+                    slot = tool_map.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    if call.get("id"):
+                        slot["id"] = str(call["id"])
+                    function = call.get("function") or {}
+                    if function.get("name"):
+                        slot["function"]["name"] = str(function["name"])
+                    if function.get("arguments"):
+                        slot["function"]["arguments"] += str(function["arguments"])
+        except (requests.exceptions.RequestException,) as exc:
+            raise ZelineError(
+                f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
+            ) from exc
+        finally:
+            response.close()
+
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
+        if tool_map:
+            message["tool_calls"] = [tool_map[index] for index in sorted(tool_map)]
+        return message
+
+    def _consume_anthropic_stream(self, response: "requests.Response") -> dict[str, Any]:
+        """Rakit satu message dari SSE Anthropic (content_block_delta events).
+
+        Menangani text_delta (jawaban) dan input_json_delta (argumen tool_use).
+        Dikembalikan dalam bentuk message OpenAI-compatible seperti jalur
+        non-stream anthropic, supaya loop agent seragam.
+        """
+        text_parts: list[str] = []
+        # index blok -> {id, name, json}
+        blocks: dict[int, dict[str, Any]] = {}
+        try:
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                line = str(raw_line).strip()
+                if line.startswith("event:"):
+                    continue
+                if line.startswith("data:"):
+                    line = line[5:].strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                etype = event.get("type", "")
+                if etype == "error":
+                    detail = event.get("error", {})
+                    message_text = detail.get("message") if isinstance(detail, dict) else str(detail)
+                    raise ZelineError(f"Provider rejected the request: {str(message_text)[:300]}")
+                if etype == "content_block_start":
+                    index = int(event.get("index", 0))
+                    block = event.get("content_block") or {}
+                    if block.get("type") == "tool_use":
+                        blocks[index] = {"id": str(block.get("id", "")), "name": str(block.get("name", "")), "json": ""}
+                elif etype == "content_block_delta":
+                    index = int(event.get("index", 0))
+                    delta = event.get("delta") or {}
+                    dtype = delta.get("type", "")
+                    if dtype == "text_delta":
+                        text_parts.append(str(delta.get("text", "")))
+                    elif dtype == "input_json_delta" and index in blocks:
+                        blocks[index]["json"] += str(delta.get("partial_json", ""))
+                elif etype == "message_stop":
+                    break
+        except (requests.exceptions.RequestException,) as exc:
+            raise ZelineError(
+                f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
+            ) from exc
+        finally:
+            response.close()
+
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
+        tool_calls: list[dict[str, Any]] = []
+        for index in sorted(blocks):
+            block = blocks[index]
+            arguments = block["json"] or "{}"
+            tool_calls.append({
+                "id": block["id"],
+                "type": "function",
+                "function": {"name": block["name"], "arguments": arguments},
+            })
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         return message
 
     def _trim_history(self) -> None:
@@ -240,6 +417,7 @@ class Zeline:
         on_iteration: Callable[[int, int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         take_steer: Callable[[], str | None] | None = None,
+        on_narration: Callable[[str], None] | None = None,
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -248,10 +426,19 @@ class Zeline:
             return "Pesan terlalu panjang (maksimum 16.000 karakter)."
         self.messages.append({"role": "user", "content": text})
         self.last_turn_tool_calls = 0
+        turn_started = time.monotonic()
+        repeated_failures = 0  # tool call berturut yang balik ERROR
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
                 return "Stopped."
+            # Batas waktu wall-clock per turn: kalau sudah lewat, jangan lanjut
+            # loop tool (mis. web_search yang gagal berulang) — paksa jawaban
+            # final dari data yang ada. Ini mencegah "Processing" 10 menit.
+            if time.monotonic() - turn_started > config.MAX_TURN_SECONDS:
+                answer = self._force_final_answer(should_stop)
+                self._trim_history()
+                return answer
             if on_iteration:
                 on_iteration(iteration, config.MAX_TOOL_ROUNDS)
             message = self._call_llm()
@@ -267,6 +454,15 @@ class Zeline:
             if not isinstance(tool_calls, list):
                 raise ZelineError("Format tool call dari provider tidak valid.")
             self.last_turn_tool_calls += len(tool_calls)
+
+            # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu
+            # konfignya lalu benerin") adalah kalimat rencana model. Kirim ke
+            # user sebagai bubble tersendiri SEBELUM tool jalan — inilah yang
+            # bikin alurnya kebaca seperti Selena/Hermes (bubble penjelasan →
+            # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
+            narration = str(message.get("content") or "").strip()
+            if narration and on_narration:
+                on_narration(narration)
 
             # Urutan ini wajib untuk OpenAI-compatible tool calling.
             self.messages.append(
@@ -320,6 +516,19 @@ class Zeline:
                         "content": result,
                     }
                 )
+
+            # Anti-loop: kalau SEMUA tool di ronde ini balik ERROR, hitung sebagai
+            # kegagalan beruntun. Setelah beberapa ronde gagal berturut (mis.
+            # web_search mati di jaringan ini), berhenti nge-hajar tool — paksa
+            # jawaban final dari data yang ada, jangan sampai 20 ronde × detik.
+            if results and all(str(r).startswith("ERROR") for r in results):
+                repeated_failures += 1
+                if repeated_failures >= config.MAX_REPEATED_TOOL_FAILURES:
+                    answer = self._force_final_answer(should_stop)
+                    self._trim_history()
+                    return answer
+            else:
+                repeated_failures = 0
 
         # Putaran tool habis. Jangan menyerah tanpa jawaban: paksa satu panggilan
         # terakhir TANPA tool agar model menyintesis data yang sudah dikumpulkan.
@@ -384,13 +593,19 @@ class Zeline:
                 "role": "user",
                 "content": (
                     "REFLEKSI SELF-IMPROVEMENT (internal, jangan tampilkan ke user). "
-                    "Tinjau singkat percakapan barusan. Apakah ada prosedur reusable, "
-                    "alur kerja non-trivial, atau error tricky yang berhasil diatasi dan "
-                    "layak jadi skill? "
+                    "Tinjau singkat percakapan barusan. "
+                    "(A) Apakah ada prosedur reusable, alur kerja non-trivial, atau "
+                    "error tricky yang berhasil diatasi dan layak jadi skill? "
                     "- Kalau YA dan belum ada skill-nya: panggil save_skill (nama jelas, "
                     "isi: kapan dipakai, langkah bernomor + command persis, pitfalls). "
                     "- Kalau skill yang dipakai ternyata kurang/salah: panggil update_skill "
                     "untuk memperbaikinya. "
+                    "(B) Apakah user MENGOREKSI kamu berulang tentang hal yang sama "
+                    "(mis. edit/revisi yang katanya 'masih sama/nggak berubah', font/warna/"
+                    "layout yang harus lebih presisi, atau kamu menimpa file dgn versi lama)? "
+                    "Kalau YA: panggil add_memory berisi pelajaran ringkas & deklaratif biar "
+                    "tidak terulang (mis. 'User sering koreksi UI kecil beruntun; wajib "
+                    "read_file dulu lalu edit bagian spesifik, jangan regenerate dari nol'). "
                     "- Kalau TIDAK ada yang layak disimpan: jangan panggil tool apa pun dan "
                     "jawab persis 'NO_ACTION'. "
                     "Jangan menyimpan hal sepele/sekali-pakai atau rahasia."

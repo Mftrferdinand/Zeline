@@ -20,6 +20,7 @@ class FakeResponse:
         self.text = json.dumps(payload)
         self.status_code = status_code
         self.ok = status_code < 400
+        self.encoding = "utf-8"
 
 
 class AgentLoopTests(unittest.TestCase):
@@ -37,6 +38,9 @@ class AgentLoopTests(unittest.TestCase):
             if module_name == "zeline" or module_name.startswith("zeline."):
                 sys.modules.pop(module_name, None)
         self.agent_module = importlib.import_module("zeline.agent")
+        # Legacy tests exercise the non-stream JSON path; streaming has its own
+        # dedicated tests below. Pin stream off so FakeResponse (plain JSON) is used.
+        self.agent_module.config.STREAM_RESPONSES = False
 
     def tearDown(self):
         for key, value in {
@@ -113,6 +117,68 @@ class AgentLoopTests(unittest.TestCase):
         tool_names = {item["function"]["name"] for item in post.call_args.kwargs["json"]["tools"]}
         self.assertNotIn("run_shell", tool_names)
         self.assertNotIn("read_file", tool_names)
+
+    def test_read_timeout_raises_clear_english_error_naming_model(self):
+        import requests as _requests
+        agent = self.agent_module.Zeline(identity="telegram:timeout", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=_requests.exceptions.ReadTimeout()):
+            with self.assertRaises(self.agent_module.ZelineError) as ctx:
+                agent.send("halo")
+        message = str(ctx.exception)
+        self.assertIn("test-model", message)
+        self.assertIn("180s", message)
+        self.assertIn("timed out", message.lower())
+        self.assertIn("/model", message)
+        self.assertNotIn("ReadTimeout.", message)
+
+    def test_connection_error_names_provider_url(self):
+        import requests as _requests
+        agent = self.agent_module.Zeline(identity="telegram:conn", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=_requests.exceptions.ConnectionError()):
+            with self.assertRaises(self.agent_module.ZelineError) as ctx:
+                agent.send("halo")
+        message = str(ctx.exception)
+        self.assertIn("http://provider.test/v1", message)
+        self.assertIn("connect", message.lower())
+
+    def test_http_error_statuses_map_to_actionable_hints(self):
+        cases = {
+            401: "invalid or unauthorized",
+            404: "not found",
+            429: "rate limited",
+            503: "server-side problem",
+        }
+        for status, expected in cases.items():
+            agent = self.agent_module.Zeline(identity=f"telegram:http{status}", tool_profile="safe")
+            with mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse({"error": "x"}, status_code=status)):
+                with self.assertRaises(self.agent_module.ZelineError) as ctx:
+                    agent.send("halo")
+            message = str(ctx.exception)
+            self.assertIn(f"HTTP {status}", message)
+            self.assertIn(expected, message.lower())
+
+    def test_reload_provider_keeps_conversation_history(self):
+        # Ganti model (/model switch) HARUS mempertahankan ingatan percakapan:
+        # reload_provider mengganti model/base_url/key tapi tidak menghapus
+        # pesan user/assistant sebelumnya, jadi agent tidak jadi "pelupa".
+        agent = self.agent_module.Zeline(identity="telegram:switch", tool_profile="safe")
+        first = {"choices": [{"message": {"role": "assistant", "content": "Siap, gua inget."}}]}
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse(first)):
+            agent.send("tolong inget: proyekku namanya Zeline")
+        history_len_before = len(agent.messages)
+        self.assertGreaterEqual(history_len_before, 3)  # system + user + assistant
+
+        # Simulasikan config berubah ke model baru, lalu reload.
+        os.environ["ZELINE_MODEL"] = "vendor/other-model"
+        self.agent_module.config.save_config(self.agent_module.config.stored_config_copy())
+        agent.reload_provider()
+
+        # History dijaga (tidak berkurang), model instance diperbarui.
+        self.assertGreaterEqual(len(agent.messages), history_len_before)
+        self.assertEqual(agent.model, "vendor/other-model")
+        # Pesan user lama masih ada di history.
+        joined = " ".join(str(m.get("content", "")) for m in agent.messages)
+        self.assertIn("proyekku namanya Zeline", joined)
 
     def test_user_memory_is_framed_as_untrusted_data_not_system_instruction(self):
         first = self.agent_module.Zeline(identity="telegram:memory-poison", tool_profile="safe")
@@ -257,10 +323,56 @@ class AgentLoopTests(unittest.TestCase):
             self.assertIsNone(safe.reflect(min_tool_calls=5))
         post.assert_not_called()
 
+    def test_web_search_uses_bing_serp_and_includes_urls(self):
+        # web_search must try the Bing SERP engine first and return title+URL
+        # lines (general daily-search results, not just news/wiki).
+        tools = importlib.import_module("zeline.tools")
+        with mock.patch.object(tools, "_search_bing_jina", return_value=[("FastAPI Tutorial", "https://fastapi.tiangolo.com/tutorial/")]) as bing:
+            out = tools._web_search("fastapi tutorial")
+        bing.assert_called_once()
+        self.assertIn("FastAPI Tutorial", out)
+        self.assertIn("https://fastapi.tiangolo.com/tutorial/", out)
+
+    def test_decode_bing_redirect_recovers_real_url(self):
+        tools = importlib.import_module("zeline.tools")
+        import base64
+        real = "https://example.com/page?a=1"
+        enc = base64.urlsafe_b64encode(real.encode()).decode().rstrip("=")
+        wrapped = f"https://www.bing.com/ck/a?!&&p=x&u=a1{enc}&ntb=1"
+        self.assertEqual(tools._decode_bing_redirect(wrapped), real)
+
+    def test_agent_stops_looping_after_repeated_tool_failures(self):
+        # If a tool keeps returning ERROR every round (e.g. web_search dead on
+        # this network), the agent must bail out and synthesize a final answer
+        # instead of hammering MAX_TOOL_ROUNDS times.
+        agent_mod = importlib.import_module("zeline.agent")
+
+        tool_msg = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "c", "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"x"}'},
+                }],
+            }}],
+        }
+        final = {"choices": [{"message": {"role": "assistant", "content": "Best-effort answer."}}]}
+        agent = agent_mod.Zeline(identity="telegram:loopfail", tool_profile="safe")
+        # 3 failing tool rounds → then the forced final-answer call returns text.
+        with mock.patch.object(agent.executor, "run", return_value="ERROR: tidak dapat mencari web"), \
+             mock.patch.object(agent_mod.requests, "post", side_effect=[FakeResponse(tool_msg)] * 3 + [FakeResponse(final)]) as post:
+            reply = agent.send("cari sesuatu")
+        self.assertEqual(reply, "Best-effort answer.")
+        # Bailed out well before the 20-round cap (3 failures + 1 final call = 4).
+        self.assertLessEqual(len(post.call_args_list), 6)
+
     def test_anthropic_protocol_uses_native_messages_contract(self):
         cfg = importlib.import_module("zeline.config").config_copy()
         cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "anthropic-key", "model": "claude-sonnet"})
         importlib.import_module("zeline.config").save_config(cfg)
+        # save_config re-runs _set_runtime_values which resets STREAM_RESPONSES to
+        # the default; re-pin off so this non-stream FakeResponse path is exercised.
+        self.agent_module.config.STREAM_RESPONSES = False
         final = {"content": [{"type": "text", "text": "Saya Claude."}], "stop_reason": "end_turn"}
         agent = self.agent_module.Zeline(identity="cli:anthropic", tool_profile="safe")
         agent.base_url = "https://api.anthropic.com/v1"
@@ -276,6 +388,126 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("Authorization", call.kwargs["headers"])
         self.assertIn("system", call.kwargs["json"])
         self.assertNotIn("system", [item["role"] for item in call.kwargs["json"]["messages"]])
+
+
+class FakeStreamResponse:
+    """Mimics requests.Response for SSE: iter_lines yields the given lines."""
+
+    def __init__(self, lines, status_code: int = 200):
+        self._lines = lines
+        self.status_code = status_code
+        self.ok = status_code < 400
+        self.text = ""
+        self.closed = False
+        self.encoding: str | None = None
+
+    def iter_lines(self, decode_unicode: bool = False):
+        for line in self._lines:
+            yield line
+
+    def close(self):
+        self.closed = True
+
+
+class StreamingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old = {k: os.environ.get(k) for k in ("ZELINE_HOME", "ZELINE_API_KEY", "ZELINE_BASE_URL", "ZELINE_MODEL")}
+        os.environ["ZELINE_HOME"] = str(Path(self.temp.name) / "state")
+        os.environ["ZELINE_API_KEY"] = "test-key"
+        os.environ["ZELINE_BASE_URL"] = "http://provider.test/v1"
+        os.environ["ZELINE_MODEL"] = "test-model"
+        for module_name in list(sys.modules):
+            if module_name == "zeline" or module_name.startswith("zeline."):
+                sys.modules.pop(module_name, None)
+        self.agent_module = importlib.import_module("zeline.agent")
+        self.agent_module.config.STREAM_RESPONSES = True
+
+    def tearDown(self):
+        for key, value in self.old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.temp.cleanup()
+
+    def test_openai_stream_assembles_text_answer(self):
+        lines = [
+            'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+            'data: {"choices":[{"delta":{"content":"lo"}}]}',
+            'data: {"choices":[{"delta":{"content":" world"}}]}',
+            "data: [DONE]",
+        ]
+        resp = FakeStreamResponse(lines)
+        agent = self.agent_module.Zeline(identity="telegram:stream1", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=resp) as post:
+            reply = agent.send("halo")
+        # stream=True must be sent to the provider.
+        self.assertTrue(post.call_args.kwargs["json"]["stream"])
+        self.assertTrue(post.call_args.kwargs["stream"])
+        self.assertEqual(reply, "Hello world")
+        self.assertTrue(resp.closed)
+
+    def test_openai_stream_assembles_tool_call_then_finishes(self):
+        # Round 1: streamed tool_call (arguments arrive fragmented across deltas).
+        tool_lines = [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"add_memory","arguments":"{\\"fact\\":"}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"suka teh\\"}"}}]}}]}',
+            "data: [DONE]",
+        ]
+        # Round 2: streamed final text.
+        final_lines = [
+            'data: {"choices":[{"delta":{"content":"Sudah aku ingat."}}]}',
+            "data: [DONE]",
+        ]
+        agent = self.agent_module.Zeline(identity="telegram:stream2", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeStreamResponse(tool_lines), FakeStreamResponse(final_lines)]):
+            reply = agent.send("inget aku suka teh")
+        self.assertEqual(reply, "Sudah aku ingat.")
+        self.assertIn("suka teh", agent.executor.memory.formatted())
+
+    def test_openai_stream_surfaces_provider_error(self):
+        lines = ['data: {"error":{"message":"bad model route"}}']
+        agent = self.agent_module.Zeline(identity="telegram:stream3", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeStreamResponse(lines)):
+            with self.assertRaises(self.agent_module.ZelineError) as ctx:
+                agent.send("halo")
+        self.assertIn("bad model route", str(ctx.exception))
+
+    def test_response_encoding_forced_utf8_so_arrows_and_emoji_survive(self):
+        # requests men-default text/* tanpa charset ke ISO-8859-1 → panah/emoji
+        # jadi mojibake. Agent HARUS memaksa response.encoding='utf-8' sebelum decode.
+        lines = [
+            'data: {"choices":[{"delta":{"content":"Build & code \u2192 run"}}]}',
+            "data: [DONE]",
+        ]
+        resp = FakeStreamResponse(lines)
+        resp.encoding = "ISO-8859-1"  # keadaan default requests yang bikin bug
+        agent = self.agent_module.Zeline(identity="telegram:utf8", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=resp):
+            reply = agent.send("halo")
+        self.assertEqual(resp.encoding, "utf-8")
+        self.assertIn("\u2192", reply)
+
+    def test_anthropic_stream_assembles_text(self):
+        cfg = importlib.import_module("zeline.config").config_copy()
+        cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "ak", "model": "claude-sonnet"})
+        importlib.import_module("zeline.config").save_config(cfg)
+        lines = [
+            "event: content_block_delta",
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Saya "}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Claude."}}',
+            'data: {"type":"message_stop"}',
+        ]
+        agent = self.agent_module.Zeline(identity="cli:astream", tool_profile="safe")
+        agent.protocol = "anthropic"
+        agent.base_url = "https://api.anthropic.com/v1"
+        agent.api_key = "ak"
+        agent.model = "claude-sonnet"
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeStreamResponse(lines)) as post:
+            reply = agent.send("model apa?")
+        self.assertEqual(reply, "Saya Claude.")
+        self.assertTrue(post.call_args.kwargs["json"]["stream"])
 
 
 if __name__ == "__main__":

@@ -102,6 +102,7 @@ class SessionStore:
         on_tool: Callable | None = None,
         on_tool_result: Callable | None = None,
         on_iteration: Callable | None = None,
+        on_narration: Callable | None = None,
     ) -> str:
         session = self.get_or_create(identity, tool_profile, workspace, system_extra)
         # Agent memiliki mutable message history; satu session harus serial.
@@ -124,6 +125,7 @@ class SessionStore:
                     on_iteration=on_iteration,
                     should_stop=session.cancel_event.is_set,
                     take_steer=take_steer,
+                    on_narration=on_narration,
                 )
                 session.last_used = time.monotonic()
                 # Simpan history ke disk setelah tiap turn sukses → bertahan
@@ -147,7 +149,7 @@ class SessionStore:
             session.cancel_event.set()
             return True
 
-    def reflect(self, identity: str, min_tool_calls: int = 5) -> str | None:
+    def reflect(self, identity: str, min_tool_calls: int = 4) -> str | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
 
         Dipanggil di akhir sesi penting. Aman: mengembalikan None bila sesi tidak
@@ -185,6 +187,20 @@ class SessionStore:
             except Exception:
                 cleared_disk = False
         return session is not None or cleared_disk
+
+    def switch_provider(self, identity: str) -> None:
+        """Ganti model/provider aktif untuk sesi ini TANPA menghapus history.
+
+        /model switch harus mengganti "otak" saja — ingatan percakapan (apa yang
+        lagi dikerjakan, keputusan sebelumnya) HARUS tetap ada, supaya user tidak
+        mengalami amnesia mendadak setelah ganti model. Kalau sesi belum ada di
+        RAM tapi ada di disk, biarkan get_or_create memuatnya nanti dengan
+        provider baru — history disk tidak disentuh.
+        """
+        with self._lock:
+            session = self._sessions.get(identity)
+            if session is not None:
+                session.agent.reload_provider()
 
     def count(self) -> int:
         with self._lock:

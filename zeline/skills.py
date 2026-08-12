@@ -287,13 +287,30 @@ def update_skill(name: str, old_text: str, new_text: str) -> str:
     return f"Patched SKILL.md in skill '{normalized}' (1 replacement)."
 
 
+def _short_desc(description: str, limit: int = 90) -> str:
+    """Deskripsi ringkas 1-baris untuk daftar skill di system prompt.
+
+    Daftar skill di-inject SETIAP turn; deskripsi panjang (ratusan char × 171
+    skill ≈ 20k char) memboroskan token & memperlambat tiap request. Cukup
+    kalimat pertama / potong di ~90 char — nama skill tetap bisa ditemukan,
+    isi lengkap dibaca via load_skill saat relevan.
+    """
+    text = " ".join(str(description).split())
+    # Ambil kalimat pertama bila pendek; kalau tidak, potong keras di limit.
+    for sep in (". ", " — ", "; "):
+        head = text.split(sep, 1)[0]
+        if head and len(head) <= limit:
+            return head
+    return text[:limit].rstrip(" ,.—-") + ("…" if len(text) > limit else "")
+
+
 def skills_block(include_private: bool = False) -> str:
     """Daftar token-cheap untuk system prompt sesuai otorisasi session."""
     available = list_skill_entries(include_private=include_private)
     if not available:
         return ""
     lines = "\n".join(
-        f"- {name}: {description}" if scope == "public" else f"- {name} [private]: {description}"
+        f"- {name}: {_short_desc(description)}" if scope == "public" else f"- {name} [private]: {_short_desc(description)}"
         for scope, name, _title, description in available
     )
     return "\n\n## Skill yang tersedia (panggil load_skill untuk isi lengkap):\n" + lines
