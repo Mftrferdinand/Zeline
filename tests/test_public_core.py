@@ -453,6 +453,35 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertGreater(len(parts), 1)
         self.assertTrue(all(len(part) <= 4_000 for part in parts))
 
+    def test_split_message_never_breaks_code_fence(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # Prose + satu blok kode raksasa (>2 potongan) + prose penutup.
+        code_body = "\n".join(f"line_{i} = compute({i})" for i in range(600))
+        text = (
+            "Berikut kodenya, jalankan di Termux:\n\n"
+            f"```python\n{code_body}\n```\n\n"
+            "Selesai — simpan lalu jalankan."
+        )
+        parts = telegram._split_message(text)
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            self.assertLessEqual(len(part), 4_000)
+            # Tiap potongan yang berisi fence harus punya fence pembuka & penutup
+            # seimbang (tidak pernah kebuka tanpa ditutup).
+            self.assertEqual(part.count("```") % 2, 0, f"fence tidak seimbang di: {part[:60]!r}")
+        # Semua baris kode harus tetap ada (tidak ada yang hilang saat dipecah).
+        rejoined = "\n".join(parts)
+        self.assertIn("line_0 = compute(0)", rejoined)
+        self.assertIn("line_599 = compute(599)", rejoined)
+
+    def test_split_message_keeps_short_code_block_intact_as_one_fence(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        text = "Jalankan ini:\n\n```bash\nmkdir -p ~/gamestore\ncd ~/gamestore\n```\n\nlalu buka browser."
+        parts = telegram._split_message(text)
+        # Muat dalam satu pesan → tidak dipecah sama sekali.
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0].count("```"), 2)
+
     def test_telegram_full_profile_requires_owner_allowlist(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         errors = telegram.validate_config({"token": "123:abc", "tool_profile": "full", "allowed": []})
@@ -499,6 +528,42 @@ class ZelinePublicCoreTests(unittest.TestCase):
             out = telegram._api_call("bot-api", "answerCallbackQuery", callback_query_id="x")
         self.assertIsNone(out)
         self.assertEqual(calls["n"], 1)  # no retry
+
+    def test_api_call_parse_error_fallback_unescapes_entities_to_plain_text(self):
+        # Saat Telegram menolak HTML (tag pre/code tak seimbang), pesan dikirim
+        # ulang sebagai teks polos. Entitas HTML (&gt; &amp; &lt;) HARUS
+        # dikembalikan ke bentuk asli (> & <) — user tidak boleh melihat
+        # '2&gt;/dev/null' mentah seperti bug di terminal card sebelumnya.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        class Resp:
+            def __init__(self, ok, payload):
+                self.ok = ok
+                self._payload = payload
+            def json(self):
+                return self._payload
+
+        sent_texts = []
+
+        def fake_post(url, json=None, timeout=None):
+            sent_texts.append(json.get("text"))
+            if json.get("parse_mode") == "HTML":
+                return Resp(False, {"ok": False, "description": "Bad Request: can't parse entities: Can't find end tag \"pre\""})
+            return Resp(True, {"ok": True, "result": {"message_id": 1}})
+
+        with mock.patch.object(telegram.requests, "post", side_effect=fake_post):
+            out = telegram._api_call(
+                "bot-api", "sendMessage", chat_id=1,
+                text='🖥️ Zeline Terminal\n<pre>which cloudflared 2&gt;/dev/null &amp;&amp; echo done</pre>',
+                parse_mode="HTML",
+            )
+        self.assertIsNotNone(out)
+        plain = sent_texts[-1]  # percobaan kedua (teks polos)
+        self.assertNotIn("<pre>", plain)      # tag dibuang
+        self.assertNotIn("&gt;", plain)        # entitas dikembalikan
+        self.assertNotIn("&amp;", plain)
+        self.assertIn("2>/dev/null", plain)    # terbaca natural
+        self.assertIn("&& echo done", plain)
 
     def test_skills_block_shortens_long_descriptions(self):
         # The per-turn skills listing must stay compact — long multi-sentence
@@ -602,6 +667,40 @@ class ZelinePublicCoreTests(unittest.TestCase):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="hi", tool_profile="safe")
         self.assertEqual(api.call_args.kwargs["parse_mode"], "HTML")
         self.assertIn("<b>Berhasil</b>", api.call_args.kwargs["text"])
+
+    def test_telegram_streams_model_narration_as_separate_bubbles(self):
+        # Kalimat rencana model yang menyertai tool call harus dikirim sebagai
+        # bubble chat SEBELUM balasan akhir — inilah yang bikin alur kebaca
+        # hidup (bubble penjelasan → tool → bubble berikutnya), bukan diam lalu
+        # satu dump panjang. Simulasikan agent yang bernarasi 2x lalu selesai.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        class Sessions:
+            def send(self, **kwargs):
+                kwargs["on_narration"]("Gua bikin struktur HTML dulu.")
+                kwargs["on_tool"]("write_file", {"path": "index.html"})
+                kwargs["on_narration"]("Oke jalan, sekarang gua tambahin CSS.")
+                kwargs["on_tool"]("write_file", {"path": "style.css"})
+                return "Selesai — web ada di ~/site, jalanin `python -m http.server 8095`."
+
+        sent = []
+        with mock.patch.object(
+            telegram, "_api_call",
+            side_effect=lambda a, m, **k: sent.append((m, k.get("text"))) or {"result": {"message_id": len(sent)}},
+        ):
+            telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="bikin web", tool_profile="full")
+
+        texts = [t for m, t in sent if m == "sendMessage" and t]
+        joined = "\n---\n".join(texts)
+        # Kedua kalimat narasi harus muncul sebagai pesan tersendiri.
+        self.assertTrue(any("struktur HTML" in t for t in texts), joined)
+        self.assertTrue(any("tambahin CSS" in t for t in texts), joined)
+        # Balasan akhir juga terkirim.
+        self.assertTrue(any("Selesai" in t for t in texts), joined)
+        # Narasi datang SEBELUM balasan akhir (urutan hidup, bukan dump di akhir).
+        idx_narr = next(i for i, t in enumerate(texts) if "struktur HTML" in t)
+        idx_final = next(i for i, t in enumerate(texts) if "Selesai" in t)
+        self.assertLess(idx_narr, idx_final)
 
     def test_whatsapp_adapts_common_markdown(self):
         whatsapp = importlib.import_module("zeline.gateways.whatsapp")
@@ -823,6 +922,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
         updated = executor.run("update_skill", {"name": "demo-skill", "old_text": "old step", "new_text": "new step"})
         self.assertIn("Patched SKILL.md", updated)
         self.assertIn("new step", executor.run("load_skill", {"name": "demo-skill"}))
+
+    def test_safe_progress_line_balances_truncated_html_tags(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # Long shell command inside <pre> that gets cut mid-tag must be re-balanced
+        # so Telegram doesn't reject the edit with "Can't find end tag pre".
+        raw = "🖥️ Zeline Terminal\n<pre>" + ("echo hello && " * 40) + "</pre>"
+        out = telegram._safe_progress_line(raw, limit=80)
+        self.assertLessEqual(out.count("<pre>"), out.count("</pre>"))
+        self.assertTrue(out.count("<pre>") == out.count("</pre>"))
+        self.assertNotIn("\n", out)
+        # Short line with balanced tags passes through untouched (minus newline).
+        ok = telegram._safe_progress_line("📖 Reading <code>a.py</code> L1-100")
+        self.assertEqual(ok, "📖 Reading <code>a.py</code> L1-100")
 
     def test_telegram_tool_progress_uses_hermes_style_labels_and_argument_preview(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

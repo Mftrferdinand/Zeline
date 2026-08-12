@@ -74,6 +74,32 @@ def _tool_names_for_profile(profile: str) -> list[str]:
     return [definition.name for definition in TOOL_DEFS if profile in definition.profiles]
 
 
+def _safe_progress_line(line: str, limit: int = 200) -> str:
+    """Ringkas satu baris feed ke ``limit`` char TANPA merusak tag HTML.
+
+    Bug yang diperbaiki: baris progress bisa mengandung `<pre>…</pre>` / `<code>…`.
+    Truncation mentah (`[:200]`) dapat memotong di tengah tag penutup sehingga
+    Telegram menolak `editMessageText` ("Can't find end tag ... pre") dan seluruh
+    bubble progres macet. Di sini kita truncate ISI di dalam tag lebih dulu,
+    lalu jamin setiap `<pre>`/`<code>` yang dibuka punya penutupnya.
+    """
+    # Ratakan newline agar satu baris (Telegram feed satu baris per aktivitas).
+    text = line.replace("\n", " ").strip()
+    if len(text) <= limit:
+        candidate = text
+    else:
+        candidate = text[:limit].rstrip()
+    # Rebalance tag pre/code yang mungkin terpotong / memang multiline.
+    for tag in ("pre", "code"):
+        opens = candidate.count(f"<{tag}>")
+        closes = candidate.count(f"</{tag}>")
+        if opens > closes:
+            # Buang penutup parsial di ujung (mis. "</pr") lalu tutup rapi.
+            candidate = re.sub(rf"<\s*/\s*{tag}?[^>]*$", "", candidate).rstrip()
+            candidate += f"</{tag}>" * (opens - closes)
+    return candidate
+
+
 def _terminal_progress(command: str, *, search: bool = False) -> str:
     """Preview terminal.
 
@@ -354,6 +380,37 @@ class _LiveStatus:
                     chat_id=self.chat_id, message_id=self.message_id,
                 )
                 self.message_id = None
+
+    def detach(self) -> None:
+        """Kunci bubble progres saat ini & lepaskan supaya aktivitas berikutnya
+
+        membuat bubble BARU di bawahnya. Dipakai sebelum mengirim bubble narasi
+        model: aktivitas tool yang sudah terjadi difinalize jadi catatan '⏳
+        Successful', lalu feed di-reset kosong. Efeknya urutan chat jadi rapi:
+        [aktivitas tool] → [bubble penjelasan model] → [aktivitas tool] → …
+        Bubble kosong (belum ada tool) cukup dilepaskan tanpa menyisakan sampah.
+        """
+        with self._lock:
+            if self.message_id is None:
+                self.lines = []
+                self._last_text = None
+                return
+            if self.lines:
+                body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
+                _api_call(
+                    self.api, "editMessageText", chat_id=self.chat_id,
+                    message_id=self.message_id, text=f"⏳ Successful\n{body}", parse_mode="HTML",
+                )
+            else:
+                _api_call(
+                    self.api, "deleteMessage",
+                    chat_id=self.chat_id, message_id=self.message_id,
+                )
+            self.message_id = None
+            self.lines = []
+            self._last_text = None
+            self.phase = "waiting"
+            self.phase_started = time.monotonic()
 
 
 def _start_working_heartbeat(
@@ -1000,6 +1057,26 @@ def _api_call(api: str, method: str, *, timeout: int = 65, **params: Any) -> dic
             if response.ok and payload.get("ok"):
                 return payload
             description = str(payload.get("description", "HTTP error"))[:160] if isinstance(payload, dict) else "HTTP error"
+            # HTML parse error (mis. tag pre/code tak seimbang) → JANGAN sampai
+            # menghilangkan pesan. Kirim ulang sekali sebagai teks polos (tanpa
+            # parse_mode, entitas HTML di-escape) supaya isi tetap sampai ke user.
+            if "parse entities" in description.lower() and params.get("parse_mode"):
+                plain = dict(params)
+                plain.pop("parse_mode", None)
+                if "text" in plain:
+                    # Buang tag HTML, LALU kembalikan entitas ke bentuk asli
+                    # (&gt; → >, &amp; → &) supaya user tidak melihat '2&gt;'
+                    # mentah saat pesan turun ke mode teks polos.
+                    stripped = re.sub(r"<[^>]+>", "", str(plain["text"]))
+                    plain["text"] = html.unescape(stripped)
+                try:
+                    retry = requests.post(f"{api}/{method}", json=plain, timeout=timeout)
+                    rp = retry.json()
+                    if retry.ok and rp.get("ok"):
+                        return rp
+                except (requests.RequestException, ValueError):
+                    pass
+                return None
             # "message is not modified" = edit konten identik (picker dibuka
             # ulang), harmless → jangan spam log & jangan retry.
             if "message is not modified" not in description:
@@ -1030,10 +1107,8 @@ def _send_document(api: str, chat_id: int, path: Path) -> bool:
         return False
 
 
-def _split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
-    """Pecah respons tanpa memotong karakter secara kasar bila memungkinkan."""
-    if len(text) <= limit:
-        return [text]
+def _split_plain(text: str, limit: int) -> list[str]:
+    """Pecah prose (tanpa blok kode) di batas newline/spasi, bukan di tengah kata."""
     parts: list[str] = []
     remaining = text
     while len(remaining) > limit:
@@ -1046,6 +1121,98 @@ def _split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
         remaining = remaining[cut:].lstrip()
     if remaining:
         parts.append(remaining)
+    return parts
+
+
+def _split_code_block(block: str, limit: int) -> list[str]:
+    """Pecah SATU blok kode besar; tiap potongan tetap fence yang valid & mandiri.
+
+    Header fence (```lang) dipertahankan di tiap potongan supaya Telegram tetap
+    merender monospace — tidak pernah bocor jadi teks biasa yang wrapping aneh.
+    """
+    match = _FENCED_CODE_RE.match(block)
+    if not match:
+        return _split_plain(block, limit)
+    language = match.group(1) or ""
+    fence_open = f"```{language}\n"
+    fence_close = "\n```"
+    # Ruang untuk isi kode per potongan setelah dikurangi fence pembuka+penutup.
+    inner_limit = max(1, limit - len(fence_open) - len(fence_close))
+    code = match.group(2).rstrip("\n")
+    lines = code.split("\n")
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        # +1 untuk newline penyambung.
+        addition = len(line) + (1 if current else 0)
+        if current and current_len + addition > inner_limit:
+            chunks.append("\n".join(current))
+            current, current_len = [line], len(line)
+        elif len(line) > inner_limit:
+            # Satu baris kode lebih panjang dari limit → potong keras per karakter.
+            if current:
+                chunks.append("\n".join(current))
+                current, current_len = [], 0
+            for i in range(0, len(line), inner_limit):
+                chunks.append(line[i:i + inner_limit])
+        else:
+            current.append(line)
+            current_len += addition
+    if current:
+        chunks.append("\n".join(current))
+    return [f"{fence_open}{chunk}{fence_close}" for chunk in chunks]
+
+
+def _split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Pecah respons dengan menghormati blok kode — tidak pernah memotong fence.
+
+    Bug lama: pemecahan buta bisa memotong ``` di tengah blok kode, sehingga
+    potongan kehilangan penutup, gagal di-render sebagai monospace, dan muncul
+    sebagai teks mentah yang wrapping berantakan di tengah token. Di sini teks
+    dipecah menjadi segmen prose & blok kode utuh dulu, baru digabung sampai
+    mendekati limit; blok kode raksasa dipecah tapi tetap fence yang valid.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    # 1) Pisahkan menjadi segmen: prose vs blok kode utuh (urutan dipertahankan).
+    segments: list[str] = []
+    last = 0
+    for match in _FENCED_CODE_RE.finditer(text):
+        if match.start() > last:
+            segments.append(text[last:match.start()])
+        segments.append(match.group(0))
+        last = match.end()
+    if last < len(text):
+        segments.append(text[last:])
+
+    # 2) Pecah tiap segmen yang kegedean; segmen kecil dibiarkan utuh.
+    pieces: list[str] = []
+    for segment in segments:
+        if not segment.strip():
+            continue
+        if len(segment) <= limit:
+            pieces.append(segment.strip("\n"))
+        elif segment.startswith("```"):
+            pieces.extend(_split_code_block(segment, limit))
+        else:
+            pieces.extend(_split_plain(segment, limit))
+
+    # 3) Gabung potongan berurutan selama muat, TAPI jangan gabung blok kode
+    #    dengan prose (biar tiap bubble tetap rapi dan fence utuh).
+    parts: list[str] = []
+    for piece in pieces:
+        is_code = piece.startswith("```")
+        if (
+            parts
+            and not is_code
+            and not parts[-1].startswith("```")
+            and len(parts[-1]) + 2 + len(piece) <= limit
+        ):
+            parts[-1] = f"{parts[-1]}\n\n{piece}"
+        else:
+            parts.append(piece)
     return parts or ["(jawaban kosong)"]
 
 
@@ -1250,19 +1417,39 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     def on_tool(_name, _args):
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
         # Tambahkan satu baris ringkas ke feed live, bukan pesan baru.
-        line = _tool_progress_text(_name, _args).replace("\n", " ")[:200]
-        live.add(line)
+        # _safe_progress_line menjaga tag HTML (pre/code) tetap seimbang saat
+        # dipangkas — mencegah editMessageText gagal "Can't find end tag pre".
+        live.add(_safe_progress_line(_tool_progress_text(_name, _args)))
 
     def on_tool_result(_name, _args, result):
         result_text = _tool_result_text(_name, _args, result)
         if result_text:
-            live.add(result_text.replace("\n", " ")[:200])
+            live.add(_safe_progress_line(result_text))
         # Setelah tool selesai, kita kembali menunggu respons model.
         live.set_waiting()
 
     def on_iteration(current, maximum):
         # Awal tiap iterasi = mulai menunggu respons provider.
         live.set_waiting()
+
+    def on_narration(sentence: str):
+        # Kalimat rencana/temuan model yang menyertai tool call → kirim sebagai
+        # bubble terpisah SEBELUM tool jalan, persis seperti Selena/Hermes
+        # (bubble penjelasan → terminal → bubble berikutnya). Tanpa ini, semua
+        # penjelasan model cuma muncul sekali di akhir sebagai dump panjang.
+        sentence = sentence.strip()
+        if not sentence:
+            return
+        # Selesaikan bubble progres berjalan (kalau ada) supaya urutannya rapi:
+        # narasi baru selalu tampil sebagai pesan sendiri di bawah aktivitas
+        # tool sebelumnya, bukan menimpanya.
+        live.detach()
+        for part in _split_message(sentence):
+            _api_call(
+                api, "sendMessage", chat_id=chat_id,
+                text=_markdown_to_telegram_html(part), parse_mode="HTML",
+            )
+        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
 
     ok = False
     try:
@@ -1273,13 +1460,14 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             on_tool=on_tool,
             on_tool_result=on_tool_result,
             on_iteration=on_iteration,
+            on_narration=on_narration,
         )
         ok = True
     except ZelineError as exc:
-        reply = f"Maaf, Zeline sedang bermasalah: {exc}"
-    except Exception:
-        print("  [telegram] unhandled agent error", flush=True)
-        reply = "Maaf, terjadi error internal. Coba lagi sebentar."
+        reply = f"⚠️ Zeline hit a problem: {exc}"
+    except Exception as exc:
+        print(f"  [telegram] unhandled agent error: {exc.__class__.__name__}: {exc}", flush=True)
+        reply = f"⚠️ Zeline hit an unexpected internal error ({exc.__class__.__name__}). Please try again in a moment."
     finally:
         done.set()
         heartbeat.join(timeout=0.2)

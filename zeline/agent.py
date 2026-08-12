@@ -183,10 +183,31 @@ class Zeline:
 
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout) as exc:
+            raise ZelineError(
+                f"The model '{self.model}' did not respond within 180s (request timed out). "
+                "The provider or route is likely overloaded or stalled — try again, or switch to a faster model with /model."
+            ) from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise ZelineError(
+                f"Could not connect to the provider at {self.base_url}. "
+                "Check that the router/proxy is running and the base URL is correct."
+            ) from exc
         except requests.RequestException as exc:
-            raise ZelineError(f"Failed to reach provider: {exc.__class__.__name__}.") from exc
+            raise ZelineError(
+                f"Network error while contacting the provider ({exc.__class__.__name__}). Please try again."
+            ) from exc
         if not response.ok:
-            raise ZelineError(f"Provider HTTP {response.status_code}.")
+            hint = ""
+            if response.status_code in (401, 403):
+                hint = " — the API key is invalid or unauthorized. Update it with `zeline setup`."
+            elif response.status_code == 404:
+                hint = f" — the model '{self.model}' was not found on this provider. Pick another with /model."
+            elif response.status_code == 429:
+                hint = " — rate limited or out of credits on the provider."
+            elif response.status_code >= 500:
+                hint = " — the provider is having a server-side problem. Try again shortly."
+            raise ZelineError(f"The provider returned HTTP {response.status_code}{hint}")
         parsed = _parse_response(response.text)
 
         if self.protocol == "anthropic":
@@ -241,6 +262,7 @@ class Zeline:
         on_iteration: Callable[[int, int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         take_steer: Callable[[], str | None] | None = None,
+        on_narration: Callable[[str], None] | None = None,
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -277,6 +299,15 @@ class Zeline:
             if not isinstance(tool_calls, list):
                 raise ZelineError("Format tool call dari provider tidak valid.")
             self.last_turn_tool_calls += len(tool_calls)
+
+            # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu
+            # konfignya lalu benerin") adalah kalimat rencana model. Kirim ke
+            # user sebagai bubble tersendiri SEBELUM tool jalan — inilah yang
+            # bikin alurnya kebaca seperti Selena/Hermes (bubble penjelasan →
+            # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
+            narration = str(message.get("content") or "").strip()
+            if narration and on_narration:
+                on_narration(narration)
 
             # Urutan ini wajib untuk OpenAI-compatible tool calling.
             self.messages.append(

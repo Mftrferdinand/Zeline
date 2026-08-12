@@ -102,6 +102,7 @@ class SessionStore:
         on_tool: Callable | None = None,
         on_tool_result: Callable | None = None,
         on_iteration: Callable | None = None,
+        on_narration: Callable | None = None,
     ) -> str:
         session = self.get_or_create(identity, tool_profile, workspace, system_extra)
         # Agent memiliki mutable message history; satu session harus serial.
@@ -124,6 +125,7 @@ class SessionStore:
                     on_iteration=on_iteration,
                     should_stop=session.cancel_event.is_set,
                     take_steer=take_steer,
+                    on_narration=on_narration,
                 )
                 session.last_used = time.monotonic()
                 # Simpan history ke disk setelah tiap turn sukses → bertahan
