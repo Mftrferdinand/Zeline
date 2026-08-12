@@ -42,6 +42,15 @@ _URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 _MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
 _MODELS_CACHE_TTL = 300.0  # detik
 
+# Retry untuk error jaringan sementara. Method yang MENGIRIM hasil ke user
+# diretry supaya reply tidak hilang saat koneksi Termux drop; getUpdates &
+# answerCallbackQuery TIDAK diretry (punya jalur/looping sendiri, dan callback
+# cepat basi). editMessageText dibiarkan sekali (progress bubble, non-kritis).
+# sendChatAction sengaja TIDAK diretry: dipanggil sangat sering dari heartbeat
+# dan non-kritis; retry+sleep malah bikin heartbeat tersendat.
+_API_RETRIES = 3
+_RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
+
 
 def _telegram_commands() -> list[dict[str, str]]:
     """Menu command ringkas seperti surface Telegram Hermes."""
@@ -973,19 +982,33 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
 
 
 def _api_call(api: str, method: str, *, timeout: int = 65, **params: Any) -> dict[str, Any] | None:
-    """Panggil Bot API; error network tidak boleh menghentikan gateway."""
-    try:
-        response = requests.post(f"{api}/{method}", json=params, timeout=timeout)
-        payload = response.json()
-        if response.ok and payload.get("ok"):
-            return payload
-        description = str(payload.get("description", "HTTP error"))[:160] if isinstance(payload, dict) else "HTTP error"
-        # "message is not modified" = edit dengan konten identik (mis. picker
-        # dibuka ulang), harmless → jangan spam log.
-        if "message is not modified" not in description:
-            print(f"  [telegram] {method} gagal: {description}", flush=True)
-    except (requests.RequestException, ValueError) as exc:
-        print(f"  [telegram] {method} gagal: {exc.__class__.__name__}", flush=True)
+    """Panggil Bot API; error network tidak boleh menghentikan gateway.
+
+    Koneksi Termux ke Telegram sering putus-putus (ConnectionError/timeout),
+    yang tadinya bikin reply agent HILANG (gagal sekali → return None). Kita
+    retry error jaringan sementara beberapa kali dengan backoff supaya pesan
+    tetap terkirim begitu koneksi pulih. Error API non-jaringan (mis. "message
+    is not modified", "query too old") TIDAK diretry — percuma.
+    """
+    attempts = max(1, _API_RETRIES) if method in _RETRYABLE_METHODS else 1
+    for attempt in range(attempts):
+        try:
+            response = requests.post(f"{api}/{method}", json=params, timeout=timeout)
+            payload = response.json()
+            if response.ok and payload.get("ok"):
+                return payload
+            description = str(payload.get("description", "HTTP error"))[:160] if isinstance(payload, dict) else "HTTP error"
+            # "message is not modified" = edit konten identik (picker dibuka
+            # ulang), harmless → jangan spam log & jangan retry.
+            if "message is not modified" not in description:
+                print(f"  [telegram] {method} gagal: {description}", flush=True)
+            return None  # error tingkat-API, retry tidak menolong
+        except (requests.RequestException, ValueError) as exc:
+            # Error jaringan sementara → backoff & coba lagi (kecuali attempt terakhir).
+            if attempt < attempts - 1:
+                time.sleep(min(2.0 * (attempt + 1), 6.0))
+                continue
+            print(f"  [telegram] {method} gagal: {exc.__class__.__name__} (setelah {attempts}x)", flush=True)
     return None
 
 

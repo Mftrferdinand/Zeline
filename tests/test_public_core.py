@@ -464,6 +464,50 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider is slow to respond")
         self.assertEqual(telegram._working_status_text(8), "⏳ Working — 8 s")
 
+    def test_api_call_retries_send_on_transient_network_error(self):
+        # sendMessage must retry on ConnectionError so a reply isn't lost when
+        # Termux's link drops momentarily; it succeeds on a later attempt.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        import requests as _rq
+
+        class OKResp:
+            ok = True
+            def json(self):
+                return {"ok": True, "result": {"message_id": 1}}
+
+        calls = {"n": 0}
+        def flaky(url, json=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise _rq.ConnectionError("boom")
+            return OKResp()
+
+        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram.requests, "post", side_effect=flaky):
+            out = telegram._api_call("bot-api", "sendMessage", chat_id=1, text="hi")
+        self.assertIsNotNone(out)
+        self.assertEqual(calls["n"], 3)  # retried until it went through
+
+    def test_api_call_does_not_retry_non_retryable_method(self):
+        # answerCallbackQuery is time-sensitive → NOT retried (single attempt).
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        import requests as _rq
+        calls = {"n": 0}
+        def always_fail(url, json=None, timeout=None):
+            calls["n"] += 1
+            raise _rq.ConnectionError("boom")
+        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram.requests, "post", side_effect=always_fail):
+            out = telegram._api_call("bot-api", "answerCallbackQuery", callback_query_id="x")
+        self.assertIsNone(out)
+        self.assertEqual(calls["n"], 1)  # no retry
+
+    def test_skills_block_shortens_long_descriptions(self):
+        # The per-turn skills listing must stay compact — long multi-sentence
+        # descriptions get trimmed to keep the injected system prompt lean.
+        skills = importlib.import_module("zeline.skills")
+        long_desc = "First short sentence. " + ("x" * 400)
+        self.assertEqual(skills._short_desc(long_desc), "First short sentence")
+        self.assertLessEqual(len(skills._short_desc("y" * 400)), 92)
+
     def test_telegram_working_heartbeat_keeps_typing_alive(self):
         # Heartbeat harus terus mengirim 'sendChatAction typing' agar indikator
         # 'sedang mengetik' tidak hilang saat model berpikir lama — TAPI tidak
