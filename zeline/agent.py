@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import requests
@@ -18,6 +19,21 @@ from zeline.tools import ToolExecutor
 
 class ZelineError(RuntimeError):
     """Error yang aman ditampilkan gateway sebagai gangguan internal."""
+
+
+# Tool read-only (tanpa efek samping) yang aman dijalankan paralel dalam satu
+# giliran. Tool yang menulis (file/memory/skill/shell) tetap serial demi urutan
+# dan keamanan thread. MCP tool tidak diketahui sifatnya → diperlakukan serial.
+_PARALLEL_SAFE_TOOLS = frozenset({
+    "runtime_info",
+    "list_memory",
+    "load_skill",
+    "read_file",
+    "search_files",
+    "web_search",
+    "web_fetch",
+    "deep_research",
+})
 
 
 def _parse_response(text: str) -> dict[str, Any]:
@@ -255,6 +271,8 @@ class Zeline:
                     "tool_calls": tool_calls,
                 }
             )
+            # Parse setiap tool call sekali (nama + argumen) dengan urutan dijaga.
+            parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
             for tool_call in tool_calls:
                 function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
                 name = str(function.get("name", ""))
@@ -264,14 +282,32 @@ class Zeline:
                         args = {}
                 except json.JSONDecodeError:
                     args = {}
-                if on_tool:
+                parsed_calls.append((tool_call, name, args))
+
+            # Bila model meminta >1 tool dan SEMUANYA read-only aman-paralel,
+            # jalankan bareng dalam thread pool (percepat riset/baca banyak file).
+            # Selain itu, jalankan serial demi urutan & keamanan tool yang menulis.
+            run_parallel = (
+                len(parsed_calls) > 1
+                and all(name in _PARALLEL_SAFE_TOOLS for _tc, name, _a in parsed_calls)
+            )
+            if on_tool:
+                for _tc, name, args in parsed_calls:
                     on_tool(name, args)
-                result = self.executor.run(name, args)
+
+            if run_parallel:
+                with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
+                    results = list(pool.map(lambda ca: self.executor.run(ca[1], ca[2]), parsed_calls))
+            else:
+                results = [self.executor.run(name, args) for _tc, name, args in parsed_calls]
+
+            steer_text = take_steer() if take_steer else None
+            for (tool_call, name, args), result in zip(parsed_calls, results):
                 if on_tool_result:
                     on_tool_result(name, args, result)
-                steer_text = take_steer() if take_steer else None
                 if steer_text:
                     result += f"\n\n[User steering — follow this guidance now: {steer_text}]"
+                    steer_text = None  # sertakan sekali saja, di tool result pertama
                 self.messages.append(
                     {
                         "role": "tool",
