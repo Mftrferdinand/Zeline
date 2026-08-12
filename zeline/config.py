@@ -25,6 +25,13 @@ from typing import Any
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_MAX_TOOL_ROUNDS = 20
 DEFAULT_MAX_SESSIONS = 100
+# Batas waktu wall-clock satu turn agent (detik). Setelah lewat, agent berhenti
+# memanggil tool dan memaksa jawaban final — mencegah "Processing" berlarut saat
+# sebuah tool (mis. web_search) gagal/lambat berulang.
+MAX_TURN_SECONDS = 90.0
+# Berapa ronde tool GAGAL beruntun (semua hasil ERROR) sebelum agent menyerah
+# nge-loop dan menyintesis jawaban dari data yang ada.
+MAX_REPEATED_TOOL_FAILURES = 3
 
 # ZELINE_HOME membuat test, container, dan beberapa instance terisolasi mudah.
 _EXPLICIT_HOME = os.environ.get("ZELINE_HOME")

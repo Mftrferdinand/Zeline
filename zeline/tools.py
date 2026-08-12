@@ -552,17 +552,68 @@ def _search_jina_ddg(query: str) -> list[tuple[str, str]]:
         return []
 
 
+def _decode_bing_redirect(url: str) -> str:
+    """Bing membungkus URL hasil di redirect `bing.com/ck/a?...&u=a1<base64url>`.
+    Ekstrak & decode ke URL aslinya; kalau gagal, kembalikan apa adanya."""
+    match = re.search(r"[?&]u=a1([A-Za-z0-9_\-]+)", url)
+    if not match:
+        return url
+    encoded = match.group(1)
+    encoded += "=" * (-len(encoded) % 4)
+    try:
+        return base64.urlsafe_b64decode(encoded).decode("utf-8", "replace")
+    except (ValueError, UnicodeDecodeError):
+        return url
+
+
+def _search_bing_jina(query: str) -> list[tuple[str, str]]:
+    """SERP umum via Bing yang dirender reader proxy (server-side, tahan blokir).
+
+    Ini mesin utama untuk kueri sehari-hari: mengembalikan hasil web nyata yang
+    relevan (bukan cuma berita/wiki). Hasil Bing berupa link redirect ck/a yang
+    di-decode balik ke URL asli.
+    """
+    from urllib.parse import quote
+    try:
+        response = requests.get(
+            _JINA_READER + f"https://www.bing.com/search?q={quote(query)}",
+            headers={"User-Agent": _UA},
+            timeout=WEB_TIMEOUT,
+        )
+        if not response.ok or not response.text.strip():
+            return []
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"#+\s*\[([^\]]+)\]\((https?://www\.bing\.com/ck/a[^)]+)\)", response.text):
+            title = re.sub(r"\*+", "", match.group(1)).strip()
+            url = _decode_bing_redirect(match.group(2))
+            if not title or not url.startswith("http"):
+                continue
+            domain = re.sub(r"^https?://", "", url).split("/", 1)[0]
+            if domain in seen:
+                continue
+            seen.add(domain)
+            out.append((title, url))
+            if len(out) >= WEB_MAX_RESULTS:
+                break
+        return out
+    except requests.RequestException:
+        return []
+
+
 def _web_search(query: str) -> str:
     """Cari web dari jaringan Termux (DuckDuckGo langsung mati/SSL-fail).
-    Urutan andal: jina→DDG (bila hidup) → Google News RSS → Wikipedia.
+    Urutan andal: jina→Bing (SERP umum, paling relevan untuk kueri harian) →
+    jina→DDG → Google News RSS → Wikipedia. Bing lewat reader proxy dirender
+    server-side jadi tahan blokir jaringan mobile/Termux.
     Selalu fail-fast; tidak pernah menggantung lama."""
     query = query.strip()
     if not query:
         return "ERROR: query kosong."
-    for engine in (_search_jina_ddg, _search_gnews, _search_wikipedia):
+    for engine in (_search_bing_jina, _search_jina_ddg, _search_gnews, _search_wikipedia):
         results = engine(query)
         if results:
-            return "\n".join(f"- {title}" for title, _url in results)
+            return "\n".join(f"- {title}\n  {url}" for title, url in results)
     return "ERROR: tidak dapat mencari web (semua sumber gagal). Coba lagi nanti."
 
 

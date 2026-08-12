@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -248,10 +249,19 @@ class Zeline:
             return "Pesan terlalu panjang (maksimum 16.000 karakter)."
         self.messages.append({"role": "user", "content": text})
         self.last_turn_tool_calls = 0
+        turn_started = time.monotonic()
+        repeated_failures = 0  # tool call berturut yang balik ERROR
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
                 return "Stopped."
+            # Batas waktu wall-clock per turn: kalau sudah lewat, jangan lanjut
+            # loop tool (mis. web_search yang gagal berulang) — paksa jawaban
+            # final dari data yang ada. Ini mencegah "Processing" 10 menit.
+            if time.monotonic() - turn_started > config.MAX_TURN_SECONDS:
+                answer = self._force_final_answer(should_stop)
+                self._trim_history()
+                return answer
             if on_iteration:
                 on_iteration(iteration, config.MAX_TOOL_ROUNDS)
             message = self._call_llm()
@@ -320,6 +330,19 @@ class Zeline:
                         "content": result,
                     }
                 )
+
+            # Anti-loop: kalau SEMUA tool di ronde ini balik ERROR, hitung sebagai
+            # kegagalan beruntun. Setelah beberapa ronde gagal berturut (mis.
+            # web_search mati di jaringan ini), berhenti nge-hajar tool — paksa
+            # jawaban final dari data yang ada, jangan sampai 20 ronde × detik.
+            if results and all(str(r).startswith("ERROR") for r in results):
+                repeated_failures += 1
+                if repeated_failures >= config.MAX_REPEATED_TOOL_FAILURES:
+                    answer = self._force_final_answer(should_stop)
+                    self._trim_history()
+                    return answer
+            else:
+                repeated_failures = 0
 
         # Putaran tool habis. Jangan menyerah tanpa jawaban: paksa satu panggilan
         # terakhir TANPA tool agar model menyintesis data yang sudah dikumpulkan.

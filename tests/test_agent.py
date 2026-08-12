@@ -257,6 +257,49 @@ class AgentLoopTests(unittest.TestCase):
             self.assertIsNone(safe.reflect(min_tool_calls=5))
         post.assert_not_called()
 
+    def test_web_search_uses_bing_serp_and_includes_urls(self):
+        # web_search must try the Bing SERP engine first and return title+URL
+        # lines (general daily-search results, not just news/wiki).
+        tools = importlib.import_module("zeline.tools")
+        with mock.patch.object(tools, "_search_bing_jina", return_value=[("FastAPI Tutorial", "https://fastapi.tiangolo.com/tutorial/")]) as bing:
+            out = tools._web_search("fastapi tutorial")
+        bing.assert_called_once()
+        self.assertIn("FastAPI Tutorial", out)
+        self.assertIn("https://fastapi.tiangolo.com/tutorial/", out)
+
+    def test_decode_bing_redirect_recovers_real_url(self):
+        tools = importlib.import_module("zeline.tools")
+        import base64
+        real = "https://example.com/page?a=1"
+        enc = base64.urlsafe_b64encode(real.encode()).decode().rstrip("=")
+        wrapped = f"https://www.bing.com/ck/a?!&&p=x&u=a1{enc}&ntb=1"
+        self.assertEqual(tools._decode_bing_redirect(wrapped), real)
+
+    def test_agent_stops_looping_after_repeated_tool_failures(self):
+        # If a tool keeps returning ERROR every round (e.g. web_search dead on
+        # this network), the agent must bail out and synthesize a final answer
+        # instead of hammering MAX_TOOL_ROUNDS times.
+        agent_mod = importlib.import_module("zeline.agent")
+
+        tool_msg = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "c", "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"x"}'},
+                }],
+            }}],
+        }
+        final = {"choices": [{"message": {"role": "assistant", "content": "Best-effort answer."}}]}
+        agent = agent_mod.Zeline(identity="telegram:loopfail", tool_profile="safe")
+        # 3 failing tool rounds → then the forced final-answer call returns text.
+        with mock.patch.object(agent.executor, "run", return_value="ERROR: tidak dapat mencari web"), \
+             mock.patch.object(agent_mod.requests, "post", side_effect=[FakeResponse(tool_msg)] * 3 + [FakeResponse(final)]) as post:
+            reply = agent.send("cari sesuatu")
+        self.assertEqual(reply, "Best-effort answer.")
+        # Bailed out well before the 20-round cap (3 failures + 1 final call = 4).
+        self.assertLessEqual(len(post.call_args_list), 6)
+
     def test_anthropic_protocol_uses_native_messages_contract(self):
         cfg = importlib.import_module("zeline.config").config_copy()
         cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "anthropic-key", "model": "claude-sonnet"})
