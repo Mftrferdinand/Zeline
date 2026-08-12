@@ -27,8 +27,11 @@ DEFAULT_MAX_TOOL_ROUNDS = 20
 DEFAULT_MAX_SESSIONS = 100
 # Batas waktu wall-clock satu turn agent (detik). Setelah lewat, agent berhenti
 # memanggil tool dan memaksa jawaban final — mencegah "Processing" berlarut saat
-# sebuah tool (mis. web_search) gagal/lambat berulang.
-MAX_TURN_SECONDS = 90.0
+# sebuah tool (mis. web_search) gagal/lambat berulang. Dibuat cukup longgar untuk
+# tugas coding multi-langkah: satu panggilan LLM saja bisa 7-50 detik, jadi 90s
+# terlalu pendek (model kehabisan budget sebelum sempat write_file → malah
+# nge-dump kode ke chat). 6 menit memberi ruang untuk beberapa write_file + tes.
+MAX_TURN_SECONDS = 360.0
 # Berapa ronde tool GAGAL beruntun (semua hasil ERROR) sebelum agent menyerah
 # nge-loop dan menyintesis jawaban dari data yang ada.
 MAX_REPEATED_TOOL_FAILURES = 3
