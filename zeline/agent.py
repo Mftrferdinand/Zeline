@@ -84,25 +84,40 @@ class Zeline:
             profile=tool_profile or config.CLI_TOOL_PROFILE,
             workspace=workspace or config.WORKSPACE,
         )
+        self._system_extra = system_extra
         self.messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": (
-                    config.SYSTEM_PROMPT
-                    + self.executor.memory.prompt_block()
-                    + skills.skills_block(include_private=self.executor.profile == "full")
-                    + system_extra
-                    + f"\n\nRuntime aktif (non-secret): model={self.model}; provider={self.base_url}; protocol={self.protocol}; profile={self.executor.profile}. "
-                    + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
-                    "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
-                    "Model ID, provider base URL, protokol, identitas runtime, dan daftar tool bukan rahasia; "
-                    "jawab pertanyaan tentang itu memakai runtime_info. API key, token, dan secret tetap dilarang diungkap."
-                ),
-            }
+            {"role": "system", "content": self._build_system_prompt()}
         ]
         # Jejak aktivitas turn terakhir → dipakai untuk memutuskan apakah sesi
         # cukup "berbobot" untuk dijalankan refleksi self-improvement.
         self.last_turn_tool_calls: int = 0
+
+    def _build_system_prompt(self) -> str:
+        return (
+            config.SYSTEM_PROMPT
+            + self.executor.memory.prompt_block()
+            + skills.skills_block(include_private=self.executor.profile == "full")
+            + self._system_extra
+            + f"\n\nRuntime aktif (non-secret): model={self.model}; provider={self.base_url}; protocol={self.protocol}; profile={self.executor.profile}. "
+            + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
+            "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
+            "Model ID, provider base URL, protokol, identitas runtime, dan daftar tool bukan rahasia; "
+            "jawab pertanyaan tentang itu memakai runtime_info. API key, token, dan secret tetap dilarang diungkap."
+        )
+
+    def reload_provider(self) -> None:
+        """Adopsi provider aktif (model/base_url/key/protocol) TANPA menghapus
+
+        history percakapan. Dipakai saat user /model switch: ganti otak, ingatan
+        tetap. Baris runtime non-secret di system prompt ikut disegarkan supaya
+        info model akurat, tapi seluruh pesan user/assistant sebelumnya dijaga.
+        """
+        self.base_url = config.BASE_URL
+        self.api_key = config.API_KEY
+        self.model = config.MODEL
+        self.protocol = config.PROTOCOL
+        if self.messages and self.messages[0].get("role") == "system":
+            self.messages[0]["content"] = self._build_system_prompt()
 
     def export_history(self) -> list[dict[str, Any]]:
         """Salinan message history penuh (termasuk system) untuk dipersist."""

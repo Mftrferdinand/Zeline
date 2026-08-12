@@ -1257,15 +1257,21 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.config.save_config(cfg)
 
         class Sessions:
-            def __init__(self): self.reset_id = None
+            def __init__(self): self.reset_id = None; self.switched_id = None
             def reset(self, identity): self.reset_id = identity; return True
+            def switch_provider(self, identity): self.switched_id = identity
 
         sessions = Sessions()
         callback = {"id": "cb-1", "data": "model:1", "message": {"message_id": 9, "chat": {"id": 42}}}
         with mock.patch.object(telegram, "_discover_models", return_value=["model-a", "model-b"]), mock.patch.object(telegram, "_api_call") as api:
             telegram._handle_callback("bot-api", callback, sessions)
         self.assertEqual(self.config.config_copy()["provider"]["model"], "model-b")
-        self.assertEqual(sessions.reset_id, "telegram:42")
+        # Ganti model harus MEMPERTAHANKAN konteks (switch_provider), bukan reset.
+        self.assertEqual(sessions.switched_id, "telegram:42")
+        self.assertIsNone(sessions.reset_id)
+        confirm = api.call_args.kwargs["text"]
+        self.assertIn("Konteks percakapan tetap dijaga", confirm)
+        self.assertNotIn("New session started", confirm)
         methods = [call.args[1] for call in api.call_args_list]
         self.assertEqual(methods, ["answerCallbackQuery", "editMessageText"])
 
@@ -1350,20 +1356,24 @@ class ZelinePublicCoreTests(unittest.TestCase):
             text="fokus ke bug", tool_profile="safe",
         )
 
-    def test_telegram_model_command_persists_model_and_resets_session(self):
+    def test_telegram_model_command_persists_model_and_keeps_context(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         cfg = self.config.config_copy()
         cfg["provider"]["api_key"] = "test-key"
         self.config.save_config(cfg)
 
         class Sessions:
-            def __init__(self): self.reset_id = None
+            def __init__(self): self.reset_id = None; self.switched_id = None
             def reset(self, identity): self.reset_id = identity; return True
+            def switch_provider(self, identity): self.switched_id = identity
 
         sessions = Sessions()
         reply = telegram._handle_command("/model vendor/new-model", sessions, "telegram:42", stop_event=threading.Event())
         self.assertIn("vendor/new-model", reply)
-        self.assertEqual(sessions.reset_id, "telegram:42")
+        # Konteks HARUS dijaga saat ganti model (switch_provider), bukan reset.
+        self.assertEqual(sessions.switched_id, "telegram:42")
+        self.assertIsNone(sessions.reset_id)
+        self.assertNotIn("reset", reply.lower())
         self.assertEqual(self.config.config_copy()["provider"]["model"], "vendor/new-model")
 
     def test_telegram_accepts_zip_larger_than_legacy_256_kb_limit(self):

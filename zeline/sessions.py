@@ -188,6 +188,20 @@ class SessionStore:
                 cleared_disk = False
         return session is not None or cleared_disk
 
+    def switch_provider(self, identity: str) -> None:
+        """Ganti model/provider aktif untuk sesi ini TANPA menghapus history.
+
+        /model switch harus mengganti "otak" saja — ingatan percakapan (apa yang
+        lagi dikerjakan, keputusan sebelumnya) HARUS tetap ada, supaya user tidak
+        mengalami amnesia mendadak setelah ganti model. Kalau sesi belum ada di
+        RAM tapi ada di disk, biarkan get_or_create memuatnya nanti dengan
+        provider baru — history disk tidak disentuh.
+        """
+        with self._lock:
+            session = self._sessions.get(identity)
+            if session is not None:
+                session.agent.reload_provider()
+
     def count(self) -> int:
         with self._lock:
             return len(self._sessions)

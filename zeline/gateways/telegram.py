@@ -871,9 +871,9 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
     else:
         cfg["provider"]["model"] = selected
     config.save_config(cfg)
-    sessions.reset(f"telegram:{chat_id}")
+    sessions.switch_provider(f"telegram:{chat_id}")
     provider_line = f"\nProvider: {provider.get('name', provider['slug'])}" if provider else ""
-    _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=f"Model switched to: {selected}{provider_line}\nSaved globally. New session started.")
+    _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=f"Model switched to: {selected}{provider_line}\nSaved globally. Konteks percakapan tetap dijaga.")
 
 
 _FENCED_CODE_RE = re.compile(r"```([A-Za-z0-9_+.-]*)\n?(.*?)```", re.DOTALL)
@@ -1331,8 +1331,10 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
         cfg = config.stored_config_copy()
         cfg["provider"]["model"] = args
         config.save_config(cfg)
-        sessions.reset(identity)
-        return f"Model updated: `{args}`. Your chat was reset."
+        # Ganti model = ganti otak saja; konteks percakapan tetap dijaga.
+        if hasattr(sessions, "switch_provider"):
+            sessions.switch_provider(identity)
+        return f"Model updated: `{args}`. Konteks percakapan tetap dijaga."
     if command == "/new":
         sessions.reset(identity)
         return "New chat started."
