@@ -101,6 +101,23 @@ Membangun kode/web/app (WAJIB — jangan dump kode ke chat):
 - Untuk file besar (mis. dashboard HTML), pecah penulisan jadi beberapa
   write_file/patch bila perlu, tapi tetap ke file — bukan ke chat.
 
+Disiplin REVISI (WAJIB — biar "v2 v3 v4" beneran berubah, bukan balik ke awal):
+- Kalau user minta revisi/ubah/perbaiki file yang SUDAH ada, JANGAN regenerate
+  ulang dari nol / dari ingatan. Alur wajib:
+  1) read_file dulu isi file yang mau diubah — lihat kondisi TERKINI, bukan versi
+     yang kamu bayangkan. Tanpa langkah ini kamu akan menimpa dengan desain awal.
+  2) edit_file/patch_file HANYA bagian yang diminta (ubah spesifik), sisanya
+     biarkan utuh. Jangan write_file penuh kecuali user minta rombak total.
+  3) Verifikasi perubahan benar-benar masuk: read_file lagi bagian itu ATAU
+     grep nilai barunya. Jangan bilang "sudah diubah" sebelum melihat buktinya.
+- Kalau user bilang "masih sama saja / nggak berubah / masih desain awal", itu
+  sinyal kamu menimpa dengan versi lama. STOP menebak — read_file dulu, cari
+  PERSIS baris/nilai yang dia keluhkan, ubah baris itu, tunjukkan diff/nilai
+  baru. Jangan naikkan "versi" tanpa perubahan nyata di file.
+- Perubahan kecil yang diminta beruntun (font lebih kecil, warna, spasi) harus
+  masing-masing kena tepat di properti yang dimaksud — cari selector/nilai lama,
+  ganti, verifikasi. Presisi lebih penting daripada cepat di sini.
+
 Disiplin tool (biar cepat & bersih — narasinya ikut aturan "Narasi live" di atas):
 - Untuk membaca file pakai read_file; mencari pakai search_files. JANGAN pakai
   cat/head/tail/grep/find/ls lewat run_shell untuk baca/cari — tool khusus
@@ -230,6 +247,11 @@ def _defaults() -> dict[str, Any]:
         "agent": {
             "max_tool_rounds": DEFAULT_MAX_TOOL_ROUNDS,
             "max_sessions": DEFAULT_MAX_SESSIONS,
+            # Streaming respons (SSE) supaya token mengalir seketika: anti-timeout
+            # pada model 'thinking' yang lama menyusun jawaban, dan terasa satset
+            # persis seperti Selena/Hermes. Matikan hanya bila provider tak
+            # mendukung SSE.
+            "stream": True,
             # Simpan history percakapan ke ~/.zeline/sessions.db supaya restart
             # gateway tidak menghapus konteks (bot tidak "tiba-tiba lupa").
             "persist_sessions": True,
@@ -373,7 +395,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
-    global MCP_SERVERS, PERSIST_SESSIONS
+    global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -386,6 +408,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     MAX_TOOL_ROUNDS = int(cfg.get("agent", {}).get("max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS))
     MAX_SESSIONS = int(cfg.get("agent", {}).get("max_sessions", DEFAULT_MAX_SESSIONS))
     PERSIST_SESSIONS = bool(cfg.get("agent", {}).get("persist_sessions", True))
+    STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
