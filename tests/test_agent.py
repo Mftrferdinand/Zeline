@@ -20,6 +20,7 @@ class FakeResponse:
         self.text = json.dumps(payload)
         self.status_code = status_code
         self.ok = status_code < 400
+        self.encoding = "utf-8"
 
 
 class AgentLoopTests(unittest.TestCase):
@@ -37,6 +38,9 @@ class AgentLoopTests(unittest.TestCase):
             if module_name == "zeline" or module_name.startswith("zeline."):
                 sys.modules.pop(module_name, None)
         self.agent_module = importlib.import_module("zeline.agent")
+        # Legacy tests exercise the non-stream JSON path; streaming has its own
+        # dedicated tests below. Pin stream off so FakeResponse (plain JSON) is used.
+        self.agent_module.config.STREAM_RESPONSES = False
 
     def tearDown(self):
         for key, value in {
@@ -366,6 +370,9 @@ class AgentLoopTests(unittest.TestCase):
         cfg = importlib.import_module("zeline.config").config_copy()
         cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "anthropic-key", "model": "claude-sonnet"})
         importlib.import_module("zeline.config").save_config(cfg)
+        # save_config re-runs _set_runtime_values which resets STREAM_RESPONSES to
+        # the default; re-pin off so this non-stream FakeResponse path is exercised.
+        self.agent_module.config.STREAM_RESPONSES = False
         final = {"content": [{"type": "text", "text": "Saya Claude."}], "stop_reason": "end_turn"}
         agent = self.agent_module.Zeline(identity="cli:anthropic", tool_profile="safe")
         agent.base_url = "https://api.anthropic.com/v1"
@@ -381,6 +388,126 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("Authorization", call.kwargs["headers"])
         self.assertIn("system", call.kwargs["json"])
         self.assertNotIn("system", [item["role"] for item in call.kwargs["json"]["messages"]])
+
+
+class FakeStreamResponse:
+    """Mimics requests.Response for SSE: iter_lines yields the given lines."""
+
+    def __init__(self, lines, status_code: int = 200):
+        self._lines = lines
+        self.status_code = status_code
+        self.ok = status_code < 400
+        self.text = ""
+        self.closed = False
+        self.encoding: str | None = None
+
+    def iter_lines(self, decode_unicode: bool = False):
+        for line in self._lines:
+            yield line
+
+    def close(self):
+        self.closed = True
+
+
+class StreamingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old = {k: os.environ.get(k) for k in ("ZELINE_HOME", "ZELINE_API_KEY", "ZELINE_BASE_URL", "ZELINE_MODEL")}
+        os.environ["ZELINE_HOME"] = str(Path(self.temp.name) / "state")
+        os.environ["ZELINE_API_KEY"] = "test-key"
+        os.environ["ZELINE_BASE_URL"] = "http://provider.test/v1"
+        os.environ["ZELINE_MODEL"] = "test-model"
+        for module_name in list(sys.modules):
+            if module_name == "zeline" or module_name.startswith("zeline."):
+                sys.modules.pop(module_name, None)
+        self.agent_module = importlib.import_module("zeline.agent")
+        self.agent_module.config.STREAM_RESPONSES = True
+
+    def tearDown(self):
+        for key, value in self.old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.temp.cleanup()
+
+    def test_openai_stream_assembles_text_answer(self):
+        lines = [
+            'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+            'data: {"choices":[{"delta":{"content":"lo"}}]}',
+            'data: {"choices":[{"delta":{"content":" world"}}]}',
+            "data: [DONE]",
+        ]
+        resp = FakeStreamResponse(lines)
+        agent = self.agent_module.Zeline(identity="telegram:stream1", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=resp) as post:
+            reply = agent.send("halo")
+        # stream=True must be sent to the provider.
+        self.assertTrue(post.call_args.kwargs["json"]["stream"])
+        self.assertTrue(post.call_args.kwargs["stream"])
+        self.assertEqual(reply, "Hello world")
+        self.assertTrue(resp.closed)
+
+    def test_openai_stream_assembles_tool_call_then_finishes(self):
+        # Round 1: streamed tool_call (arguments arrive fragmented across deltas).
+        tool_lines = [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"add_memory","arguments":"{\\"fact\\":"}}]}}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"suka teh\\"}"}}]}}]}',
+            "data: [DONE]",
+        ]
+        # Round 2: streamed final text.
+        final_lines = [
+            'data: {"choices":[{"delta":{"content":"Sudah aku ingat."}}]}',
+            "data: [DONE]",
+        ]
+        agent = self.agent_module.Zeline(identity="telegram:stream2", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeStreamResponse(tool_lines), FakeStreamResponse(final_lines)]):
+            reply = agent.send("inget aku suka teh")
+        self.assertEqual(reply, "Sudah aku ingat.")
+        self.assertIn("suka teh", agent.executor.memory.formatted())
+
+    def test_openai_stream_surfaces_provider_error(self):
+        lines = ['data: {"error":{"message":"bad model route"}}']
+        agent = self.agent_module.Zeline(identity="telegram:stream3", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeStreamResponse(lines)):
+            with self.assertRaises(self.agent_module.ZelineError) as ctx:
+                agent.send("halo")
+        self.assertIn("bad model route", str(ctx.exception))
+
+    def test_response_encoding_forced_utf8_so_arrows_and_emoji_survive(self):
+        # requests men-default text/* tanpa charset ke ISO-8859-1 → panah/emoji
+        # jadi mojibake. Agent HARUS memaksa response.encoding='utf-8' sebelum decode.
+        lines = [
+            'data: {"choices":[{"delta":{"content":"Build & code \u2192 run"}}]}',
+            "data: [DONE]",
+        ]
+        resp = FakeStreamResponse(lines)
+        resp.encoding = "ISO-8859-1"  # keadaan default requests yang bikin bug
+        agent = self.agent_module.Zeline(identity="telegram:utf8", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=resp):
+            reply = agent.send("halo")
+        self.assertEqual(resp.encoding, "utf-8")
+        self.assertIn("\u2192", reply)
+
+    def test_anthropic_stream_assembles_text(self):
+        cfg = importlib.import_module("zeline.config").config_copy()
+        cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "ak", "model": "claude-sonnet"})
+        importlib.import_module("zeline.config").save_config(cfg)
+        lines = [
+            "event: content_block_delta",
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Saya "}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Claude."}}',
+            'data: {"type":"message_stop"}',
+        ]
+        agent = self.agent_module.Zeline(identity="cli:astream", tool_profile="safe")
+        agent.protocol = "anthropic"
+        agent.base_url = "https://api.anthropic.com/v1"
+        agent.api_key = "ak"
+        agent.model = "claude-sonnet"
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeStreamResponse(lines)) as post:
+            reply = agent.send("model apa?")
+        self.assertEqual(reply, "Saya Claude.")
+        self.assertTrue(post.call_args.kwargs["json"]["stream"])
 
 
 if __name__ == "__main__":
