@@ -208,12 +208,20 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
             os.chmod(LOG_FILE, 0o600)
         except OSError:
             pass
+        # Spawn dari direktori NETRAL (~/.zeline), bukan cwd user. Kalau cwd
+        # kebetulan berisi folder bernama `zeline` (mis. checkout repo di
+        # ~/zeline saat user berada di home), `python -m zeline.cli` akan
+        # menambahkan cwd ke sys.path dan folder itu MENIMPA paket terpasang
+        # sebagai namespace package tanpa __init__ → ImportError __version__.
+        # PYTHONSAFEPATH=1 (Py3.11+) juga mencegah cwd diprepend ke sys.path.
+        child_env = {**os.environ, "PYTHONSAFEPATH": "1"}
         process = subprocess.Popen(
             _command(only),
             stdin=subprocess.DEVNULL,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
-            cwd=str(Path.cwd()),
+            cwd=str(config.DATA_DIR),
+            env=child_env,
             start_new_session=True,
             close_fds=True,
         )

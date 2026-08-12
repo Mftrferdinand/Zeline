@@ -987,6 +987,23 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(buttons[1]["text"], "✓ model-b")
         self.assertLessEqual(max(len(button["callback_data"]) for button in buttons), 64)
 
+    def test_telegram_model_picker_shows_full_id_when_tail_collides(self):
+        # Router IDs sharing the same final segment (e.g. Gr/claude-opus-4-8 and
+        # tabi/claude-opus-4-8) must show the FULL id so the buttons aren't
+        # two identical "claude-opus-4-8" rows with no provider prefix.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        models = ["Gr/claude-opus-4-8", "tabi/claude-opus-4-8", "th-orchestra"]
+        text, markup = telegram._model_picker_payload(models, "tabi/claude-opus-4-8")
+        buttons = [button for row in markup["inline_keyboard"] for button in row]
+        labels = [b["text"] for b in buttons if b["callback_data"].startswith("model:") and b["callback_data"] != "model:cancel"]
+        # Colliding ones keep their route prefix; current one is check-marked.
+        self.assertIn("Gr/claude-opus-4-8", labels)
+        self.assertIn("✓ tabi/claude-opus-4-8", labels)
+        # Non-colliding id still shows the short tail.
+        self.assertIn("th-orchestra", labels)
+        # Callbacks stay index-based and within Telegram's 64-byte limit.
+        self.assertLessEqual(max(len(b["callback_data"]) for b in buttons), 64)
+
     def test_telegram_model_root_picker_lists_named_providers_first(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         providers = [

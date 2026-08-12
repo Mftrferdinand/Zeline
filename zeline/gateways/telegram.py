@@ -375,13 +375,25 @@ def _start_working_heartbeat(
 def _model_picker_payload(models: list[str], current_model: str, provider_index: int | None = None, provider_name: str = "") -> tuple[str, dict[str, Any]]:
     """Bangun inline picker dengan callback pendek agar aman di batas 64 byte."""
     buttons = []
+    # Deteksi label yang bakal tabrakan bila hanya diambil segmen terakhir.
+    # Di router seperti 9Router, ID model berprefix rute (mis. `Gr/claude-opus-4-8`
+    # dan `tabi/claude-opus-4-8`) → rsplit('/') membuat dua tombol identik tanpa
+    # pembeda. Kalau segmen terakhir tidak unik, tampilkan ID PENUH agar jelas
+    # provider/rute mana yang dipilih.
+    tails = [model.rsplit("/", 1)[-1] for model in models]
+    ambiguous = {tail for tail in tails if tails.count(tail) > 1}
     for index, model in enumerate(models):
-        label = model.rsplit("/", 1)[-1]
+        tail = model.rsplit("/", 1)[-1]
+        # Tampilkan ID penuh bila segmen terakhir tidak unik (biar prefix rute
+        # terlihat); selain itu segmen terakhir sudah cukup ringkas.
+        label = model if tail in ambiguous else tail
         if model == current_model:
             label = f"✓ {label}"
         callback = f"model:{index}" if provider_index is None else f"model:{provider_index}:{index}"
-        buttons.append({"text": label[:48], "callback_data": callback})
-    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+        buttons.append({"text": label[:60], "callback_data": callback})
+    # Model dengan label panjang (ID penuh) lebih enak dibaca satu per baris.
+    per_row = 1 if ambiguous else 2
+    rows = [buttons[index:index + per_row] for index in range(0, len(buttons), per_row)]
     if provider_index is not None:
         rows.append([{"text": "« Back", "callback_data": "provider:back"}])
     rows.append([{"text": "✗ Cancel", "callback_data": "model:cancel"}])
