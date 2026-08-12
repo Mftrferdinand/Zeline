@@ -31,13 +31,13 @@ def _parse_response(text: str) -> dict[str, Any]:
         try:
             value, _ = json.JSONDecoder().raw_decode(cleaned)
         except json.JSONDecodeError as exc:
-            raise ZelineError("Provider memberi respons yang bukan JSON valid.") from exc
+            raise ZelineError("Provider returned a non-JSON response.") from exc
     if not isinstance(value, dict):
-        raise ZelineError("Provider memberi bentuk respons yang tidak dikenal.")
+        raise ZelineError("Provider returned an unrecognized response shape.")
     if value.get("error"):
         error = value["error"]
         message = error.get("message") if isinstance(error, dict) else str(error)
-        raise ZelineError(f"Provider menolak request: {str(message)[:300]}")
+        raise ZelineError(f"Provider rejected the request: {str(message)[:300]}")
     return value
 
 
@@ -105,9 +105,9 @@ class Zeline:
 
     def _call_llm(self, use_tools: bool = True) -> dict[str, Any]:
         if not self.api_key:
-            raise ZelineError("API key belum dikonfigurasi. Jalankan `zeline setup`.")
+            raise ZelineError("API key not configured. Run `zeline setup`.")
         if not self.base_url or not self.model:
-            raise ZelineError("Provider belum lengkap. Jalankan `zeline setup`.")
+            raise ZelineError("Provider not fully configured. Run `zeline setup`.")
 
         endpoint = f"{self.base_url}/chat/completions"
         headers = {
@@ -164,7 +164,7 @@ class Zeline:
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
         except requests.RequestException as exc:
-            raise ZelineError(f"Gagal menghubungi provider: {exc.__class__.__name__}.") from exc
+            raise ZelineError(f"Failed to reach provider: {exc.__class__.__name__}.") from exc
         if not response.ok:
             raise ZelineError(f"Provider HTTP {response.status_code}.")
         parsed = _parse_response(response.text)
@@ -187,9 +187,9 @@ class Zeline:
         try:
             message = parsed["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise ZelineError("Provider tidak mengembalikan pilihan respons.") from exc
+            raise ZelineError("Provider returned no response choices.") from exc
         if not isinstance(message, dict):
-            raise ZelineError("Provider mengembalikan message yang tidak valid.")
+            raise ZelineError("Provider returned an invalid message.")
         return message
 
     def _trim_history(self) -> None:

@@ -186,7 +186,7 @@ def _working_status_text(elapsed_seconds: float, *, iteration: int | None = None
     minutes = int(elapsed_seconds // 60)
     seconds = int(elapsed_seconds % 60)
     clock = f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
-    slow = " · provider lambat merespons" if elapsed_seconds >= 120 else ""
+    slow = " · provider is slow to respond" if elapsed_seconds >= 120 else ""
     return f"⏳ Working — {clock}{slow}"
 
 
@@ -197,8 +197,8 @@ def _provider_wait_text(wait_seconds: float, model: str = "") -> str:
     (Reading/Searching) sedang jalan, karena itu bagian cepat.
     """
     who = f" {model}" if model else ""
-    detail = " (provider lambat/overload, atau model sedang berpikir)" if wait_seconds >= 30 else ""
-    return f"⏳ Menunggu{who} — {int(wait_seconds)}s belum ada respons{detail}"
+    detail = " (provider slow/overloaded, or model is thinking)" if wait_seconds >= 30 else ""
+    return f"⏳ Waiting{who} — {int(wait_seconds)}s with no response{detail}"
 
 
 class _LiveStatus:
@@ -230,7 +230,7 @@ class _LiveStatus:
         if self.phase == "waiting":
             wait = time.monotonic() - self.phase_started
             if wait >= 30 and self.model:
-                header = f"⏳ Processing… ({self.model} lambat merespons)"
+                header = f"⏳ Processing… ({self.model} is slow to respond)"
             else:
                 header = "⏳ Processing..."
         else:

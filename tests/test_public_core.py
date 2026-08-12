@@ -441,7 +441,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_working_status_matches_hermes_style(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider lambat merespons")
+        self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider is slow to respond")
         self.assertEqual(telegram._working_status_text(8), "⏳ Working — 8 s")
 
     def test_telegram_working_heartbeat_keeps_typing_alive(self):

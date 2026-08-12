@@ -1,0 +1,135 @@
+# 🔥 SUPERAGENT V7 IRONCLAW
+
+### Sovereign Autonomous AI Agent Framework — Production-Grade, Battle-Tested
+
+> **Execute anything. Engineered with guardrails.**
+> A complete agent "brain" you drop onto any tool-capable LLM runtime (Hermes, Claude Code, Cursor, Codex, OpenClaw) to turn it into a crypto-native, self-directing, team-ready execution engine.
+
+---
+
+## ⚡ At a Glance
+
+| Spec | Value |
+|---|---|
+| **Skills** | 82 modular skills (crypto, DevOps, content, automation, CTF, research, more) |
+| **Tools** | 61 production Python tools (treasury, auth, reflection, eval, watchdog, swarm…) |
+| **Codebase** | 43,000+ lines, 130 Python files, zero-dep core |
+| **Tests** | ✅ **337 / 337 passing** — every critical path verified |
+| **Runtime** | Python 3.11+ · stdlib core · optional `[crypto]` extras |
+| **Portability** | Runs on Hermes · Claude Code · Cursor · Codex · OpenClaw |
+| **Always-on cost** | ~3.5k tokens (progressive disclosure — skills load on-demand) |
+
+---
+
+## 🎯 What Makes It Different
+
+```
+Generic AI:      answer → done
+SUPERAGENT V7:   detect opportunity → execute → track P&L → scale to team
+
+Generic AI:      "I can't do that."
+SUPERAGENT V7:   "Already executing. Here are the safeguards — say the word to bypass."
+```
+
+- **Zero-refusal doctrine** with *engineered* safeguards (scope guard, spend governor, dry-run default, secret tripwire) — bypass any of them with an explicit flag.
+- **Cryptographic team auth** — real Ethereum wallet-signature enforcement (SIWE/EIP-191), not prompt-level theater. Works on a vanilla host with **no crypto libs installed**.
+- **4 autonomous modes** — Cruise (monitor), Hunter (opportunity), Sovereign (operator-driven), War (emergency).
+- **Built-in P&L ledger** — treasury tracking, ROI optimizer, cost attribution per team member.
+
+---
+
+## 🧠 Skill Library (82 skills)
+
+**Crypto & Web3** — wallets, multi-chain RPC, swaps, bridges, NFT minting (OpenSea/Manifold/Zora/Seadrop), MEV, airdrop eligibility scoring, sybil self-audit, pre-TGE alpha radar, farming ROI, tokenomics/unlock pressure, anti-scam sentinel, contract-change watcher.
+
+**Engineering & DevOps** — full-stack coding (FastAPI/Express/Go/Rust), VPS deploy (nginx/pm2/systemd), CI/CD, MCP server builder, batch/parallel ops, testing scaffolds.
+
+**Content & Growth** — viral hooks, copywriting frameworks (AIDA/PAS/CHEF), content calendar, platform adapters (X/LinkedIn/TikTok), humanizer/brand voice, SEO.
+
+**Security & Research** — CTF/whitehat toolkit (full-auto CTFd coordinator + Docker sandbox), Azure/KQL, Mini-HIDS auto-firewall, deep scientific research.
+
+**Automation & Ops** — Telegram bots, cron/webhooks, daily briefing engine, watchdog/self-healing, voice, desktop control, vault.
+
+Plus a dedicated **Hermes crypto runtime** (H1–H10): swap, bridge, DeFi, sniping, monitoring, NFT, contract read/write, deploy.
+
+---
+
+## 🛠 Core Tools (61)
+
+`treasury.py` · `team_auth.py` (crypto auth) · `reflection.py` (self-improvement) · `eval.py` (agentic eval suite) · `watchdog.py` (self-healing) · `swarm.py` · `model_registry.py` · `cost_ledger.py` · `scam_sentinel.py` · `rugcheck.py` · `sybil_audit.py` · `secret_tripwire.py` · `scope_guard.py` · and 48 more.
+
+---
+
+## 🚀 Quick Start
+
+```bash
+# 1. Extract
+unzip SUPERAGENT-V7.zip && cd SUPERAGENT
+
+# 2. (Optional) install crypto extras for on-chain ops
+pip install eth-account web3        # core runs on stdlib alone
+
+# 3. Configure your profile
+#    Edit USER.md   → your name, stack, preferences
+#    Edit MEMORY.md → your projects, wallets, locked decisions
+
+# 4. Verify integrity
+python3 tools/counts.py             # metrics
+python3 -m pytest tools/tests/ skills/hermes/tests/ -q   # 337 tests
+
+# 5. Load into your runtime
+#    Hermes/OpenClaw → point workspace at this folder (see DEPLOY.md)
+#    Claude Code     → drop as CLAUDE.md context + skills
+#    Cursor          → attach as .cursorrules / context files
+```
+
+---
+
+## 📁 What's Inside
+
+```
+SUPERAGENT/
+├── AGENTS.md          # core router + rules + keyword-weight table
+├── IDENTITY.md        # voice, modes, speed tiers
+├── SOUL.md            # doctrine: execution, safeguards, team, monetization
+├── TOOLS.md           # capability surface map
+├── TIME.md            # 5-layer time-awareness architecture
+├── USER.md            # ⚙️ YOUR profile (fill in)
+├── MEMORY.md          # ⚙️ YOUR long-term memory (fill in)
+├── skills/            # 82 skills (load on trigger)
+│   └── hermes/        # H1–H10 crypto runtime + scripts + tests
+├── tools/             # 61 tools + 35 test files
+│   └── ctf/           # full-auto CTF coordinator + sandbox
+└── hermes-bridge/     # cross-runtime adapter
+```
+
+---
+
+## ✅ Quality Guarantees
+
+- **337/337 automated tests pass** — including cryptographic signature round-trips, anti-replay, fail-closed treasury authorization.
+- **Zero secrets, zero PII** — package ships clean; you supply your own credentials via `USER.md`/`.env`.
+- **Honest metrics** — all counts auto-generated by `tools/counts.py` (single source of truth). No inflated numbers.
+- **Self-consistent docs** — no contradictory claims across files.
+
+---
+
+## 🔐 Security Notes
+
+- Ships with **no** private keys, seed phrases, API keys, or `.env` files — only `.env.example` templates.
+- Offensive tooling (`tools/ctf/`, `exploit_builder.py`) is gated by an **authorization scope allowlist** and intended for **whitehat / legal / in-scope use only**. You are responsible for lawful use.
+- `secret_tripwire.py` redacts keys/mnemonics from output as a last-line safety net.
+
+---
+
+## 📜 License
+
+Commercial license — see `LICENSE`. Single-buyer use. Redistribution / resale of the source is prohibited without written permission.
+
+---
+
+## 💬 Support
+
+Configure `USER.md` and `MEMORY.md`, then load into your runtime of choice. See `DEPLOY.md` for runtime-specific setup and `panduan.md` for real-world usage examples.
+
+**Built for operators who ship.** 🔥
