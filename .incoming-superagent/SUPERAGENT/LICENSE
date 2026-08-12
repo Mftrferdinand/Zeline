@@ -1,0 +1,126 @@
+SUPERAGENT V7 IRONCLAW — COMMERCIAL SOFTWARE LICENSE AGREEMENT
+================================================================
+
+Version 1.0
+Copyright (c) 2026. All rights reserved.
+
+This Commercial License Agreement ("Agreement") is a legal agreement between
+you ("Licensee", "you") and the author/vendor ("Licensor") for the software
+product SUPERAGENT V7 IRONCLAW, including all source code, skills, tools,
+documentation, and associated files ("Software").
+
+BY PURCHASING, DOWNLOADING, INSTALLING, OR USING THE SOFTWARE, YOU AGREE TO
+BE BOUND BY THE TERMS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT USE THE
+SOFTWARE.
+
+--------------------------------------------------------------------------
+1. GRANT OF LICENSE
+--------------------------------------------------------------------------
+Subject to full payment and the terms below, Licensor grants Licensee a
+non-exclusive, non-transferable, perpetual license to:
+
+  (a) Install and use the Software for Licensee's own personal or internal
+      business purposes;
+  (b) Modify and adapt the Software for Licensee's own use;
+  (c) Deploy the Software on infrastructure owned or controlled by Licensee.
+
+This is a SINGLE-BUYER license. It grants rights to the individual or single
+legal entity that purchased it.
+
+--------------------------------------------------------------------------
+2. RESTRICTIONS
+--------------------------------------------------------------------------
+Licensee SHALL NOT:
+
+  (a) Resell, redistribute, sublicense, rent, lease, lend, or otherwise
+      transfer the Software or its source code, in whole or in part, to any
+      third party;
+  (b) Publish, open-source, or make the source code publicly available;
+  (c) Remove, alter, or obscure any copyright, license, or proprietary
+      notices;
+  (d) Repackage the Software (modified or unmodified) as a competing product
+      or template for sale or free distribution;
+  (e) Share purchased access credentials or license keys with third parties.
+
+Delivering end-user outputs, deployed services, or automation results
+produced BY the Software to Licensee's own clients is permitted. Transferring
+the SOURCE itself is not.
+
+--------------------------------------------------------------------------
+3. OWNERSHIP
+--------------------------------------------------------------------------
+The Software is licensed, not sold. Licensor retains all right, title, and
+interest in and to the Software, including all intellectual property rights.
+This Agreement does not grant Licensee any rights to trademarks or service
+marks of Licensor.
+
+--------------------------------------------------------------------------
+4. LAWFUL & ETHICAL USE — SECURITY TOOLING
+--------------------------------------------------------------------------
+The Software includes offensive-security and reconnaissance tooling
+(including but not limited to the CTF toolkit and exploit builder). Such
+tooling is provided for WHITEHAT, EDUCATIONAL, AUTHORIZED PENETRATION
+TESTING, and LEGAL, IN-SCOPE USE ONLY.
+
+Licensee represents and warrants that Licensee will:
+  (a) Only use such tooling against systems Licensee owns or has explicit
+      written authorization to test;
+  (b) Comply with all applicable laws, regulations, and third-party terms
+      of service;
+  (c) Bear sole responsibility for any use of the Software.
+
+Licensor bears NO responsibility or liability for any unlawful, unauthorized,
+or unethical use of the Software by Licensee.
+
+--------------------------------------------------------------------------
+5. NO CUSTODY OF FUNDS OR KEYS
+--------------------------------------------------------------------------
+The Software ships with NO private keys, seed phrases, or credentials.
+Licensee is solely responsible for the security of any wallets, private keys,
+API keys, or funds Licensee configures. Licensor has no access to and no
+liability for Licensee's assets. On-chain transactions are irreversible;
+Licensee assumes all financial risk.
+
+--------------------------------------------------------------------------
+6. DISCLAIMER OF WARRANTY
+--------------------------------------------------------------------------
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+NON-INFRINGEMENT. LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE
+ERROR-FREE, UNINTERRUPTED, OR THAT IT WILL MEET LICENSEE'S REQUIREMENTS OR
+PRODUCE ANY PARTICULAR FINANCIAL RESULT.
+
+--------------------------------------------------------------------------
+7. LIMITATION OF LIABILITY
+--------------------------------------------------------------------------
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL LICENSOR BE LIABLE
+FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR
+ANY LOSS OF PROFITS, REVENUE, DATA, OR FUNDS, ARISING OUT OF OR RELATED TO
+THE USE OF OR INABILITY TO USE THE SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGES. LICENSOR'S TOTAL AGGREGATE LIABILITY SHALL NOT
+EXCEED THE AMOUNT PAID BY LICENSEE FOR THE SOFTWARE.
+
+--------------------------------------------------------------------------
+8. TERMINATION
+--------------------------------------------------------------------------
+This Agreement is effective until terminated. It terminates automatically
+without notice if Licensee breaches any term. Upon termination, Licensee must
+cease all use and destroy all copies of the Software. Sections 2, 3, 4, 5, 6,
+7, and 9 survive termination.
+
+--------------------------------------------------------------------------
+9. GENERAL
+--------------------------------------------------------------------------
+This Agreement constitutes the entire agreement between the parties regarding
+the Software and supersedes all prior understandings. If any provision is
+held unenforceable, the remaining provisions remain in full force. Failure to
+enforce any right is not a waiver.
+
+--------------------------------------------------------------------------
+CONTACT
+--------------------------------------------------------------------------
+For licensing inquiries, extended/multi-seat licenses, or written permission
+for redistribution, contact the vendor at the point of purchase.
+
+END OF AGREEMENT

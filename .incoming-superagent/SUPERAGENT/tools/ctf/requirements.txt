@@ -1,0 +1,4 @@
+requests>=2.31
+python-dotenv>=1.0
+# solver tooling lives inside the Docker sandbox (pwntools, angr, sage, etc.)
+# host only needs HTTP + docker CLI access

@@ -13,8 +13,10 @@ memakai LLM sebagai remote shell di device/VPS pemilik.
 from __future__ import annotations
 
 import html as _html
+import base64
 import ipaddress
 import json
+import mimetypes
 import os
 import re
 import socket
@@ -272,6 +274,103 @@ def _format_size(num_bytes: int) -> str:
         if num_bytes >= factor:
             return f"{num_bytes / factor:.1f} {unit}"
     return f"{num_bytes} B"
+
+
+# Batas ukuran media yang dikirim ke model vision (base64 membengkak ~33%).
+VISION_MAX_BYTES = 8 * 1024 * 1024
+_VISION_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
+    """Lihat gambar dan jawab pertanyaan tentangnya lewat model vision provider.
+
+    Menerima path file di workspace ATAU URL http/https gambar. Gambar dikirim ke
+    endpoint chat/completions provider aktif sebagai konten image_url (data URI
+    untuk file lokal). Untuk audio/video, kembalikan pesan yang mengarahkan ke
+    jalur yang tepat (transkrip/ekstraksi frame) daripada mengarang isi.
+    """
+    src = (path_or_url or "").strip()
+    if not src:
+        return "ERROR: butuh path file gambar atau URL."
+    prompt = (question or "").strip() or "Describe this image in detail."
+
+    image_url: str
+    if src.lower().startswith(("http://", "https://")):
+        parsed = urlparse(src)
+        host = parsed.hostname or ""
+        if not host or _is_internal_ip(host):
+            return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+        ext = Path(parsed.path).suffix.lower()
+        if ext and ext not in _VISION_IMAGE_EXT:
+            return (
+                f"ERROR: ekstensi `{ext}` bukan gambar yang didukung. "
+                "Vision mendukung PNG/JPG/WEBP/GIF. Untuk audio/video, minta transkrip "
+                "atau ekstraksi frame dulu."
+            )
+        image_url = src
+    else:
+        try:
+            target = _resolve_workspace_path(src, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not target.is_file():
+            return f"ERROR: bukan file atau tidak ditemukan: {target}"
+        ext = target.suffix.lower()
+        if ext not in _VISION_IMAGE_EXT:
+            if ext in {".mp3", ".ogg", ".wav", ".m4a", ".flac", ".opus"}:
+                return (
+                    f"File `{target.name}` adalah audio. Model vision hanya melihat gambar. "
+                    "Untuk 'mendengar', transkrip dulu (mis. tool STT/Whisper) lalu proses teksnya."
+                )
+            if ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
+                return (
+                    f"File `{target.name}` adalah video. Model vision hanya melihat gambar diam. "
+                    "Untuk 'menonton', ekstrak frame kunci jadi gambar (mis. ffmpeg) lalu analisa "
+                    "frame-nya dengan analyze_media, dan/atau transkrip audionya."
+                )
+            return f"ERROR: ekstensi `{ext}` bukan gambar. Vision mendukung PNG/JPG/WEBP/GIF."
+        data = target.read_bytes()
+        if len(data) > VISION_MAX_BYTES:
+            return f"ERROR: gambar terlalu besar (batas {VISION_MAX_BYTES // (1024*1024)} MB)."
+        mime = mimetypes.guess_type(target.name)[0] or "image/png"
+        b64 = base64.b64encode(data).decode("ascii")
+        image_url = f"data:{mime};base64,{b64}"
+
+    if not config.API_KEY or not config.BASE_URL or not config.MODEL:
+        return "ERROR: provider belum dikonfigurasi untuk analisa gambar."
+    payload = {
+        "model": config.MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }
+        ],
+        "temperature": 0.3,
+        "stream": False,
+    }
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=90,
+        )
+    except requests.RequestException as exc:
+        return f"ERROR: failed to reach vision provider: {exc.__class__.__name__}."
+    if not response.ok:
+        return (
+            f"ERROR: vision provider HTTP {response.status_code}. "
+            "The active model may not support image input — switch to a vision-capable model."
+        )
+    try:
+        answer = str(response.json()["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "ERROR: vision provider returned an unexpected response."
+    return answer or "(model returned no description)"
 
 
 def _system_env() -> str:
@@ -662,6 +761,19 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "analyze_media",
+        "Lihat sebuah gambar (PNG/JPG/WEBP/GIF) dan jawab pertanyaan tentangnya memakai model vision. Terima path file di workspace ATAU URL http/https. Gunakan saat user mengirim/menunjuk gambar (screenshot, foto, diagram). Untuk audio/video, tool ini menjelaskan langkah yang benar (transkrip/ekstraksi frame).",
+        {
+            "type": "object",
+            "properties": {
+                "path_or_url": {"type": "string", "description": "Path file gambar di workspace atau URL http/https"},
+                "question": {"type": "string", "description": "Pertanyaan/instruksi tentang gambar (opsional)"},
+            },
+            "required": ["path_or_url"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "http_request",
         "Panggil REST API/webhook dengan method bebas (GET/POST/PUT/PATCH/DELETE), header, dan body JSON. Beda dari web_fetch yang cuma baca halaman GET. Alamat jaringan internal otomatis diblokir.",
         {
@@ -809,6 +921,7 @@ class ToolExecutor:
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url),
             "deep_research": lambda query: _deep_research(query),
+            "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
             "read_file": lambda path: _read_file(path, self.workspace),

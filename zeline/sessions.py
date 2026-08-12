@@ -147,6 +147,22 @@ class SessionStore:
             session.cancel_event.set()
             return True
 
+    def reflect(self, identity: str, min_tool_calls: int = 5) -> str | None:
+        """Jalankan self-improvement review untuk sesi ini (best-effort).
+
+        Dipanggil di akhir sesi penting. Aman: mengembalikan None bila sesi tidak
+        ada, terlalu ringan, atau tidak ada yang layak disimpan.
+        """
+        with self._lock:
+            session = self._sessions.get(identity)
+        if session is None:
+            return None
+        with session.lock:
+            try:
+                return session.agent.reflect(min_tool_calls=min_tool_calls)
+            except Exception:
+                return None
+
     def steer(self, identity: str, text: str) -> bool:
         guidance = text.strip()
         with self._lock:

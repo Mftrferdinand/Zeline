@@ -193,6 +193,70 @@ class AgentLoopTests(unittest.TestCase):
         # Panggilan terakhir tidak menyertakan daftar tools.
         self.assertNotIn("tools", post.call_args_list[-1].kwargs["json"])
 
+    def test_multiple_readonly_tool_calls_run_and_preserve_order(self):
+        # Model meminta DUA tool read-only (list_memory + runtime_info) dalam satu
+        # giliran; keduanya harus dieksekusi dan tool result-nya muncul sesuai
+        # urutan tool_call_id-nya (parallel-safe path).
+        first = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [
+                    {"id": "call-a", "type": "function",
+                     "function": {"name": "list_memory", "arguments": "{}"}},
+                    {"id": "call-b", "type": "function",
+                     "function": {"name": "runtime_info", "arguments": "{}"}},
+                ],
+            }}],
+        }
+        second = {"choices": [{"message": {"role": "assistant", "content": "beres"}}]}
+        agent = self.agent_module.Zeline(identity="telegram:parallel", tool_profile="safe")
+        results = []
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(first), FakeResponse(second)]):
+            reply = agent.send(
+                "cek dua hal",
+                on_tool_result=lambda name, args, result: results.append(name),
+            )
+        self.assertEqual(reply, "beres")
+        # Kedua tool tereksekusi dan urutan tool result mengikuti urutan call.
+        self.assertEqual(results, ["list_memory", "runtime_info"])
+        tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
+        self.assertEqual([m["tool_call_id"] for m in tool_msgs], ["call-a", "call-b"])
+
+    def test_reflect_saves_skill_on_substantial_session_and_is_noop_when_light(self):
+        # Sesi berbobot (>=5 tool call) → reflect boleh memanggil save_skill.
+        agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
+        agent.last_turn_tool_calls = 6
+        reflect_first = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "call-skill", "type": "function",
+                    "function": {"name": "save_skill", "arguments": '{"name":"demo-flow","content":"# Demo\\n> demo\\nlangkah"}'},
+                }],
+            }}],
+        }
+        reflect_done = {"choices": [{"message": {"role": "assistant", "content": "NO_ACTION"}}]}
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(reflect_first), FakeResponse(reflect_done)]):
+            summary = agent.reflect(min_tool_calls=5)
+        self.assertIsNotNone(summary)
+        self.assertIn("demo-flow", summary)
+        # History utama tidak boleh tercemar jejak refleksi.
+        self.assertTrue(all("REFLEKSI" not in str(m.get("content") or "") for m in agent.messages))
+
+        # Sesi ringan (< min) → reflect no-op tanpa memanggil provider.
+        light = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
+        light.last_turn_tool_calls = 1
+        with mock.patch.object(self.agent_module.requests, "post") as post:
+            self.assertIsNone(light.reflect(min_tool_calls=5))
+        post.assert_not_called()
+
+        # Profile non-full (gateway publik) → reflect selalu no-op.
+        safe = self.agent_module.Zeline(identity="telegram:x", tool_profile="safe")
+        safe.last_turn_tool_calls = 20
+        with mock.patch.object(self.agent_module.requests, "post") as post:
+            self.assertIsNone(safe.reflect(min_tool_calls=5))
+        post.assert_not_called()
+
     def test_anthropic_protocol_uses_native_messages_contract(self):
         cfg = importlib.import_module("zeline.config").config_copy()
         cfg["provider"].update({"protocol": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key": "anthropic-key", "model": "claude-sonnet"})

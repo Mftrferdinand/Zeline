@@ -1,0 +1,14 @@
+{
+  "competition": "EXAMPLE CTF 2026 — replace before every event",
+  "allow_hosts": [
+    "chal.ctf.example",
+    "*.ctf.example"
+  ],
+  "allow_cidrs": [
+    "10.13.37.0/24"
+  ],
+  "deny_hosts": [
+    "admin.ctf.example",
+    "scoreboard.ctf.example"
+  ]
+}

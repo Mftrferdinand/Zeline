@@ -1,0 +1,69 @@
+# Dockerfile.sandbox — isolated CTF toolchain.
+# Run every untrusted challenge binary / target interaction inside this.
+#   docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
+#   docker run --rm -it -v "$PWD/work:/work" --network none ctf-sandbox   # offline rev/pwn-local
+#   docker run --rm -it -v "$PWD/work:/work" ctf-sandbox                  # when remote nc/http needed
+#
+# Network: default to --network none for local rev/crypto/forensics. Only grant
+# network when the challenge is a remote pwn/web target, and pair with
+# scope_guard.py so the agent cannot wander off-target.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv pipx \
+    build-essential gdb git curl wget unzip file xxd \
+    binutils patchelf ltrace strace \
+    binwalk foremost steghide \
+    tshark \
+    nmap netcat-openbsd \
+    sagemath \
+    ruby ruby-dev \
+    radare2 john libimage-exiftool-perl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python tooling
+RUN pip3 install --break-system-packages --no-cache-dir \
+    pwntools \
+    angr \
+    z3-solver \
+    pycryptodome gmpy2 sympy requests \
+    ropgadget ropper hashpumpy \
+    volatility3
+
+# Ruby stego
+RUN gem install zsteg --no-document || true
+
+# pwndbg (better gdb)
+RUN git clone --depth 1 https://github.com/pwndbg/pwndbg /opt/pwndbg \
+    && cd /opt/pwndbg && ./setup.sh || true
+
+# one_gadget
+RUN gem install one_gadget --no-document || true
+
+# RsaCtfTool
+RUN git clone --depth 1 https://github.com/RsaCtfTool/RsaCtfTool /opt/RsaCtfTool \
+    && pip3 install --break-system-packages --no-cache-dir -r /opt/RsaCtfTool/requirements.txt || true
+ENV PATH="/opt/RsaCtfTool:${PATH}"
+
+# jwt_tool (web/JWT challenges)
+RUN git clone --depth 1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool \
+    && pip3 install --break-system-packages --no-cache-dir termcolor cprint pycryptodomex requests || true
+ENV PATH="/opt/jwt_tool:${PATH}"
+
+# wordlist (rockyou) — fetch at build if available, else mount one in
+RUN mkdir -p /usr/share/wordlists
+#
+# Heavier web/forensics tools are intentionally NOT baked in to keep the image
+# slim. Add per-event if the category needs them, e.g.:
+#   apt-get install -y sqlmap seclists       # web injection + wordlists
+#   pipx install ffuf || go install .../ffuf  # content discovery
+#   feroxbuster / nuclei                      # download release binaries
+#   stegseek (deb), stegsolve.jar, ghidra     # forensics/rev GUIs
+# Mount rockyou.txt into /usr/share/wordlists/ for cracking steps.
+
+WORKDIR /work
+CMD ["/bin/bash"]

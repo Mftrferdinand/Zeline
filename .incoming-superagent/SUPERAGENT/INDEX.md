@@ -1,0 +1,174 @@
+# File Index — SUPERAGENT V7 IRONCLAW SUPREME
+
+## Core (always loaded)
+- `AGENTS.md` — router + rules R1-R12 (V7: team delegation + autonomous) + keyword weights + autonomous triggers table
+- `IDENTITY.md` — voice, speed tiers, character modes, V7 signature capabilities
+- `SOUL.md` — IRONCLAW V7: sovereign execution, engineering-first, team hierarchy, monetization engine
+- `TIME.md` — 5-layer time awareness (system inject → tool call → cache → infer → disclose)
+- `HEARTBEAT.md` — session continuity, time refresh, token discipline
+- `TOOLS.md` — execution surface map, time tool specs
+- `USER.md` — operator profile (customize)
+- `MEMORY.md` — compaction rules
+- `README.md` — install + overview
+- `CONTRIBUTORS.md` — credits
+- `CHANGELOG.md` — version history (v3.1 baseline → v4.0)
+- `panduan.md` — operator usage guide (real-world examples)
+- `DEPLOY.md` — VPS deployment guide (supersedes README quick-start) *(v4.0)*
+- `STANDARD.md` — open SKILL.md format, progressive disclosure, cross-platform compat *(v4.1)*
+
+## Skills — modular (load on trigger)
+### Operational
+- `skills/sk0.md` — skill registry, reflection loop, escape hatch
+- `skills/sk1.md` — monetization, business ops, pricing
+- `skills/sk2.md` — VPS, deployment, nginx, pm2, screen, tmux
+- `skills/sk3.md` — content, copywriting, Indonesian voice, airdrop templates
+- `skills/sk4.md` — Telegram bots, anti-duplicate, webhook, multi-bot
+- `skills/sk5.md` — data handling, O(1) lookups, chunked reads
+- `skills/sk6.md` — integrations, webhooks, Midtrans, Xendit, WA Cloud
+- `skills/sk7.md` — AI multi-provider, streaming, fallback, tool use, caching
+- `skills/sk8.md` — DOCX/XLSX/PPTX/PDF, ReportLab, image processing
+- `skills/sk9.md` — frontend, Tailwind, Web3 connect, AOS/Framer
+- `skills/sk10.md` — Web3 ops, RPC fallback, mass wallets, mint, airdrop check
+- `skills/sk11.md` — security audit, skill safety, secret scan
+- `skills/sk12.md` — batch ops, parallel exec, rate-limit, resume-from-failure
+- `skills/sk13.md` — universal NFT minter, OpenSea/Manifold/Zora/Seadrop, auto-gas
+- `skills/sk14.md` — daily assistant: briefing & alert engine *(v4.0)*
+- `skills/sk15.md` — daily assistant II: watchdog, vault, multimodal, triage *(v4.0)*
+- `skills/sk16.md` — software engineering & general coding (backend/db/testing/scaffold) *(v4.0)*
+- `skills/sk17.md` — power pack: planner, swarm, automation, backtest, dashboard, voice, explain *(v4.0)*
+- `skills/sk18.md` — creative & media: ComfyUI, Manim, Excalidraw, ASCII video, design systems, slides, aesthetic judgment *(v4.1)*
+- `skills/sk19.md` — desktop & physical: macOS bg control (no cursor steal), Isaac Sim/Omniverse, scene prep, mobility *(v4.1)*
+- `skills/sk20.md` — humanizer & brand voice: AI-tell removal, brand voice adaptation *(v4.1)*
+- `skills/sk21.md` — enterprise & defensive: Azure/KQL troubleshooting, Mini-HIDS auto-firewall *(v4.1)*
+- `skills/sk22.md` — scientific & deep research: AI-Q dispatch, tool workflows, hypothesis/experiment design *(v4.1)*
+- `skills/sk23.md` — executive function & neurodivergent: task breakdown, context-switch, prioritization *(v4.1)*
+- `skills/sk24.md` — MCP-builder + prompt engineering: scaffold MCP server, audit/fix prompts *(v4.1)*
+- `skills/sk25.md` — compliance, CI/CD & code migration: regulatory review, pipelines, language porting *(v4.1)*
+- `skills/sk26.md` — product & spec workflows: Grill-Me, To-PRD, To-Issues, TDD, internal-comms *(v4.1)*
+- `skills/sk27.md` — content strategy & social media: pillars, calendar, platform adapter, hooks, thread/carousel/reels *(v4.1)*
+- `skills/sk28.md` — copywriting & writing mastery: AIDA/PAS/CHEF frameworks, SEO, storytelling, localization/RTL *(v4.1)*
+- `skills/sk29.md` — content research, analytics & pipeline: trend/competitor, social listening, A/B, full pipeline *(v4.1)*
+- `skills/sk30.md` — Client Revenue Engine: API-first bulk gig ops (harvest/scrape API, mass on-chain, integrasi job) — browser-last orchestrator *(v4.1.2)*
+- `skills/sk31.md` — Airdrop Intelligence: eligibility scorer, sybil self-audit, claim-window calendar, exit planner — offline logic, data delegated *(v4.2)*
+- `skills/sk32.md` — CTF / Whitehat toolkit: triage, multi-decode, classic crypto, hash-id — legal/in-scope only *(v4.2)*
+- `skills/sk33.md` — Pre-TGE Alpha Radar: deteksi airdrop sebelum diumumkan, scoring sinyal 0-100 + tier *(v4.2)*
+- `skills/sk34.md` — Farming Portfolio & ROI Optimizer: EV/ROI per posisi, keep/trim/drop, idle-wallet flag *(v4.2)*
+- `skills/sk35.md` — Auto Guide Studio: panduan airdrop ID full + varian TG/X, referral embed, screenshot jobs *(v4.2)*
+- `skills/sk36.md` — Tokenomics & Unlock Pressure Engine: kalender unlock + tekanan jual vs likuiditas *(v4.2)*
+- `skills/sk37.md` — Anti-Scam Sentinel: typosquat + sinyal halaman → risiko + warning post, read-only defensif *(v4.2)*
+- `skills/sk38.md` — Contract-Change & Claim-Address Watcher: diff snapshot kontrak → alert + safe_to_claim *(v4.2)*
+- `skills/sk39.md` — Community Intelligence: topik trending, pertanyaan, sentimen, FUD, ide konten *(v4.2)*
+- `skills/sk40.md` — Omni-Repurpose Engine: 1 sumber → X thread/TG/IG carousel/TikTok/YouTube *(v4.2)*
+- `skills/sk41.md` — Video Script-to-Screen Pipeline: script ber-timing + storyboard + voiceover + SRT *(v4.2)*
+- `skills/sk42.md` — Hook A/B Lab: generate + skor prediksi stop-scroll 0-100, ranking varian *(v4.2)*
+- `skills/sk43.md` — CTF Web Exploitation (sub of sk32): SQLi/SSTI/SSRF/IDOR/XXE/JWT/deserialization playbook *(v4.2)*
+- `skills/sk44.md` — CTF Binary Exploitation/pwn (sub of sk32): ret2win/ret2libc/format-string/heap, pwntools *(v4.2)*
+- `skills/sk45.md` — CTF Reverse Engineering (sub of sk32): angr/Ghidra/radare2, keygen, deobfuscation *(v4.2)*
+- `skills/sk46.md` — CTF Cryptography (sub of sk32): RSA attacks/block-cipher/PRNG, offline rsa_attacks *(v4.2)*
+- `skills/sk47.md` — CTF Forensics & Stego (sub of sk32): pcap/memory/carving/stego + file-id fallback *(v4.2)*
+- `skills/sk48.md` — CTF Prompt-Injection/LLM Red-Teaming (sub of sk32): Gandalf-style password extraction, defense ladder, host-locked solver *(v4.2)*
+- `skills/sk49.md` — Team Orchestration & Multi-User Ops: Level 0-3 hierarchy, delegation, conflict detection, billing *(v7.0 NEW)*
+- `skills/sk50.md` — Autonomous Monetization Engine: treasury, P&L, revenue optimization, passive income *(v7.0 NEW)*
+- `skills/sk51.md` — Offensive Security & Red-Team Ops: exploit dev, C2, post-exploitation, MITRE ATT&CK *(v7.0 NEW)*
+
+### Hermes Crypto Agent (deep refs, loaded via H1-H7 dispatch)
+- `skills/hermes/SKILL.md` — hermes principles + capability index
+- `skills/hermes/DISPATCH.md` — bridge to v3 router, env var checklist, safety rails
+- `skills/hermes/README.md` — install + dependency list
+- `skills/hermes/references/wallets.md` — multi-chain wallet gen + import (EVM/Solana/Sui/Aptos/TON)
+- `skills/hermes/references/swap.md` — 1inch + Jupiter + DEX router fallback
+- `skills/hermes/references/nft.md` — Seaport / Blur / Reservoir / Magic Eden / Tensor
+- `skills/hermes/references/sniping.md` — PairCreated listener + honeypot.is + GoPlus gate
+- `skills/hermes/references/airdrop_automation.md` — multi-wallet runner + jitter + resume
+- `skills/hermes/references/bridge.md` — LI.FI + Stargate + Across + native L1↔L2
+- `skills/hermes/references/defi.md` — Aave V3 / Lido / GMX V2 / Hyperliquid / Pendle
+- `skills/hermes/references/web3_connect.md` — SIWE / WalletConnect v2 / EIP-712 / EIP-1271 / ENS
+- `skills/hermes/references/monitoring.md` — mempool + smart money + NFT whale + contract listener (12 sections)
+- `skills/hermes/references/security.md` — encrypted vault (scrypt + Fernet)
+- `skills/hermes/references/governor.md` — spend governor / circuit breaker *(v4.0)*
+- `skills/hermes/references/browser.md` — Playwright dApp automation + governed signing *(v4.0)*
+- `skills/hermes/references/contract_read.md` — universal multi-chain contract reader *(v4.0)*
+- `skills/hermes/references/contract_write.md` — universal contract write, gated via governor *(v4.0)*
+- `skills/hermes/references/deploy.md` — crypto dev: compile/test/deploy/verify, CREATE2 *(v4.0)*
+- `skills/hermes/scripts/` — 10 Python templates (wallet_manager, swap_engine, nft_engine, bridge_engine, web3_connect, monitoring, monitoring_advanced, airdrop_runner, **governor**, **mev**, **browser_engine** *(v4.0)*)
+
+### Meta
+- `skills/sk52.md` — self-audit, system refinement
+- `skills/sk53.md` — deep decomposition, strategy, pre-mortem
+- `skills/sk54.md` — debug, error pattern library
+- `skills/sk55.md` — self-improvement & autonomous problem-solving + instinct extraction *(v4.0, v4.1)*
+- `skills/sk56.md` — agentic eval, self-critique & variance testing *(v4.1)*
+- `skills/sk57.md` — systematic debugging (4-phase RCA→Pattern→Hypothesis→Fix) + auto-debug loop *(v4.1)*
+- `skills/sk58.md` — problem shaping, brainstorming sign-off, decision support w/ uncertainty *(v4.1)*
+
+## Tools *(v4.0)*
+- `tools/skill_integrity.py` — SHA-256 (+Ed25519) skill manifest generate/verify
+- `tools/memory_engine.py` — compounding memory, keyless local recall *(v4.0)*
+- `tools/reflection.py` — self-improvement loop: learn / auto-fix / gated proposals *(v4.0)*
+- `tools/model_registry.py` — dynamic LLM model registry, encrypted keys, cascade *(v4.0, frozen)*
+- `tools/planner.py` — NL workflow planner *(v4.0, frozen)*
+- `tools/swarm.py` — multi-agent swarm orchestrator *(v4.0, frozen)*
+- `tools/automation.py` — event-driven automation engine *(v4.0, frozen)*
+- `tools/skill_forge.py` — self-extending skill proposals *(v4.0, frozen)*
+- `tools/backtest.py` — strategy backtester *(v4.0)*
+- `tools/dashboard.py` — live web dashboard generator *(v4.0)*
+- `tools/voice.py` — voice conversation mode (STT→LLM→TTS) *(v4.0)*
+- `tools/explain.py` — explainability / audit trail report *(v4.0)*
+- `tools/briefing.py` — proactive daily briefing (composes memory/alerts/proposals) *(v4.0)*
+- `tools/alerts.py` — conditional alert engine, persistent triggers + dedup *(v4.0)*
+- `tools/watchdog.py` — self-healing process monitor, rate-limited restart *(v4.0, frozen)*
+- `tools/vault.py` — snippet/address vault + macros *(v4.0, frozen)*
+- `tools/multimodal.py` — voice transcription (Whisper) + screenshot vision *(v4.0)*
+- `tools/triage.py` — inbox/notification triage & prioritization *(v4.0)*
+- `tools/eval.py` — agentic eval, self-critique & variance testing *(v4.1)*
+- `tools/humanizer.py` — AI-tell detector + deterministic rewriter + brand voice *(v4.1)*
+- `tools/hids.py` — Mini-HIDS: log → detect → auto-firewall (allowlist+TTL) *(v4.1, frozen)*
+- `tools/desktop_control.py` — macOS background control, no cursor steal *(v4.1, frozen)*
+- `tools/scene_prep.py` — USD scene assembly + ComfyUI graph patch *(v4.1)*
+- `tools/skill_market.py` — skills.sh marketplace → quarantine (audit before activate) *(v4.1, frozen)*
+- `tools/mcp_builder.py` — scaffold MCP server (Python/TS) + prompt auditor *(v4.1)*
+- `tools/prd.py` — To-PRD / To-Issues structurer *(v4.1)*
+- `tools/research_q.py` — deep research dispatcher (AI-Q style, cited) *(v4.1)*
+- `tools/content.py` — social content scaffolder: calendar, platform-adapt, thread/carousel/reels, repurpose *(v4.1)*
+- `tools/revenue_engine.py` — bulk job runner: token-bucket rate limit, retry/backoff, checkpoint-resume, dedupe *(v4.1.2)*
+- `tools/api_harvester.py` — API-first harvest: offset/cursor pagination, JSON-path extract, cURL→RequestSpec, JSONL/CSV writers *(v4.1.2)*
+- `tools/cost_ledger.py` — unified cost/usage ledger: LLM tokens + on-chain USD + API calls, per-provider/chain summary *(v4.2)*
+- `tools/router_log.py` — router decision log + tie detection → keyword disambiguation tuner *(v4.2)*
+- `tools/secret_tripwire.py` — output-layer secret redaction (priv key/mnemonic/API key/JWT/PEM), strict guard *(v4.2)*
+- `tools/dryrun.py` — global dry-run/simulation mode (contextvars), engines plan instead of broadcast *(v4.2)*
+- `tools/eligibility.py` — airdrop eligibility scorer 0-100 + gaps + flags, override-able rubric *(v4.2, sk31)*
+- `tools/sybil_audit.py` — sybil-resistance self-audit across own wallets + de-correlation advice *(v4.2, sk31)*
+- `tools/claim_watcher.py` — airdrop calendar & claim-window watcher (time injected, fire-once alerts) *(v4.2, sk31)*
+- `tools/exit_planner.py` — post-airdrop exit ladder (conservative/balanced/degen), governor-routed *(v4.2, sk31)*
+- `tools/rugcheck.py` — rug/legitimacy pre-check → SAFE/CAUTION/DANGER verdict, signals delegated *(v4.2, sk11)*
+- `tools/ctf.py` — CTF/whitehat toolkit: triage, multi-decode, caesar/xor, hash-id *(v4.2, sk32)*
+- `tools/eval.py` — +RegressionSuite: golden-set regression across releases *(v4.2)*
+- `tools/alpha_radar.py` — pre-TGE project scorer 0-100 + tier (cold/watch/warm/hot), token-exists cap *(v4.2, sk33)*
+- `tools/farm_roi.py` — farming position EV/ROI evaluator + portfolio ranking keep/trim/drop *(v4.2, sk34)*
+- `tools/guide_studio.py` — airdrop guide builder ID: full MD + TG/X variants + referral + screenshot jobs *(v4.2, sk35)*
+- `tools/unlock_engine.py` — unlock/vesting calendar + sell-pressure ratio vs daily volume, time injected *(v4.2, sk36)*
+- `tools/scam_sentinel.py` — typosquat (levenshtein) + page-signal risk scorer + warning post draft, read-only *(v4.2, sk37)*
+- `tools/contract_watch.py` — contract snapshot differ: proxy/claim-address/admin/code-hash/sensitive-funcs → safe_to_claim *(v4.2, sk38)*
+- `tools/community_intel.py` — community message analytics: topics, trending questions, sentiment, FUD, content ideas *(v4.2, sk39)*
+- `tools/repurpose.py` — one source → X thread / Telegram / IG carousel / TikTok / YouTube scripts *(v4.2, sk40)*
+- `tools/video_pipeline.py` — video brief → timed script + storyboard + voiceover lines + SRT *(v4.2, sk41)*
+- `tools/hook_lab.py` — hook generator + deterministic stop-scroll score 0-100 + ranking *(v4.2, sk42)*
+- `tools/ctf/` — CTF Swarm framework *(v4.2, sk32/sk43–sk48)*:
+  - `scope_guard.py` — authorization allowlist (whitehat line, deny wins), offline
+  - `flag_validator.py` — strict full-match flag check + placeholder blocklist (anti-hallucination)
+  - `rsa_attacks.py` — offline RSA attacks (small-e/Fermat/Wiener/common-modulus), gmpy2-optional
+  - `coordinator/` — full-auto runtime: CTFd poll → model swarm (consensus-aware) → Docker sandbox → HITL/auto submit
+  - `templates/` — pwntools + angr solver skeletons · `sandbox/Dockerfile.sandbox` — isolated toolchain
+  - `gandalf_solver.py` — host-locked LLM red-team solver for Gandalf (static + adaptive modes), sk48
+  - `run.py` — entrypoint (run | status | approve) · `README.md` — package guide
+- `SKILLS.lock` — integrity manifest (v7.0, 218 files), verified at boot
+
+### V7 New Tools
+- `tools/team_routing.py` — team hierarchy routing (Level 0-3), task assignment, conflict detection *(v7.0 NEW)*
+- `tools/treasury.py` — treasury management, P&L ledger, revenue stream tracker *(v7.0 NEW)*
+- `tools/revenue_optimizer.py` — autonomous monetization strategies optimizer *(v7.0 NEW)*
+- `tools/exploit_builder.py` — exploit development lifecycle, payload gen, C2 designer *(v7.0 NEW)*
+- `tools/opsec_checker.py` — operational security validation, MITRE ATT&CK mapping *(v7.0 NEW)*
+
+## Memory
+- `memory/YYYY-MM.md` — monthly rolling log

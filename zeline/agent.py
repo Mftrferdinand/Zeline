@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import requests
@@ -20,6 +21,21 @@ class ZelineError(RuntimeError):
     """Error yang aman ditampilkan gateway sebagai gangguan internal."""
 
 
+# Tool read-only (tanpa efek samping) yang aman dijalankan paralel dalam satu
+# giliran. Tool yang menulis (file/memory/skill/shell) tetap serial demi urutan
+# dan keamanan thread. MCP tool tidak diketahui sifatnya → diperlakukan serial.
+_PARALLEL_SAFE_TOOLS = frozenset({
+    "runtime_info",
+    "list_memory",
+    "load_skill",
+    "read_file",
+    "search_files",
+    "web_search",
+    "web_fetch",
+    "deep_research",
+})
+
+
 def _parse_response(text: str) -> dict[str, Any]:
     """Parse normal JSON dan quirk router yang mengirim JSON+trailing SSE."""
     cleaned = text.strip()
@@ -31,13 +47,13 @@ def _parse_response(text: str) -> dict[str, Any]:
         try:
             value, _ = json.JSONDecoder().raw_decode(cleaned)
         except json.JSONDecodeError as exc:
-            raise ZelineError("Provider memberi respons yang bukan JSON valid.") from exc
+            raise ZelineError("Provider returned a non-JSON response.") from exc
     if not isinstance(value, dict):
-        raise ZelineError("Provider memberi bentuk respons yang tidak dikenal.")
+        raise ZelineError("Provider returned an unrecognized response shape.")
     if value.get("error"):
         error = value["error"]
         message = error.get("message") if isinstance(error, dict) else str(error)
-        raise ZelineError(f"Provider menolak request: {str(message)[:300]}")
+        raise ZelineError(f"Provider rejected the request: {str(message)[:300]}")
     return value
 
 
@@ -83,6 +99,9 @@ class Zeline:
                 ),
             }
         ]
+        # Jejak aktivitas turn terakhir → dipakai untuk memutuskan apakah sesi
+        # cukup "berbobot" untuk dijalankan refleksi self-improvement.
+        self.last_turn_tool_calls: int = 0
 
     def export_history(self) -> list[dict[str, Any]]:
         """Salinan message history penuh (termasuk system) untuk dipersist."""
@@ -105,9 +124,9 @@ class Zeline:
 
     def _call_llm(self, use_tools: bool = True) -> dict[str, Any]:
         if not self.api_key:
-            raise ZelineError("API key belum dikonfigurasi. Jalankan `zeline setup`.")
+            raise ZelineError("API key not configured. Run `zeline setup`.")
         if not self.base_url or not self.model:
-            raise ZelineError("Provider belum lengkap. Jalankan `zeline setup`.")
+            raise ZelineError("Provider not fully configured. Run `zeline setup`.")
 
         endpoint = f"{self.base_url}/chat/completions"
         headers = {
@@ -164,7 +183,7 @@ class Zeline:
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
         except requests.RequestException as exc:
-            raise ZelineError(f"Gagal menghubungi provider: {exc.__class__.__name__}.") from exc
+            raise ZelineError(f"Failed to reach provider: {exc.__class__.__name__}.") from exc
         if not response.ok:
             raise ZelineError(f"Provider HTTP {response.status_code}.")
         parsed = _parse_response(response.text)
@@ -187,9 +206,9 @@ class Zeline:
         try:
             message = parsed["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise ZelineError("Provider tidak mengembalikan pilihan respons.") from exc
+            raise ZelineError("Provider returned no response choices.") from exc
         if not isinstance(message, dict):
-            raise ZelineError("Provider mengembalikan message yang tidak valid.")
+            raise ZelineError("Provider returned an invalid message.")
         return message
 
     def _trim_history(self) -> None:
@@ -228,6 +247,7 @@ class Zeline:
         if len(text) > 16_000:
             return "Pesan terlalu panjang (maksimum 16.000 karakter)."
         self.messages.append({"role": "user", "content": text})
+        self.last_turn_tool_calls = 0
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
@@ -246,6 +266,7 @@ class Zeline:
 
             if not isinstance(tool_calls, list):
                 raise ZelineError("Format tool call dari provider tidak valid.")
+            self.last_turn_tool_calls += len(tool_calls)
 
             # Urutan ini wajib untuk OpenAI-compatible tool calling.
             self.messages.append(
@@ -255,6 +276,8 @@ class Zeline:
                     "tool_calls": tool_calls,
                 }
             )
+            # Parse setiap tool call sekali (nama + argumen) dengan urutan dijaga.
+            parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
             for tool_call in tool_calls:
                 function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
                 name = str(function.get("name", ""))
@@ -264,14 +287,32 @@ class Zeline:
                         args = {}
                 except json.JSONDecodeError:
                     args = {}
-                if on_tool:
+                parsed_calls.append((tool_call, name, args))
+
+            # Bila model meminta >1 tool dan SEMUANYA read-only aman-paralel,
+            # jalankan bareng dalam thread pool (percepat riset/baca banyak file).
+            # Selain itu, jalankan serial demi urutan & keamanan tool yang menulis.
+            run_parallel = (
+                len(parsed_calls) > 1
+                and all(name in _PARALLEL_SAFE_TOOLS for _tc, name, _a in parsed_calls)
+            )
+            if on_tool:
+                for _tc, name, args in parsed_calls:
                     on_tool(name, args)
-                result = self.executor.run(name, args)
+
+            if run_parallel:
+                with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
+                    results = list(pool.map(lambda ca: self.executor.run(ca[1], ca[2]), parsed_calls))
+            else:
+                results = [self.executor.run(name, args) for _tc, name, args in parsed_calls]
+
+            steer_text = take_steer() if take_steer else None
+            for (tool_call, name, args), result in zip(parsed_calls, results):
                 if on_tool_result:
                     on_tool_result(name, args, result)
-                steer_text = take_steer() if take_steer else None
                 if steer_text:
                     result += f"\n\n[User steering — follow this guidance now: {steer_text}]"
+                    steer_text = None  # sertakan sekali saja, di tool result pertama
                 self.messages.append(
                     {
                         "role": "tool",
@@ -320,4 +361,72 @@ class Zeline:
             "Aku sudah mengumpulkan banyak data tapi belum bisa merangkumnya. "
             "Coba persempit pertanyaannya ya."
         )
+
+    def reflect(self, min_tool_calls: int = 5) -> str | None:
+        """Self-improvement review di akhir sesi penting (profile full saja).
+
+        Menyuruh model meninjau percakapan yang baru saja terjadi lalu, bila ada
+        prosedur reusable / pelajaran nyata, MENYIMPAN atau MEMPERBAIKI skill via
+        tool save_skill/update_skill. Hanya dijalankan untuk sesi yang cukup
+        berbobot (>= ``min_tool_calls`` tool call) supaya obrolan ringan tidak
+        memicu skill sampah. Mengembalikan ringkasan tindakan, atau None bila
+        tidak ada yang perlu disimpan / sesi terlalu ringan.
+        """
+        if self.executor.profile != "full":
+            return None
+        if self.last_turn_tool_calls < min_tool_calls:
+            return None
+        # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
+        # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
+        saved_messages = copy.deepcopy(self.messages)
+        self.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "REFLEKSI SELF-IMPROVEMENT (internal, jangan tampilkan ke user). "
+                    "Tinjau singkat percakapan barusan. Apakah ada prosedur reusable, "
+                    "alur kerja non-trivial, atau error tricky yang berhasil diatasi dan "
+                    "layak jadi skill? "
+                    "- Kalau YA dan belum ada skill-nya: panggil save_skill (nama jelas, "
+                    "isi: kapan dipakai, langkah bernomor + command persis, pitfalls). "
+                    "- Kalau skill yang dipakai ternyata kurang/salah: panggil update_skill "
+                    "untuk memperbaikinya. "
+                    "- Kalau TIDAK ada yang layak disimpan: jangan panggil tool apa pun dan "
+                    "jawab persis 'NO_ACTION'. "
+                    "Jangan menyimpan hal sepele/sekali-pakai atau rahasia."
+                ),
+            }
+        )
+        actions: list[str] = []
+        try:
+            for _ in range(3):  # maksimal beberapa langkah tool untuk refleksi
+                message = self._call_llm()
+                tool_calls = message.get("tool_calls")
+                if not tool_calls or not isinstance(tool_calls, list):
+                    break
+                self.messages.append(
+                    {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
+                )
+                for tool_call in tool_calls:
+                    function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                    name = str(function.get("name", ""))
+                    try:
+                        args = json.loads(function.get("arguments") or "{}")
+                        if not isinstance(args, dict):
+                            args = {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = self.executor.run(name, args)
+                    if name in {"save_skill", "update_skill"} and not result.startswith("ERROR"):
+                        actions.append(result)
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}
+                    )
+        except ZelineError:
+            actions = actions  # refleksi bersifat best-effort; error diabaikan
+        finally:
+            # Buang jejak refleksi dari history utama supaya tidak mengganggu
+            # konteks percakapan berikutnya.
+            self.messages = saved_messages
+        return "\n".join(actions) if actions else None
 
