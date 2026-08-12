@@ -980,7 +980,10 @@ def _api_call(api: str, method: str, *, timeout: int = 65, **params: Any) -> dic
         if response.ok and payload.get("ok"):
             return payload
         description = str(payload.get("description", "HTTP error"))[:160] if isinstance(payload, dict) else "HTTP error"
-        print(f"  [telegram] {method} gagal: {description}", flush=True)
+        # "message is not modified" = edit dengan konten identik (mis. picker
+        # dibuka ulang), harmless → jangan spam log.
+        if "message is not modified" not in description:
+            print(f"  [telegram] {method} gagal: {description}", flush=True)
     except (requests.RequestException, ValueError) as exc:
         print(f"  [telegram] {method} gagal: {exc.__class__.__name__}", flush=True)
     return None
@@ -1339,12 +1342,12 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 callback_user_id = (callback.get("from") or {}).get("id")
                 try:
                     if callback_chat_id is not None and callback_user_id is not None and _allowed(int(callback_user_id), allowed):
-                        # Jawab callback SEGERA (hentikan spinner "loading" di
-                        # tombol Telegram), lalu proses di thread agar loop
-                        # polling tidak ter-blok — inilah yang bikin tap
-                        # provider/model terasa lama 1-3 menit sebelumnya.
-                        if callback.get("id"):
-                            _api_call(api, "answerCallbackQuery", timeout=10, callback_query_id=str(callback["id"]))
+                        # SEMUA proses callback (termasuk answerCallbackQuery)
+                        # dijalankan di thread terpisah supaya loop polling TIDAK
+                        # PERNAH ter-blok oleh round-trip HTTP ke Telegram (yang
+                        # bisa lambat dari Termux). Menaruh answerCallbackQuery di
+                        # loop malah membuat tiap tap nge-blok polling — itulah
+                        # penyebab tap provider/model terasa stuck lama.
                         threading.Thread(
                             target=_handle_callback,
                             args=(api, dict(callback), sessions),
