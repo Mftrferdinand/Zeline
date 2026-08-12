@@ -869,7 +869,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._finalize_line("🔎 Searching FundedNext…"), "📖 Reading FundedNext…")
         self.assertEqual(telegram._finalize_line("🔍 Researching FundedNext prop firm review"), "📖 Reading FundedNext prop firm review")
 
-    def test_telegram_live_status_collapses_repeated_searches(self):
+    def test_telegram_live_status_collapses_only_search_research(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         def fake_api(_api, method, **kwargs):
@@ -879,19 +879,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
             live = telegram._LiveStatus("bot-api", 1)
-            live.add("📚 Reading skill prop-firm-vetting")
             live.add("🔎 Searching FTMO 2025")
             live.add("🔎 Searching FTMO OANDA")   # kategori sama → collapse
             live.add("🔎 Searching FTMO rules")   # tetap satu baris search
             live.add("🔍 Researching FTMO")
-        # Hanya satu baris per kategori: 1 skill + 1 search + 1 research.
+        # Search/research tetap di-collapse (repetitif): 1 search + 1 research.
         searches = [l for l in live.lines if l.startswith("🔎")]
         self.assertEqual(len(searches), 1)
         self.assertEqual(searches[0], "🔎 Searching FTMO rules")  # baris terbaru
-        self.assertEqual(len([l for l in live.lines if l.startswith("📚")]), 1)
         self.assertEqual(len([l for l in live.lines if l.startswith("🔍")]), 1)
 
-    def test_telegram_live_status_orders_skill_search_research(self):
+    def test_telegram_live_status_does_not_collapse_coding_actions(self):
+        # Aksi coding (baca/tulis/edit file, shell) TIDAK di-collapse — tiap
+        # langkah harus kelihatan sendiri, bukan diringkas jadi satu baris.
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         def fake_api(_api, method, **kwargs):
@@ -901,16 +901,50 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
             live = telegram._LiveStatus("bot-api", 1)
-            # Model memanggil dengan urutan terbalik (research dulu, skill telat).
+            live.add("📖 Reading <code>a.py</code> L1-100")
+            live.add("📖 Reading <code>b.py</code> L1-100")
+            live.add("✍️ Writing <code>c.py</code>")
+            live.add("🖥️ Zeline Terminal\n<pre>ls</pre>")
+        # Semua 4 aksi coding tampil terpisah (tidak digabung).
+        self.assertEqual(len(live.lines), 4)
+
+    def test_telegram_live_status_orders_search_research_first(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        def fake_api(_api, method, **kwargs):
+            if method == "sendMessage":
+                return {"ok": True, "result": {"message_id": 999}}
+            return {"ok": True}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
+            live = telegram._LiveStatus("bot-api", 1)
             live.add("🔍 Researching FundingPips rules pricing")
             live.add("🔎 Searching FundingPips")
-            live.add("📚 Reading skill prop-firm-vetting")
+            live.add("📖 Reading <code>notes.md</code> L1-50")
             rendered = live._render()
-        lines = [l for l in rendered.split("\n") if l.strip() and not l.startswith("⏳")]
-        # Tampilan selalu: skill → search → research, apa pun urutan panggilan.
-        self.assertEqual(lines[0], "📚 Reading skill prop-firm-vetting")
-        self.assertEqual(lines[1], "🔎 Searching FundingPips")
-        self.assertEqual(lines[2], "🔍 Researching FundingPips rules pricing")
+        lines = [l for l in rendered.split("\n") if l.strip() and not l.startswith("⏳") and not l.startswith("<pre>")]
+        # Search & research ditata dulu; aksi lain menyusul kronologis.
+        self.assertEqual(lines[0], "🔎 Searching FundingPips")
+        self.assertEqual(lines[1], "🔍 Researching FundingPips rules pricing")
+
+    def test_telegram_turn_triggers_background_reflection(self):
+        # Setelah turn sukses, gateway harus memicu sessions.reflect(identity)
+        # di background — inilah yang bikin Zeline "sering self-improvement".
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        called = {"reflect": None}
+
+        class Sessions:
+            def send(self, **_kwargs):
+                return "beres"
+            def reflect(self, identity, *a, **k):
+                called["reflect"] = identity
+                return None  # tidak ada skill baru → tidak kirim pesan
+
+        with mock.patch.object(telegram, "_api_call", return_value={"result": {"message_id": 5}}):
+            telegram._send_agent_reply("bot-api", Sessions(), chat_id=42, identity="telegram:42", text="hi", tool_profile="full")
+            # beri thread background kesempatan jalan
+            time.sleep(0.15)
+        self.assertEqual(called["reflect"], "telegram:42")
 
     def test_telegram_progress_supports_code_skill_and_self_improvement(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

@@ -147,7 +147,7 @@ class SessionStore:
             session.cancel_event.set()
             return True
 
-    def reflect(self, identity: str, min_tool_calls: int = 5) -> str | None:
+    def reflect(self, identity: str, min_tool_calls: int = 4) -> str | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
 
         Dipanggil di akhir sesi penting. Aman: mengembalikan None bila sesi tidak

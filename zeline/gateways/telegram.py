@@ -150,21 +150,23 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
 
 
 def _progress_category(line: str) -> str | None:
-    """Kategori baris feed untuk collapse. None = baris unik (jangan digabung)."""
-    if line.startswith("📚"):
-        return "skill"
+    """Kategori baris feed untuk collapse. None = baris unik (jangan digabung).
+
+    HANYA search/research yang di-collapse (repetitif & sering banyak query mirip).
+    Aksi coding (baca/tulis/edit file, shell, run code) TIDAK di-collapse — tiap
+    file & command harus kelihatan sendiri supaya user lihat SEMUA yang dikerjakan,
+    bukan cuma satu baris ringkasan.
+    """
     if line.startswith("🔎"):
         return "search"
     if line.startswith("🔍"):
         return "research"
-    if line.startswith("📖"):
-        return "read"
     return None
 
 
 # Urutan tampilan tetap agar feed rapi & logis, apa pun urutan model memanggil
-# tool: baca skill → searching → researching → membaca hasil → lainnya.
-_CATEGORY_ORDER = {"skill": 0, "search": 1, "research": 2, "read": 3}
+# tool: searching → researching, sisanya tampil kronologis apa adanya.
+_CATEGORY_ORDER = {"search": 0, "research": 1}
 
 
 def _ordered_lines(lines: list[str]) -> list[str]:
@@ -227,7 +229,7 @@ class _LiveStatus:
     Aman dipakai dari worker heartbeat dan callback tool (dilindungi lock).
     """
 
-    def __init__(self, api: str, chat_id: int, *, max_lines: int = 6, model: str = ""):
+    def __init__(self, api: str, chat_id: int, *, max_lines: int = 14, model: str = ""):
         self.api = api
         self.chat_id = chat_id
         self.max_lines = max_lines
@@ -1295,6 +1297,25 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             text=_markdown_to_telegram_html(part),
             parse_mode="HTML",
         )
+
+    # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
+    # background agar tidak menahan balasan. reflect() sendiri menjaga ambang
+    # (profile full + cukup tool call) dan hanya kirim pesan bila benar-benar
+    # menyimpan/memperbaiki skill — jadi ini yang bikin Zeline "sering
+    # Self-improvement" seperti diminta, tanpa nyampah di sesi ringan.
+    if ok:
+        def _reflect_bg():
+            try:
+                summary = sessions.reflect(identity)
+            except Exception:
+                summary = None
+            if summary:
+                _api_call(
+                    api, "sendMessage", chat_id=chat_id,
+                    text=f"📒 Self-improvement:\n{html.escape(summary[:1500], quote=False)}",
+                    parse_mode="HTML",
+                )
+        threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
 def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> threading.Thread:
