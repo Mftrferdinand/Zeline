@@ -111,11 +111,11 @@ async function startSocket() {
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('connection.update', (update) => {
     if (update.qr) qrcode.generate(update.qr, { small: true });
-    if (update.connection === 'open') console.log('[bridge] WhatsApp terhubung');
+    if (update.connection === 'open') console.log('[bridge] WhatsApp connected');
     if (update.connection === 'close') {
       const code = update.lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
-      console.log('[bridge] koneksi tertutup' + (loggedOut ? ' (logout)' : ', reconnecting'));
+      console.log('[bridge] connection closed' + (loggedOut ? ' (logout)' : ', reconnecting'));
       if (loggedOut) process.exit(1);
       setTimeout(startSocket, 1500);
     }
@@ -129,7 +129,7 @@ async function startSocket() {
       const text = extractText(message.message).trim();
       if (!from || !text || from === 'status@broadcast') continue;
       try { await forwardIncoming(from, text); }
-      catch (err) { console.log('[bridge] callback gagal: ' + err.message); }
+      catch (err) { console.log('[bridge] callback failed: ' + err.message); }
     }
   });
 }
@@ -152,14 +152,14 @@ http.createServer((req, res) => {
       const to = String(body.to || '');
       const text = String(body.text || '');
       if (!to || !text) throw new Error('to/text required');
-      if (!sock) throw new Error('WhatsApp belum tersambung');
+      if (!sock) throw new Error('WhatsApp not connected yet');
       await sock.sendMessage(to, { text });
       res.end('ok');
     } catch (err) {
       res.statusCode = 500; res.end(String(err.message || err));
     }
   });
-}).listen(PORT, '127.0.0.1', () => console.log('[bridge] HTTP siap di 127.0.0.1:' + PORT));
+}).listen(PORT, '127.0.0.1', () => console.log('[bridge] HTTP ready on 127.0.0.1:' + PORT));
 
 startSocket().catch((err) => { console.error('[bridge] fatal:', err); process.exit(1); });
 '''
@@ -168,7 +168,7 @@ startSocket().catch((err) => { console.error('[bridge] fatal:', err); process.ex
 def info() -> dict[str, str]:
     return {
         "label": "WhatsApp",
-        "hint": "Butuh Node.js; saat serve pertama akan install bridge lalu tampil QR untuk Linked Devices.",
+        "hint": "Requires Node.js; the first serve installs the bridge then shows a QR for Linked Devices.",
     }
 
 
@@ -176,21 +176,21 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     profile = str(cfg.get("tool_profile", "safe"))
     if profile not in {"safe", "workspace", "full"}:
-        errors.append(f"tool_profile WhatsApp tidak valid: {profile}")
+        errors.append(f"invalid WhatsApp tool_profile: {profile}")
     if not isinstance(cfg.get("allowed", []), list):
-        errors.append("allowed WhatsApp harus berupa list nomor/JID")
+        errors.append("WhatsApp allowed must be a list of numbers/JIDs")
     ports: dict[str, int] = {}
     for field, default in (("callback_port", DEFAULT_CALLBACK_PORT), ("bridge_port", DEFAULT_BRIDGE_PORT)):
         try:
             port = int(cfg.get(field, default))
             if not 1 <= port <= 65535:
-                errors.append(f"{field} harus 1–65535")
+                errors.append(f"{field} must be 1–65535")
             else:
                 ports[field] = port
         except (TypeError, ValueError):
-            errors.append(f"{field} tidak valid")
+            errors.append(f"{field} is invalid")
     if len(ports) == 2 and ports["callback_port"] == ports["bridge_port"]:
-        errors.append("callback_port dan bridge_port harus berbeda")
+        errors.append("callback_port and bridge_port must differ")
     return errors
 
 
@@ -235,7 +235,7 @@ def _split_message(text: str, limit: int = 4_000) -> list[str]:
 
 def _ensure_bridge() -> Path:
     if shutil.which("node") is None or shutil.which("npm") is None:
-        raise RuntimeError("Node.js dan npm wajib untuk gateway WhatsApp. Install Node.js >=18 dahulu.")
+        raise RuntimeError("Node.js and npm are required for the WhatsApp gateway. Install Node.js >=18 first.")
     BRIDGE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(BRIDGE_DIR, 0o700)
@@ -282,9 +282,9 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                     timeout=20,
                 )
                 if not response.ok:
-                    print(f"  [whatsapp] kirim gagal HTTP {response.status_code}", flush=True)
+                    print(f"  [whatsapp] send failed HTTP {response.status_code}", flush=True)
             except requests.RequestException as exc:
-                print(f"  [whatsapp] kirim gagal: {exc.__class__.__name__}", flush=True)
+                print(f"  [whatsapp] send failed: {exc.__class__.__name__}", flush=True)
 
     def process_incoming(jid: str, text: str) -> None:
         is_group = jid.endswith("@g.us")
@@ -367,4 +367,4 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
-        print("  [whatsapp] berhenti", flush=True)
+        print("  [whatsapp] stopped", flush=True)

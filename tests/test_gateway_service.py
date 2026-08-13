@@ -66,7 +66,7 @@ class GatewayServiceTests(unittest.TestCase):
         with mock.patch.object(self.service, "_pid_alive", return_value=True), mock.patch.object(self.service, "_process_start_ticks", return_value="new"), mock.patch.object(self.service.os, "kill") as kill:
             stopped, message = self.service.stop(wait_seconds=0)
         self.assertFalse(stopped)
-        self.assertIn("bukan process zeline", message.lower())
+        self.assertIn("not a matching zeline process", message.lower())
         kill.assert_not_called()
         self.assertFalse(self.config.PID_FILE.exists())
 
@@ -76,7 +76,7 @@ class GatewayServiceTests(unittest.TestCase):
         with mock.patch.object(self.service, "_process_matches_state", return_value=True), mock.patch.object(self.service.subprocess, "Popen") as popen:
             started, message = self.service.start()
         self.assertFalse(started)
-        self.assertIn("sudah berjalan", message.lower())
+        self.assertIn("already running", message.lower())
         popen.assert_not_called()
 
     def test_start_refuses_invalid_enabled_gateway_before_spawning(self):
@@ -86,7 +86,7 @@ class GatewayServiceTests(unittest.TestCase):
         with mock.patch.object(self.service.subprocess, "Popen") as popen:
             started, message = self.service.start()
         self.assertFalse(started)
-        self.assertIn("token telegram kosong", message.lower())
+        self.assertIn("telegram token is empty", message.lower())
         popen.assert_not_called()
 
     def test_status_cleans_stale_pid_state(self):
@@ -95,7 +95,7 @@ class GatewayServiceTests(unittest.TestCase):
         with mock.patch.object(self.service, "_pid_alive", return_value=False):
             active, message, state = self.service.status()
         self.assertFalse(active)
-        self.assertIn("tidak berjalan", message.lower())
+        self.assertIn("not running", message.lower())
         self.assertIsNone(state)
         self.assertFalse(self.config.PID_FILE.exists())
 
@@ -107,7 +107,7 @@ class GatewayServiceTests(unittest.TestCase):
             stopped, message = self.service.stop(wait_seconds=5, grace_seconds=5)
         self.assertTrue(stopped)
         killpg.assert_called_once_with(12345, signal.SIGTERM)
-        self.assertIn("dihentikan", message.lower())
+        self.assertIn("stopped", message.lower())
         self.assertNotIn("sigkill", message.lower())
         self.assertFalse(self.config.PID_FILE.exists())
 
@@ -131,10 +131,10 @@ class GatewayServiceTests(unittest.TestCase):
             stopped, message = self.service.stop(wait_seconds=5, grace_seconds=5)
         self.assertTrue(stopped)
         kill.assert_called_once_with(12345, signal.SIGTERM)
-        self.assertIn("dihentikan", message.lower())
+        self.assertIn("stopped", message.lower())
 
     def test_log_tail_is_empty_without_log_file(self):
-        self.assertEqual(self.service.tail_log(), "(belum ada log gateway)")
+        self.assertEqual(self.service.tail_log(), "(no gateway log yet)")
 
     def test_start_token_falls_back_to_ps_lstart_on_macos(self):
         # Simulasikan macOS/BSD: /proc tidak ada (starttime None) → pakai ps lstart.

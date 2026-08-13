@@ -28,7 +28,7 @@ MAX_BODY_BYTES = 32_000
 def info() -> dict[str, str]:
     return {
         "label": "Webhook HTTP",
-        "hint": "Endpoint POST /message untuk integrasi aplikasi sendiri.",
+        "hint": "POST /message endpoint for your own app integration.",
     }
 
 
@@ -36,15 +36,15 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     token = str(cfg.get("token", ""))
     if len(token) < 16:
-        errors.append("token webhook kosong/terlalu pendek (minimum 16 karakter)")
+        errors.append("webhook token empty/too short (minimum 16 characters)")
     try:
         port = int(cfg.get("port", 8765))
         if not 1 <= port <= 65535:
-            errors.append("port webhook harus 1–65535")
+            errors.append("webhook port must be 1–65535")
     except (TypeError, ValueError):
-        errors.append("port webhook tidak valid")
+        errors.append("invalid webhook port")
     if str(cfg.get("tool_profile", "safe")) not in {"safe", "workspace", "full"}:
-        errors.append("tool_profile webhook tidak valid")
+        errors.append("invalid webhook tool_profile")
     return errors
 
 
@@ -136,4 +136,4 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
             server.handle_request()
     finally:
         server.server_close()
-        print("  [webhook] berhenti", flush=True)
+        print("  [webhook] stopped", flush=True)

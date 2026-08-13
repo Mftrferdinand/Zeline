@@ -54,7 +54,7 @@ class ZelineCliTests(unittest.TestCase):
 
     def test_gateway_enable_webhook_generates_secret_and_uses_loopback_default(self):
         result = self.invoke(["gateway", "enable", "webhook"])
-        self.assertIn("webhook diaktifkan", result.lower())
+        self.assertIn("webhook enabled", result.lower())
         saved = __import__("json").loads((self.home / "config.json").read_text())
         webhook = saved["gateways"]["webhook"]
         self.assertTrue(webhook["enabled"])
@@ -67,8 +67,8 @@ class ZelineCliTests(unittest.TestCase):
         result = self.invoke(["gateway", "list"])
         self.assertIn("webhook", result)
         # Config state (dihidupkan) harus jelas terpisah dari status proses.
-        self.assertIn("dihidupkan", result)
-        self.assertIn("Proses background", result)
+        self.assertIn("enabled", result)
+        self.assertIn("Background process", result)
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertNotIn(saved["gateways"]["webhook"]["token"], result)
 
@@ -93,7 +93,7 @@ class ZelineCliTests(unittest.TestCase):
         cfg["provider"]["api_key"] = "test-key"
         self.config.save_config(cfg)
         result = self.invoke(["gateway", "start"], expected_status=2)
-        self.assertIn("tidak ada gateway aktif", result.lower())
+        self.assertIn("no enabled gateway", result.lower())
 
     def test_gateway_picker_moves_with_arrows_and_selects_one_option(self):
         with mock.patch.object(self.cli.sys.stdin, "isatty", return_value=True), mock.patch.object(self.cli.sys.stdin, "fileno", return_value=0), mock.patch.object(self.cli.termios, "tcgetattr", return_value=[0]), mock.patch.object(self.cli.termios, "tcsetattr"), mock.patch.object(self.cli.tty, "setraw"), mock.patch.object(self.cli, "_read_menu_key", side_effect=["down", "enter"]):
@@ -135,7 +135,7 @@ class ZelineCliTests(unittest.TestCase):
 
     def test_model_setup_is_blocked_until_gateway_exists(self):
         result = self.invoke(["model"], expected_status=2)
-        self.assertIn("jalankan: zeline", result.lower())
+        self.assertIn("run: zeline", result.lower())
 
     def test_chat_refuses_unconfirmed_legacy_provider_config(self):
         cfg = self.config.config_copy()
@@ -222,7 +222,7 @@ class ZelineCliTests(unittest.TestCase):
         with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertIn("ditambahkan", result)
+        self.assertIn("added", result)
         self.assertEqual(saved["provider"], {
             "protocol": "openai",
             "model_verified": True,
@@ -249,7 +249,7 @@ class ZelineCliTests(unittest.TestCase):
         with mock.patch("builtins.input", side_effect=["2", "2", "4"]):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertIn("dihapus", result)
+        self.assertIn("removed", result)
         self.assertNotIn("beta", saved["providers"])
         self.assertIn("alpha", saved["providers"])
         self.assertEqual(saved["provider"]["name"], "Alpha")
@@ -268,7 +268,7 @@ class ZelineCliTests(unittest.TestCase):
         with mock.patch("builtins.input", side_effect=["2", "1", "4"]):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
-        self.assertIn("aktif", result.lower())
+        self.assertIn("active", result.lower())
         self.assertIn("alpha", saved["providers"])
         self.assertIn("beta", saved["providers"])
 
@@ -287,12 +287,12 @@ class ZelineCliTests(unittest.TestCase):
         with mock.patch.object(
             self.cli.gateway_service,
             "status",
-            return_value=(True, "Gateway berjalan (PID 43210).", {"pid": 43210}),
+            return_value=(True, "Gateway running (PID 43210).", {"pid": 43210}),
         ), mock.patch.object(self.cli.os, "getpid", return_value=99999), mock.patch.object(
             self.cli, "run_all"
         ) as run_all:
             result = self.invoke(["gateway", "run"], expected_status=1)
-        self.assertIn("sudah berjalan", result.lower())
+        self.assertIn("already running", result.lower())
         self.assertIn("gateway stop", result.lower())
         run_all.assert_not_called()
 

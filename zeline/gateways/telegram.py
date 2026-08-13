@@ -863,7 +863,7 @@ def _handle_command_update(
     if command == "/repository":
         repository = _ensure_repository()
         if not _send_document(api, chat_id, repository):
-            _api_call(api, "sendMessage", chat_id=chat_id, text="Gagal mengirim repository archive.")
+            _api_call(api, "sendMessage", chat_id=chat_id, text="Failed to send the repository archive.")
         return True
     if command == "/savetask":
         snapshot = sessions.task_snapshot(identity)
@@ -959,7 +959,7 @@ def _handle_command_update(
         # Publikasi skill ke repo dengan approval + scan sensitif. Hanya
         # bermakna untuk owner (profile full); selain itu tolak halus.
         if tool_profile != "full":
-            _api_call(api, "sendMessage", chat_id=chat_id, text="Perintah ini hanya untuk operator Zeline.")
+            _api_call(api, "sendMessage", chat_id=chat_id, text="This command is for the Zeline operator only.")
             return True
         if not args:
             _api_call(api, "sendMessage", chat_id=chat_id, text="Usage: /promoteskill <nama-skill>")
@@ -998,7 +998,7 @@ def _promote_preview_text(plan: "skill_publish.PublishPlan") -> str:
 def _handle_promote_skill(api: str, chat_id: int, name: str) -> None:
     plan = skill_publish.prepare(name)
     if not plan.ok and plan.error:
-        _api_call(api, "sendMessage", chat_id=chat_id, text=f"Gagal memuat skill: {plan.error}")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=f"Failed to load skill: {plan.error}")
         return
 
     _api_call(api, "sendMessage", chat_id=chat_id, text=_promote_preview_text(plan), parse_mode="HTML")
@@ -1278,24 +1278,24 @@ def _markdown_to_telegram_html(text: str) -> str:
 def info() -> dict[str, str]:
     return {
         "label": "Telegram",
-        "hint": "Buat bot melalui @BotFather, lalu tempel token Bot API.",
+        "hint": "Create a bot via @BotFather, then paste the Bot API token.",
     }
 
 
 def validate_config(cfg: dict[str, Any]) -> list[str]:
     token = str(cfg.get("token", "")).strip()
     if not token:
-        return ["token Telegram kosong"]
+        return ["Telegram token is empty"]
     if ":" not in token:
-        return ["format token Telegram terlihat tidak valid"]
+        return ["Telegram token format looks invalid"]
     profile = str(cfg.get("tool_profile", "safe"))
     if profile not in {"safe", "workspace", "full"}:
-        return [f"tool_profile Telegram tidak valid: {profile}"]
+        return [f"invalid Telegram tool_profile: {profile}"]
     allowed = cfg.get("allowed", [])
     if not isinstance(allowed, list):
-        return ["allowed Telegram harus berupa list chat ID"]
+        return ["Telegram allowed must be a list of chat IDs"]
     if profile == "full" and not allowed:
-        return ["tool_profile full membutuhkan owner allowlist Telegram"]
+        return ["tool_profile full requires a Telegram owner allowlist"]
     return []
 
 
@@ -1339,14 +1339,14 @@ def _api_call(api: str, method: str, *, timeout: int = 65, **params: Any) -> dic
             # "message is not modified" = edit konten identik (picker dibuka
             # ulang), harmless → jangan spam log & jangan retry.
             if "message is not modified" not in description:
-                print(f"  [telegram] {method} gagal: {description}", flush=True)
+                print(f"  [telegram] {method} failed: {description}", flush=True)
             return None  # error tingkat-API, retry tidak menolong
         except (requests.RequestException, ValueError) as exc:
             # Error jaringan sementara → backoff & coba lagi (kecuali attempt terakhir).
             if attempt < attempts - 1:
                 time.sleep(min(2.0 * (attempt + 1), 6.0))
                 continue
-            print(f"  [telegram] {method} gagal: {exc.__class__.__name__} (setelah {attempts}x)", flush=True)
+            print(f"  [telegram] {method} failed: {exc.__class__.__name__} (after {attempts}x)", flush=True)
     return None
 
 
@@ -1794,10 +1794,10 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
 
     me = _api_call(api, "getMe", timeout=20)
     if not me:
-        print("  [telegram] token tidak bisa diverifikasi; gateway dihentikan.", flush=True)
+        print("  [telegram] token could not be verified; gateway stopped.", flush=True)
         return
     username = str((me.get("result") or {}).get("username", "?"))
-    print(f"  [telegram] @{username} terhubung via polling", flush=True)
+    print(f"  [telegram] @{username} connected via polling", flush=True)
     _api_call(api, "setMyCommands", commands=_telegram_commands())
 
     offset = _load_offset()
@@ -1815,7 +1815,7 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
             payload = response.json()
             if not response.ok or not payload.get("ok"):
                 description = str(payload.get("description", f"HTTP {response.status_code}"))[:160]
-                print(f"  [telegram] getUpdates gagal: {description}", flush=True)
+                print(f"  [telegram] getUpdates failed: {description}", flush=True)
                 stop_event.wait(3)
                 continue
         except requests.Timeout:
@@ -1869,7 +1869,7 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 identity = f"telegram:{chat_id_int}"
 
                 if not _allowed(chat_id_int, allowed):
-                    _api_call(api, "sendMessage", chat_id=chat_id_int, text="Akses bot ini belum diizinkan.")
+                    _api_call(api, "sendMessage", chat_id=chat_id_int, text="Access to this bot is not permitted yet.")
                     continue
 
                 if text:
@@ -1926,11 +1926,11 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                         api,
                         "sendMessage",
                         chat_id=chat_id_int,
-                        text="Pesan ini belum bisa diproses. Kirim teks, gambar, voice/video, atau file .txt/.md.",
+                        text="This message could not be processed. Send text, an image, voice/video, or a .txt/.md file.",
                     )
             finally:
                 # Simpan setelah handler selesai agar restart tidak kehilangan update.
                 offset = max(offset, update_id + 1)
                 _save_offset(offset)
 
-    print("  [telegram] berhenti", flush=True)
+    print("  [telegram] stopped", flush=True)
