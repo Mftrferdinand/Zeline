@@ -32,16 +32,21 @@ need_command() {
 need_command "$PYTHON_BIN"
 
 print_banner() {
-  local subtitle="ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND"
-  local art
-  art=' _______ ___  ___  _    ___ _  _ ___   _   ___
-|_  / __| _ \/ _ \| |  |_ _| \| | __| /_\ | _ \
- / /| _||   / (_) | |__ | || .` | _| / _ \|   /
-/___|___|_|_\\___/|____|___|_|\_|___/_/ \_\_|_\'
+  local title="Z  E  L  I  N  E"
+  local subtitle="AGENTIC AI BY ZEROLINEAR • v0.1.0"
+  # Inner width = widest line + 6 padding; build the frame to match.
+  local inner=$(( ${#subtitle} + 6 ))
+  local bar
+  bar=$(printf '─%.0s' $(seq 1 "$inner"))
+  # Center helper
+  center() { local s="$1"; local pad=$(( (inner - ${#s}) / 2 )); printf '%*s%s%*s' "$pad" '' "$s" "$(( inner - ${#s} - pad ))" ''; }
+  local t s
+  t=$(center "$title"); s=$(center "$subtitle")
   if [ -t 1 ] && [ "${NO_COLOR+x}" != x ] && [ "${TERM:-}" != "dumb" ]; then
-    printf '\n\033[38;5;51m%s\033[0m\n\033[38;5;75m%s\033[0m\n\n' "$art" "$subtitle"
+    local f='\033[38;5;25m' w='\033[97m\033[1m' b='\033[38;5;39m' r='\033[0m'
+    printf "\n${f}╭%s╮${r}\n${f}│${r}${w}%s${r}${f}│${r}\n${f}├%s┤${r}\n${f}│${r}${b}%s${r}${f}│${r}\n${f}╰%s╯${r}\n\n" "$bar" "$t" "$bar" "$s" "$bar"
   else
-    printf '\n%s\n%s\n\n' "$art" "$subtitle"
+    printf '\n╭%s╮\n│%s│\n├%s┤\n│%s│\n╰%s╯\n\n' "$bar" "$t" "$bar" "$s" "$bar"
   fi
 }
 

@@ -50,32 +50,43 @@ def _terminal_color_enabled() -> bool:
     return bool(os.environ.get("FORCE_COLOR")) or sys.stdout.isatty()
 
 
-BANNER_ART = (
-    " _______ ___  ___  _    ___ _  _ ___   _   ___ ",
-    "|_  / __| _ \\/ _ \\| |  |_ _| \\| | __| /_\\ | _ \\",
-    " / /| _||   / (_) | |__ | || .` | _| / _ \\|   /",
-    "/___|___|_|_\\\\___/|____|___|_|\\_|___/_/ \\_\\_|_\\",
-)
-BANNER_SUBTITLE = f"ZELINE AGENTIC AI · v{__version__} · BY MFTRFERDINAND"
-BANNER_WIDTH = max(len(line) for line in BANNER_ART)
+BANNER_TITLE = "Z  E  L  I  N  E"
+BANNER_SUBTITLE = f"AGENTIC AI BY ZEROLINEAR • v{__version__}"
+# Inner box width: widest content line + 3 spaces of padding each side.
+_BANNER_INNER = max(len(BANNER_TITLE), len(BANNER_SUBTITLE)) + 6
 
 
-def _centered_banner_line(text: str) -> str:
-    return text.center(BANNER_WIDTH)
+def _boxed_line(text: str) -> str:
+    return text.center(_BANNER_INNER)
 
 
 def _print_banner() -> None:
-    """Render the portable ZEROLINEAR / Zeline terminal identity."""
-    lines = BANNER_ART
-    subtitle = BANNER_SUBTITLE
+    """Render the boxed Zeline terminal identity (title + subtitle in one frame)."""
+    top = "╭" + "─" * _BANNER_INNER + "╮"
+    mid = "├" + "─" * _BANNER_INNER + "┤"
+    bottom = "╰" + "─" * _BANNER_INNER + "╯"
+    title = _boxed_line(BANNER_TITLE)
+    subtitle = _boxed_line(BANNER_SUBTITLE)
     if _terminal_color_enabled():
-        colors = ("\033[38;5;51m", "\033[38;5;45m", "\033[38;5;39m", "\033[38;5;27m")
+        frame = "\033[38;5;25m"   # dark blue frame
+        white = "\033[97m\033[1m"  # bright white bold title
+        blue = "\033[38;5;39m"    # regular blue subtitle
         reset = "\033[0m"
-        wordmark = "\n".join(f"{color}{line}{reset}" for color, line in zip(colors, lines))
-        print(f"\n{wordmark}\n\033[38;5;75m{subtitle}{reset}\n")
+        print(
+            f"\n{frame}{top}{reset}\n"
+            f"{frame}│{reset}{white}{title}{reset}{frame}│{reset}\n"
+            f"{frame}{mid}{reset}\n"
+            f"{frame}│{reset}{blue}{subtitle}{reset}{frame}│{reset}\n"
+            f"{frame}{bottom}{reset}\n"
+        )
     else:
-        wordmark = "\n".join(lines)
-        print(f"\n{wordmark}\n{subtitle}\n")
+        print(
+            f"\n{top}\n"
+            f"│{title}│\n"
+            f"{mid}\n"
+            f"│{subtitle}│\n"
+            f"{bottom}\n"
+        )
 
 
 def _read_secret_key() -> str:
@@ -908,7 +919,6 @@ def cmd_doctor() -> int:
                 print(f"  gateway   : {name} connected & running (PID {pid})")
             else:
                 print(f"  gateway   : {name} configured but not connected (run `zeline gateway start`)")
-    print(f"  skills    : {len(skills.list_skills())}")
     if warnings:
         print("\nWarnings:")
         for item in warnings:

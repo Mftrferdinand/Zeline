@@ -301,18 +301,13 @@ class ZelineCliTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.cli._print_banner()
-        lines = output.getvalue().splitlines()
-        subtitle = next(line for line in lines if "ZELINE" in line)
-        wordmark = lines[1:5]
-        self.assertEqual(wordmark, [
-            " _______ ___  ___  _    ___ _  _ ___   _   ___ ",
-            "|_  / __| _ \\/ _ \\| |  |_ _| \\| | __| /_\\ | _ \\",
-            " / /| _||   / (_) | |__ | || .` | _| / _ \\|   /",
-            "/___|___|_|_\\\\___/|____|___|_|\\_|___/_/ \\_\\_|_\\",
-        ])
-        self.assertIn("ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND", subtitle)
-        self.assertIn("BY MFTRFERDINAND", subtitle)
-        self.assertNotIn("┏", output.getvalue())
+        text = output.getvalue()
+        # Boxed identity: title + subtitle inside one frame, no ANSI in plain mode.
+        self.assertIn("Z  E  L  I  N  E", text)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.1.0", text)
+        self.assertIn("╭", text)
+        self.assertIn("╰", text)
+        self.assertNotIn("\x1b[", text)
 
 
     def test_top_level_gateway_aliases_dispatch_to_gateway_commands(self):
@@ -330,9 +325,9 @@ class ZelineCliTests(unittest.TestCase):
         parser = self.cli.build_parser()
         self.assertEqual(parser.prog, "zeline")
         result = self.invoke(["status"], expected_status=1)
-        self.assertIn(" _______ ___  ___  _    ___ _  _ ___   _   ___ ", result)
-        self.assertIn("ZELINE AGENTIC AI · v0.1.0 · BY MFTRFERDINAND", result)
-        self.assertIn("BY MFTRFERDINAND", result)
+        self.assertIn("Z  E  L  I  N  E", result)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.1.0", result)
+        self.assertIn("ZEROLINEAR", result)
 
 
     def test_banner_falls_back_to_plain_text_when_color_is_disabled(self):
@@ -340,8 +335,8 @@ class ZelineCliTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.cli._print_banner()
-        self.assertIn(" _______ ___  ___  _    ___ _  _ ___   _   ___ ", output.getvalue())
-        self.assertIn("ZELINE", output.getvalue())
+        self.assertIn("Z  E  L  I  N  E", output.getvalue())
+        self.assertIn("AGENTIC AI BY ZEROLINEAR", output.getvalue())
         self.assertNotIn("\x1b[", output.getvalue())
 
 
