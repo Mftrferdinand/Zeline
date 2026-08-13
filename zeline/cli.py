@@ -749,11 +749,21 @@ def cmd_gateway_disable(name: str) -> int:
 
 
 def cmd_gateway_list() -> int:
-    print("Gateway:")
+    # "dihidupkan" (config enabled) DIPISAH TEGAS dari "berjalan" (proses
+    # background hidup). Dulu keduanya sama-sama tampil "AKTIF" sehingga user
+    # bingung kenapa `gateway` bilang AKTIF tapi `gateway status` bilang tidak
+    # berjalan. Sekarang bahasanya beda: config vs proses.
+    print("Gateway (konfigurasi):")
     for name, enabled, errors in gateway_status(config.GATEWAYS):
-        state = "AKTIF" if enabled else "mati"
+        state = "dihidupkan" if enabled else "dimatikan"
         suffix = f" · masalah: {'; '.join(errors)}" if errors else ""
         print(f"  - {name:<10} {state}{suffix}")
+    active, _message, state = gateway_service.status()
+    if active:
+        pid = (state or {}).get("pid", "?")
+        print(f"\nProses background: BERJALAN (PID {pid}).")
+    else:
+        print("\nProses background: tidak berjalan — jalankan `zeline gateway start`.")
     return 0
 
 
@@ -875,7 +885,12 @@ def cmd_doctor() -> int:
     for name, enabled, errors in gateway_status(config.GATEWAYS):
         if enabled and errors:
             problems.append(f"Gateway {name}: {'; '.join(errors)}")
-        print(f"  gateway {name:<9}: {'aktif' if enabled else 'mati'}")
+        print(f"  gateway {name:<9}: {'dihidupkan' if enabled else 'dimatikan'} (konfigurasi)")
+    active, _msg, state = gateway_service.status()
+    if active:
+        print(f"  gateway proses  : BERJALAN (PID {(state or {}).get('pid', '?')})")
+    else:
+        print("  gateway proses  : tidak berjalan (jalankan `zeline gateway start`)")
     print(f"  skills    : {len(skills.list_skills())}")
     if warnings:
         print("\nPeringatan:")

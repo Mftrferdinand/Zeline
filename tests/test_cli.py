@@ -66,7 +66,9 @@ class ZelineCliTests(unittest.TestCase):
         self.invoke(["gateway", "enable", "webhook"])
         result = self.invoke(["gateway", "list"])
         self.assertIn("webhook", result)
-        self.assertIn("AKTIF", result)
+        # Config state (dihidupkan) harus jelas terpisah dari status proses.
+        self.assertIn("dihidupkan", result)
+        self.assertIn("Proses background", result)
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertNotIn(saved["gateways"]["webhook"]["token"], result)
 
