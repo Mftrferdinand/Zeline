@@ -273,11 +273,12 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("beta", saved["providers"])
 
     def test_gateway_restart_stops_then_starts_with_same_selection(self):
-        with mock.patch.object(self.cli.gateway_service, "stop", return_value=(True, "stopped")) as stop, mock.patch.object(self.cli.gateway_service, "start", return_value=(True, "started")) as start:
+        with mock.patch.object(self.cli.gateway_service, "stop", return_value=(True, "stopped")) as stop, mock.patch.object(self.cli.gateway_service, "start", return_value=(True, "started")) as start, mock.patch.object(self.cli.gateway_service, "wait_until_connected", return_value=(True, ["telegram: connected"])):
             result = self.invoke(["gateway", "restart", "--only", "telegram"])
         stop.assert_called_once()
         start.assert_called_once_with(only=["telegram"])
         self.assertIn("started", result)
+        self.assertIn("connected", result.lower())
 
     def test_gateway_run_refuses_duplicate_managed_process(self):
         cfg = self.config.config_copy()
