@@ -911,7 +911,8 @@ def cmd_doctor() -> int:
     print(f"  {_label('python    :')} {sys.version.split()[0]}")
     print(f"  {_label('provider  :')} {config.BASE_URL or '(empty)'}")
     print(f"  {_label('model     :')} {config.MODEL or '(empty)'}")
-    print(f"  {_label('api key   :')} {config.mask_secret(config.API_KEY)}")
+    masked_key = config.mask_secret(config.API_KEY)
+    print(f"  {_label('api key   :')} {masked_key}")
     if not config.API_KEY:
         problems.append("API key is empty — run `zeline setup`.")
     if not config.BASE_URL:
