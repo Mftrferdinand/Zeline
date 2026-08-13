@@ -75,7 +75,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("Zeline", self.config.SYSTEM_PROMPT)
         self.assertIn("Zerolinear", self.config.SYSTEM_PROMPT)
         self.assertEqual(self.config.NAME, "Zeline")
-        self.assertIn("eksekusi", self.config.SYSTEM_PROMPT.lower())
+        self.assertIn("execute", self.config.SYSTEM_PROMPT.lower())
 
     def test_existing_zeline_config_keeps_agent_name_and_model(self):
         saved = self.config.config_copy()
@@ -127,21 +127,21 @@ class ZelinePublicCoreTests(unittest.TestCase):
         two = self.memory.MemoryStore("telegram:200")
         one.add("Suka kopi tanpa gula")
         self.assertIn("kopi", one.formatted())
-        self.assertEqual(two.formatted(), "(memory kosong)")
+        self.assertEqual(two.formatted(), "(memory empty)")
 
     def test_memory_per_identity_has_bounded_fact_count(self):
         store = self.memory.MemoryStore("telegram:bounded")
         with mock.patch.object(self.memory, "MAX_FACTS_PER_IDENTITY", 2):
-            self.assertIn("disimpan", store.add("fakta satu"))
-            self.assertIn("disimpan", store.add("fakta dua"))
-            self.assertIn("batas", store.add("fakta tiga").lower())
+            self.assertIn("saved", store.add("fakta satu"))
+            self.assertIn("saved", store.add("fakta dua"))
+            self.assertIn("limit", store.add("fakta tiga").lower())
         self.assertEqual(store.list(), ["fakta satu", "fakta dua"])
 
     def test_memory_rejects_new_identity_after_global_file_limit(self):
         self.memory.MemoryStore("telegram:first").add("fakta pertama")
         with mock.patch.object(self.memory, "MAX_IDENTITIES", 1):
             result = self.memory.MemoryStore("telegram:second").add("fakta kedua")
-        self.assertIn("batas", result.lower())
+        self.assertIn("limit", result.lower())
 
     def test_session_history_survives_restart(self):
         # Simulasikan restart: buat store, simpan history, buang store, buat lagi.
@@ -195,7 +195,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("add_memory", names)
         self.assertNotIn("read_file", names)
         self.assertNotIn("run_shell", names)
-        self.assertIn("tidak diizinkan", executor.run("run_shell", {"command": "id"}))
+        self.assertIn("not allowed", executor.run("run_shell", {"command": "id"}))
 
     def test_safe_profile_has_web_tools(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
@@ -236,13 +236,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_system_prompt_contains_default_response_formatting_rules(self):
         self.assertIn("**bold**", self.config.SYSTEM_PROMPT)
         self.assertIn("fenced code block", self.config.SYSTEM_PROMPT)
-        self.assertIn("hasil terminal", self.config.SYSTEM_PROMPT.lower())
+        self.assertIn("terminal", self.config.SYSTEM_PROMPT.lower())
 
     def test_web_fetch_blocks_internal_addresses(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         for url in ("http://127.0.0.1/admin", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.5/", "http://192.168.1.1/"):
-            self.assertIn("diblokir", executor.run("web_fetch", {"url": url}))
-        self.assertIn("diblokir", executor.run("web_fetch", {"url": "http://localhost.localdomain/"}))
+            self.assertIn("blocked", executor.run("web_fetch", {"url": url}))
+        self.assertIn("blocked", executor.run("web_fetch", {"url": "http://localhost.localdomain/"}))
         self.assertIn("ERROR", executor.run("web_fetch", {"url": "ftp://example.com/file"}))
 
     def test_http_request_blocks_internal_and_bad_scheme(self):
@@ -251,10 +251,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         names = {item["function"]["name"] for item in executor.schemas}
         self.assertIn("http_request", names)
         self.assertIn("system_env", names)
-        self.assertIn("diblokir", executor.run("http_request", {"method": "POST", "url": "http://127.0.0.1:20128/v1"}))
-        self.assertIn("diblokir", executor.run("http_request", {"method": "GET", "url": "http://169.254.169.254/latest/"}))
+        self.assertIn("blocked", executor.run("http_request", {"method": "POST", "url": "http://127.0.0.1:20128/v1"}))
+        self.assertIn("blocked", executor.run("http_request", {"method": "GET", "url": "http://169.254.169.254/latest/"}))
         self.assertIn("ERROR", executor.run("http_request", {"method": "GET", "url": "ftp://example.com/x"}))
-        self.assertIn("tidak didukung", executor.run("http_request", {"method": "TRACE", "url": "https://example.com"}))
+        self.assertIn("unsupported", executor.run("http_request", {"method": "TRACE", "url": "https://example.com"}))
 
     def test_http_request_rejects_bad_headers_json(self):
         executor = self.tools.ToolExecutor("cli:local", profile="safe", workspace=self.home)
@@ -265,7 +265,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         result = executor.run("system_env", {})
         self.assertIn("OS", result)
         self.assertIn("Python", result)
-        self.assertIn("Tool terpasang", result)
+        self.assertIn("Installed tools", result)
 
     def test_analyze_media_is_owner_gated_and_validates_input(self):
         # safe profile (gateway publik) TIDAK boleh punya analyze_media.
@@ -277,7 +277,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=ws)
         self.assertIn("analyze_media", {item["function"]["name"] for item in executor.schemas})
         # URL internal diblokir.
-        self.assertIn("diblokir", executor.run("analyze_media", {"path_or_url": "http://169.254.169.254/x.png"}))
+        self.assertIn("blocked", executor.run("analyze_media", {"path_or_url": "http://169.254.169.254/x.png"}))
         # File audio → diarahkan ke transkrip, bukan mengarang isi.
         audio = ws / "clip.ogg"
         audio.write_bytes(b"fakeaudio")
@@ -295,7 +295,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         workspace = self.home / "dl-ws"
         workspace.mkdir(parents=True)
         executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=workspace)
-        self.assertIn("diblokir", executor.run("download_file", {"url": "http://169.254.169.254/x", "path": "meta.txt"}))
+        self.assertIn("blocked", executor.run("download_file", {"url": "http://169.254.169.254/x", "path": "meta.txt"}))
         self.assertIn("workspace", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
         self.assertFalse((self.home / "escape.txt").exists())
 
@@ -341,7 +341,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             # safe (gateway publik) TIDAK boleh dapat tool MCP (server = perintah lokal)
             safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
             self.assertFalse(any(n["function"]["name"].startswith("mcp__") for n in safe.schemas))
-            self.assertIn("tidak diizinkan", safe.run("mcp__fake__add", {"a": 1, "b": 1}))
+            self.assertIn("not allowed", safe.run("mcp__fake__add", {"a": 1, "b": 1}))
             # full (operator) dapat + bisa dispatch
             full = self.tools.ToolExecutor("cli:local", profile="full", workspace=self.home)
             self.assertTrue(any(n["function"]["name"] == "mcp__fake__add" for n in full.schemas))
@@ -376,7 +376,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         public_agent_tools = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         owner_tools = self.tools.ToolExecutor("cli:local", profile="full", workspace=self.home)
 
-        self.assertIn("tidak ditemukan", public_agent_tools.run("load_skill", {"name": "owner-secret-procedure"}))
+        self.assertIn("not found", public_agent_tools.run("load_skill", {"name": "owner-secret-procedure"}))
         self.assertIn("PRIVATE-SKILL-CONTENT-CHECK", owner_tools.run("load_skill", {"name": "owner-secret-procedure"}))
 
     def test_webhook_requires_token_and_keeps_identity_namespaced(self):
@@ -905,7 +905,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
         self.assertIn("OK", executor.run("write_file", {"path": "app.py", "content": "name = 'old'\n"}))
         patched = executor.run("patch_file", {"path": "app.py", "old_text": "'old'", "new_text": "'new'"})
-        self.assertIn("dipatch", patched)
+        self.assertIn("patched", patched)
         self.assertEqual((self.home / "app.py").read_text(), "name = 'new'\n")
         task = executor.run("update_task", {"task": "Run tests", "status": "in_progress"})
         self.assertIn("Run tests", task)
@@ -918,7 +918,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("exit=0", code)
         self.assertIn("42", code)
         saved = executor.run("save_skill", {"name": "demo-skill", "content": "# Demo\n\nold step\n"})
-        self.assertIn("disimpan", saved)
+        self.assertIn("saved", saved)
         updated = executor.run("update_skill", {"name": "demo-skill", "old_text": "old step", "new_text": "new step"})
         self.assertIn("Patched SKILL.md", updated)
         self.assertIn("new step", executor.run("load_skill", {"name": "demo-skill"}))
@@ -1074,8 +1074,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._tool_progress_text("save_skill", {"name": "riset-prop-firm"}), "💡 Saving skill <code>riset-prop-firm</code>")
         result = telegram._tool_result_text("update_skill", {"name": "zeline-development"}, "Patched SKILL.md in skill 'zeline-development' (1 replacement).")
         self.assertEqual(result, "📒 Improvement: Patched SKILL.md in skill 'zeline-development' (1 replacement).")
-        saved = telegram._tool_result_text("save_skill", {"name": "riset-prop-firm"}, "OK, skill private 'riset-prop-firm' disimpan.")
-        self.assertEqual(saved, "📒 Improvement: OK, skill private 'riset-prop-firm' disimpan.")
+        saved = telegram._tool_result_text("save_skill", {"name": "riset-prop-firm"}, "OK, private skill 'riset-prop-firm' saved.")
+        self.assertEqual(saved, "📒 Improvement: OK, private skill 'riset-prop-firm' saved.")
 
     def test_telegram_live_status_shows_elapsed_and_slow_provider(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

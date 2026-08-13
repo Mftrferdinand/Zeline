@@ -421,9 +421,9 @@ class Zeline:
     ) -> str:
         text = user_input.strip()
         if not text:
-            return "Tulis pesan dulu ya."
+            return "Please write a message first."
         if len(text) > 16_000:
-            return "Pesan terlalu panjang (maksimum 16.000 karakter)."
+            return "Message too long (maximum 16,000 characters)."
         self.messages.append({"role": "user", "content": text})
         self.last_turn_tool_calls = 0
         turn_started = time.monotonic()
@@ -452,7 +452,7 @@ class Zeline:
                 return content or "(provider tidak mengirim jawaban teks)"
 
             if not isinstance(tool_calls, list):
-                raise ZelineError("Format tool call dari provider tidak valid.")
+                raise ZelineError("Invalid tool call format from the provider.")
             self.last_turn_tool_calls += len(tool_calls)
 
             # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu

@@ -183,22 +183,22 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
     active, _message, _state = status()
     if active:
         current = _load_state() or {}
-        return False, f"Gateway sudah berjalan (PID {current.get('pid', '?')})."
+        return False, f"Gateway is already running (PID {current.get('pid', '?')})."
 
     only = list(dict.fromkeys(only or []))  # dedupe while preserving user order
     for name in only:
         if name not in config.GATEWAYS:
-            return False, f"Gateway tidak dikenal: {name}"
+            return False, f"Unknown gateway: {name}"
     enabled = [
         name for name, gateway_cfg in config.GATEWAYS.items()
         if gateway_cfg.get("enabled", False) and (not only or name in only)
     ]
     if not enabled:
-        return False, "Tidak ada gateway aktif. Jalankan `zeline gateway setup`."
+        return False, "No enabled gateway. Run `zeline gateway setup`."
     for name in enabled:
         errors = validate_gateway(name, config.GATEWAYS[name])
         if errors:
-            return False, f"Gateway {name} belum valid: {'; '.join(errors)}"
+            return False, f"Gateway {name} is not valid yet: {'; '.join(errors)}"
 
     try:
         # `a+` means users can inspect logs after a crash, while source code
@@ -232,7 +232,7 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
             log_handle.close()  # type: ignore[name-defined]
         except Exception:
             pass
-        return False, f"Gagal start gateway: {exc}"
+        return False, f"Failed to start gateway: {exc}"
 
     # Identitas process lintas-OS: Linux/Android pakai /proc starttime, macOS/BSD
     # pakai `ps -o lstart`. Bila keduanya gagal (jarang), simpan tanpa token —
@@ -249,8 +249,8 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
         "command": _command(only),
     }
     _write_private(config.PID_FILE, json.dumps(state, ensure_ascii=False) + "\n")
-    target = ", ".join(only) if only else "semua gateway aktif"
-    return True, f"Gateway dijalankan (PID {process.pid}; {target}). Log: {LOG_FILE}"
+    target = ", ".join(only) if only else "all enabled gateways"
+    return True, f"Gateway started (PID {process.pid}; {target}). Log: {LOG_FILE}"
 
 
 def status() -> tuple[bool, str, dict[str, Any] | None]:
@@ -258,14 +258,14 @@ def status() -> tuple[bool, str, dict[str, Any] | None]:
     state = _load_state()
     if not state:
         _remove_state()
-        return False, "Gateway tidak berjalan.", None
+        return False, "Gateway is not running.", None
     pid = int(state["pid"])
     if not _process_matches_state(state):
         _remove_state()
-        return False, "Gateway tidak berjalan (state PID lama/tidak cocok dibersihkan).", None
+        return False, "Gateway is not running (stale/mismatched PID state cleared).", None
     only = state.get("only", [])
-    target = ", ".join(only) if only else "semua gateway aktif"
-    return True, f"Gateway berjalan (PID {pid}; {target}).", state
+    target = ", ".join(only) if only else "all enabled gateways"
+    return True, f"Gateway running (PID {pid}; {target}).", state
 
 
 def _signal_process(pid: int, sig: int) -> bool:
@@ -303,25 +303,25 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
     state = _load_state()
     if not state:
         _remove_state()
-        return False, "Gateway tidak berjalan."
+        return False, "Gateway is not running."
     pid = int(state["pid"])
     if not _process_matches_state(state):
         _remove_state()
-        return False, "Gateway tidak berjalan (state PID bukan process Zeline yang cocok dibersihkan)."
+        return False, "Gateway is not running (PID state was not a matching Zeline process; cleared)."
 
     if not _signal_process(pid, signal.SIGTERM):
         # Proses sudah hilang atau tak bisa di-signal.
         if not _process_matches_state(state):
             _remove_state()
-            return True, "Gateway sudah berhenti."
-        return False, f"Tidak punya izin menghentikan PID {pid}."
+            return True, "Gateway already stopped."
+        return False, f"No permission to stop PID {pid}."
 
     # Fase 1: tunggu shutdown anggun setelah SIGTERM.
     grace_deadline = time.monotonic() + max(0.0, grace_seconds)
     while time.monotonic() < grace_deadline:
         if not _process_matches_state(state):
             _remove_state()
-            return True, "Gateway dihentikan."
+            return True, "Gateway stopped."
         time.sleep(0.1)
 
     # Fase 2: eskalasi ke SIGKILL (seluruh process group).
@@ -330,23 +330,23 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
     while time.monotonic() < kill_deadline:
         if not _process_matches_state(state):
             _remove_state()
-            suffix = " (perlu SIGKILL)" if escalated else ""
-            return True, f"Gateway dihentikan{suffix}."
+            suffix = " (required SIGKILL)" if escalated else ""
+            return True, f"Gateway stopped{suffix}."
         time.sleep(0.1)
 
     if not _process_matches_state(state):
         _remove_state()
-        return True, "Gateway dihentikan (perlu SIGKILL)."
-    return False, f"PID {pid} tidak mati bahkan setelah SIGKILL. Cek manual: ps | grep zeline. Log: {LOG_FILE}"
+        return True, "Gateway stopped (required SIGKILL)."
+    return False, f"PID {pid} did not die even after SIGKILL. Check manually: ps | grep zeline. Log: {LOG_FILE}"
 
 
 def tail_log(lines: int = 80) -> str:
     """Baca tail log tanpa mengeksekusi `tail` shell."""
     if not LOG_FILE.exists():
-        return "(belum ada log gateway)"
+        return "(no gateway log yet)"
     try:
         content = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-        return "\n".join(content[-max(1, lines):]) or "(log kosong)"
+        return "\n".join(content[-max(1, lines):]) or "(empty log)"
     except OSError as exc:
         return f"(gagal baca log: {exc})"
 

@@ -46,13 +46,13 @@ class GatewayRuntime:
 def validate_gateway(name: str, cfg: dict[str, Any]) -> list[str]:
     module = GATEWAYS.get(name)
     if module is None:
-        return [f"gateway tidak dikenal: {name}"]
+        return [f"unknown gateway: {name}"]
     validator = getattr(module, "validate_config", None)
     return validator(cfg) if validator else []
 
 
 def run_all(sessions, cfg: dict[str, dict[str, Any]], names: list[str] | None = None) -> GatewayRuntime:
-    """Jalankan gateway enabled dalam thread dan tangkap crash adapter."""
+    """Run enabled gateways in threads and capture adapter crashes."""
     stop_event = threading.Event()
     threads: list[tuple[str, threading.Thread]] = []
 
@@ -64,7 +64,7 @@ def run_all(sessions, cfg: dict[str, dict[str, Any]], names: list[str] | None = 
             continue
         errors = validate_gateway(name, gateway_cfg)
         if errors:
-            print(f"  [gateway:{name}] tidak dijalankan: {'; '.join(errors)}", flush=True)
+            print(f"  [gateway:{name}] not started: {'; '.join(errors)}", flush=True)
             continue
 
         def worker(adapter=module, adapter_cfg=gateway_cfg, adapter_name=name):

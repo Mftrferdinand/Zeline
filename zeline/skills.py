@@ -214,7 +214,7 @@ def _find_skill(name: str, include_private: bool) -> Path | None | str:
         return candidates[0]
     if len(candidates) > 1:
         names = [p.parent.name if p.name == "SKILL.md" else p.stem for p in candidates[:8]]
-        return "ERROR skill ambigu: " + ", ".join(names)
+        return "ERROR ambiguous skill: " + ", ".join(names)
     return None
 
 
@@ -233,7 +233,7 @@ def load_skill(name: str, include_private: bool = False) -> str:
             normalized = _safe_name(name)
         except ValueError:
             normalized = name.strip()
-        return f"ERROR: skill '{normalized}' tidak ditemukan."
+        return f"ERROR: skill '{normalized}' not found."
     content = found.read_text(encoding="utf-8", errors="replace")
     # Skill folder: sertakan daftar file pendukung relatif ke folder skill.
     if found.name == "SKILL.md":
@@ -245,7 +245,7 @@ def load_skill(name: str, include_private: bool = False) -> str:
         if extras:
             listing = "\n".join(f"- {skill_dir}/{rel}" for rel in extras)
             content += (
-                "\n\n---\n### File pendukung skill ini (baca dengan read_file bila perlu):\n"
+                "\n\n---\n### Supporting files for this skill (read with read_file if needed):\n"
                 + listing
             )
     return content
@@ -258,14 +258,14 @@ def save_skill(name: str, content: str) -> str:
     except ValueError as exc:
         return f"ERROR skill: {exc}"
     if not content.strip():
-        return "ERROR skill: isi kosong."
+        return "ERROR skill: empty content."
     if len(content) > 100_000:
-        return "ERROR skill: isi terlalu panjang (maksimum 100.000 karakter)."
+        return "ERROR skill: content too long (maximum 100,000 characters)."
     _ensure_dirs()
     target = PRIVATE_SKILLS_DIR / f"{normalized}.md"
     target.write_text(content, encoding="utf-8")
     _chmod_private(target, 0o600)
-    return f"OK, skill private '{normalized}' disimpan."
+    return f"OK, private skill '{normalized}' saved."
 
 
 def update_skill(name: str, old_text: str, new_text: str) -> str:
@@ -277,11 +277,11 @@ def update_skill(name: str, old_text: str, new_text: str) -> str:
         return f"ERROR skill: {exc}"
     target = PRIVATE_SKILLS_DIR / f"{normalized}.md"
     if not target.is_file():
-        return f"ERROR: skill private '{normalized}' tidak ditemukan."
+        return f"ERROR: private skill '{normalized}' not found."
     content = target.read_text(encoding="utf-8")
     count = content.count(old_text)
     if count != 1:
-        return f"ERROR update skill: old_text harus unik (ditemukan {count})."
+        return f"ERROR update skill: old_text must be unique (found {count})."
     target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
     _chmod_private(target, 0o600)
     return f"Patched SKILL.md in skill '{normalized}' (1 replacement)."
@@ -313,4 +313,4 @@ def skills_block(include_private: bool = False) -> str:
         f"- {name}: {_short_desc(description)}" if scope == "public" else f"- {name} [private]: {_short_desc(description)}"
         for scope, name, _title, description in available
     )
-    return "\n\n## Skill yang tersedia (panggil load_skill untuk isi lengkap):\n" + lines
+    return "\n\n## Available skills (call load_skill for full content):\n" + lines

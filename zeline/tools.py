@@ -68,7 +68,7 @@ def _resolve_workspace_path(raw_path: str, workspace: Path) -> Path:
     try:
         resolved.relative_to(root)
     except ValueError as exc:
-        raise ValueError(f"path harus berada di workspace: {root}") from exc
+        raise ValueError(f"path must stay inside the workspace: {root}") from exc
     return resolved
 
 
@@ -76,25 +76,25 @@ def _read_file(path: str, workspace: Path) -> str:
     try:
         target = _resolve_workspace_path(path, workspace)
         if not target.is_file():
-            return f"ERROR baca file: bukan file atau tidak ditemukan: {target}"
+            return f"ERROR read file: not a file or not found: {target}"
         content = target.read_text(encoding="utf-8", errors="replace")
         if len(content) > 20_000:
-            content = content[:20_000] + "\n... [dipotong, file terlalu panjang]"
+            content = content[:20_000] + "\n... [truncated, file too long]"
         return content
     except Exception as exc:
-        return f"ERROR baca file: {exc}"
+        return f"ERROR read file: {exc}"
 
 
 def _write_file(path: str, content: str, workspace: Path) -> str:
     try:
         if len(content) > 200_000:
-            return "ERROR tulis file: konten terlalu besar (maksimum 200.000 karakter)."
+            return "ERROR write file: content too large (maximum 200,000 characters)."
         target = _resolve_workspace_path(path, workspace)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return f"OK, {len(content)} karakter ditulis ke {target}"
+        return f"OK, wrote {len(content)} characters to {target}"
     except Exception as exc:
-        return f"ERROR tulis file: {exc}"
+        return f"ERROR write file: {exc}"
 
 
 def _edit_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
@@ -103,26 +103,26 @@ def _edit_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
         content = target.read_text(encoding="utf-8")
         count = content.count(old_text)
         if count != 1:
-            return f"ERROR edit file: old_text harus unik (ditemukan {count})."
+            return f"ERROR edit file: old_text must be unique (found {count})."
         target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
-        return f"OK, {target} diedit."
+        return f"OK, {target} edited."
     except Exception as exc:
         return f"ERROR edit file: {exc}"
 
 
 def _patch_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
     result = _edit_file(path, old_text, new_text, workspace)
-    return result.replace("diedit", "dipatch")
+    return result.replace("edited", "patched")
 
 
 def _update_task(task: str, status: str) -> str:
     allowed = {"pending", "in_progress", "completed", "cancelled"}
     clean_status = status.strip().lower()
     if clean_status not in allowed:
-        return f"ERROR task: status harus salah satu {', '.join(sorted(allowed))}."
+        return f"ERROR task: status must be one of {', '.join(sorted(allowed))}."
     clean_task = task.strip()[:500]
     if not clean_task:
-        return "ERROR task: deskripsi kosong."
+        return "ERROR task: empty description."
     return json.dumps({"task": clean_task, "status": clean_status}, ensure_ascii=False)
 
 
@@ -140,13 +140,13 @@ def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
                             break
             except OSError:
                 continue
-        return "\n".join(matches) or "(tidak ada hasil)"
+        return "\n".join(matches) or "(no results)"
     except Exception as exc:
-        return f"ERROR cari file: {exc}"
+        return f"ERROR search file: {exc}"
 
 
 def _run_shell(command: str, workspace: Path) -> str:
-    """Shell owner-only. Gateway tidak menerima profile ini secara default."""
+    """Owner-only shell. Gateways do not receive this profile by default."""
     try:
         result = subprocess.run(
             command,
@@ -157,20 +157,20 @@ def _run_shell(command: str, workspace: Path) -> str:
             timeout=60,
             env={**os.environ},
         )
-        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(tidak ada output)"
+        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(no output)"
         if len(output) > 12_000:
-            output = output[:12_000] + "\n... [output dipotong]"
+            output = output[:12_000] + "\n... [output truncated]"
         return f"exit={result.returncode}\n{output}"
     except subprocess.TimeoutExpired:
-        return "ERROR: perintah timeout (>60 detik)"
+        return "ERROR: command timed out (>60 seconds)"
     except Exception as exc:
-        return f"ERROR jalankan perintah: {exc}"
+        return f"ERROR running command: {exc}"
 
 
 def _execute_code(code: str, workspace: Path) -> str:
-    """Jalankan snippet Python owner-only tanpa interpolasi shell."""
+    """Run an owner-only Python snippet without shell interpolation."""
     if len(code) > 100_000:
-        return "ERROR: kode terlalu panjang (maksimum 100.000 karakter)."
+        return "ERROR: code too long (maximum 100,000 characters)."
     try:
         workspace.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
@@ -178,12 +178,12 @@ def _execute_code(code: str, workspace: Path) -> str:
             cwd=str(workspace), capture_output=True, text=True, timeout=60,
             env={**os.environ},
         )
-        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(tidak ada output)"
+        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(no output)"
         return f"exit={result.returncode}\n{output[:12_000]}"
     except subprocess.TimeoutExpired:
-        return "ERROR: kode timeout (>60 detik)"
+        return "ERROR: code timed out (>60 seconds)"
     except Exception as exc:
-        return f"ERROR jalankan kode: {exc}"
+        return f"ERROR running code: {exc}"
 
 
 def _http_request(method: str, url: str, headers: str = "", body: str = "") -> str:
@@ -196,23 +196,23 @@ def _http_request(method: str, url: str, headers: str = "", body: str = "") -> s
     """
     method = (method or "GET").strip().upper()
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
-        return f"ERROR: method HTTP tidak didukung: {method}"
+        return f"ERROR: unsupported HTTP method: {method}"
     url = (url or "").strip()
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return "ERROR: URL harus http/https yang valid."
+        return "ERROR: URL must be a valid http/https URL."
     host = parsed.hostname or ""
     if not host or _is_internal_ip(host):
-        return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+        return "ERROR: URL points to an internal address and is blocked."
     hdrs: dict[str, str] = {"User-Agent": _UA}
     if headers.strip():
         try:
             parsed_hdrs = json.loads(headers)
             if not isinstance(parsed_hdrs, dict):
-                return "ERROR: headers harus objek JSON {\"Key\": \"Value\"}."
+                return "ERROR: headers must be a JSON object {\"Key\": \"Value\"}."
             hdrs.update({str(k): str(v) for k, v in parsed_hdrs.items()})
         except json.JSONDecodeError as exc:
-            return f"ERROR: headers bukan JSON valid: {exc}"
+            return f"ERROR: headers is not valid JSON: {exc}"
     data = body.encode("utf-8") if body else None
     if data and "content-type" not in {k.lower() for k in hdrs}:
         stripped = body.lstrip()
@@ -226,7 +226,7 @@ def _http_request(method: str, url: str, headers: str = "", body: str = "") -> s
         return f"ERROR request: {exc.__class__.__name__}: {exc}"
     text = response.text or ""
     if len(text) > 8_000:
-        text = text[:8_000] + "\n... [dipotong]"
+        text = text[:8_000] + "\n... [truncated]"
     ctype = response.headers.get("Content-Type", "")
     return f"Status: {response.status_code} {response.reason}\nContent-Type: {ctype}\n\n{text}".strip()
 
@@ -241,10 +241,10 @@ def _download_file(url: str, path: str, workspace: Path) -> str:
     url = (url or "").strip()
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return "ERROR: URL harus http/https yang valid."
+        return "ERROR: URL must be a valid http/https URL."
     host = parsed.hostname or ""
     if not host or _is_internal_ip(host):
-        return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+        return "ERROR: URL points to an internal address and is blocked."
     try:
         dest = _resolve_workspace_path(path, workspace)
     except ValueError as exc:
@@ -262,11 +262,11 @@ def _download_file(url: str, path: str, workspace: Path) -> str:
                     if size > DOWNLOAD_MAX_BYTES:
                         handle.close()
                         dest.unlink(missing_ok=True)
-                        return f"ERROR: file melebihi batas {DOWNLOAD_MAX_BYTES // (1024*1024)} MB."
+                        return f"ERROR: file exceeds the {DOWNLOAD_MAX_BYTES // (1024*1024)} MB limit."
     except requests.RequestException as exc:
         return f"ERROR download: {exc.__class__.__name__}: {exc}"
     rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
-    return f"OK, terunduh: {rel} ({_format_size(size)})"
+    return f"OK, downloaded: {rel} ({_format_size(size)})"
 
 
 def _format_size(num_bytes: int) -> str:
@@ -282,7 +282,7 @@ _VISION_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
-    """Lihat gambar dan jawab pertanyaan tentangnya lewat model vision provider.
+    """Look at an image and answer a question about it via the provider vision model.
 
     Menerima path file di workspace ATAU URL http/https gambar. Gambar dikirim ke
     endpoint chat/completions provider aktif sebagai konten image_url (data URI
@@ -291,7 +291,7 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
     """
     src = (path_or_url or "").strip()
     if not src:
-        return "ERROR: butuh path file gambar atau URL."
+        return "ERROR: need an image file path or URL."
     prompt = (question or "").strip() or "Describe this image in detail."
 
     image_url: str
@@ -299,13 +299,13 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
         parsed = urlparse(src)
         host = parsed.hostname or ""
         if not host or _is_internal_ip(host):
-            return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+            return "ERROR: URL points to an internal address and is blocked."
         ext = Path(parsed.path).suffix.lower()
         if ext and ext not in _VISION_IMAGE_EXT:
             return (
-                f"ERROR: ekstensi `{ext}` bukan gambar yang didukung. "
-                "Vision mendukung PNG/JPG/WEBP/GIF. Untuk audio/video, minta transkrip "
-                "atau ekstraksi frame dulu."
+                f"ERROR: extension `{ext}` is not a supported image. "
+                "Vision supports PNG/JPG/WEBP/GIF. For audio/video, request a transcript "
+                "or frame extraction first."
             )
         image_url = src
     else:
@@ -314,30 +314,30 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
         except ValueError as exc:
             return f"ERROR: {exc}"
         if not target.is_file():
-            return f"ERROR: bukan file atau tidak ditemukan: {target}"
+            return f"ERROR: not a file or not found: {target}"
         ext = target.suffix.lower()
         if ext not in _VISION_IMAGE_EXT:
             if ext in {".mp3", ".ogg", ".wav", ".m4a", ".flac", ".opus"}:
                 return (
-                    f"File `{target.name}` adalah audio. Model vision hanya melihat gambar. "
-                    "Untuk 'mendengar', transkrip dulu (mis. tool STT/Whisper) lalu proses teksnya."
+                    f"File `{target.name}` is audio. The vision model only sees images. "
+                    "To 'listen', transcribe first (e.g. an STT/Whisper tool) then process the text."
                 )
             if ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
                 return (
-                    f"File `{target.name}` adalah video. Model vision hanya melihat gambar diam. "
-                    "Untuk 'menonton', ekstrak frame kunci jadi gambar (mis. ffmpeg) lalu analisa "
-                    "frame-nya dengan analyze_media, dan/atau transkrip audionya."
+                    f"File `{target.name}` is video. The vision model only sees still images. "
+                    "To 'watch', extract key frames to images (e.g. ffmpeg) then analyze "
+                    "the frames with analyze_media, and/or transcribe the audio."
                 )
-            return f"ERROR: ekstensi `{ext}` bukan gambar. Vision mendukung PNG/JPG/WEBP/GIF."
+            return f"ERROR: extension `{ext}` is not an image. Vision supports PNG/JPG/WEBP/GIF."
         data = target.read_bytes()
         if len(data) > VISION_MAX_BYTES:
-            return f"ERROR: gambar terlalu besar (batas {VISION_MAX_BYTES // (1024*1024)} MB)."
+            return f"ERROR: image too large (limit {VISION_MAX_BYTES // (1024*1024)} MB)."
         mime = mimetypes.guess_type(target.name)[0] or "image/png"
         b64 = base64.b64encode(data).decode("ascii")
         image_url = f"data:{mime};base64,{b64}"
 
     if not config.API_KEY or not config.BASE_URL or not config.MODEL:
-        return "ERROR: provider belum dikonfigurasi untuk analisa gambar."
+        return "ERROR: provider is not configured for image analysis."
     payload = {
         "model": config.MODEL,
         "messages": [
@@ -397,18 +397,18 @@ def _system_env() -> str:
     import platform as _platform
     import shutil as _shutil
 
-    lines = ["Lingkungan Sistem", ""]
+    lines = ["System Environment", ""]
     lines.append(f"- OS: {_platform.system()} {_platform.release()}")
     lines.append(f"- Arch: {_platform.machine()}")
     lines.append(f"- CPU: {os.cpu_count()} core")
     lines.append(f"- Python: {_platform.python_version()}")
     lines.append("")
-    lines.append("Tool terpasang:")
+    lines.append("Installed tools:")
     for tool in ("python", "python3", "pip", "node", "npm", "go", "gcc", "make", "git", "docker", "curl", "ffmpeg"):
         found = _shutil.which(tool)
-        lines.append(f"- {tool}: {found or 'tidak ada'}")
+        lines.append(f"- {tool}: {found or 'not found'}")
     lines.append("")
-    lines.append("Port lokal aktif (umum):")
+    lines.append("Active local ports (common):")
     active = []
     for port in (22, 80, 443, 3000, 5000, 8000, 8080, 8081, 8089, 8092, 20128):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -418,7 +418,7 @@ def _system_env() -> str:
                 active.append(port)
         finally:
             sock.close()
-    lines.append("- " + (", ".join(str(p) for p in active) if active else "tidak ada yang terdeteksi"))
+    lines.append("- " + (", ".join(str(p) for p in active) if active else "none detected"))
     return "\n".join(lines)
 
 
@@ -624,12 +624,12 @@ def _web_search(query: str) -> str:
     Selalu fail-fast; tidak pernah menggantung lama."""
     query = query.strip()
     if not query:
-        return "ERROR: query kosong."
+        return "ERROR: empty query."
     for engine in (_search_bing_jina, _search_jina_ddg, _search_gnews, _search_wikipedia):
         results = engine(query)
         if results:
             return "\n".join(f"- {title}\n  {url}" for title, url in results)
-    return "ERROR: tidak dapat mencari web (semua sumber gagal). Coba lagi nanti."
+    return "ERROR: could not search the web (all sources failed). Try again later."
 
 
 def _web_fetch(url: str) -> str:
@@ -638,10 +638,10 @@ def _web_fetch(url: str) -> str:
     url = url.strip()
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return "ERROR: URL harus http/https yang valid."
+        return "ERROR: URL must be a valid http/https URL."
     host = parsed.hostname or ""
     if not host or _is_internal_ip(host):
-        return "ERROR: URL menunjuk ke alamat internal dan diblokir."
+        return "ERROR: URL points to an internal address and is blocked."
     # 1) Reader proxy: mengembalikan teks/markdown bersih, jarang kena blokir.
     try:
         response = requests.get(
@@ -651,7 +651,7 @@ def _web_fetch(url: str) -> str:
         )
         if response.ok and response.text.strip():
             text = response.text
-            return text[:12_000] + ("\n... [dipotong]" if len(text) > 12_000 else "")
+            return text[:12_000] + ("\n... [truncated]" if len(text) > 12_000 else "")
     except requests.RequestException:
         pass
     # 2) Fallback: fetch langsung.
@@ -674,8 +674,8 @@ def _web_fetch(url: str) -> str:
                 break
         text = _html_to_text(b"".join(chunks))
         if not text:
-            return "(halaman tidak memiliki teks yang bisa dibaca)"
-        return text[:12_000] + ("\n... [dipotong]" if size > 12_000 else "")
+            return "(page has no readable text)"
+        return text[:12_000] + ("\n... [truncated]" if size > 12_000 else "")
     except requests.RequestException as exc:
         return f"ERROR fetch: {exc.__class__.__name__}."
 
@@ -712,7 +712,7 @@ def _deep_research(query: str) -> str:
     proxy, lalu kumpulkan kutipan untuk disintesis. Dibatasi ketat agar cepat."""
     query = query.strip()
     if not query:
-        return "ERROR: query kosong."
+        return "ERROR: empty query."
     urls = _search_result_urls(query, limit=3)
     if not urls:
         # Tidak dapat URL → pakai hasil web_search ringkas saja (cepat).
@@ -756,84 +756,84 @@ def _deep_research(query: str) -> str:
 TOOL_DEFS: list[ToolDef] = [
     ToolDef(
         "runtime_info",
-        "Tampilkan identitas runtime Zeline, model, provider, protokol, profile, dan tools tanpa membocorkan API key atau token.",
+        "Show Zeline runtime identity, model, provider, protocol, profile, and tools without leaking the API key or token.",
         {"type": "object", "properties": {}},
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "add_memory",
-        "Simpan satu fakta jangka panjang tentang user di memory percakapan ini.",
+        "Save one long-term fact about the user in this conversation's memory.",
         {
             "type": "object",
-            "properties": {"fact": {"type": "string", "description": "Fakta singkat yang mau diingat"}},
+            "properties": {"fact": {"type": "string", "description": "Short fact to remember"}},
             "required": ["fact"],
         },
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "remove_memory",
-        "Hapus fakta di memory percakapan ini yang mengandung potongan teks tertentu.",
+        "Remove a fact in this conversation's memory containing a given substring.",
         {
             "type": "object",
-            "properties": {"substring": {"type": "string", "description": "Potongan teks fakta yang mau dihapus"}},
+            "properties": {"substring": {"type": "string", "description": "Substring of the fact to remove"}},
             "required": ["substring"],
         },
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "list_memory",
-        "Tampilkan semua fakta yang tersimpan untuk user/percakapan ini.",
+        "Show all facts stored for this user/conversation.",
         {"type": "object", "properties": {}},
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "load_skill",
-        "Baca isi lengkap sebuah skill/prosedur berdasarkan nama file skill.",
+        "Read the full content of a skill/procedure by its skill file name.",
         {
             "type": "object",
-            "properties": {"name": {"type": "string", "description": "Nama skill tanpa .md"}},
+            "properties": {"name": {"type": "string", "description": "Skill name without .md"}},
             "required": ["name"],
         },
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "web_search",
-        "Cari informasi terbaru dari web (berita, artikel, data publik). Gunakan saat user minta info yang tidak kamu tahu atau butuh data terbaru.",
+        "Search the web for current information (news, articles, public data). Use when the user asks for info you don't know or that needs fresh data.",
         {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "Kata kunci pencarian"}},
+            "properties": {"query": {"type": "string", "description": "Search keywords"}},
             "required": ["query"],
         },
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "web_fetch",
-        "Buka satu URL publik (http/https) dan kembalikan teks halamannya. URL internal/jaringan privat otomatis diblokir.",
+        "Open one public URL (http/https) and return its page text. Internal/private-network URLs are blocked automatically.",
         {
             "type": "object",
-            "properties": {"url": {"type": "string", "description": "URL lengkap, misal https://example.com/artikel"}},
+            "properties": {"url": {"type": "string", "description": "Full URL, e.g. https://example.com/article"}},
             "required": ["url"],
         },
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "deep_research",
-        "Riset mendalam multi-sumber: cari web, buka 3 halaman teratas, dan kumpulkan kutipan berbukti untuk disintesis. Gunakan saat user minta riset, perbandingan, atau jawaban yang butuh beberapa sumber—bukan sekadar 1 fakta cepat.",
+        "In-depth multi-source research: search the web, open the top 3 pages, and gather evidence-backed quotes to synthesize. Use when the user asks for research, comparison, or an answer needing several sources — not just one quick fact.",
         {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "Topik atau pertanyaan riset"}},
+            "properties": {"query": {"type": "string", "description": "Research topic or question"}},
             "required": ["query"],
         },
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "analyze_media",
-        "Lihat sebuah gambar (PNG/JPG/WEBP/GIF) dan jawab pertanyaan tentangnya memakai model vision. Terima path file di workspace ATAU URL http/https. Gunakan saat user mengirim/menunjuk gambar (screenshot, foto, diagram). Untuk audio/video, tool ini menjelaskan langkah yang benar (transkrip/ekstraksi frame).",
+        "Look at an image (PNG/JPG/WEBP/GIF) and answer a question about it using the vision model. Accepts a workspace file path OR an http/https URL. Use when the user sends/points to an image (screenshot, photo, diagram). For audio/video, this tool explains the correct step (transcript/frame extraction).",
         {
             "type": "object",
             "properties": {
-                "path_or_url": {"type": "string", "description": "Path file gambar di workspace atau URL http/https"},
-                "question": {"type": "string", "description": "Pertanyaan/instruksi tentang gambar (opsional)"},
+                "path_or_url": {"type": "string", "description": "Image file path in the workspace or an http/https URL"},
+                "question": {"type": "string", "description": "Question/instruction about the image (optional)"},
             },
             "required": ["path_or_url"],
         },
@@ -841,14 +841,14 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "http_request",
-        "Panggil REST API/webhook dengan method bebas (GET/POST/PUT/PATCH/DELETE), header, dan body JSON. Beda dari web_fetch yang cuma baca halaman GET. Alamat jaringan internal otomatis diblokir.",
+        "Call a REST API/webhook with any method (GET/POST/PUT/PATCH/DELETE), headers, and a JSON body. Unlike web_fetch which only reads GET pages. Internal network addresses are blocked automatically.",
         {
             "type": "object",
             "properties": {
                 "method": {"type": "string", "description": "GET, POST, PUT, PATCH, DELETE"},
-                "url": {"type": "string", "description": "URL endpoint http/https"},
-                "headers": {"type": "string", "description": "Header sebagai JSON, mis. {\"Authorization\": \"Bearer x\"}. Opsional."},
-                "body": {"type": "string", "description": "Body request (JSON/teks). Opsional."},
+                "url": {"type": "string", "description": "http/https endpoint URL"},
+                "headers": {"type": "string", "description": "Headers as JSON, e.g. {\"Authorization\": \"Bearer x\"}. Optional."},
+                "body": {"type": "string", "description": "Request body (JSON/text). Optional."},
             },
             "required": ["method", "url"],
         },
@@ -856,28 +856,28 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "system_env",
-        "Tampilkan info lingkungan: OS/arch/CPU, runtime & tool yang terpasang (python/node/go/git/docker/ffmpeg), dan port lokal aktif. Panggil sebelum menjalankan perintah untuk tahu tool apa yang tersedia.",
+        "Show environment info: OS/arch/CPU, installed runtimes & tools (python/node/go/git/docker/ffmpeg), and active local ports. Call before running commands to see which tools are available.",
         {"type": "object", "properties": {}},
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
         "read_file",
-        "Baca file teks di dalam workspace yang diizinkan.",
+        "Read a text file inside the allowed workspace.",
         {
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "Path relatif di workspace"}},
+            "properties": {"path": {"type": "string", "description": "Relative path in the workspace"}},
             "required": ["path"],
         },
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
         "write_file",
-        "Tulis/timpa file teks di dalam workspace yang diizinkan.",
+        "Write/overwrite a text file inside the allowed workspace.",
         {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path relatif di workspace"},
-                "content": {"type": "string", "description": "Isi file"},
+                "path": {"type": "string", "description": "Relative path in the workspace"},
+                "content": {"type": "string", "description": "File content"},
             },
             "required": ["path", "content"],
         },
@@ -885,30 +885,30 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "edit_file",
-        "Edit satu bagian unik pada file teks di workspace.",
+        "Edit one unique section of a text file in the workspace.",
         {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
         "patch_file",
-        "Terapkan patch replace unik pada satu file workspace.",
+        "Apply a unique replace patch to one workspace file.",
         {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
         "search_files",
-        "Cari teks dalam file-file workspace.",
-        {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string", "description": "Glob file, default *"}}, "required": ["query"]},
+        "Search text within workspace files.",
+        {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string", "description": "File glob, default *"}}, "required": ["query"]},
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
         "download_file",
-        "Unduh file dari URL publik (http/https) ke dalam workspace. Untuk aset/release/dataset. Alamat internal diblokir; batas 50 MB.",
+        "Download a file from a public URL (http/https) into the workspace. For assets/releases/datasets. Internal addresses blocked; 50 MB limit.",
         {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "URL file yang mau diunduh"},
-                "path": {"type": "string", "description": "Path tujuan relatif di workspace"},
+                "url": {"type": "string", "description": "URL of the file to download"},
+                "path": {"type": "string", "description": "Destination relative path in the workspace"},
             },
             "required": ["url", "path"],
         },
@@ -916,18 +916,18 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "update_task",
-        "Laporkan perubahan status satu task coding. Panggil saat task mulai, selesai, dibatalkan, atau diganti.",
+        "Report a status change for one coding task. Call when a task starts, finishes, is cancelled, or is replaced.",
         {"type": "object", "properties": {"task": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}}, "required": ["task", "status"]},
         frozenset({"full"}),
     ),
     ToolDef(
         "save_skill",
-        "Simpan skill baru milik pemilik Zeline. Hanya gunakan bila pengguna lokal meminta prosedur reusable.",
+        "Save a new skill owned by the Zeline operator. Only use when the local user asks for a reusable procedure.",
         {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Nama skill"},
-                "content": {"type": "string", "description": "Markdown skill (# judul, > deskripsi, langkah)"},
+                "name": {"type": "string", "description": "Skill name"},
+                "content": {"type": "string", "description": "Skill markdown (# title, > description, steps)"},
             },
             "required": ["name", "content"],
         },
@@ -935,22 +935,22 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "update_skill",
-        "Patch satu bagian unik pada skill private milik operator.",
+        "Patch one unique section of the operator's private skill.",
         {"type": "object", "properties": {"name": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["name", "old_text", "new_text"]},
         frozenset({"full"}),
     ),
     ToolDef(
         "execute_code",
-        "Jalankan snippet Python di workspace operator dan kembalikan output nyata.",
+        "Run a Python snippet in the operator workspace and return the real output.",
         {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
         frozenset({"full"}),
     ),
     ToolDef(
         "run_shell",
-        "Jalankan perintah shell di workspace pemilik. Hanya untuk operator lokal yang berwenang.",
+        "Run a shell command in the owner workspace. Only for the authorized local operator.",
         {
             "type": "object",
-            "properties": {"command": {"type": "string", "description": "Perintah shell"}},
+            "properties": {"command": {"type": "string", "description": "Shell command"}},
             "required": ["command"],
         },
         frozenset({"full"}),
@@ -959,11 +959,11 @@ TOOL_DEFS: list[ToolDef] = [
 
 
 class ToolExecutor:
-    """Tool binding untuk satu session/identity dan satu security profile."""
+    """Tool binding for one session/identity and one security profile."""
 
     def __init__(self, identity: str, profile: str = "safe", workspace: str | Path | None = None):
         if profile not in SAFE_PROFILES:
-            raise ValueError(f"tool profile tidak dikenal: {profile}")
+            raise ValueError(f"unknown tool profile: {profile}")
         self.identity = identity or "cli:local"
         self.profile = profile
         self.workspace = Path(workspace or config.WORKSPACE).expanduser().resolve(strict=False)
@@ -1014,7 +1014,7 @@ class ToolExecutor:
             "protocol": config.PROTOCOL,
             "tool_profile": self.profile,
             "tools": available,
-            "secrets": "API key dan token sengaja tidak ditampilkan",
+            "secrets": "API key and token intentionally hidden",
         }, ensure_ascii=False, indent=2)
 
     @property
@@ -1031,20 +1031,20 @@ class ToolExecutor:
         # Tool MCP di-dispatch ke registry (hanya untuk profile workspace/full).
         if self.mcp is not None and name.startswith(mcp_module.MCP_TOOL_PREFIX):
             if not self.mcp.has_tool(name):
-                return f"ERROR: tool MCP '{name}' tidak terdaftar."
+                return f"ERROR: MCP tool '{name}' is not registered."
             return self.mcp.call(name, args)
         allowed = {definition.name for definition in TOOL_DEFS if self.profile in definition.profiles}
         if name not in allowed:
-            return f"ERROR: tool '{name}' tidak diizinkan untuk profile '{self.profile}'."
+            return f"ERROR: tool '{name}' is not allowed for profile '{self.profile}'."
         handler = self._handlers.get(name)
         if handler is None:
-            return f"ERROR: tool '{name}' tidak tersedia."
+            return f"ERROR: tool '{name}' is not available."
         try:
             return str(handler(**args))
         except TypeError as exc:
-            return f"ERROR argumen {name}: {exc}"
+            return f"ERROR argument {name}: {exc}"
         except Exception as exc:
-            return f"ERROR menjalankan {name}: {exc}"
+            return f"ERROR running {name}: {exc}"
 
 
 # Backward-compatible aliases for kode kecil yang mungkin sudah import ini.
