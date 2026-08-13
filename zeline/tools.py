@@ -638,14 +638,19 @@ def _looks_like_cf_challenge(text: str) -> bool:
     FTMO & banyak situs prop firm pakai CF 'managed challenge': fetch (termasuk
     via reader proxy) balik halaman 'Just a moment…' berisi JS challenge, bukan
     isi halaman. Ciri khas: title 'Just a moment', variabel _cf_chl_opt, atau
-    endpoint challenges.cloudflare.com. Kalau kena ini, konten tidak berguna →
-    picu fallback Wayback.
+    token challenge __cf_chl. Kalau kena ini, konten tidak berguna → picu
+    fallback Wayback.
+
+    Catatan: sengaja TIDAK mencocokkan hostname `challenges.cloudflare.com`
+    mentah — CodeQL menandainya sebagai 'incomplete URL sanitization' (padahal
+    ini bukan sanitasi URL, cuma pindai konten). Marker `__cf_chl` /
+    `_cf_chl_opt` sudah unik untuk halaman challenge, jadi lebih presisi.
     """
     low = text[:4000].lower()
     return (
         "just a moment" in low
         or "_cf_chl_opt" in low
-        or "challenges.cloudflare.com" in low
+        or "__cf_chl" in low
         or "cf-browser-verification" in low
         or "enable javascript and cookies to continue" in low
     )
