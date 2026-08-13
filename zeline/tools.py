@@ -632,9 +632,96 @@ def _web_search(query: str) -> str:
     return "ERROR: could not search the web (all sources failed). Try again later."
 
 
+def _looks_like_cf_challenge(text: str) -> bool:
+    """Deteksi halaman tantangan Cloudflare (bukan konten asli).
+
+    FTMO & banyak situs prop firm pakai CF 'managed challenge': fetch (termasuk
+    via reader proxy) balik halaman 'Just a moment…' berisi JS challenge, bukan
+    isi halaman. Ciri khas: title 'Just a moment', variabel _cf_chl_opt, atau
+    endpoint challenges.cloudflare.com. Kalau kena ini, konten tidak berguna →
+    picu fallback Wayback.
+    """
+    low = text[:4000].lower()
+    return (
+        "just a moment" in low
+        or "_cf_chl_opt" in low
+        or "challenges.cloudflare.com" in low
+        or "cf-browser-verification" in low
+        or "enable javascript and cookies to continue" in low
+    )
+
+
+def _fetch_via_wayback(url: str) -> str | None:
+    """Ambil isi halaman dari snapshot terbaru archive.org (bypass Cloudflare).
+
+    Cloudflare tidak melindungi archive.org, jadi snapshot yang sudah tersimpan
+    bisa dibaca bebas dari Termux. Alur:
+      1) CDX API → cari timestamp snapshot 200 TERBARU untuk URL itu.
+      2) Ambil versi mentah `<ts>id_/<url>` (id_ = original bytes, tanpa
+         toolbar archive). archive.org menyajikan byte asli yang mungkin masih
+         ter-gzip → dekompres manual bila perlu.
+      3) Bersihkan HTML → teks. Kembalikan None kalau tidak ada snapshot.
+    Ini fallback zero-cost (tanpa browser/proxy berbayar) untuk situs ber-CF.
+    """
+    import gzip
+
+    # archive.org kerap lambat / rate-limited (429). Beri timeout lebih lega
+    # dari WEB_TIMEOUT biasa karena ini fallback terakhir; lebih baik nunggu
+    # sebentar daripada gagal total di situs ber-Cloudflare.
+    wayback_timeout = 25
+    try:
+        cdx = requests.get(
+            "https://web.archive.org/cdx/search/cdx",
+            params={
+                "url": url,
+                "output": "json",
+                "limit": "-3",  # 3 snapshot terbaru
+                "filter": "statuscode:200",
+                "fl": "timestamp,original",
+            },
+            headers={"User-Agent": _UA},
+            timeout=wayback_timeout,
+        )
+        if not cdx.ok:
+            return None
+        rows = cdx.json()
+        # rows[0] = header ['timestamp','original']; sisanya data.
+        if not isinstance(rows, list) or len(rows) < 2:
+            return None
+        timestamp = str(rows[-1][0])  # snapshot paling baru
+    except (requests.RequestException, ValueError, IndexError, KeyError):
+        return None
+
+    try:
+        snap = requests.get(
+            f"https://web.archive.org/web/{timestamp}id_/{url}",
+            headers={"User-Agent": _UA, "Accept-Encoding": "gzip, deflate"},
+            timeout=wayback_timeout,
+        )
+        if not snap.ok:
+            return None
+        raw = snap.content
+        # archive.org id_ kadang mengembalikan byte asli yang masih ter-gzip
+        # tanpa header Content-Encoding → requests tidak auto-dekompres. Coba
+        # gunzip manual bila terdeteksi magic byte gzip (0x1f 0x8b).
+        if raw[:2] == b"\x1f\x8b":
+            try:
+                raw = gzip.decompress(raw)
+            except OSError:
+                pass
+        text = _html_to_text(raw)
+        if not text or _looks_like_cf_challenge(text):
+            return None
+        note = f"[via arsip web {timestamp[:8]} — situs asli diblokir Cloudflare]\n\n"
+        return note + text[:12_000] + ("\n... [truncated]" if len(text) > 12_000 else "")
+    except requests.RequestException:
+        return None
+
+
 def _web_fetch(url: str) -> str:
     """Buka URL publik dan kembalikan teksnya. URL internal diblokir (SSRF).
-    Utamakan reader proxy (cepat & tahan blokir); fallback fetch langsung."""
+    Utamakan reader proxy (cepat & tahan blokir); fallback fetch langsung;
+    kalau kena tantangan Cloudflare, fallback ke snapshot archive.org."""
     url = url.strip()
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -649,7 +736,7 @@ def _web_fetch(url: str) -> str:
             headers={"User-Agent": _UA},
             timeout=WEB_TIMEOUT,
         )
-        if response.ok and response.text.strip():
+        if response.ok and response.text.strip() and not _looks_like_cf_challenge(response.text):
             text = response.text
             return text[:12_000] + ("\n... [truncated]" if len(text) > 12_000 else "")
     except requests.RequestException:
@@ -663,21 +750,30 @@ def _web_fetch(url: str) -> str:
             allow_redirects=True,
             stream=True,
         )
-        if not response.ok:
-            return f"ERROR: HTTP {response.status_code}."
-        chunks = []
-        size = 0
-        for chunk in response.iter_content(8192):
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > WEB_MAX_BYTES:
-                break
-        text = _html_to_text(b"".join(chunks))
-        if not text:
-            return "(page has no readable text)"
-        return text[:12_000] + ("\n... [truncated]" if size > 12_000 else "")
-    except requests.RequestException as exc:
-        return f"ERROR fetch: {exc.__class__.__name__}."
+        if response.ok:
+            chunks = []
+            size = 0
+            for chunk in response.iter_content(8192):
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > WEB_MAX_BYTES:
+                    break
+            body = b"".join(chunks)
+            text = _html_to_text(body)
+            # Situs ber-Cloudflare: fetch langsung balik halaman challenge, bukan
+            # isi. Jangan kembalikan sampah itu → coba Wayback dulu.
+            if text and not _looks_like_cf_challenge(text):
+                return text[:12_000] + ("\n... [truncated]" if size > 12_000 else "")
+    except requests.RequestException:
+        pass
+    # 3) Fallback terakhir: snapshot archive.org (bypass Cloudflare, zero-cost).
+    archived = _fetch_via_wayback(url)
+    if archived:
+        return archived
+    return (
+        "ERROR: halaman tidak bisa dibaca — kemungkinan diblokir Cloudflare dan "
+        "tidak ada snapshot arsip. Coba URL/sumber lain."
+    )
 
 
 def _search_result_urls(query: str, limit: int = 4) -> list[str]:
