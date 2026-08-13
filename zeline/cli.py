@@ -890,15 +890,24 @@ def cmd_doctor() -> int:
         problems.append("Provider model is empty.")
     if not Path(config.WORKSPACE).expanduser().exists():
         warnings.append(f"Workspace not found: {config.WORKSPACE}")
+    # Only surface gateways that are actually enabled (configured to connect).
+    # Disabled platforms (e.g. WhatsApp/webhook when we only use Telegram) are
+    # not printed at all. For each enabled gateway show whether the background
+    # process is live (connected/running) or just configured (not connected yet).
+    active, _msg, state = gateway_service.status()
+    enabled_gateways = [name for name, enabled, errors in gateway_status(config.GATEWAYS) if enabled]
     for name, enabled, errors in gateway_status(config.GATEWAYS):
         if enabled and errors:
             problems.append(f"Gateway {name}: {'; '.join(errors)}")
-        print(f"  gateway {name:<9}: {'enabled' if enabled else 'disabled'} (config)")
-    active, _msg, state = gateway_service.status()
-    if active:
-        print(f"  gateway process : RUNNING (PID {(state or {}).get('pid', '?')})")
+    if not enabled_gateways:
+        print("  gateway   : none configured (run `zeline gateway setup`)")
     else:
-        print("  gateway process : not running (run `zeline gateway start`)")
+        for name in enabled_gateways:
+            if active:
+                pid = (state or {}).get("pid", "?")
+                print(f"  gateway   : {name} connected & running (PID {pid})")
+            else:
+                print(f"  gateway   : {name} configured but not connected (run `zeline gateway start`)")
     print(f"  skills    : {len(skills.list_skills())}")
     if warnings:
         print("\nWarnings:")
