@@ -1768,7 +1768,18 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
 
 
 def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> threading.Thread:
-    """Jalankan turn di worker agar polling tetap menerima /stop dan /steer."""
+    """Jalankan turn di worker agar polling tetap menerima /stop dan /steer.
+
+    Kirim 'typing…' SEKETIKA (sinkron, dari loop polling) sebelum worker dimulai.
+    Sebelumnya sendChatAction baru dipanggil di dalam worker setelah session
+    di-load, jadi ada jeda terlihat 'diam' sebelum 'sedang mengetik' muncul.
+    Satu round-trip sendChatAction sangat cepat (~ratusan ms) dan langsung
+    memberi feedback bahwa bot menerima pesan.
+    """
+    try:
+        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
+    except Exception:
+        pass
     worker = threading.Thread(
         target=_send_agent_reply,
         kwargs={
