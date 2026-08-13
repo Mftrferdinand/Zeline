@@ -831,7 +831,20 @@ def cmd_gateway_start(only: list[str] | None = None) -> int:
         return 2
     started, message = gateway_service.start(only=only)
     print(message)
-    return 0 if started else 1
+    if not started:
+        return 1
+    # Don't just report 'spawned' — wait for each platform to actually connect
+    # (getMe + polling) and show a live per-gateway status, like Hermes does.
+    print("  Connecting…", flush=True)
+    ready, lines = gateway_service.wait_until_connected(timeout=30.0)
+    for line in lines:
+        icon = "✅" if ready else "⚠️"
+        print(f"  {icon} {line}")
+    if ready:
+        print("  Gateway is live and connected.")
+    else:
+        print("  Not all gateways connected yet. Check `zeline gateway log`.")
+    return 0 if ready else 1
 
 
 def cmd_gateway_stop() -> int:
@@ -845,7 +858,18 @@ def cmd_gateway_restart(only: list[str] | None = None) -> int:
     print(stop_message)
     started, start_message = gateway_service.start(only=only)
     print(start_message)
-    return 0 if started else 1
+    if not started:
+        return 1
+    print("  Connecting…", flush=True)
+    ready, lines = gateway_service.wait_until_connected(timeout=30.0)
+    for line in lines:
+        icon = "✅" if ready else "⚠️"
+        print(f"  {icon} {line}")
+    if ready:
+        print("  Gateway is live and connected.")
+    else:
+        print("  Not all gateways connected yet. Check `zeline gateway log`.")
+    return 0 if ready else 1
 
 
 def cmd_gateway_service_status() -> int:

@@ -325,16 +325,10 @@ class _LiveStatus:
     def _render(self) -> str:
         ordered = _ordered_lines(self.lines)[-self.max_lines:]
         feed = ("\n" + "\n".join(ordered)) if ordered else ""
-        # Header konsisten '⏰ Processing'. Delay panjang diberi catatan provider.
-        if self.phase == "waiting":
-            wait = time.monotonic() - self.phase_started
-            if wait >= 30 and self.model:
-                header = f"⏰ Processing ({self.model} is slow to respond)"
-            else:
-                header = "⏰ Processing"
-        else:
-            header = "⏰ Processing"
-        return header + feed
+        # Header selalu netral '⏰ Processing'. JANGAN pernah menyalahkan model
+        # ('is slow to respond') — user membenci itu; delay bisa jaringan/tool,
+        # bukan model. Streaming token live sudah memberi umpan balik nyata.
+        return "⏰ Processing" + feed
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
         # Bubble progres HANYA dibuat saat ada aktivitas tool nyata (search/coding/
@@ -498,6 +492,111 @@ def _start_working_heartbeat(
     worker = threading.Thread(target=heartbeat, name=f"zeline-heartbeat-{chat_id}", daemon=True)
     worker.start()
     return worker
+
+
+class _StreamingReply:
+    """Bubble teks yang di-edit LIVE saat token mengalir dari model.
+
+    Tujuan: hilangkan efek "diam lama → tiba-tiba dump panjang". Selama model
+    menghasilkan teks, tiap ~``min_interval`` detik bubble di-edit dengan teks
+    terkini + kursor ``▍`` (persis rasa Selena/Hermes yang "satset").
+
+    Detail penting:
+    - Saat streaming (partial), teks dikirim sebagai PLAIN (tanpa parse_mode)
+      supaya markdown yang belum selesai tidak bikin editMessageText gagal
+      ("can't parse entities"). Baru saat commit teks dirender jadi HTML rapi.
+    - Satu segmen = satu panggilan LLM. ``commit()`` mengunci bubble segmen ini
+      lalu reset ``message_id`` supaya segmen berikutnya (setelah tool jalan)
+      membuat bubble BARU di bawahnya → urutan chat rapi.
+    - Kalau provider tidak streaming (tidak ada token), ``streamed_any`` tetap
+      False → pemanggil jatuh ke jalur legacy (kirim bubble sekaligus).
+    """
+
+    _CURSOR = " ▍"
+
+    def __init__(self, api: str, chat_id: int, *, min_interval: float = 1.2):
+        self.api = api
+        self.chat_id = chat_id
+        self.min_interval = min_interval
+        self.message_id: int | None = None
+        self.buffer = ""
+        self.streamed_any = False
+        self._last_edit = 0.0
+        self._last_text: str | None = None
+        self._lock = threading.Lock()
+
+    def feed(self, token: str) -> None:
+        if not token:
+            return
+        with self._lock:
+            self.buffer += token
+            self.streamed_any = True
+            now = time.monotonic()
+            if self.message_id is not None and now - self._last_edit < self.min_interval:
+                return
+            self._flush_locked(final=False)
+            self._last_edit = now
+
+    def _preview(self) -> str:
+        """Teks preview plain, ekor dibatasi agar tak melewati limit Telegram."""
+        text = self.buffer
+        budget = TELEGRAM_MESSAGE_LIMIT - len(self._CURSOR) - 1
+        if len(text) > budget:
+            text = "…" + text[-(budget - 1):]
+        return text.strip()
+
+    def _flush_locked(self, *, final: bool) -> None:
+        display = self._preview()
+        if not display:
+            return
+        if not final:
+            display = display + self._CURSOR
+        if display == self._last_text:
+            return
+        self._last_text = display
+        if self.message_id is None:
+            payload = _api_call(self.api, "sendMessage", chat_id=self.chat_id, text=display)
+            if payload and isinstance(payload.get("result"), dict):
+                self.message_id = payload["result"].get("message_id")
+        else:
+            _api_call(self.api, "editMessageText", chat_id=self.chat_id, message_id=self.message_id, text=display)
+
+    def _reset_segment(self) -> None:
+        self.message_id = None
+        self.buffer = ""
+        self.streamed_any = False
+        self._last_edit = 0.0
+        self._last_text = None
+
+    def commit(self, text: str) -> bool:
+        """Kunci bubble segmen ini dgn ``text`` (dirender HTML), lalu reset.
+
+        Return True bila memang ada teks yang di-stream live (bubble sudah ada
+        dan tinggal difinalisasi). False bila tidak ada streaming → pemanggil
+        harus mengirim ``text`` lewat jalur normal.
+        """
+        with self._lock:
+            if not self.streamed_any or self.message_id is None:
+                self._reset_segment()
+                return False
+            rendered = _markdown_to_telegram_html(text.strip())
+            if len(rendered) > TELEGRAM_MESSAGE_LIMIT:
+                # Terlalu panjang untuk satu bubble → hapus preview, biar
+                # pemanggil kirim rapi multi-part via _split_message.
+                _api_call(self.api, "deleteMessage", chat_id=self.chat_id, message_id=self.message_id)
+                self._reset_segment()
+                return False
+            _api_call(self.api, "editMessageText", chat_id=self.chat_id, message_id=self.message_id, text=rendered, parse_mode="HTML")
+            self._reset_segment()
+            return True
+
+    def discard(self) -> None:
+        """Buang bubble preview (mis. saat error) tanpa menyisakan sampah."""
+        with self._lock:
+            if self.message_id is not None:
+                _api_call(self.api, "deleteMessage", chat_id=self.chat_id, message_id=self.message_id)
+            self._reset_segment()
+
 
 
 def _model_picker_payload(models: list[str], current_model: str, provider_index: int | None = None, provider_name: str = "") -> tuple[str, dict[str, Any]]:
@@ -1674,6 +1773,15 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     done = threading.Event()
     live = _LiveStatus(api, chat_id, model=getattr(config, "MODEL", ""))
     heartbeat = _start_working_heartbeat(api, chat_id, done, status=live)
+    # Bubble teks yang di-edit LIVE saat token model mengalir (rasa "satset"
+    # Selena/Hermes). Kalau provider tidak streaming, objek ini pasif dan alur
+    # jatuh ke jalur bubble sekaligus seperti sebelumnya.
+    stream = _StreamingReply(api, chat_id)
+
+    def on_stream_delta(token: str):
+        # Token mentah dari model → tumbuhkan bubble preview. Refresh typing
+        # sesekali supaya indikator tidak keburu hilang saat jeda antar-token.
+        stream.feed(token)
 
     def on_tool(_name, _args):
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
@@ -1694,12 +1802,18 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_narration(sentence: str):
-        # Kalimat rencana/temuan model yang menyertai tool call → kirim sebagai
-        # bubble terpisah SEBELUM tool jalan, persis seperti Selena/Hermes
-        # (bubble penjelasan → terminal → bubble berikutnya). Tanpa ini, semua
-        # penjelasan model cuma muncul sekali di akhir sebagai dump panjang.
+        # Kalimat rencana/temuan model yang menyertai tool call. Kalau teksnya
+        # sudah di-stream live, cukup KUNCI bubble streaming itu jadi bentuk
+        # HTML final (tidak kirim ulang). Kalau tidak ada streaming (provider
+        # non-SSE), jatuh ke jalur lama: detach progres lalu kirim bubble baru.
         sentence = sentence.strip()
         if not sentence:
+            return
+        if stream.commit(sentence):
+            # Bubble narasi live sudah terkunci; siapkan progres tool baru
+            # di bawahnya.
+            live.detach()
+            _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
             return
         # Selesaikan bubble progres berjalan (kalau ada) supaya urutannya rapi:
         # narasi baru selalu tampil sebagai pesan sendiri di bawah aktivitas
@@ -1722,6 +1836,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             on_tool_result=on_tool_result,
             on_iteration=on_iteration,
             on_narration=on_narration,
+            on_stream_delta=on_stream_delta,
         )
         ok = True
     except ZelineError as exc:
@@ -1737,15 +1852,20 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             # kirim jawaban final sebagai pesan baru terpisah.
             live.finalize()
         else:
+            stream.discard()  # buang preview streaming yang belum selesai
             live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
-    for part in _split_message(reply):
-        _api_call(
-            api,
-            "sendMessage",
-            chat_id=chat_id,
-            text=_markdown_to_telegram_html(part),
-            parse_mode="HTML",
-        )
+    # Jawaban final: kalau sudah di-stream live, kunci bubble itu jadi HTML rapi
+    # (tidak kirim ulang). Kalau tidak (non-stream / terlalu panjang), kirim
+    # normal multi-part.
+    if not (ok and stream.commit(reply)):
+        for part in _split_message(reply):
+            _api_call(
+                api,
+                "sendMessage",
+                chat_id=chat_id,
+                text=_markdown_to_telegram_html(part),
+                parse_mode="HTML",
+            )
 
     # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
     # background agar tidak menahan balasan. reflect() sendiri menjaga ambang

@@ -340,6 +340,51 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
     return False, f"PID {pid} did not die even after SIGKILL. Check manually: ps | grep zeline. Log: {LOG_FILE}"
 
 
+def wait_until_connected(timeout: float = 25.0) -> tuple[bool, list[str]]:
+    """Watch the gateway log until each enabled platform reports 'connected',
+    or a fatal error / timeout. Returns (all_ready, status_lines).
+
+    The child process prints '[telegram] @<bot> connected via polling' once it
+    finishes getMe + setMyCommands. We tail the log for those markers so
+    `zeline gateway start` can confirm real readiness instead of just 'spawned'.
+    """
+    state = _load_state()
+    if not state:
+        return False, ["gateway process not running"]
+    only = state.get("only", [])
+    expected = [
+        name for name, gw in config.GATEWAYS.items()
+        if gw.get("enabled", False) and (not only or name in only)
+    ]
+    connected: dict[str, bool] = {}
+    fatal: list[str] = []
+    deadline = time.monotonic() + timeout
+    last_size = 0
+    while time.monotonic() < deadline:
+        # Process died before connecting → surface it, don't hang.
+        if not _process_matches_state(_load_state() or {}):
+            return False, ["gateway process exited before connecting — check `zeline gateway log`"]
+        try:
+            text = LOG_FILE.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        last_size = len(text)
+        for line in text.splitlines():
+            for name in expected:
+                if f"[{name}]" in line and "connected via polling" in line:
+                    connected[name] = True
+                if f"[{name}]" in line and ("could not be verified" in line or "not started" in line):
+                    fatal.append(line.strip())
+        if fatal:
+            return False, fatal
+        if all(connected.get(name) for name in expected):
+            return True, [f"{name}: connected" for name in expected]
+        time.sleep(0.4)
+    # Timed out — report which platforms are still pending.
+    pending = [name for name in expected if not connected.get(name)]
+    return False, [f"{name}: still connecting (timeout {int(timeout)}s)" for name in pending]
+
+
 def tail_log(lines: int = 80) -> str:
     """Baca tail log tanpa mengeksekusi `tail` shell."""
     if not LOG_FILE.exists():

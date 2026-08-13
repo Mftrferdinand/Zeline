@@ -138,7 +138,11 @@ class Zeline:
         start = next((i for i, m in enumerate(restored) if m.get("role") == "user"), 0)
         self.messages = [system, *restored[start:]]
 
-    def _call_llm(self, use_tools: bool = True) -> dict[str, Any]:
+    def _call_llm(
+        self,
+        use_tools: bool = True,
+        on_stream_delta: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         if not self.api_key:
             raise ZelineError("API key not configured. Run `zeline setup`.")
         if not self.base_url or not self.model:
@@ -233,8 +237,8 @@ class Zeline:
 
         if stream:
             if self.protocol == "anthropic":
-                return self._consume_anthropic_stream(response)
-            return self._consume_openai_stream(response)
+                return self._consume_anthropic_stream(response, on_stream_delta)
+            return self._consume_openai_stream(response, on_stream_delta)
 
         parsed = _parse_response(response.text)
 
@@ -261,7 +265,11 @@ class Zeline:
             raise ZelineError("Provider returned an invalid message.")
         return message
 
-    def _consume_openai_stream(self, response: "requests.Response") -> dict[str, Any]:
+    def _consume_openai_stream(
+        self,
+        response: "requests.Response",
+        on_stream_delta: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         """Rakit satu message dari SSE OpenAI-compatible (choices[].delta).
 
         Streaming = token mengalir seketika, jadi tidak ada jeda diam panjang
@@ -298,6 +306,11 @@ class Zeline:
                 piece = delta.get("content")
                 if piece:
                     content_parts.append(str(piece))
+                    if on_stream_delta:
+                        try:
+                            on_stream_delta(str(piece))
+                        except Exception:
+                            pass
                 for call in delta.get("tool_calls") or []:
                     index = int(call.get("index", 0))
                     slot = tool_map.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
@@ -320,7 +333,11 @@ class Zeline:
             message["tool_calls"] = [tool_map[index] for index in sorted(tool_map)]
         return message
 
-    def _consume_anthropic_stream(self, response: "requests.Response") -> dict[str, Any]:
+    def _consume_anthropic_stream(
+        self,
+        response: "requests.Response",
+        on_stream_delta: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         """Rakit satu message dari SSE Anthropic (content_block_delta events).
 
         Menangani text_delta (jawaban) dan input_json_delta (argumen tool_use).
@@ -362,7 +379,13 @@ class Zeline:
                     delta = event.get("delta") or {}
                     dtype = delta.get("type", "")
                     if dtype == "text_delta":
-                        text_parts.append(str(delta.get("text", "")))
+                        piece = str(delta.get("text", ""))
+                        text_parts.append(piece)
+                        if piece and on_stream_delta:
+                            try:
+                                on_stream_delta(piece)
+                            except Exception:
+                                pass
                     elif dtype == "input_json_delta" and index in blocks:
                         blocks[index]["json"] += str(delta.get("partial_json", ""))
                 elif etype == "message_stop":
@@ -418,6 +441,7 @@ class Zeline:
         should_stop: Callable[[], bool] | None = None,
         take_steer: Callable[[], str | None] | None = None,
         on_narration: Callable[[str], None] | None = None,
+        on_stream_delta: Callable[[str], None] | None = None,
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -436,12 +460,12 @@ class Zeline:
             # loop tool (mis. web_search yang gagal berulang) — paksa jawaban
             # final dari data yang ada. Ini mencegah "Processing" 10 menit.
             if time.monotonic() - turn_started > config.MAX_TURN_SECONDS:
-                answer = self._force_final_answer(should_stop)
+                answer = self._force_final_answer(should_stop, on_stream_delta=on_stream_delta)
                 self._trim_history()
                 return answer
             if on_iteration:
                 on_iteration(iteration, config.MAX_TOOL_ROUNDS)
-            message = self._call_llm()
+            message = self._call_llm(on_stream_delta=on_stream_delta)
             if should_stop and should_stop():
                 return "Stopped."
             tool_calls = message.get("tool_calls")
@@ -524,7 +548,7 @@ class Zeline:
             if results and all(str(r).startswith("ERROR") for r in results):
                 repeated_failures += 1
                 if repeated_failures >= config.MAX_REPEATED_TOOL_FAILURES:
-                    answer = self._force_final_answer(should_stop)
+                    answer = self._force_final_answer(should_stop, on_stream_delta=on_stream_delta)
                     self._trim_history()
                     return answer
             else:
@@ -532,11 +556,15 @@ class Zeline:
 
         # Putaran tool habis. Jangan menyerah tanpa jawaban: paksa satu panggilan
         # terakhir TANPA tool agar model menyintesis data yang sudah dikumpulkan.
-        answer = self._force_final_answer(should_stop)
+        answer = self._force_final_answer(should_stop, on_stream_delta=on_stream_delta)
         self._trim_history()
         return answer
 
-    def _force_final_answer(self, should_stop: Callable[[], bool] | None = None) -> str:
+    def _force_final_answer(
+        self,
+        should_stop: Callable[[], bool] | None = None,
+        on_stream_delta: Callable[[str], None] | None = None,
+    ) -> str:
         """Minta jawaban final tanpa tool setelah batas putaran tercapai.
 
         Tanpa ini, tugas riset yang butuh banyak fetch akan berakhir dengan
@@ -558,7 +586,7 @@ class Zeline:
             }
         )
         try:
-            message = self._call_llm(use_tools=False)
+            message = self._call_llm(use_tools=False, on_stream_delta=on_stream_delta)
         except ZelineError:
             return (
                 "Aku sudah mengumpulkan banyak data tapi butuh lebih banyak "
