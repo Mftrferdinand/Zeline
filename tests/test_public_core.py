@@ -778,15 +778,16 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_live_status_never_blames_model_as_slow(self):
         # User membenci header yang menyalahkan model ("is slow to respond").
-        # Header harus selalu netral '⏰ Processing' apa pun fase/lama menunggu.
+        # Tidak ada header sama sekali: tanpa aktivitas tool, _render() kosong.
         telegram = importlib.import_module("zeline.gateways.telegram")
         with mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 1}}):
             live = telegram._LiveStatus("bot-api", 1, model="tabi/claude")
             live.set_waiting()
             live.phase_started = live.phase_started - 999  # paksa "sudah lama menunggu"
             rendered = live._render()
-        self.assertEqual(rendered, "⏰ Processing")
+        self.assertEqual(rendered, "")
         self.assertNotIn("slow to respond", rendered)
+        self.assertNotIn("Processing", rendered)
         self.assertNotIn("tabi/claude", rendered)
 
     def test_progress_ui_calls_never_block_agent_loop(self):
@@ -1190,7 +1191,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             live.add("🌐 Searching FundingPips")
             live.add("📖 Reading <code>notes.md</code> L1-50")
             rendered = live._render()
-        lines = [l for l in rendered.split("\n") if l.strip() and not l.startswith("⏰") and not l.startswith("<pre>")]
+        lines = [l for l in rendered.split("\n") if l.strip() and not l.startswith("<pre>")]
         # Search & research ditata dulu; aksi lain menyusul kronologis.
         self.assertEqual(lines[0], "🌐 Searching FundingPips")
         self.assertEqual(lines[1], "🪩 Researching FundingPips rules pricing")
@@ -1225,7 +1226,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         saved = telegram._tool_result_text("save_skill", {"name": "riset-prop-firm"}, "OK, private skill 'riset-prop-firm' saved.")
         self.assertEqual(saved, "📒 Improvement: OK, private skill 'riset-prop-firm' saved.")
 
-    def test_telegram_live_status_shows_elapsed_and_slow_provider(self):
+    def test_telegram_live_status_no_header_when_only_waiting(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         def fake_api(_api, method, **kwargs):
@@ -1233,13 +1234,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 return {"ok": True, "result": {"message_id": 999}}
             return {"ok": True}
 
-        # Header saat menunggu = '⏳ Processing...'; delay panjang beri catatan model.
+        # Tanpa aktivitas tool (cuma menunggu) → tidak ada header/teks apa pun.
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
             live = telegram._LiveStatus("bot-api", 1, model="tabi/claude")
             live.set_waiting()
-            self.assertTrue(live._render().startswith("⏰ Processing"))
+            self.assertEqual(live._render(), "")
 
-    def test_telegram_live_status_processing_header_during_tool_phase(self):
+    def test_telegram_live_status_feed_only_no_header(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         def fake_api(_api, method, **kwargs):
@@ -1251,11 +1252,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
             live = telegram._LiveStatus("bot-api", 1, model="tabi/claude")
             live.add("🌐 Searching FTMO")
             rendered = live._render()
-        # Header konsisten '⏰ Processing' + feed; tanpa jam/Working/Menunggu.
-        self.assertTrue(rendered.startswith("⏰ Processing"))
+        # Feed aktivitas apa adanya — TANPA header 'Processing'/'Working'/dll.
+        self.assertEqual(rendered, "🌐 Searching FTMO")
+        self.assertNotIn("Processing", rendered)
         self.assertNotIn("Working", rendered)
         self.assertNotIn("Menunggu", rendered)
-        self.assertIn("🌐 Searching FTMO", rendered)
 
     def test_telegram_collapses_tool_activity_into_single_live_message(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -1284,13 +1285,16 @@ class ZelinePublicCoreTests(unittest.TestCase):
         ]
         self.assertEqual(len(live_sends), 1)
         self.assertIn("editMessageText", methods)  # update via edit
-        # Bubble progres DIKUNCI sebagai catatan alur (✅ Successful), bukan dihapus.
+        # Bubble progres DIKUNCI sebagai catatan alur (feed final apa adanya,
+        # TANPA header '✅ Successful' yang sudah dihapus), bukan dihapus.
         self.assertNotIn("deleteMessage", methods)
+        self.assertNotIn("✅ Successful", str(api.call_args_list))
+        # Feed final = baris aktivitas yang sudah di-finalize (Searching→Reading).
         finalized = [
             c for c in api.call_args_list
-            if len(c.args) > 1 and c.args[1] == "editMessageText" and "✅ Successful" in str(c.kwargs.get("text", ""))
+            if len(c.args) > 1 and c.args[1] == "editMessageText" and "Reading data/other" in str(c.kwargs.get("text", ""))
         ]
-        self.assertEqual(len(finalized), 1)
+        self.assertTrue(finalized)
         # Jawaban final terkirim sebagai pesan terpisah.
         finals = [
             c for c in api.call_args_list

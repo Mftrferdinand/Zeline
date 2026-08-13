@@ -328,12 +328,12 @@ class _LiveStatus:
         self._lock = threading.Lock()
 
     def _render(self) -> str:
+        # Feed aktivitas tool APA ADANYA — TANPA header '⏰ Processing' (dihapus
+        # atas permintaan user; biar bersih seperti Selena/Hermes). Hanya baris
+        # aktivitas (Reading/Searching/dst). Kalau belum ada baris, kosong →
+        # _push_locked tidak akan bikin bubble.
         ordered = _ordered_lines(self.lines)[-self.max_lines:]
-        feed = ("\n" + "\n".join(ordered)) if ordered else ""
-        # Header selalu netral '⏰ Processing'. JANGAN pernah menyalahkan model
-        # ('is slow to respond') — user membenci itu; delay bisa jaringan/tool,
-        # bukan model. Streaming token live sudah memberi umpan balik nyata.
-        return "⏰ Processing" + feed
+        return "\n".join(ordered)
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
         # Bubble progres HANYA dibuat saat ada aktivitas tool nyata (search/coding/
@@ -344,6 +344,11 @@ class _LiveStatus:
         if self.message_id is None and not allow_create:
             return
         text = self._render()
+        # Tanpa header lagi: kalau belum ada baris aktivitas, teksnya kosong →
+        # jangan pernah kirim/edit bubble kosong (Telegram tolak teks kosong &
+        # bikin bubble hampa). Bubble baru hanya lahir saat ada aktivitas nyata.
+        if not text.strip():
+            return
         if text == self._last_text and not force:
             return
         self._last_text = text
@@ -406,9 +411,10 @@ class _LiveStatus:
     def finalize(self) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
 
-        Header berubah jadi '⏳ Successful' dan baris fase-kerja jadi bentuk
-        selesai (Searching→Reading). Kalau tidak ada aktivitas tool sama sekali
-        (jawaban langsung), bubble dihapus agar tidak menyisakan pesan kosong.
+        Baris fase-kerja jadi bentuk selesai (Searching→Reading), TANPA header
+        '✅ Successful' (dihapus atas permintaan user). Kalau tidak ada aktivitas
+        tool sama sekali (jawaban langsung), bubble dihapus agar tidak menyisakan
+        pesan kosong.
         """
         with self._lock:
             if self.message_id is None:
@@ -422,10 +428,9 @@ class _LiveStatus:
                 self.message_id = None
                 return
             body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
-            final = f"✅ Successful\n{body}"
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
-                message_id=self.message_id, text=final, parse_mode="HTML",
+                message_id=self.message_id, text=body, parse_mode="HTML",
                 timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
 
@@ -444,9 +449,9 @@ class _LiveStatus:
         """Kunci bubble progres saat ini & lepaskan supaya aktivitas berikutnya
 
         membuat bubble BARU di bawahnya. Dipakai sebelum mengirim bubble narasi
-        model: aktivitas tool yang sudah terjadi difinalize jadi catatan '⏳
-        Successful', lalu feed di-reset kosong. Efeknya urutan chat jadi rapi:
-        [aktivitas tool] → [bubble penjelasan model] → [aktivitas tool] → …
+        model: aktivitas tool yang sudah terjadi dikunci jadi catatan (baris
+        aktivitas apa adanya, tanpa header), lalu feed di-reset kosong. Efeknya
+        urutan chat jadi rapi: [aktivitas tool] → [bubble penjelasan model] → …
         Bubble kosong (belum ada tool) cukup dilepaskan tanpa menyisakan sampah.
         """
         with self._lock:
@@ -458,7 +463,7 @@ class _LiveStatus:
                 body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
                 _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
-                    message_id=self.message_id, text=f"✅ Successful\n{body}", parse_mode="HTML",
+                    message_id=self.message_id, text=body, parse_mode="HTML",
                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
             else:
