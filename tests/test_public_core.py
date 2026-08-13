@@ -245,6 +245,49 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("blocked", executor.run("web_fetch", {"url": "http://localhost.localdomain/"}))
         self.assertIn("ERROR", executor.run("web_fetch", {"url": "ftp://example.com/file"}))
 
+    def test_detects_cloudflare_challenge_page(self):
+        # Halaman 'Just a moment…' / _cf_chl_opt bukan konten asli — harus
+        # dikenali supaya web_fetch tidak balikin sampah challenge.
+        tools = importlib.import_module("zeline.tools")
+        challenge = '<html><head><title>Just a moment...</title></head><body><script>window._cf_chl_opt={cRay:"x"}</script></body></html>'
+        self.assertTrue(tools._looks_like_cf_challenge(challenge))
+        self.assertFalse(tools._looks_like_cf_challenge("<html><body>Konten normal soal FTMO challenge 10% profit target.</body></html>"))
+
+    def test_web_fetch_falls_back_to_wayback_on_cloudflare(self):
+        # Kalau reader proxy & fetch langsung balik halaman challenge CF,
+        # web_fetch harus jatuh ke snapshot archive.org (bukan return sampah).
+        tools = importlib.import_module("zeline.tools")
+        cf_page = '<html><title>Just a moment...</title><script>window._cf_chl_opt={}</script></html>'
+
+        class Resp:
+            ok = True
+            text = cf_page
+            def iter_content(self, n):
+                yield cf_page.encode()
+
+        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+             mock.patch.object(tools, "_fetch_via_wayback", return_value="[via arsip web] Isi FTMO asli.") as wb:
+            out = tools._web_fetch("https://ftmo.com/en/how-it-works/")
+        wb.assert_called_once()
+        self.assertIn("arsip web", out)
+        self.assertIn("FTMO", out)
+
+    def test_web_fetch_reports_error_when_blocked_and_no_archive(self):
+        tools = importlib.import_module("zeline.tools")
+        cf_page = '<html><title>Just a moment...</title></html>'
+
+        class Resp:
+            ok = True
+            text = cf_page
+            def iter_content(self, n):
+                yield cf_page.encode()
+
+        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+             mock.patch.object(tools, "_fetch_via_wayback", return_value=None):
+            out = tools._web_fetch("https://ftmo.com/en/how-it-works/")
+        self.assertIn("ERROR", out)
+        self.assertIn("Cloudflare", out)
+
     def test_http_request_blocks_internal_and_bad_scheme(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         # http_request harus tersedia bahkan di profile safe (SSRF-protected)
