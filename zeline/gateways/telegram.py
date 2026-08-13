@@ -111,16 +111,13 @@ def _safe_progress_line(line: str, limit: int = 200) -> str:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal.
+    """Preview terminal — command langsung di dalam blok monospace.
 
-    Pencarian (web/skill/lokal): blok terminal biasa (monospace), tanpa emoji
-    dan tanpa judul 'Zeline Terminal' — command langsung di dalam blok. Untuk
-    coding: blok terminal penuh dengan judul.
+    Baik untuk pencarian maupun coding: TANPA emoji dan TANPA judul 'Zeline
+    Terminal' (dihapus atas permintaan user). Cukup blok <pre> berisi command.
     """
     escaped = html.escape(command.strip()[:1500], quote=False)
-    if search:
-        return f"<pre>{escaped}</pre>"
-    return f"📺 Zeline Terminal\n<pre>{escaped}</pre>"
+    return f"<pre>{escaped}</pre>"
 
 
 def _is_search_command(command: str) -> bool:

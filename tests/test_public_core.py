@@ -1084,8 +1084,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Reading skill test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
-        self.assertEqual(shell, "📺 Zeline Terminal\n<pre>python -m unittest tests.test_agent</pre>")
+        self.assertEqual(shell, "<pre>python -m unittest tests.test_agent</pre>")
         self.assertTrue(shell.endswith("</pre>"))
+        self.assertNotIn("Zeline Terminal", shell)
+        self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
         self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading <code>agent.py</code> L1-300")
         # read_file tanpa offset/limit → tanpa rentang baris.
@@ -1099,17 +1101,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
         task = telegram._tool_progress_text("update_task", {"task": "Run tests", "status": "in_progress"})
         self.assertEqual(task, "📋 Updating tasks\n<code>in_progress</code> · Run tests")
 
-    def test_telegram_search_terminal_has_no_title_and_uses_light_emoji(self):
+    def test_telegram_terminal_progress_has_no_title_or_emoji(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        # Perintah shell pencarian: blok terminal <pre> biasa — tanpa judul
-        # 'Zeline Terminal', tanpa emoji lampu.
+        # Semua perintah shell (pencarian maupun coding) tampil sebagai blok
+        # <pre> polos — TANPA judul 'Zeline Terminal' & TANPA emoji (dihapus
+        # atas permintaan user).
         search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
         self.assertEqual(search, "<pre>python -searching ftmo -v</pre>")
         self.assertNotIn("Zeline Terminal", search)
-        self.assertNotIn("🔴", search)
-        # Perintah coding biasa tetap bergaya terminal penuh dengan judul.
+        self.assertNotIn("📺", search)
         coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
-        self.assertIn("📺 Zeline Terminal", coding)
+        self.assertEqual(coding, "<pre>pytest -q</pre>")
+        self.assertNotIn("Zeline Terminal", coding)
+        self.assertNotIn("📺", coding)
 
     def test_telegram_web_progress_hides_raw_links(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
