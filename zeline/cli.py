@@ -60,6 +60,25 @@ def _boxed_line(text: str) -> str:
     return text.center(_BANNER_INNER)
 
 
+# Shared palette (256-color). Gated by _terminal_color_enabled() via _paint().
+COLOR_BLUE = "\033[38;5;39m"        # regular blue — labels before ':'
+COLOR_LIGHT_BLUE = "\033[38;5;117m"  # light blue — the 'you' prompt
+COLOR_DARK_BLUE = "\033[38;5;27m"    # dark blue — the 'Zeline' reply prefix
+COLOR_RESET = "\033[0m"
+
+
+def _paint(text: str, color: str) -> str:
+    """Wrap text in an ANSI color only when the terminal supports color."""
+    if not _terminal_color_enabled():
+        return text
+    return f"{color}{text}{COLOR_RESET}"
+
+
+def _label(text: str) -> str:
+    """Color a 'label :' prefix blue; the value after it stays default."""
+    return _paint(text, COLOR_BLUE)
+
+
 def _print_banner() -> None:
     """Render the boxed Zeline terminal identity (title + subtitle in one frame)."""
     top = "╭" + "─" * _BANNER_INNER + "╮"
@@ -594,9 +613,9 @@ def cmd_chat(query: str | None = None) -> int:
         print("[!] API key is empty. Run: zeline setup")
         return 2
     _print_banner()
-    print(f"  Agent : {config.NAME}")
-    print(f"  Model : {config.MODEL}")
-    print("  Tool profile: full (local operator)\n")
+    print(f"  {_label('Agent :')} {config.NAME}")
+    print(f"  {_label('Model :')} {config.MODEL}")
+    print(f"  {_label('Tool profile:')} full (local operator)\n")
     sessions = SessionStore(max_sessions=1)
 
     def ask(text: str) -> str:
@@ -622,7 +641,7 @@ def cmd_chat(query: str | None = None) -> int:
     print("Type 'exit' to quit.\n")
     while True:
         try:
-            text = input("\033[36myou ›\033[0m ").strip()
+            text = input(f"{_paint('you ›', COLOR_LIGHT_BLUE) if _terminal_color_enabled() else 'you ›'} ").strip()
         except (EOFError, KeyboardInterrupt):
             _run_reflection(sessions)
             print("\nGoodbye!")
@@ -635,7 +654,7 @@ def cmd_chat(query: str | None = None) -> int:
             return 0
         try:
             answer = ask(text)
-            print(f"\033[35m{config.NAME} ›\033[0m {answer}\n")
+            print(f"{_paint(f'{config.NAME} ›', COLOR_DARK_BLUE)} {answer}\n")
         except ZelineError as exc:
             print(f"\033[31m[error] {exc}\033[0m\n")
 
@@ -887,12 +906,12 @@ def cmd_doctor() -> int:
     problems: list[str] = []
     warnings: list[str] = []
     print("Zeline doctor")
-    print(f"  home      : {config.DATA_DIR}")
-    print(f"  config    : {config.CONFIG_FILE} {'present' if config.CONFIG_FILE.exists() else 'not created'}")
-    print(f"  python    : {sys.version.split()[0]}")
-    print(f"  provider  : {config.BASE_URL or '(empty)'}")
-    print(f"  model     : {config.MODEL or '(empty)'}")
-    print(f"  api key   : {config.mask_secret(config.API_KEY)}")
+    print(f"  {_label('home      :')} {config.DATA_DIR}")
+    print(f"  {_label('config    :')} {config.CONFIG_FILE} {'present' if config.CONFIG_FILE.exists() else 'not created'}")
+    print(f"  {_label('python    :')} {sys.version.split()[0]}")
+    print(f"  {_label('provider  :')} {config.BASE_URL or '(empty)'}")
+    print(f"  {_label('model     :')} {config.MODEL or '(empty)'}")
+    print(f"  {_label('api key   :')} {config.mask_secret(config.API_KEY)}")
     if not config.API_KEY:
         problems.append("API key is empty — run `zeline setup`.")
     if not config.BASE_URL:
@@ -911,14 +930,14 @@ def cmd_doctor() -> int:
         if enabled and errors:
             problems.append(f"Gateway {name}: {'; '.join(errors)}")
     if not enabled_gateways:
-        print("  gateway   : none configured (run `zeline gateway setup`)")
+        print(f"  {_label('gateway   :')} none configured (run `zeline gateway setup`)")
     else:
         for name in enabled_gateways:
             if active:
                 pid = (state or {}).get("pid", "?")
-                print(f"  gateway   : {name} connected & running (PID {pid})")
+                print(f"  {_label('gateway   :')} {name} connected & running (PID {pid})")
             else:
-                print(f"  gateway   : {name} configured but not connected (run `zeline gateway start`)")
+                print(f"  {_label('gateway   :')} {name} configured but not connected (run `zeline gateway start`)")
     if warnings:
         print("\nWarnings:")
         for item in warnings:
