@@ -573,6 +573,37 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(skills._short_desc(long_desc), "First short sentence")
         self.assertLessEqual(len(skills._short_desc("y" * 400)), 92)
 
+    def test_dispatch_update_routes_text_to_agent(self):
+        # _dispatch_update memproses satu update: pesan teks biasa → jalur agent.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        started = []
+
+        class Sessions:
+            pass
+
+        with mock.patch.object(telegram, "_api_call", return_value={"result": {"message_id": 1}}), \
+             mock.patch.object(telegram, "_start_agent_reply", side_effect=lambda *a, **k: started.append(k.get("text"))):
+            update = {"update_id": 5, "message": {"chat": {"id": 111222333}, "text": "halo"}}
+            telegram._dispatch_update(
+                "bot-api", "token", Sessions(), update,
+                allowed=[111222333], tool_profile="full", stop_event=threading.Event(),
+            )
+        self.assertEqual(started, ["halo"])
+
+    def test_dispatch_update_denies_unlisted_chat(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        sent = []
+
+        with mock.patch.object(telegram, "_api_call", side_effect=lambda a, m, **k: sent.append((m, k.get("text"))) or {"result": {"message_id": 1}}), \
+             mock.patch.object(telegram, "_start_agent_reply") as start_reply:
+            update = {"update_id": 9, "message": {"chat": {"id": 999}, "text": "halo"}}
+            telegram._dispatch_update(
+                "bot-api", "token", object(), update,
+                allowed=[111222333], tool_profile="full", stop_event=threading.Event(),
+            )
+        start_reply.assert_not_called()
+        self.assertTrue(any("not permitted" in str(t) for _m, t in sent))
+
     def test_telegram_working_heartbeat_keeps_typing_alive(self):
         # Heartbeat harus terus mengirim 'sendChatAction typing' agar indikator
         # 'sedang mengetik' tidak hilang saat model berpikir lama — TAPI tidak
@@ -715,60 +746,43 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn("slow to respond", rendered)
         self.assertNotIn("tabi/claude", rendered)
 
-    def test_streaming_reply_edits_one_bubble_live_then_commits_html(self):
-        # Token yang mengalir harus MENUMBUHKAN satu bubble (edit), bukan spam
-        # pesan baru; commit mengunci jadi HTML final sekali.
+    def test_progress_ui_calls_never_block_agent_loop(self):
+        # BUG yang diperbaiki: baris progres UI (bubble Processing, edit feed,
+        # sendChatAction) dulu dipanggil dgn timeout 65s + retry. Di jaringan
+        # Termux yang sering drop, tiap update MENAHAN loop agent → efek
+        # 'lambat/cek-cek doang/bubble ilang-ilangan'. Sekarang panggilan UI
+        # pakai timeout pendek & attempts=1 (fail-fast, dilewati diam-diam).
         telegram = importlib.import_module("zeline.gateways.telegram")
-        sent = []
+        seen = []
 
         def fake_api(_api, method, **kwargs):
-            sent.append((method, kwargs.get("text"), kwargs.get("parse_mode")))
-            return {"ok": True, "result": {"message_id": 77}}
+            seen.append((method, kwargs.get("timeout"), kwargs.get("attempts")))
+            if method == "sendMessage":
+                return {"ok": True, "result": {"message_id": 999}}
+            return {"ok": True}
 
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
-            stream = telegram._StreamingReply("bot-api", 1, min_interval=0.0)
-            stream.feed("Hel")
-            stream.feed("lo ")
-            stream.feed("**world**")
-            committed = stream.commit("Hello **world**")
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.add("🌐 Searching bitcoin")   # bikin + edit bubble progres
+            live.set_waiting()
+            live.finalize()
 
-        self.assertTrue(committed)
-        methods = [m for m, _t, _p in sent]
-        # Tepat satu sendMessage (bubble awal), sisanya editMessageText.
-        self.assertEqual(methods.count("sendMessage"), 1)
-        self.assertIn("editMessageText", methods)
-        # Commit terakhir merender markdown → HTML dengan parse_mode HTML.
-        last_method, last_text, last_parse = sent[-1]
-        self.assertEqual(last_method, "editMessageText")
-        self.assertEqual(last_parse, "HTML")
-        self.assertIn("<b>world</b>", last_text)
-        # Preview partial dikirim PLAIN (tanpa parse_mode) supaya markdown
-        # setengah jadi tidak bikin parse error.
-        partial = [p for m, t, p in sent if m in {"sendMessage", "editMessageText"} and t and "▍" in t]
-        self.assertTrue(partial)
-        self.assertTrue(all(p is None for _t, p in [(t, p) for m, t, p in sent if t and "▍" in t]))
+        # Semua panggilan progres UI harus fail-fast: timeout pendek, 1 attempt.
+        progress = [(m, t, a) for m, t, a in seen if m in {"sendMessage", "editMessageText", "deleteMessage", "sendChatAction"}]
+        self.assertTrue(progress)
+        for method, timeout, attempts in progress:
+            self.assertEqual(timeout, telegram._PROGRESS_TIMEOUT, method)
+            self.assertEqual(attempts, telegram._PROGRESS_ATTEMPTS, method)
 
-    def test_streaming_reply_commit_false_when_no_tokens(self):
-        # Provider non-stream (tidak ada token) → commit() False, tidak membuat
-        # bubble apa pun, agar pemanggil kirim lewat jalur normal.
-        telegram = importlib.import_module("zeline.gateways.telegram")
-        sent = []
-        with mock.patch.object(telegram, "_api_call", side_effect=lambda a, m, **k: sent.append(m) or {"result": {"message_id": 1}}):
-            stream = telegram._StreamingReply("bot-api", 1, min_interval=0.0)
-            self.assertFalse(stream.commit("teks final"))
-        self.assertEqual(sent, [])
-
-    def test_telegram_streams_reply_live_and_finalizes_single_bubble(self):
-        # End-to-end: agent stream token → satu bubble live yang di-edit, lalu
-        # dikunci jadi HTML final; TIDAK ada pesan final duplikat.
+    def test_final_reply_sent_as_new_bubble_not_edited_live(self):
+        # Streaming/live-edit dimatikan: jawaban akhir dikirim SEKALI sebagai
+        # pesan baru yang utuh (sendMessage), bukan di-edit berulang. Tidak ada
+        # editMessageText untuk balasan.
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         class Sessions:
-            def send(self, **kwargs):
-                delta = kwargs["on_stream_delta"]
-                for piece in ["Ini ", "jawaban ", "**live**."]:
-                    delta(piece)
-                return "Ini jawaban **live**."
+            def send(self, **_kwargs):
+                return "Ini jawaban **final**."
 
         sent = []
         with mock.patch.object(
@@ -777,15 +791,17 @@ class ZelinePublicCoreTests(unittest.TestCase):
         ):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="tanya", tool_profile="safe")
 
-        methods = [m for m, _t in sent]
-        # Hanya satu bubble teks dibuat (sendMessage), sisanya edit.
-        self.assertEqual(methods.count("sendMessage"), 1)
-        # Jawaban final dikunci jadi HTML di bubble yang sama.
-        html_finals = [t for m, t in sent if m == "editMessageText" and t and "<b>live</b>" in t]
-        self.assertEqual(len(html_finals), 1)
-        # Tidak ada pengiriman final terpisah yang menduplikasi jawaban.
-        final_sends = [t for m, t in sent if m == "sendMessage" and t and "<b>live</b>" in t]
-        self.assertEqual(final_sends, [])
+        # Jawaban akhir dikirim sebagai sendMessage (bubble baru), bukan edit.
+        final_sends = [t for m, t in sent if m == "sendMessage" and t and "<b>final</b>" in t]
+        self.assertEqual(len(final_sends), 1)
+        edits = [t for m, t in sent if m == "editMessageText" and t and "<b>final</b>" in t]
+        self.assertEqual(edits, [])
+
+    def test_no_streaming_reply_symbol_remains(self):
+        # _StreamingReply sudah dihapus total (live-edit dimatikan) — pastikan
+        # simbolnya tidak lagi ada di modul gateway.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        self.assertFalse(hasattr(telegram, "_StreamingReply"))
 
     def test_whatsapp_adapts_common_markdown(self):
         whatsapp = importlib.import_module("zeline.gateways.whatsapp")

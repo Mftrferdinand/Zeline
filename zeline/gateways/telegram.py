@@ -51,6 +51,14 @@ _MODELS_CACHE_TTL = 300.0  # detik
 # dan non-kritis; retry+sleep malah bikin heartbeat tersendat.
 _API_RETRIES = 3
 _RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
+# Baris progres (bubble '⏰ Processing', edit feed tool) BUKAN hal kritis. Di
+# jaringan Termux yang sering drop, memanggilnya dengan timeout 65s + retry
+# akan MENAHAN loop agent tiap update → efek 'macet/lambat/cek-cek doang' dan
+# bubble ilang-ilangan. Jadi semua panggilan UI-progres pakai timeout pendek &
+# attempts=1: kalau gagal, dilewati diam-diam, agent jalan terus. Hanya jawaban
+# akhir (sendMessage biasa) yang tetap diretry supaya tidak pernah hilang.
+_PROGRESS_TIMEOUT = 6
+_PROGRESS_ATTEMPTS = 1
 
 
 def _telegram_commands() -> list[dict[str, str]]:
@@ -346,6 +354,7 @@ class _LiveStatus:
             payload = _api_call(
                 self.api, "sendMessage", chat_id=self.chat_id,
                 text=text, parse_mode="HTML",
+                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
             if payload and isinstance(payload.get("result"), dict):
                 self.message_id = payload["result"].get("message_id")
@@ -353,6 +362,7 @@ class _LiveStatus:
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=text, parse_mode="HTML",
+                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
 
     def set_waiting(self) -> None:
@@ -410,6 +420,7 @@ class _LiveStatus:
                 _api_call(
                     self.api, "deleteMessage",
                     chat_id=self.chat_id, message_id=self.message_id,
+                    timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
                 self.message_id = None
                 return
@@ -418,6 +429,7 @@ class _LiveStatus:
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=final, parse_mode="HTML",
+                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
 
     def clear(self) -> None:
@@ -427,6 +439,7 @@ class _LiveStatus:
                 _api_call(
                     self.api, "deleteMessage",
                     chat_id=self.chat_id, message_id=self.message_id,
+                    timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
                 self.message_id = None
 
@@ -449,11 +462,13 @@ class _LiveStatus:
                 _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
                     message_id=self.message_id, text=f"✅ Successful\n{body}", parse_mode="HTML",
+                    timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
             else:
                 _api_call(
                     self.api, "deleteMessage",
                     chat_id=self.chat_id, message_id=self.message_id,
+                    timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
             self.message_id = None
             self.lines = []
@@ -484,7 +499,8 @@ def _start_working_heartbeat(
     def heartbeat() -> None:
         while not done.wait(interval):
             try:
-                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
+                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                          timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
             except Exception:
                 pass
             live.tick()
@@ -492,111 +508,6 @@ def _start_working_heartbeat(
     worker = threading.Thread(target=heartbeat, name=f"zeline-heartbeat-{chat_id}", daemon=True)
     worker.start()
     return worker
-
-
-class _StreamingReply:
-    """Bubble teks yang di-edit LIVE saat token mengalir dari model.
-
-    Tujuan: hilangkan efek "diam lama → tiba-tiba dump panjang". Selama model
-    menghasilkan teks, tiap ~``min_interval`` detik bubble di-edit dengan teks
-    terkini + kursor ``▍`` (persis rasa Selena/Hermes yang "satset").
-
-    Detail penting:
-    - Saat streaming (partial), teks dikirim sebagai PLAIN (tanpa parse_mode)
-      supaya markdown yang belum selesai tidak bikin editMessageText gagal
-      ("can't parse entities"). Baru saat commit teks dirender jadi HTML rapi.
-    - Satu segmen = satu panggilan LLM. ``commit()`` mengunci bubble segmen ini
-      lalu reset ``message_id`` supaya segmen berikutnya (setelah tool jalan)
-      membuat bubble BARU di bawahnya → urutan chat rapi.
-    - Kalau provider tidak streaming (tidak ada token), ``streamed_any`` tetap
-      False → pemanggil jatuh ke jalur legacy (kirim bubble sekaligus).
-    """
-
-    _CURSOR = " ▍"
-
-    def __init__(self, api: str, chat_id: int, *, min_interval: float = 1.2):
-        self.api = api
-        self.chat_id = chat_id
-        self.min_interval = min_interval
-        self.message_id: int | None = None
-        self.buffer = ""
-        self.streamed_any = False
-        self._last_edit = 0.0
-        self._last_text: str | None = None
-        self._lock = threading.Lock()
-
-    def feed(self, token: str) -> None:
-        if not token:
-            return
-        with self._lock:
-            self.buffer += token
-            self.streamed_any = True
-            now = time.monotonic()
-            if self.message_id is not None and now - self._last_edit < self.min_interval:
-                return
-            self._flush_locked(final=False)
-            self._last_edit = now
-
-    def _preview(self) -> str:
-        """Teks preview plain, ekor dibatasi agar tak melewati limit Telegram."""
-        text = self.buffer
-        budget = TELEGRAM_MESSAGE_LIMIT - len(self._CURSOR) - 1
-        if len(text) > budget:
-            text = "…" + text[-(budget - 1):]
-        return text.strip()
-
-    def _flush_locked(self, *, final: bool) -> None:
-        display = self._preview()
-        if not display:
-            return
-        if not final:
-            display = display + self._CURSOR
-        if display == self._last_text:
-            return
-        self._last_text = display
-        if self.message_id is None:
-            payload = _api_call(self.api, "sendMessage", chat_id=self.chat_id, text=display)
-            if payload and isinstance(payload.get("result"), dict):
-                self.message_id = payload["result"].get("message_id")
-        else:
-            _api_call(self.api, "editMessageText", chat_id=self.chat_id, message_id=self.message_id, text=display)
-
-    def _reset_segment(self) -> None:
-        self.message_id = None
-        self.buffer = ""
-        self.streamed_any = False
-        self._last_edit = 0.0
-        self._last_text = None
-
-    def commit(self, text: str) -> bool:
-        """Kunci bubble segmen ini dgn ``text`` (dirender HTML), lalu reset.
-
-        Return True bila memang ada teks yang di-stream live (bubble sudah ada
-        dan tinggal difinalisasi). False bila tidak ada streaming → pemanggil
-        harus mengirim ``text`` lewat jalur normal.
-        """
-        with self._lock:
-            if not self.streamed_any or self.message_id is None:
-                self._reset_segment()
-                return False
-            rendered = _markdown_to_telegram_html(text.strip())
-            if len(rendered) > TELEGRAM_MESSAGE_LIMIT:
-                # Terlalu panjang untuk satu bubble → hapus preview, biar
-                # pemanggil kirim rapi multi-part via _split_message.
-                _api_call(self.api, "deleteMessage", chat_id=self.chat_id, message_id=self.message_id)
-                self._reset_segment()
-                return False
-            _api_call(self.api, "editMessageText", chat_id=self.chat_id, message_id=self.message_id, text=rendered, parse_mode="HTML")
-            self._reset_segment()
-            return True
-
-    def discard(self) -> None:
-        """Buang bubble preview (mis. saat error) tanpa menyisakan sampah."""
-        with self._lock:
-            if self.message_id is not None:
-                _api_call(self.api, "deleteMessage", chat_id=self.chat_id, message_id=self.message_id)
-            self._reset_segment()
-
 
 
 def _model_picker_payload(models: list[str], current_model: str, provider_index: int | None = None, provider_name: str = "") -> tuple[str, dict[str, Any]]:
@@ -1398,7 +1309,7 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
     return []
 
 
-def _api_call(api: str, method: str, *, timeout: int = 65, **params: Any) -> dict[str, Any] | None:
+def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None = None, **params: Any) -> dict[str, Any] | None:
     """Panggil Bot API; error network tidak boleh menghentikan gateway.
 
     Koneksi Termux ke Telegram sering putus-putus (ConnectionError/timeout),
@@ -1406,8 +1317,14 @@ def _api_call(api: str, method: str, *, timeout: int = 65, **params: Any) -> dic
     retry error jaringan sementara beberapa kali dengan backoff supaya pesan
     tetap terkirim begitu koneksi pulih. Error API non-jaringan (mis. "message
     is not modified", "query too old") TIDAK diretry — percuma.
+
+    ``attempts`` bisa dioverride pemanggil: baris progres UI pakai attempts
+    kecil + timeout pendek supaya UI tidak pernah MENAHAN loop agent (sumber
+    'macet/lambat') meski jaringan lagi jelek.
     """
-    attempts = max(1, _API_RETRIES) if method in _RETRYABLE_METHODS else 1
+    if attempts is None:
+        attempts = max(1, _API_RETRIES) if method in _RETRYABLE_METHODS else 1
+    attempts = max(1, attempts)
     for attempt in range(attempts):
         try:
             response = requests.post(f"{api}/{method}", json=params, timeout=timeout)
@@ -1769,22 +1686,20 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
 
 
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:
-    _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
+    _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+              timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
     live = _LiveStatus(api, chat_id, model=getattr(config, "MODEL", ""))
     heartbeat = _start_working_heartbeat(api, chat_id, done, status=live)
-    # Bubble teks yang di-edit LIVE saat token model mengalir (rasa "satset"
-    # Selena/Hermes). Kalau provider tidak streaming, objek ini pasif dan alur
-    # jatuh ke jalur bubble sekaligus seperti sebelumnya.
-    stream = _StreamingReply(api, chat_id)
-
-    def on_stream_delta(token: str):
-        # Token mentah dari model → tumbuhkan bubble preview. Refresh typing
-        # sesekali supaya indikator tidak keburu hilang saat jeda antar-token.
-        stream.feed(token)
-
+    # CATATAN: streaming/live-edit token (edit satu bubble berulang) DIMATIKAN.
+    # Di Android bubble yang di-edit terus makin berat/lag makin panjang, dan
+    # markdown setengah jadi (##) sempat keliatan mentah. Alur yang diminta
+    # persis Selena/Hermes: kerjain sambil kirim pesan SATU-SATU yang sudah
+    # rapi — narasi & jawaban akhir masing-masing jadi bubble utuh sendiri
+    # (tidak ada edit-in-place), diselingi feed aktivitas tool.
     def on_tool(_name, _args):
-        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
+        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
         # Tambahkan satu baris ringkas ke feed live, bukan pesan baru.
         # _safe_progress_line menjaga tag HTML (pre/code) tetap seimbang saat
         # dipangkas — mencegah editMessageText gagal "Can't find end tag pre".
@@ -1802,29 +1717,23 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_narration(sentence: str):
-        # Kalimat rencana/temuan model yang menyertai tool call. Kalau teksnya
-        # sudah di-stream live, cukup KUNCI bubble streaming itu jadi bentuk
-        # HTML final (tidak kirim ulang). Kalau tidak ada streaming (provider
-        # non-SSE), jatuh ke jalur lama: detach progres lalu kirim bubble baru.
+        # Kalimat rencana/temuan model yang menyertai tool call → dikirim
+        # sebagai bubble chat UTUH tersendiri SEBELUM tool jalan. Ini yang
+        # bikin alur kebaca hidup & "satset": [penjelasan] → [tool feed] →
+        # [penjelasan] → [jawaban], tiap pesan rapi dan dikirim sekali (bukan
+        # di-edit live). Selesaikan dulu bubble progres berjalan biar narasi
+        # baru tampil di bawah aktivitas tool sebelumnya, bukan menimpanya.
         sentence = sentence.strip()
         if not sentence:
             return
-        if stream.commit(sentence):
-            # Bubble narasi live sudah terkunci; siapkan progres tool baru
-            # di bawahnya.
-            live.detach()
-            _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
-            return
-        # Selesaikan bubble progres berjalan (kalau ada) supaya urutannya rapi:
-        # narasi baru selalu tampil sebagai pesan sendiri di bawah aktivitas
-        # tool sebelumnya, bukan menimpanya.
         live.detach()
         for part in _split_message(sentence):
             _api_call(
                 api, "sendMessage", chat_id=chat_id,
                 text=_markdown_to_telegram_html(part), parse_mode="HTML",
             )
-        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing")
+        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
     ok = False
     try:
@@ -1836,7 +1745,6 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             on_tool_result=on_tool_result,
             on_iteration=on_iteration,
             on_narration=on_narration,
-            on_stream_delta=on_stream_delta,
         )
         ok = True
     except ZelineError as exc:
@@ -1852,20 +1760,17 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             # kirim jawaban final sebagai pesan baru terpisah.
             live.finalize()
         else:
-            stream.discard()  # buang preview streaming yang belum selesai
             live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
-    # Jawaban final: kalau sudah di-stream live, kunci bubble itu jadi HTML rapi
-    # (tidak kirim ulang). Kalau tidak (non-stream / terlalu panjang), kirim
-    # normal multi-part.
-    if not (ok and stream.commit(reply)):
-        for part in _split_message(reply):
-            _api_call(
-                api,
-                "sendMessage",
-                chat_id=chat_id,
-                text=_markdown_to_telegram_html(part),
-                parse_mode="HTML",
-            )
+    # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
+    # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
+    for part in _split_message(reply):
+        _api_call(
+            api,
+            "sendMessage",
+            chat_id=chat_id,
+            text=_markdown_to_telegram_html(part),
+            parse_mode="HTML",
+        )
 
     # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
     # background agar tidak menahan balasan. reflect() sendiri menjaga ambang
@@ -1917,6 +1822,118 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     return worker
 
 
+def _dispatch_update(
+    api: str,
+    token: str,
+    sessions,
+    update: dict[str, Any],
+    *,
+    allowed: list[Any],
+    tool_profile: str,
+    stop_event,
+) -> None:
+    """Proses satu update Telegram (message / callback_query).
+
+    Dipisah dari loop polling supaya pemanggil bisa membungkusnya dengan
+    try/except: satu update bermasalah tidak boleh menjatuhkan loop (yang dulu
+    bikin thread gateway mati diam dan butuh SIGKILL untuk restart).
+    """
+    callback = update.get("callback_query") or {}
+    message = update.get("message") or {}
+    if callback:
+        callback_message = callback.get("message") or {}
+        callback_chat_id = (callback_message.get("chat") or {}).get("id")
+        callback_user_id = (callback.get("from") or {}).get("id")
+        if callback_chat_id is not None and callback_user_id is not None and _allowed(int(callback_user_id), allowed):
+            # SEMUA proses callback (termasuk answerCallbackQuery) dijalankan di
+            # thread terpisah supaya loop polling TIDAK PERNAH ter-blok oleh
+            # round-trip HTTP ke Telegram (yang bisa lambat dari Termux).
+            threading.Thread(
+                target=_handle_callback,
+                args=(api, dict(callback), sessions),
+                daemon=True,
+                name="zeline-callback",
+            ).start()
+        elif callback.get("id"):
+            _api_call(api, "answerCallbackQuery", callback_query_id=str(callback["id"]), text="Access denied.", show_alert=True)
+        return
+
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    text = str(message.get("text") or "").strip()
+    caption = str(message.get("caption") or "").strip()
+    document = message.get("document") or {}
+    photos = message.get("photo") or []
+    voice = message.get("voice") or message.get("audio") or {}
+    video = message.get("video") or message.get("video_note") or {}
+
+    if chat_id is None:
+        return
+    chat_id_int = int(chat_id)
+    identity = f"telegram:{chat_id_int}"
+
+    if not _allowed(chat_id_int, allowed):
+        _api_call(api, "sendMessage", chat_id=chat_id_int, text="Access to this bot is not permitted yet.")
+        return
+
+    if text:
+        if text.startswith("/"):
+            handled = _handle_command_update(
+                api, text, sessions, identity, chat_id_int,
+                stop_event=stop_event, tool_profile=tool_profile,
+                message_id=int(message.get("message_id") or 0),
+            )
+            if not handled:
+                command_reply = _handle_command(text, sessions, identity, stop_event=stop_event)
+                _api_call(api, "sendMessage", chat_id=chat_id_int, text=command_reply or "Unknown command. Use /start.")
+        else:
+            _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile)
+    elif document:
+        filename = _document_filename(document)
+        file_content, error = _download_document(api, token, document)
+        if error:
+            _api_call(api, "sendMessage", chat_id=chat_id_int, text=error)
+            return
+        file_text, error = _extract_document_text(filename, file_content or b"", str(document.get("mime_type") or ""))
+        if error:
+            _api_call(api, "sendMessage", chat_id=chat_id_int, text=error)
+            return
+        prompt = _build_document_prompt(filename, file_text or "", caption)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+    elif photos:
+        # Ambil resolusi terbesar (elemen terakhir) untuk kualitas vision.
+        largest = photos[-1] if isinstance(photos, list) else {}
+        dest, error = _download_media_file(api, token, str(largest.get("file_id") or ""), ".jpg")
+        if error or dest is None:
+            _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the image.")
+            return
+        prompt = _build_image_prompt(dest, caption)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+    elif voice:
+        dest, error = _download_media_file(api, token, str(voice.get("file_id") or ""), ".ogg")
+        if error or dest is None:
+            _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the audio.")
+            return
+        prompt = _build_media_notice_prompt("audio", dest, caption)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+    elif video:
+        dest, error = _download_media_file(api, token, str(video.get("file_id") or ""), ".mp4")
+        if error or dest is None:
+            _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the video.")
+            return
+        prompt = _build_media_notice_prompt("video", dest, caption)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+    elif caption:
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=caption, tool_profile=tool_profile)
+    else:
+        _api_call(
+            api,
+            "sendMessage",
+            chat_id=chat_id_int,
+            text="This message could not be processed. Send text, an image, voice/video, or a .txt/.md file.",
+        )
+
+
 def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     token = str(cfg["token"]).strip()
     api = API_TEMPLATE.format(token=token)
@@ -1932,135 +1949,74 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     _api_call(api, "setMyCommands", commands=_telegram_commands())
 
     offset = _load_offset()
+    # Backoff adaptif + self-heal: loop polling TIDAK BOLEH mati permanen.
+    # Dulu exception di handler per-update (di luar try getUpdates) bisa
+    # menembus keluar loop → seluruh start() crash → thread gateway mati diam
+    # (proses induk masih hidup, butuh SIGKILL). Sekarang: (a) tiap update
+    # dibungkus try/except sendiri, (b) getUpdates yang gagal beruntun pakai
+    # backoff yang naik lalu reset saat pulih, (c) 409 Conflict (instance
+    # dobel) ditangani spesifik, (d) heartbeat log tiap ~5 menit supaya
+    # 'diam' selalu kelihatan di log, bukan misteri.
+    consecutive_errors = 0
+    last_heartbeat = time.monotonic()
     while not stop_event.is_set():
         try:
-            response = requests.get(
-                f"{api}/getUpdates",
-                # Long-poll dipersingkat (10s) agar shutdown responsif: begitu
-                # stop_event di-set, loop keluar dalam <=10s alih-alih menggantung
-                # sampai 25-35s (penyebab `gateway stop` sering nyangkut lalu
-                # butuh SIGKILL). Read-timeout diberi margin di atas long-poll.
-                params={"offset": offset, "timeout": 10, "allowed_updates": json.dumps(["message", "callback_query"])},
-                timeout=20,
-            )
-            payload = response.json()
-            if not response.ok or not payload.get("ok"):
-                description = str(payload.get("description", f"HTTP {response.status_code}"))[:160]
-                print(f"  [telegram] getUpdates failed: {description}", flush=True)
-                stop_event.wait(3)
+            now = time.monotonic()
+            if now - last_heartbeat >= 300:
+                print(f"  [telegram] polling alive (offset={offset})", flush=True)
+                last_heartbeat = now
+            try:
+                response = requests.get(
+                    f"{api}/getUpdates",
+                    # Long-poll dipersingkat (10s) agar shutdown responsif: begitu
+                    # stop_event di-set, loop keluar dalam <=10s alih-alih menggantung
+                    # sampai 25-35s (penyebab `gateway stop` sering nyangkut lalu
+                    # butuh SIGKILL). Read-timeout diberi margin di atas long-poll.
+                    params={"offset": offset, "timeout": 10, "allowed_updates": json.dumps(["message", "callback_query"])},
+                    timeout=20,
+                )
+                payload = response.json()
+                if not response.ok or not payload.get("ok"):
+                    description = str(payload.get("description", f"HTTP {response.status_code}"))[:160]
+                    # 409 Conflict = ada instance lain yang ikut polling token yang
+                    # sama. Log jelas + backoff supaya tidak spam & tidak spin CPU;
+                    # begitu instance duplikat mati, polling pulih sendiri.
+                    if response.status_code == 409 or "conflict" in description.lower():
+                        print("  [telegram] 409 Conflict — instance lain sedang polling token ini. Menunggu…", flush=True)
+                        consecutive_errors += 1
+                        stop_event.wait(min(3 + consecutive_errors, 15))
+                        continue
+                    print(f"  [telegram] getUpdates failed: {description}", flush=True)
+                    consecutive_errors += 1
+                    stop_event.wait(min(3 + consecutive_errors, 15))
+                    continue
+            except requests.Timeout:
+                consecutive_errors = 0  # long-poll timeout = normal, bukan error
                 continue
-        except requests.Timeout:
-            continue  # Long polling normal.
-        except (requests.RequestException, ValueError) as exc:
-            print(f"  [telegram] polling error: {exc.__class__.__name__}", flush=True)
-            stop_event.wait(3)
+            except (requests.RequestException, ValueError) as exc:
+                # Error jaringan sementara (Termux drop): backoff naik lalu reset
+                # saat pulih. TIDAK PERNAH keluar loop → bot auto-recover sendiri.
+                consecutive_errors += 1
+                print(f"  [telegram] polling error: {exc.__class__.__name__} (retry #{consecutive_errors})", flush=True)
+                stop_event.wait(min(3 + consecutive_errors, 15))
+                continue
+
+            consecutive_errors = 0  # getUpdates sukses → reset backoff
+        except Exception as exc:  # jaring pengaman terakhir: apa pun jangan bunuh loop
+            print(f"  [telegram] polling loop recovered from: {exc.__class__.__name__}: {exc}", flush=True)
+            stop_event.wait(2)
             continue
 
         for update in payload.get("result", []):
             update_id = int(update.get("update_id", -1))
-            callback = update.get("callback_query") or {}
-            message = update.get("message") or {}
-            if callback:
-                callback_message = callback.get("message") or {}
-                callback_chat_id = (callback_message.get("chat") or {}).get("id")
-                callback_user_id = (callback.get("from") or {}).get("id")
-                try:
-                    if callback_chat_id is not None and callback_user_id is not None and _allowed(int(callback_user_id), allowed):
-                        # SEMUA proses callback (termasuk answerCallbackQuery)
-                        # dijalankan di thread terpisah supaya loop polling TIDAK
-                        # PERNAH ter-blok oleh round-trip HTTP ke Telegram (yang
-                        # bisa lambat dari Termux). Menaruh answerCallbackQuery di
-                        # loop malah membuat tiap tap nge-blok polling — itulah
-                        # penyebab tap provider/model terasa stuck lama.
-                        threading.Thread(
-                            target=_handle_callback,
-                            args=(api, dict(callback), sessions),
-                            daemon=True,
-                            name="zeline-callback",
-                        ).start()
-                    elif callback.get("id"):
-                        _api_call(api, "answerCallbackQuery", callback_query_id=str(callback["id"]), text="Access denied.", show_alert=True)
-                finally:
-                    offset = max(offset, update_id + 1)
-                    _save_offset(offset)
-                continue
-            chat = message.get("chat") or {}
-            chat_id = chat.get("id")
-            text = str(message.get("text") or "").strip()
-            caption = str(message.get("caption") or "").strip()
-            document = message.get("document") or {}
-            photos = message.get("photo") or []
-            voice = message.get("voice") or message.get("audio") or {}
-            video = message.get("video") or message.get("video_note") or {}
-
+            # Bungkus SETIAP update: satu pesan bermasalah tidak boleh menjatuhkan
+            # loop polling. Offset tetap maju di finally supaya update rusak tidak
+            # diproses ulang tanpa henti (poison message).
             try:
-                if chat_id is None:
-                    continue
-                chat_id_int = int(chat_id)
-                identity = f"telegram:{chat_id_int}"
-
-                if not _allowed(chat_id_int, allowed):
-                    _api_call(api, "sendMessage", chat_id=chat_id_int, text="Access to this bot is not permitted yet.")
-                    continue
-
-                if text:
-                    if text.startswith("/"):
-                        handled = _handle_command_update(
-                            api, text, sessions, identity, chat_id_int,
-                            stop_event=stop_event, tool_profile=tool_profile,
-                            message_id=int(message.get("message_id") or 0),
-                        )
-                        if not handled:
-                            command_reply = _handle_command(text, sessions, identity, stop_event=stop_event)
-                            _api_call(api, "sendMessage", chat_id=chat_id_int, text=command_reply or "Unknown command. Use /start.")
-                    else:
-                        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile)
-                elif document:
-                    filename = _document_filename(document)
-                    file_content, error = _download_document(api, token, document)
-                    if error:
-                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error)
-                        continue
-                    file_text, error = _extract_document_text(filename, file_content or b"", str(document.get("mime_type") or ""))
-                    if error:
-                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error)
-                        continue
-                    prompt = _build_document_prompt(filename, file_text or "", caption)
-                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
-                elif photos:
-                    # Ambil resolusi terbesar (elemen terakhir) untuk kualitas vision.
-                    largest = photos[-1] if isinstance(photos, list) else {}
-                    dest, error = _download_media_file(api, token, str(largest.get("file_id") or ""), ".jpg")
-                    if error or dest is None:
-                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the image.")
-                        continue
-                    prompt = _build_image_prompt(dest, caption)
-                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
-                elif voice:
-                    dest, error = _download_media_file(api, token, str(voice.get("file_id") or ""), ".ogg")
-                    if error or dest is None:
-                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the audio.")
-                        continue
-                    prompt = _build_media_notice_prompt("audio", dest, caption)
-                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
-                elif video:
-                    dest, error = _download_media_file(api, token, str(video.get("file_id") or ""), ".mp4")
-                    if error or dest is None:
-                        _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the video.")
-                        continue
-                    prompt = _build_media_notice_prompt("video", dest, caption)
-                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
-                elif caption:
-                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=caption, tool_profile=tool_profile)
-                else:
-                    _api_call(
-                        api,
-                        "sendMessage",
-                        chat_id=chat_id_int,
-                        text="This message could not be processed. Send text, an image, voice/video, or a .txt/.md file.",
-                    )
+                _dispatch_update(api, token, sessions, update, allowed=allowed, tool_profile=tool_profile, stop_event=stop_event)
+            except Exception as exc:
+                print(f"  [telegram] update {update_id} skipped: {exc.__class__.__name__}: {exc}", flush=True)
             finally:
-                # Simpan setelah handler selesai agar restart tidak kehilangan update.
                 offset = max(offset, update_id + 1)
                 _save_offset(offset)
 
