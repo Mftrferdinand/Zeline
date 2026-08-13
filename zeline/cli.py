@@ -273,7 +273,7 @@ def _select_gateway() -> str:
         tty.setraw(fd)
         while True:
             for index, (_value, label) in enumerate(GATEWAY_OPTIONS):
-                marker = "❯" if index == selected else " "
+                marker = _paint("❯", COLOR_BLUE) if index == selected else " "
                 print(f"\r\033[K  {marker} {label}")
             key = _read_menu_key()
             if key == "up":
@@ -540,7 +540,7 @@ def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
         tty.setraw(fd)
         while True:
             for index, label in enumerate(options):
-                marker = "❯" if index == selected else " "
+                marker = _paint("❯", COLOR_BLUE) if index == selected else " "
                 print(f"\r\033[K  {marker} {label}")
             key = _read_menu_key()
             if key == "up":
