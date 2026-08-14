@@ -7,6 +7,9 @@
 
 Empat kemampuan harian biar bot makin diandelin & gampang dipakai. Semua keyless di core; yang butuh model (vision/STT) pakai lokal/gratis atau provider sk7 yang udah ada.
 
+**Blueprint:** module names and Python snippets below are pseudocode contracts.
+This skill does not bundle watchdog, vault, multimodal, or triage implementations.
+
 | Fitur | Script | Inti |
 |---|---|---|
 | Self-healing watchdog | `tools/watchdog.py` | mantau proses, restart yang mati (rate-limited), alert |
@@ -29,7 +32,7 @@ wd = Watchdog([
 await wd.run(notifier, interval_s=30)
 ```
 
-Bot juga `Watchdog.touch_heartbeat()` tiap loop; watchdog cek `bot_heartbeat_alive()` buat deteksi hang. Selaras sama sk55 `SAFE_AUTO_ACTIONS` (restart_crashed_process). **File ini FROZEN** — self-improve gak boleh ngeditnya.
+Bot juga `Watchdog.touch_heartbeat()` tiap loop; watchdog cek `bot_heartbeat_alive()` buat deteksi hang. Selaras sama sk55 `SAFE_AUTO_ACTIONS` (restart_crashed_process). An implementation should protect watchdog policy from autonomous edits.
 
 ## 2. Snippet/address vault + macro
 
@@ -43,7 +46,7 @@ addr = v.resolve_address("wallet kerja")   # "kirim ke wallet kerja" → resolve
 steps = v.get_macro("morning routine")     # "jalanin morning routine" → eksekusi step
 ```
 
-**SAFETY**: vault cuma nyimpen & resolve. Address hasil resolve, pas dipakai di tx, **tetap lewat governor + konfirmasi**. `kind="address"` divalidasi formatnya (EVM/base58). **File FROZEN** — kalau loop bisa ngeditnya, dia bisa diam-diam ganti "wallet kerja" jadi alamat attacker. Resolve label = anti salah-tempel + anti poisoning.
+**SAFETY**: vault cuma nyimpen & resolve. Address hasil resolve, pas dipakai di tx, **tetap lewat governor + konfirmasi**. `kind="address"` divalidasi formatnya (EVM/base58). An implementation must protect vault data and require confirmation before use in transactions. Resolve label = anti salah-tempel + anti poisoning.
 
 ## 3. Voice & screenshot input
 
@@ -59,7 +62,7 @@ STT lokal gratis: `pip install faster-whisper` (ringan) atau `openai-whisper`. V
 
 ```python
 from triage import Message, triage, format_digest
-d = triage(messages, vips={"bos", "partner"}, my_handles={"@hermes"})
+d = triage(messages, vips={"bos", "partner"}, my_handles={"@zeline"})
 print(format_digest(d))   # 🔴 prioritas tinggi + ⚪ lainnya
 ```
 
@@ -69,11 +72,9 @@ Skor heuristik keyless: VIP sender + kata urgent + mention + pertanyaan + recenc
 
 ## Env var
 
-```bash
-export HERMES_BOT_HEARTBEAT=~/.hermes/bot-heartbeat   # watchdog self-monitor
-export HERMES_VAULT_DB=~/.hermes/vault.db
-export HERMES_WHISPER_MODEL=base                       # tiny/base/small/medium
-```
+Choose project-local, gitignored paths for watchdog/vault state and configure
+the speech-to-text model through the selected library. Do not assume Zeline
+defines these application-specific environment variables.
 
 ## Trigger phrases
 

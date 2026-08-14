@@ -18,7 +18,7 @@ from __future__ import annotations
 import hmac
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 
 from zeline.agent import ZelineError
 
@@ -56,7 +56,12 @@ def _is_authorized(headers, token: str) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, token)
 
 
-def start(sessions, cfg: dict[str, Any], stop_event) -> None:
+def start(
+    sessions,
+    cfg: dict[str, Any],
+    stop_event,
+    ready: Callable[[int], None] | None = None,
+) -> None:
     host = str(cfg.get("host", "127.0.0.1"))
     port = int(cfg.get("port", 8765))
     token = str(cfg["token"])
@@ -130,7 +135,10 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
 
     server = ThreadingHTTPServer((host, port), Handler)
     server.timeout = 0.5
-    print(f"  [webhook] listening http://{host}:{port} (/health, /message)", flush=True)
+    bound_port = int(server.server_address[1])
+    if ready is not None:
+        ready(bound_port)
+    print(f"  [webhook] listening http://{host}:{bound_port} (/health, /message)", flush=True)
     try:
         while not stop_event.is_set():
             server.handle_request()

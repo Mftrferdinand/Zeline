@@ -274,6 +274,9 @@ def _defaults() -> dict[str, Any]:
             # CLI dimiliki operator lokal; gateway publik harus safe secara default.
             "cli_profile": "full",
             "workspace": str(Path.home()),
+            # Native tools remain enabled unless the owner explicitly disables
+            # one. Opt-out means old configs automatically gain new tools.
+            "disabled": [],
         },
         "gateways": {
             "telegram": {
@@ -409,7 +412,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
-    global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES
+    global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -425,6 +428,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
+    DISABLED_TOOLS = frozenset(str(name) for name in cfg.get("tools", {}).get("disabled", []))
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
     SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(name=NAME)
 

@@ -11,7 +11,13 @@ Bikin bot kerasa kayak asisten harian, bukan alat panggil-pakai:
 - **Daily briefing** — push ringkasan tiap pagi tanpa diminta.
 - **Alert engine** — trigger persisten "kabarin kalau ...".
 
-Scripts: `tools/briefing.py` + `tools/alerts.py`. Notifier reuse `monitoring.Notifier` (Telegram/Discord). Keyless di mana bisa (harga DexScreener, gas via RPC).
+This skill is an implementation blueprint. It does not bundle `briefing.py`,
+`alerts.py`, or a notifier module. Build those components in the user's project
+or connect an installed scheduler/notification integration. Prefer keyless data
+sources where possible (DexScreener for prices, public RPC for gas).
+
+Every interface and snippet below is **pseudocode** to implement in the target
+project, not an importable module or preinstalled command.
 
 Read-only / notify-only — gak ada yang sign tx, jadi gak nyentuh governor. Begitu sebuah alert mau MEMICU aksi dana (mis. "auto-swap pas dip"), aksinya tetap lewat governor + konfirmasi.
 
@@ -24,29 +30,18 @@ Ngekompos dari yang udah ada — section tanpa data di-skip:
 ```
 💼 Portfolio   ← inject portfolio_provider (balanceOf multicall, keyless)
 ⛽ Gas         ← inject gas_provider (eth_gasPrice / feeHistory, keyless)
-🔔 Alert aktif ← alerts.py
-🧠 Lesson      ← memory_engine (lesson terbaru)
-⏳ Masih open  ← memory_engine (blocker/decision belum kelar)
-📝 Proposal    ← reflection.py (yang nunggu review)
+🔔 Alert aktif ← project alert store
+🧠 Lesson      ← project memory provider
+⏳ Masih open  ← project task provider
+📝 Proposal    ← project proposal store
 ```
 
-```python
-from briefing import push_briefing
-from memory_engine import MemoryEngine
-from alerts import AlertEngine
-from monitoring import Notifier   # dari skills/hermes/scripts
-
-notifier = Notifier(telegram=(os.environ["HERMES_TG_BOT_TOKEN"], os.environ["HERMES_TG_CHAT_ID"]))
-await push_briefing(notifier, memory_engine=MemoryEngine(), alert_engine=AlertEngine(),
-                    portfolio_provider=my_portfolio_fn, gas_provider=my_gas_fn)
-```
+Implement providers and notification delivery explicitly in the target project;
+do not assume a bundled Python module or environment-variable contract.
 
 `once_per_day=True` (default) ada guard biar gak dobel kalau heartbeat sering. Jadwal: cron harian (sk2/sk4) atau scheduler in-process.
 
-```bash
-# contoh cron jam 7 pagi WIB
-0 7 * * *  cd ~/superagent-v3 && python -c "import asyncio; from tools.briefing import ..."  # sesuaikan
-```
+Schedule the implemented project entry point with the platform scheduler.
 
 ---
 
@@ -63,8 +58,8 @@ Trigger persisten di SQLite. Sekali set, jalan terus.
 | `custom` | expr | kondisi sendiri |
 
 ```python
-from alerts import AlertEngine
-ae = AlertEngine()
+# PSEUDOCODE: implement AlertEngine in the target project.
+ae = ProjectAlertEngine()
 ae.add_rule("price_below", {"token": "0x...", "chain": "ethereum", "threshold": 2000},
             cooldown_s=3600, label="ETH dip")
 ae.add_rule("gas_below", {"chain": "ethereum", "threshold_gwei": 10}, label="gas murah")
@@ -75,17 +70,16 @@ await ae.run(notifier, poll_interval_s=60, fetchers={"gas_fn": my_gas_fn})
 
 **Dedup**: tiap rule punya `cooldown_s` — alert yang udah nyala gak refire sampai cooldown lewat. Gak spam.
 
-**Sumber data keyless**: harga default dari DexScreener (free, no key); gas & wallet activity di-inject (eth RPC / monitoring.py). Semua bisa di-override dengan fetcher sendiri.
+**Sumber data keyless**: harga bisa dari DexScreener; gas & wallet activity
+di-inject dari provider yang benar-benar diimplementasikan proyek.
 
 ---
 
-## Env var
+## State and credentials
 
-```bash
-export HERMES_ALERTS_DB=~/.hermes/alerts.db
-export HERMES_BRIEFING_STATE=~/.hermes/briefing-last.txt
-# Notifier pakai HERMES_TG_BOT_TOKEN / HERMES_TG_CHAT_ID / HERMES_DISCORD_WEBHOOK (udah ada)
-```
+Choose project-local, gitignored paths for alert state and load notification
+credentials from that project's secret store. Never assume Zeline defines
+application-specific alert or notifier environment variables.
 
 ## Trigger phrases (router)
 

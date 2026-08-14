@@ -259,23 +259,19 @@ SKILL.md / agent definition red flags:
 
 ## Skill Integrity Verification (NEW in v4.0)
 
-Riset keamanan OpenClaw (190 advisory) menemukan skill jahat lewat jalur distribusi plugin bisa nyelipin dropper di dalam konteks LLM, lolos dari exec pipeline. Untuk agent yang pegang private key, integritas skill bukan opsional.
+Untrusted skills can hide data exfiltration or command-execution instructions in
+agent context. Before using a third-party skill, inspect its source and diff,
+verify the publisher and archive checksum/signature when available, and keep it
+outside privileged profiles until reviewed. This bundle does not provide a
+`skill_integrity.py` tool or signing-key environment variable; do not claim that
+an integrity lock exists unless the project implements and verifies one.
 
-Tool: `tools/skill_integrity.py` — bikin & verifikasi manifest SHA-256 per file (opsional ditandatangani Ed25519).
-
-```bash
-python tools/skill_integrity.py generate          # di sumber tepercaya → tulis SKILLS.lock
-python tools/skill_integrity.py generate --sign    # + tanda tangan (HERMES_SIGNING_KEY)
-python tools/skill_integrity.py verify             # exit 0 bersih, 1 ada perubahan, 2 error
-```
-
-Rail boot (lihat HEARTBEAT.md): jalankan `verify` di awal sesi. Kalau exit != 0 → ada file skill berubah/baru/hilang → **tahan operasi on-chain** sampai operator audit temuannya dan, kalau memang disengaja, `generate` ulang lock-nya. Skill `[NEW]` yang belum di-lock diperlakukan untrusted sampai diaudit.
-
-Workflow saat verify gagal:
+If a project provides its own verified integrity manifest and verification fails:
 ```
 1. Lihat file mana yang [MODIFIED]/[NEW]/[MISSING]
-2. Audit pakai checklist di atas (§OpenClaw / Skill File Specific Audit)
-3. Sengaja & aman → `generate` ulang. Bukan / mencurigakan → JANGAN jalankan, investigasi.
+2. Audit pakai checklist skill/prompt di atas.
+3. Sengaja & aman → update manifest using that project's documented process.
+   Bukan / mencurigakan → JANGAN jalankan, investigasi.
 ```
 
 ---

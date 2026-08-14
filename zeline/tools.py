@@ -1069,6 +1069,16 @@ class ToolExecutor:
         self.profile = profile
         self.workspace = Path(workspace or config.WORKSPACE).expanduser().resolve(strict=False)
         self.memory = memory.MemoryStore(self.identity)
+        # Snapshot once per session. Tool schemas must remain stable throughout
+        # a model turn for prompt caching and tool-call consistency; config
+        # changes apply when a new ToolExecutor/session is created.
+        disabled = set(getattr(config, "DISABLED_TOOLS", ()))
+        self._disabled_tools = frozenset(disabled)
+        self._native_defs = tuple(
+            definition
+            for definition in TOOL_DEFS
+            if profile in definition.profiles and definition.name not in disabled
+        )
         # Private skill hanya boleh dibaca operator local/full profile.
         self._can_read_private_skills = profile == "full"
         # MCP hanya untuk operator (workspace/full). Server stdio menjalankan
@@ -1104,8 +1114,11 @@ class ToolExecutor:
             "run_shell": lambda command: _run_shell(command, self.workspace),
         }
 
+    def _enabled_native_defs(self) -> tuple[ToolDef, ...]:
+        return self._native_defs
+
     def _runtime_info(self) -> str:
-        available = [definition.name for definition in TOOL_DEFS if self.profile in definition.profiles]
+        available = [definition.name for definition in self._enabled_native_defs()]
         return json.dumps({
             "identity": config.NAME,
             "framework": "Zeline",
@@ -1120,7 +1133,7 @@ class ToolExecutor:
 
     @property
     def schemas(self) -> list[dict[str, Any]]:
-        native = [definition.schema() for definition in TOOL_DEFS if self.profile in definition.profiles]
+        native = [definition.schema() for definition in self._enabled_native_defs()]
         if self.mcp is not None:
             try:
                 native.extend(self.mcp.schemas())
@@ -1134,8 +1147,10 @@ class ToolExecutor:
             if not self.mcp.has_tool(name):
                 return f"ERROR: MCP tool '{name}' is not registered."
             return self.mcp.call(name, args)
-        allowed = {definition.name for definition in TOOL_DEFS if self.profile in definition.profiles}
+        allowed = {definition.name for definition in self._enabled_native_defs()}
         if name not in allowed:
+            if name in self._disabled_tools:
+                return f"ERROR: tool '{name}' is disabled by the owner."
             return f"ERROR: tool '{name}' is not allowed for profile '{self.profile}'."
         handler = self._handlers.get(name)
         if handler is None:

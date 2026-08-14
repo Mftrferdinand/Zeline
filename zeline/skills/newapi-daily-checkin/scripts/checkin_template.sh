@@ -14,7 +14,7 @@ CAP="REPLACE_ME_2CAPTCHA_KEY"          # 2captcha api key (keep local!)
 BASE="https://REPLACE_ME_PANEL"        # e.g. https://tabitoken.com
 SITEKEY="REPLACE_ME_TURNSTILE_SITEKEY" # from GET /api/status
 NEEDS_USER_HEADER="false"              # "true" for gorouter-style panels
-TOKFILE="$HOME/.hermes/scripts/REPLACE_ME_tokens.txt"
+TOKFILE="${TOKFILE:-./REPLACE_ME_tokens.txt}"
 UA="Mozilla/5.0"
 
 [ -f "$TOKFILE" ] || { echo "ERR: $TOKFILE tidak ada"; exit 1; }

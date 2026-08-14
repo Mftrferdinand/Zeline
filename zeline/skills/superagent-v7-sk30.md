@@ -19,6 +19,8 @@ Render-only, no API?      → headless browser (H8 / browser_engine) — pilihan
 ```
 
 ## NET-NEW TOOLS (v4.1.2)
+**Blueprint:** the following modules and snippets are pseudocode components to
+implement and test in the target project; they are not bundled with this skill.
 - `tools/api_harvester.py` — `parse_curl()` (DevTools → RequestSpec), `paginate_offset` / `paginate_cursor`, `extract()` (JSON path `data.items[*].addr`), `to_jsonl` / `to_csv`, `send()` (httpx, lazy import).
 - `tools/revenue_engine.py` — `BulkRunner` (concurrency + retry/backoff + **checkpoint-resume** + dedupe), `TokenBucket` (rate limit), `Checkpoint`.
 
@@ -32,7 +34,7 @@ Pola anti-browser standar:
 | Pattern | sk30 nyetir | Delegasi ke |
 |---|---|---|
 | **A. Harvest / scrape API** (anti-browser) | parse_curl + paginate + extract + BulkRunner | sk6 (API), sk5 (data shape), H8/browser_engine (last resort) |
-| **B. Mass akun / airdrop / on-chain** | BulkRunner + Checkpoint (resume) + dedupe | sk10 + hermes (`wallet_manager`, `airdrop_runner`) — **WAJIB lewat `governor.py`** |
+| **B. Mass akun / airdrop / on-chain** | BulkRunner + Checkpoint (resume) + dedupe | sk10 + available wallet/on-chain tools — require an implemented spend governor |
 | **C. Integrasi API & otomasi job klien** | RequestSpec + retry + provider cascade | sk6 (webhook/SDK), sk16 (scaffold service), sk4 (schedule) |
 
 Kalau task murni 1 domain (mis. cuma batch tanpa API) → jangan load sk30, pakai sk12/sk16 langsung. sk30 nyala pas garapannya **API-first + bulk + anti-browser**.
@@ -40,13 +42,10 @@ Kalau task murni 1 domain (mis. cuma batch tanpa API) → jangan load sk30, paka
 ## SAFETY RAILS (non-negotiable)
 - On-chain apa pun di Pattern B → lewat **Spend Governor** (caps + kill-switch). Gak ada bypass walau `auto_confirm`.
 - Hormati rate-limit & ToS target; default `TokenBucket` konservatif — jangan hammer.
-- Jangan harvest data pribadi/PII di luar izin klien. Simpan kredensial klien di vault (`hermes/references/security.md`), bukan hardcode.
+- Jangan harvest data pribadi/PII di luar izin klien. Simpan kredensial klien di secret store atau vault yang benar-benar tersedia, bukan hardcode.
 - Resume-from-checkpoint harus **idempotent** — jangan double-submit / double-charge.
 
-## QUICKSTART
-```bash
-bash tools/tests/run_tests.sh      # buktiin engine-nya hijau (offline, stdlib)
-```
+## Pseudocode example
 ```python
 from api_harvester import parse_curl, paginate_offset, extract, to_jsonl
 from revenue_engine import BulkRunner, TokenBucket, Checkpoint

@@ -11,6 +11,8 @@ sk31 jawab "wallet gue layak gak buat airdrop X?" — **sk33 jawab "proyek mana 
 Murni logika scoring (offline, deterministik). Pengumpulan sinyal mentah (funding, deploy kontrak, points program, GitHub, governance) didelegasi ke sk6/sk22/sk10.
 
 ## TOOL (v4.2, net-new)
+**Blueprint:** `alpha_radar.py` and the snippet below are pseudocode for a
+component to implement and test in the target project.
 - `tools/alpha_radar.py` — `ProjectSignal` → `score_project()` → skor 0-100 + tier (cold/watch/warm/hot) + alasan konkret + estimasi effort. `rank(list)` urutkan banyak proyek.
 
 ## SINYAL YANG DINILAI
@@ -30,9 +32,9 @@ for r in rank(sigs, top=10):
 | Butuh | sk33 | Delegasi |
 |---|---|---|
 | Data funding/sosial/GitHub | konsumsi `ProjectSignal` | sk6 (API) / sk22 (riset) |
-| Aktivitas on-chain (deploy/testnet) | konsumsi sinyal | sk10 + hermes |
+| Aktivitas on-chain (deploy/testnet) | konsumsi sinyal | sk10 plus available on-chain tools |
 | Cek wallet sendiri layak | — | sk31 eligibility |
-| Eksekusi farming | hasilkan watchlist | sk30 + airdrop_runner (governor) |
+| Eksekusi farming | hasilkan watchlist | implemented runner plus spend governor |
 
 ## SAFETY RAILS
 - Skor = **probabilitas + estimasi**, BUKAN jaminan ada airdrop/cuan. Sampaikan apa adanya.

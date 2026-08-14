@@ -10,9 +10,12 @@ sk31 ngubah siklus airdrop jadi keputusan ber-angka di 4 tahap:
 **(1) FARMING** → eligibility scorer + sybil self-audit
 **(2) MENJELANG TGE** → claim-window watcher (kalender)
 **(3) SETELAH TGE** → exit planner
-Semua tool di sini **murni logika (offline, deterministik)** — pengambilan data on-chain didelegasi ke sk10/hermes. Time SELALU di-inject (TIME.md).
+Semua komponen rancangan di sini bersifat offline/deterministik; data on-chain
+harus datang dari tool yang benar-benar tersedia. Time selalu di-inject.
 
 ## TOOLS (v4.2, net-new)
+**Blueprint:** every `tools/*` name and import below is pseudocode for components
+that must be implemented and tested in the target project.
 - `tools/eligibility.py` — `WalletStats` → `score_wallet()` → skor 0-100 + band + **gaps konkret** (apa yang kurang) + flags (dormant, no-bridge). Rubric default bisa di-override per-project (`Criterion`).
 - `tools/sybil_audit.py` — `audit(list[WalletActivity])` → risiko cluster antar-**wallet sendiri** (funding seragam, timing berdempet, gas/tx kembar, overlap kontrak) + **saran de-correlation**. Jaring keselamatan operator, BUKAN buat ngecoh proyek orang.
 - `tools/claim_watcher.py` — `ClaimWatcher` + `AirdropEvent` → `due(now)` (alert H-48/H-2/H-0, fire-once) & `upcoming(now)` (kalender). `now` WAJIB di-inject.
@@ -20,7 +23,7 @@ Semua tool di sini **murni logika (offline, deterministik)** — pengambilan dat
 
 ## ALUR STANDAR
 ```python
-# 1. Layak gak? (data wallet dari sk10/hermes RPC, lalu skor offline)
+# 1. Layak gak? (data wallet dari sk10 plus available RPC, lalu skor offline)
 from eligibility import WalletStats, score_wallet
 print(score_wallet(WalletStats(tx_count=22, age_days=120, volume_usd=4200,
       unique_contracts=9, distinct_chains=2, active_weeks=7, bridged=True)).report())
@@ -44,9 +47,9 @@ print(build_plan(10000, profile="balanced", hold_pct=20, liquidity_thin=True).re
 ## SCOPE & DELEGATION
 | Butuh | sk31 | Delegasi |
 |---|---|---|
-| Data on-chain wallet (balance/tx/age) | konsumsi `WalletStats` | sk10 + hermes (RPC/explorer) |
-| Legitimasi project (rug/honeypot) | — | sk11 / `tools/rugcheck.py` + H4 |
-| Eksekusi farming multi-wallet | input ke audit | sk30 + `airdrop_runner` (WAJIB `governor.py`) |
+| Data on-chain wallet (balance/tx/age) | konsumsi `WalletStats` | sk10 plus available RPC/explorer tools |
+| Legitimasi project (rug/honeypot) | — | sk11 plus available security/data tools |
+| Eksekusi farming multi-wallet | input ke audit | require implemented runner and spend governor |
 | Eksekusi exit (jual) | hasilkan rencana | H1 swap + Spend Governor + R9 gate |
 | Alert delivery (telegram/dll) | hasilkan pesan | sk14 / sk4 |
 
@@ -56,8 +59,5 @@ print(build_plan(10000, profile="balanced", hold_pct=20, liquidity_thin=True).re
 - Time-sensitive (claim/vesting): kalau gak ada Layer 1/2 time source di strict mode → tahan, jangan nebak (TIME.md).
 - Eligibility/exit = estimasi pendukung keputusan, **bukan jaminan** dapat/cuan. Sampaikan apa adanya.
 
-## QUICKSTART
-```bash
-python3 tools/tests/run_tests.sh   # eligibility/sybil/claim/exit semuanya hijau (offline)
-```
+
 🔧 Upgrade: combo sk14 buat auto-alert claim harian, sk5 buat export skor multi-wallet ke XLSX.

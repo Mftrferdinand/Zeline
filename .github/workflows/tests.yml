@@ -100,6 +100,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Banner and platform probe work in Windows PowerShell 5.1
+        run: |
+          $legacy = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -PlatformInfo | Out-String
+          Write-Host $legacy
+          if ($legacy -notmatch 'Z  E  L  I  N  E') { throw 'legacy PowerShell banner missing' }
+          if ($legacy -notmatch 'Windows PowerShell 5.1') { throw 'platform report missing' }
+          if ($legacy -match 'â|�') { throw 'legacy PowerShell banner is mojibake' }
+
       - name: Run install.ps1 from the checkout
         # ZELINE_PYTHON pins the interpreter to the one setup-python provisioned.
         # Without it the installer prefers `py -3`, which on the runner is a
@@ -108,7 +116,7 @@ jobs:
         # -NoPathUpdate keeps the runner's PATH untouched and skips the prompt.
         run: |
           $env:ZELINE_PYTHON = 'python'
-          ./install.ps1 -NoPathUpdate
+          ./install.ps1 -NoPathUpdate -Source .
 
       - name: Installed CLI is usable
         # Must use the nt_user scheme, NOT userbase + '\Scripts' — that path does
@@ -122,6 +130,35 @@ jobs:
           $env:PATH = "$env:PATH;$scripts"
           zeline --version
           python -c "from zeline import skills; print('skills import OK')"
+
+  macos:
+    # Run both the package and the real shell installer on native macOS. This
+    # catches Homebrew/PEP-668, BSD userland, and Darwin path differences that
+    # Linux cannot simulate.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: python -m pip install .
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+      - name: Exercise install.sh in an isolated runtime
+        env:
+          ZELINE_PYTHON: python3
+        run: |
+          bash install.sh \
+            --source "$PWD" \
+            --install-root "$RUNNER_TEMP/zeline-runtime" \
+            --bin-dir "$RUNNER_TEMP/zeline-bin" \
+            --no-seed \
+            --platform macos
+          "$RUNNER_TEMP/zeline-bin/zeline" --version
+          "$RUNNER_TEMP/zeline-bin/zeline" tools list
+      - name: Compile package
+        run: python -m compileall -q zeline
 
   package:
     runs-on: ubuntu-latest
@@ -140,7 +177,7 @@ jobs:
           wheel = next(Path("dist").glob("*.whl"))
           with zipfile.ZipFile(wheel) as archive:
               names = archive.namelist()
-          blocked = [name for name in names if ".zeline" in name or "memory.json" in name or name.endswith(".env")]
+          blocked = [name for name in names if ".zeline" in name or "memory.json" in name or name.endswith(".env") or "__pycache__" in name or name.endswith(".pyc")]
           assert not blocked, f"local state leaked into wheel: {blocked}"
           print(wheel, "OK")
           PY

@@ -324,7 +324,7 @@ class WindowsInstallerTests(unittest.TestCase):
                 self.fail(f"unwrapped pipeline .Count under StrictMode: {line.strip()}")
 
     def test_installer_supports_non_interactive_path_switches(self):
-        """`irm | iex` and CI have no console: Read-Host must be avoidable."""
+        """Downloaded scripts and CI may have no console: Read-Host must be avoidable."""
         text = self.script.read_text(encoding="utf-8")
         self.assertIn("[switch]$AddToPath", text)
         self.assertIn("[switch]$NoPathUpdate", text)

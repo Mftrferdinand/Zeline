@@ -69,15 +69,18 @@ def _ensure_dirs() -> None:
     _migrate_legacy_root()
 
 
-def seed_skills() -> int:
-    """Copy bundled public skill tanpa menimpa skill yang sudah dikustom.
+def seed_skills(source: str | Path | None = None) -> int:
+    """Salin skill bawaan dari paket ke scope public tanpa overwrite.
 
     Mendukung dua bentuk sumber:
     - flat  : ``skills/<name>.md``
     - folder : ``skills/<name>/SKILL.md`` (+ references/scripts/assets)
+
+    ``source`` is injectable for importers/tests so they never need to mutate
+    the installed package directory. Normal callers use the bundled skills.
     """
     _ensure_dirs()
-    source = Path(__file__).resolve().parent / "skills"
+    source = Path(source).expanduser().resolve() if source is not None else Path(__file__).resolve().parent / "skills"
     if not source.exists():
         return 0
     copied = 0

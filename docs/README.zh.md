@@ -44,66 +44,76 @@ Zeline —— 一个 [Zerolinear](https://zerolinear.com) 项目，由 [Mftrferd
 
 ## 安装
 
-**要求：** Python 3.10 或更新版本。WhatsApp 还需要 Node.js 18+ 和 npm。
+**要求：** Python 3.10+。WhatsApp 还需要 Node.js 18+ 和 npm。在 POSIX
+平台上，Zeline 使用私有 Python 环境；Windows 只为当前用户安装。无需 root
+或管理员权限。
 
-### Termux
-
-```bash
-pkg install git python -y
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
-zeline setup
-```
-
-### Linux 和 macOS
+### Termux、Linux 和 macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
-zeline setup
-```
-
-若想改为从代码检出安装：
-
-```bash
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+lines = Path("SHA256SUMS").read_text().splitlines()
+expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
+actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
+if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
+    raise SystemExit("invalid install.sh checksum entry")
+if actual != expected.lower():
+    raise SystemExit("install.sh checksum mismatch")
+print("install.sh SHA-256 verified")
+PY
 bash install.sh
-```
-
-### Windows（PowerShell）
-
-无需管理员权限。打开 **PowerShell**（不是 CMD），然后运行：
-
-```powershell
-irm https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.ps1 | iex
+export PATH="$HOME/.local/bin:$PATH"
 zeline setup
 ```
 
-若想改为从代码检出安装：
+### 通过 iSH 使用 iOS / iPadOS
 
-```powershell
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+```sh
+apk add bash curl python3 py3-pip
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+lines = Path("SHA256SUMS").read_text().splitlines()
+expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
+actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
+if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
+    raise SystemExit("invalid install.sh checksum entry")
+if actual != expected.lower():
+    raise SystemExit("install.sh checksum mismatch")
+print("install.sh SHA-256 verified")
+PY
+bash install.sh
+zeline setup
 ```
 
-如果安装后无法识别 `zeline`，请重启终端（安装脚本会询问是否将 Scripts
-目录加入 PATH），或以模块方式运行：
+CLI 和 HTTP 集成可在 iSH 中使用，但当 iSH 不在前台时，iOS 可能会暂停消息网关。
+
+### Windows PowerShell
 
 ```powershell
-py -3 -m zeline.cli
+$base = 'https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0'
+Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
+if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
+.\install.ps1
+zeline setup
 ```
 
-两点 Windows 专属说明：
+请查看[完整安装指南](installation.md)，了解各系统依赖、从代码检出安装、
+更新、PATH 修复、iOS 限制和卸载方法。
 
-- 如果输入 `python` 打开的是 Microsoft Store，那是占位程序，不是 Python。
-  请从 [python.org](https://www.python.org/downloads/) 安装 Python，并勾选
-  **Add python.exe to PATH**。安装脚本会检测并跳过该占位程序。
-- 请使用 Windows Terminal 或 PowerShell 7，以正确显示方框线条和方向键。
-  旧版 `cmd.exe` 会把横幅渲染成乱码。
-
-你的配置存储在本地 `~/.zeline/config.json`。安装完成后可快速检查一下：
+安装后检查工具、集成与运行状态：
 
 ```bash
+zeline tools list
+zeline mcp list
 zeline doctor
 zeline gateway list
 ```
@@ -184,10 +194,15 @@ zeline config show
 ## 命令参考
 
 ```text
-zeline                         Set up a gateway first, then open local chat
+zeline                         First run: gateway onboarding; later: local chat
 zeline chat -q "..."           Send one query after gateway + model setup
-zeline setup                   Open the gateway picker (Telegram/WhatsApp/Webhook)
+zeline setup                   First run: gateway picker; later: setup center
+zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline tools list              List native tools, profiles, and enabled state
+zeline tools profile <name>    Set safe|workspace|full for the local CLI
+zeline tools enable|disable T  Toggle one native tool for new sessions
+zeline tools workspace <path>  Set the owner workspace root
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
 zeline config show             Print configuration with masked secrets
@@ -229,7 +244,7 @@ API 密钥和网关令牌绝不会被包含在内。
 - WhatsApp 桥接在 Python 和 Node 之间使用一个随机的运行时令牌。
 - 该仓库启用了密钥扫描、推送保护、Dependabot、CodeQL 和依赖审查。
 
-有关报告指引，请参阅 [SECURITY.md](SECURITY.md)。
+有关报告指引，请参阅 [SECURITY.md](../SECURITY.md)。
 
 ## 开发
 

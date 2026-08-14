@@ -333,6 +333,157 @@ def cmd_setup(*, reset: bool = False) -> int:
     return 0
 
 
+def _parse_yes_no(raw: str, *, default: bool) -> bool:
+    value = raw.strip().lower()
+    if not value:
+        return default
+    return value in {"y", "yes", "1", "true", "on"}
+
+
+def cmd_setup_agent() -> int:
+    """Configure agent behavior as one atomic, validated setup section."""
+    cfg = config.stored_config_copy()
+    agent_cfg = cfg.setdefault("agent", {})
+    name = _ask("Agent name", str(cfg.get("name", "Zeline"))).strip() or "Zeline"
+    rounds_raw = _ask("Max tool rounds [1-50]", str(agent_cfg.get("max_tool_rounds", 8)))
+    sessions_raw = _ask("Max sessions [1-1000]", str(agent_cfg.get("max_sessions", 50)))
+    stream_raw = _ask("Stream responses? [Y/n]", "y" if agent_cfg.get("stream", True) else "n")
+    persist_raw = _ask(
+        "Persist sessions? [Y/n]",
+        "y" if agent_cfg.get("persist_sessions", True) else "n",
+    )
+    try:
+        rounds = int(rounds_raw)
+        sessions_count = int(sessions_raw)
+    except ValueError:
+        print("Max tool rounds and max sessions must be whole numbers.")
+        return 2
+    if not 1 <= rounds <= 50:
+        print("Max tool rounds must be between 1 and 50.")
+        return 2
+    if not 1 <= sessions_count <= 1000:
+        print("Max sessions must be between 1 and 1000.")
+        return 2
+    cfg["name"] = name
+    agent_cfg.update(
+        {
+            "max_tool_rounds": rounds,
+            "max_sessions": sessions_count,
+            "stream": _parse_yes_no(stream_raw, default=True),
+            "persist_sessions": _parse_yes_no(persist_raw, default=True),
+        }
+    )
+    config.save_config(cfg)
+    print("Agent settings saved.")
+    # Do not echo setup input: the same prompt path also handles secrets, and
+    # terminals/CI logs are not a safe place for user-supplied values.
+    print("  Name       : saved")
+    print(f"  Tool rounds: {rounds}")
+    print(f"  Sessions   : {sessions_count}")
+    return 0
+
+
+def cmd_setup_tools() -> int:
+    """Interactive owner-tool profile and workspace setup."""
+    cfg = config.stored_config_copy()
+    tool_cfg = cfg.setdefault("tools", {})
+    current = str(tool_cfg.get("cli_profile", "full"))
+    options = [
+        "safe - memory and public web tools",
+        "workspace - safe plus files in one workspace",
+        "full - workspace plus code and shell (local owner only)",
+        "Cancel",
+    ]
+    start = {"safe": 0, "workspace": 1, "full": 2}.get(current, 2)
+    selected = _arrow_menu("Local CLI tool profile:", options, start=start)
+    if selected in {-1, 3}:
+        print("Tools setup cancelled.")
+        return 0
+    profile = ("safe", "workspace", "full")[selected]
+    workspace = Path(str(tool_cfg.get("workspace", Path.home()))).expanduser()
+    if profile in {"workspace", "full"}:
+        raw = _ask("Workspace directory", str(workspace))
+        workspace = Path(raw).expanduser().resolve(strict=False)
+        if not workspace.is_dir():
+            print(f"Workspace directory not found: {workspace}")
+            return 2
+    tool_cfg["cli_profile"] = profile
+    tool_cfg["workspace"] = str(workspace.resolve(strict=False))
+    config.save_config(cfg)
+    print("Tool settings saved.")
+    print(f"  CLI profile: {profile}")
+    print(f"  Workspace  : {tool_cfg['workspace']}")
+    print("  Fine tune  : zeline tools list|enable|disable")
+    return 0
+
+
+def cmd_setup_integrations() -> int:
+    """Small MCP integration wizard; native integrations arrive as modules."""
+    while True:
+        choice = _arrow_menu(
+            "Integrations:",
+            [
+                "List configured MCP servers",
+                "Add MCP server (stdio command)",
+                "Add MCP server (HTTP URL)",
+                "Test configured MCP servers",
+                "Done",
+            ],
+        )
+        if choice in {-1, 4}:
+            print("Integrations setup done.")
+            return 0
+        if choice == 0:
+            cmd_mcp("list")
+        elif choice == 1:
+            name = _ask("Integration name", "").strip()
+            command = _ask("Command", "").strip()
+            if not name or not command:
+                print("Name and command are required.")
+                continue
+            cmd_mcp("add", name, command=command)
+        elif choice == 2:
+            name = _ask("Integration name", "").strip()
+            url = _ask("HTTP URL", "").strip()
+            if not name or not url:
+                print("Name and URL are required.")
+                continue
+            cmd_mcp("add", name, url=url)
+        elif choice == 3:
+            cmd_mcp("test")
+
+
+def cmd_setup_center() -> int:
+    """Reconfigurable setup center; first-run onboarding remains `cmd_setup`."""
+    _print_banner()
+    print(f"==> SETUP CENTER  ·  {config.CONFIG_FILE}")
+    while True:
+        choice = _arrow_menu(
+            "Configure:",
+            [
+                "Gateway - Telegram, WhatsApp, or webhook",
+                "Model - provider, endpoint, API key, and model",
+                "Tools - security profile and workspace",
+                "Integrations - MCP servers and external tools",
+                "Agent - identity, sessions, streaming, tool rounds",
+                "Done",
+            ],
+        )
+        if choice in {-1, 5}:
+            print("Setup center done. Run `zeline doctor` to verify everything.")
+            return 0
+        if choice == 0:
+            cmd_gateway_setup(None)
+        elif choice == 1:
+            cmd_model()
+        elif choice == 2:
+            cmd_setup_tools()
+        elif choice == 3:
+            cmd_setup_integrations()
+        elif choice == 4:
+            cmd_setup_agent()
+
+
 def _provider_slug(provider: dict[str, Any]) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(provider.get("name", "provider")).lower()).strip("-") or "provider"
 
@@ -976,12 +1127,129 @@ def cmd_memory() -> int:
     return 0
 
 
+def _native_tool_names() -> list[str]:
+    from zeline.tools import TOOL_DEFS
+
+    return [definition.name for definition in TOOL_DEFS]
+
+
+def cmd_tools(
+    action: str,
+    value: str | None = None,
+    *,
+    gateway: str | None = None,
+    owner: str | None = None,
+    allow_remote_code_execution: bool = False,
+) -> int:
+    """Inspect and control native tools without hand-editing config.json."""
+    from zeline.tools import SAFE_PROFILES, TOOL_DEFS
+
+    cfg = config.stored_config_copy()
+    tool_cfg = cfg.setdefault("tools", {})
+    disabled = {str(item) for item in tool_cfg.setdefault("disabled", [])}
+    known = {definition.name for definition in TOOL_DEFS}
+
+    if action == "list":
+        cli_profile = str(tool_cfg.get("cli_profile", "full"))
+        workspace = str(tool_cfg.get("workspace", Path.home()))
+        print("Zeline native tools")
+        print(f"  CLI profile : {cli_profile}")
+        print(f"  Workspace   : {workspace}")
+        print("  Profiles    : safe < workspace < full")
+        print("  Legend      : enabled/disabled · profiles")
+        for definition in TOOL_DEFS:
+            state = "disabled" if definition.name in disabled else "enabled"
+            profiles = ",".join(sorted(definition.profiles))
+            print(f"  {definition.name:<20} {state:<8} · {profiles}")
+        servers = len(cfg.get("mcp", {}).get("servers", {}))
+        print(f"\n  External MCP tools: {servers} server(s); run `zeline mcp list`.")
+        return 0
+
+    if action == "profile":
+        profile = str(value or "")
+        if profile not in SAFE_PROFILES:
+            print(f"Unknown profile: {profile}. Choose: safe, workspace, full.")
+            return 2
+        if gateway:
+            gateway_cfg = cfg.get("gateways", {}).get(gateway)
+            if gateway_cfg is None:
+                print(f"Unknown gateway: {gateway}.")
+                return 2
+            if profile in {"workspace", "full"}:
+                allowed = gateway_cfg.get("allowed")
+                if (
+                    not isinstance(allowed, list)
+                    or len(allowed) != 1
+                    or str(allowed[0]).strip() in {"", "*"}
+                ):
+                    print(f"Refusing {profile} profile for {gateway}: configure one exact owner allowlist entry first.")
+                    return 2
+                owner_identity = str(owner or "").strip()
+                if not owner_identity or owner_identity != str(allowed[0]).strip():
+                    print("Owner identity must exactly match the sole allowlist entry.")
+                    return 2
+                if gateway == "webhook":
+                    print("Webhook must remain safe because its caller controls chat_id; use Telegram/WhatsApp for owner tools.")
+                    return 2
+                if profile == "full" and not allow_remote_code_execution:
+                    print("Full gateway tools allow remote code execution. Re-run with --allow-remote-code-execution.")
+                    return 2
+                gateway_cfg["owner_identity"] = owner_identity
+                gateway_cfg["remote_code_execution_ack"] = bool(
+                    profile == "full" and allow_remote_code_execution
+                )
+            else:
+                gateway_cfg.pop("owner_identity", None)
+                gateway_cfg.pop("remote_code_execution_ack", None)
+            gateway_cfg["tool_profile"] = profile
+            config.save_config(cfg)
+            print(f"{gateway} tool profile: {profile}")
+            return 0
+        tool_cfg["cli_profile"] = profile
+        config.save_config(cfg)
+        print(f"Local CLI tool profile: {profile}")
+        return 0
+
+    if action in {"enable", "disable"}:
+        name = str(value or "")
+        if name not in known:
+            print(f"Unknown native tool: {name}. Run `zeline tools list`.")
+            return 2
+        if action == "disable":
+            disabled.add(name)
+        else:
+            disabled.discard(name)
+        tool_cfg["disabled"] = sorted(disabled)
+        config.save_config(cfg)
+        print(f"{name}: {action}d")
+        return 0
+
+    if action == "workspace":
+        target = Path(str(value or "")).expanduser().resolve(strict=False)
+        if not target.is_dir():
+            print(f"Workspace directory not found: {target}")
+            return 2
+        tool_cfg["workspace"] = str(target)
+        config.save_config(cfg)
+        print(f"Workspace: {target}")
+        return 0
+
+    print("Usage: zeline tools list|profile|enable|disable|workspace")
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="zeline", description="Zeline agentic AI framework by Zerolinear")
     parser.add_argument("--version", action="version", version=f"zeline {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
-    setup = subparsers.add_parser("setup", help="configure agent, provider, and gateways")
+    setup = subparsers.add_parser("setup", help="configure one section or run first-time gateway setup")
+    setup.add_argument(
+        "setup_section",
+        nargs="?",
+        choices=["gateway", "model", "tools", "integrations", "agent"],
+        help="configure only this section",
+    )
     setup.add_argument("--reset", action="store_true", help="discard saved provider defaults and start clean")
 
     chat = subparsers.add_parser("chat", help="chat in the terminal")
@@ -1025,6 +1293,25 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", aliases=["status"], help="check dependencies and configuration")
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
     subparsers.add_parser("memory", help="view local CLI memory")
+
+    tools_parser = subparsers.add_parser("tools", help="inspect and configure native tools")
+    tools_sub = tools_parser.add_subparsers(dest="tools_command")
+    tools_sub.add_parser("list", help="list native tools, profiles, and state")
+    tools_profile = tools_sub.add_parser("profile", help="set local CLI or gateway tool profile")
+    tools_profile.add_argument("profile", choices=["safe", "workspace", "full"])
+    tools_profile.add_argument("--gateway", choices=list(GATEWAYS), help="apply profile to one gateway")
+    tools_profile.add_argument("--owner", help="exact gateway owner identity; must be the sole allowlist entry")
+    tools_profile.add_argument(
+        "--allow-remote-code-execution",
+        action="store_true",
+        help="explicitly acknowledge that full gateway tools can execute owner code",
+    )
+    for action in ("enable", "disable"):
+        item = tools_sub.add_parser(action, help=f"{action} one native tool globally")
+        item.add_argument("tool", choices=_native_tool_names())
+    tools_workspace = tools_sub.add_parser("workspace", help="set the owner workspace root")
+    tools_workspace.add_argument("path")
+
     for alias, alias_help in (
         ("start", "alias: start enabled gateways"),
         ("stop", "alias: stop background gateways"),
@@ -1070,7 +1357,24 @@ def main(argv: list[str] | None = None) -> int:
     namespace = parser.parse_args(args)
     command = namespace.command
     if command == "setup":
-        return cmd_setup(reset=namespace.reset)
+        section = namespace.setup_section
+        if section == "gateway":
+            return cmd_gateway_setup(None)
+        if section == "model":
+            return cmd_model()
+        if section == "tools":
+            return cmd_setup_tools()
+        if section == "integrations":
+            return cmd_setup_integrations()
+        if section == "agent":
+            return cmd_setup_agent()
+        if namespace.reset:
+            return cmd_setup(reset=True)
+        # Backward-compatible first run: `zeline setup` has historically opened
+        # the gateway picker, and every public quick-start relies on that.
+        if not config.GATEWAY_SETUP_COMPLETE:
+            return cmd_setup(reset=False)
+        return cmd_setup_center()
     if command == "chat":
         return cmd_chat(namespace.query)
     if command == "model":
@@ -1124,6 +1428,22 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_skills()
     if command == "memory":
         return cmd_memory()
+    if command == "tools":
+        action = namespace.tools_command or "list"
+        value = (
+            getattr(namespace, "profile", None)
+            or getattr(namespace, "tool", None)
+            or getattr(namespace, "path", None)
+        )
+        return cmd_tools(
+            action,
+            value,
+            gateway=getattr(namespace, "gateway", None),
+            owner=getattr(namespace, "owner", None),
+            allow_remote_code_execution=bool(
+                getattr(namespace, "allow_remote_code_execution", False)
+            ),
+        )
     parser.print_help()
     return 2
 

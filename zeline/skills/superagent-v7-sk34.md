@@ -8,9 +8,11 @@
 ## DOCTRINE — farming = keputusan ber-angka
 Berhenti nebak. Tiap posisi farming dihitung: biaya (gas) vs expected value (estimasi airdrop × keyakinan + realisasi) → ROI → aksi keep/trim/drop. Deteksi wallet nganggur yang cuma bakar gas.
 
-Murni logika (offline, deterministik). Data biaya/aktivitas mentah didelegasi ke sk10/hermes (on-chain) + `cost_ledger.py`.
+Blueprint logika offline/deterministik. Data mentah datang dari on-chain tools;
+`cost_ledger.py` and `farm_roi.py` are pseudocode components to implement.
 
 ## TOOL (v4.2, net-new)
+The module/import example below is not bundled or directly runnable.
 - `tools/farm_roi.py` — `FarmPosition` → `evaluate()` → `PositionVerdict` (cost, EV, net, ROI, action, notes). `analyze(list)` → `PortfolioSummary` (agregat + ranking by net + grouping per aksi).
 
 ## ALUR STANDAR
@@ -30,7 +32,7 @@ print(analyze(port).report())   # ranking + keep/trim/drop + idle warning
 ## SCOPE & DELEGATION
 | Butuh | sk34 | Delegasi |
 |---|---|---|
-| Gas terpakai / modal terkunci on-chain | konsumsi `FarmPosition` | sk10 + hermes + cost_ledger |
+| Gas terpakai / modal terkunci on-chain | konsumsi `FarmPosition` | sk10 plus available on-chain tools and cost_ledger |
 | Estimasi nilai airdrop | input `est_airdrop_usd` | sk33 (alpha) / sk22 (riset) |
 | Eksekusi exit dari posisi | hasilkan aksi | sk31 exit_planner + H1 + governor |
 

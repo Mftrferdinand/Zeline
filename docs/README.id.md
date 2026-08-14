@@ -44,67 +44,78 @@ Zeline — sebuah proyek [Zerolinear](https://zerolinear.com), dipimpin oleh [Mf
 
 ## Instalasi
 
-**Persyaratan:** Python 3.10 atau lebih baru. WhatsApp juga memerlukan Node.js 18+ dan npm.
+**Persyaratan:** Python 3.10+. WhatsApp juga membutuhkan Node.js 18+ dan npm.
+Di platform POSIX, Zeline memakai environment Python privat; di Windows paket
+dipasang hanya untuk akun pengguna. Tidak perlu root atau Administrator.
 
-### Termux
-
-```bash
-pkg install git python -y
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
-zeline setup
-```
-
-### Linux dan macOS
+### Termux, Linux, dan macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
-zeline setup
-```
-
-Untuk menginstal dari checkout sebagai gantinya:
-
-```bash
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+lines = Path("SHA256SUMS").read_text().splitlines()
+expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
+actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
+if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
+    raise SystemExit("invalid install.sh checksum entry")
+if actual != expected.lower():
+    raise SystemExit("install.sh checksum mismatch")
+print("install.sh SHA-256 verified")
+PY
 bash install.sh
-```
-
-### Windows (PowerShell)
-
-Tidak perlu hak admin. Buka **PowerShell** (bukan CMD), lalu jalankan:
-
-```powershell
-irm https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.ps1 | iex
+export PATH="$HOME/.local/bin:$PATH"
 zeline setup
 ```
 
-Dari checkout sebagai gantinya:
+### iOS / iPadOS melalui iSH
 
-```powershell
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+```sh
+apk add bash curl python3 py3-pip
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+lines = Path("SHA256SUMS").read_text().splitlines()
+expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
+actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
+if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
+    raise SystemExit("invalid install.sh checksum entry")
+if actual != expected.lower():
+    raise SystemExit("install.sh checksum mismatch")
+print("install.sh SHA-256 verified")
+PY
+bash install.sh
+zeline setup
 ```
 
-Jika `zeline` tidak dikenali setelah instalasi, mulai ulang terminal (installer
-menawarkan untuk menambahkan folder Scripts ke PATH) atau jalankan sebagai
-modul:
+CLI dan integrasi HTTP bisa dipakai di iSH, tetapi iOS dapat menghentikan gateway
+saat iSH tidak berada di foreground.
+
+### Windows PowerShell
 
 ```powershell
-py -3 -m zeline.cli
+$base = 'https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0'
+Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
+if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
+.\install.ps1
+zeline setup
 ```
 
-Dua catatan khusus Windows:
+Lihat [panduan instalasi lengkap](installation.md) untuk paket prasyarat setiap
+OS, instalasi dari checkout, update, perbaikan PATH, keterbatasan iOS, dan
+uninstall.
 
-- Jika mengetik `python` malah membuka Microsoft Store, itu stub, bukan Python.
-  Instal Python dari [python.org](https://www.python.org/downloads/) dan
-  centang **Add python.exe to PATH**. Installer mendeteksi dan melewati stub itu.
-- Gunakan Windows Terminal atau PowerShell 7 agar garis kotak dan tombol panah
-  tampil benar. `cmd.exe` lama menampilkan banner dengan karakter rusak.
-
-Konfigurasi Anda disimpan secara lokal di `~/.zeline/config.json`. Jalankan pemeriksaan cepat setelah setup:
+Sesudah itu, periksa tools, integrasi, dan kesehatan instalasi:
 
 ```bash
+zeline tools list
+zeline mcp list
 zeline doctor
 zeline gateway list
 ```
@@ -185,10 +196,15 @@ Jika Anda mengekspos webhook melalui tunnel atau reverse proxy, gunakan HTTPS da
 ## Referensi perintah
 
 ```text
-zeline                         Set up a gateway first, then open local chat
+zeline                         First run: gateway onboarding; later: local chat
 zeline chat -q "..."           Send one query after gateway + model setup
-zeline setup                   Open the gateway picker (Telegram/WhatsApp/Webhook)
+zeline setup                   First run: gateway picker; later: setup center
+zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline tools list              List native tools, profiles, and enabled state
+zeline tools profile <name>    Set safe|workspace|full for the local CLI
+zeline tools enable|disable T  Toggle one native tool for new sessions
+zeline tools workspace <path>  Set the owner workspace root
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
 zeline config show             Print configuration with masked secrets
@@ -230,7 +246,7 @@ API key dan token gateway tidak pernah disertakan.
 - Bridge WhatsApp menggunakan token runtime acak antara Python dan Node.
 - Repositori ini mengaktifkan secret scanning, push protection, Dependabot, CodeQL, dan dependency review.
 
-Lihat [SECURITY.md](SECURITY.md) untuk panduan pelaporan.
+Lihat [SECURITY.md](../SECURITY.md) untuk panduan pelaporan.
 
 ## Pengembangan
 

@@ -11,6 +11,8 @@ Pelengkap exit_planner (sk31). sk36 fokus **tekanan jual makro**: kalender vesti
 Murni logika (offline, deterministik). `now` WAJIB di-inject (TIME.md) — gak ada fabrikasi waktu. Data unlock/likuiditas mentah didelegasi ke sk10/sk22.
 
 ## TOOL (v4.2, net-new)
+**Blueprint:** `unlock_engine.py` and the snippet below are pseudocode for a
+component to implement and test in the target project.
 - `tools/unlock_engine.py` — `UnlockEvent` + `MarketState` → `assess_event(ev, mkt, now)` → `UnlockVerdict` (days_until, unlock value, % circulating, pressure_ratio, pressure low/medium/high/extreme, signal). `build_calendar()` urut tanggal; `biggest_pressure()` cari event terberat.
 
 ## ALUR STANDAR
@@ -32,7 +34,7 @@ for v in build_calendar(evs, mkt, now):
 | Butuh | sk36 | Delegasi |
 |---|---|---|
 | Jadwal vesting & supply | konsumsi `UnlockEvent` | sk22 (riset) / sk10 (on-chain) |
-| Harga & volume live | konsumsi `MarketState` | sk10 + hermes |
+| Harga & volume live | konsumsi `MarketState` | sk10 plus available on-chain tools |
 | Eksekusi jual | hasilkan sinyal | sk31 exit_planner + H1 + governor |
 | Time source strict | wajib `now` | TIME.md (Layer 1/2) |
 

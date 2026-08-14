@@ -94,12 +94,55 @@ class ZelinePublicCoreTests(unittest.TestCase):
         content = skill_system.load_skill("superagent-v7-sk0")
         self.assertIn("Skill Registry", content)
 
+    def test_bundled_skills_do_not_expose_upstream_branding(self):
+        skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
+        source_suffixes = {".md", ".txt", ".py", ".sh", ".ts", ".json", ".yml", ".yaml"}
+        sources = sorted(
+            path for path in skill_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in source_suffixes
+        )
+        self.assertTrue(sources)
+        unknown = sorted(
+            str(path.relative_to(skill_root)) for path in skill_root.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+            and path.suffix.lower() not in source_suffixes
+        )
+        self.assertEqual(unknown, [])
+        leaked = []
+        for path in sources:
+            text = path.read_text(encoding="utf-8")
+            if "hermes" in text.casefold():
+                leaked.append(str(path.relative_to(skill_root)))
+        self.assertEqual(leaked, [])
+
+    def test_bundled_skills_do_not_invent_renamed_runtime_contracts(self):
+        skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
+        forbidden = (
+            "skills/zeline/", "zeline/references/", "zeline/scripts/governor.py",
+            "ZELINE_MASTER_PW", "ZELINE_SIGNING_KEY", "ZELINE_ALERTS_DB",
+            "ZELINE_BRIEFING_STATE", "ZELINE_BOT_HEARTBEAT", "ZELINE_VAULT_DB",
+            "ZELINE_WHISPER_MODEL", "tools/skill_integrity.py",
+        )
+        findings = []
+        for path in skill_root.rglob("*"):
+            if path.is_file() and path.suffix.lower() in {".md", ".txt", ".py", ".sh", ".ts"}:
+                text = path.read_text(encoding="utf-8")
+                for marker in forbidden:
+                    if marker in text:
+                        findings.append(f"{path.relative_to(skill_root)}: {marker}")
+        self.assertEqual(findings, [])
+
+    def test_mem0_skill_uses_supported_manual_auth_configuration(self):
+        path = Path(__file__).resolve().parents[1] / "zeline" / "skills" / "mem0-memory-mcp" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        self.assertNotIn("zeline mcp add", text)
+        self.assertIn("config.json", text)
+        self.assertIn("Authorization: Bearer <key>", text)
+
     def test_folder_based_skill_is_seeded_listed_and_loaded(self):
-        """Skill berformat folder (SKILL.md + file pendukung) ikut ter-seed,
-        muncul di daftar, dan bisa dimuat lengkap dengan referensi filenya."""
+        """Folder skill is tested from an isolated source, never package data."""
         skill_system = importlib.import_module("zeline.skills")
-        # Buat skill folder di sumber bundled (dir skills/ paket).
-        source_root = Path(skill_system.__file__).resolve().parent / "skills"
+        source_root = self.home / "bundled-test-skills"
         folder = source_root / "folder-demo-skill"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "SKILL.md").write_text(
@@ -109,18 +152,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         refs = folder / "references"
         refs.mkdir(exist_ok=True)
         (refs / "extra.md").write_text("Detail tambahan.\n", encoding="utf-8")
-        try:
-            skill_system.seed_skills()
-            names = [name for _scope, name, _title, _desc in skill_system.list_skill_entries()]
-            self.assertIn("folder-demo-skill", names)
-            content = skill_system.load_skill("folder-demo-skill")
-            self.assertIn("Langkah utama di sini", content)
-            # Daftar file pendukung ikut disertakan agar agent tahu bisa membacanya.
-            self.assertIn("references/extra.md", content)
-        finally:
-            import shutil
 
-            shutil.rmtree(folder, ignore_errors=True)
+        skill_system.seed_skills(source=source_root)
+        names = [name for _scope, name, _title, _desc in skill_system.list_skill_entries()]
+        self.assertIn("folder-demo-skill", names)
+        content = skill_system.load_skill("folder-demo-skill")
+        self.assertIn("Langkah utama di sini", content)
+        self.assertIn("references/extra.md", content)
 
     def test_memory_isolated_between_platform_users(self):
         one = self.memory.MemoryStore("telegram:100")
@@ -394,6 +432,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
         finally:
             self.config.MCP_SERVERS = {}
 
+    def test_mcp_close_closes_subprocess_pipes(self):
+        mcp = importlib.import_module("zeline.mcp")
+        stdin = mock.Mock()
+        stdout = mock.Mock()
+        process = mock.Mock(stdin=stdin, stdout=stdout, stderr=None)
+        process.poll.return_value = 0
+        server = mcp.MCPServer(name="fake", transport="stdio", command="fake")
+        server._process = process
+        server.close()
+        stdin.close.assert_called_once_with()
+        stdout.close.assert_called_once_with()
+        self.assertIsNone(server._process)
+
     def test_mcp_name_helpers_and_sse_parsing(self):
         mcp = importlib.import_module("zeline.mcp")
         self.assertEqual(mcp.parse_tool_name("mcp__srv__tool"), ("srv", "tool"))
@@ -422,9 +473,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("not found", public_agent_tools.run("load_skill", {"name": "owner-secret-procedure"}))
         self.assertIn("PRIVATE-SKILL-CONTENT-CHECK", owner_tools.run("load_skill", {"name": "owner-secret-procedure"}))
 
+    @unittest.skipIf(
+        sys.platform == "darwin",
+        "GitHub macOS runners can block local HTTP server bind threads; live integration runs on Linux/Windows",
+    )
     def test_webhook_requires_token_and_keeps_identity_namespaced(self):
         webhook = importlib.import_module("zeline.gateways.webhook")
-        port = free_port()
         token = "this-is-a-long-webhook-test-token"
         received = []
 
@@ -434,17 +488,26 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 return f"reply:{kwargs['text']}"
 
         stop = threading.Event()
-        thread = threading.Thread(
-            target=webhook.start,
-            args=(
-                FakeSessions(),
-                {"host": "127.0.0.1", "port": port, "token": token, "tool_profile": "safe"},
-                stop,
-            ),
-            daemon=True,
-        )
+        ready = __import__("queue").Queue()
+
+        def run_webhook():
+            try:
+                webhook.start(
+                    FakeSessions(),
+                    {"host": "127.0.0.1", "port": 0, "token": token, "tool_profile": "safe"},
+                    stop,
+                    lambda port: ready.put(("ready", port)),
+                )
+            except BaseException as exc:
+                ready.put(("error", exc))
+
+        thread = threading.Thread(target=run_webhook, daemon=True)
         thread.start()
-        deadline = time.monotonic() + 3
+        state, value = ready.get(timeout=10)
+        if state == "error":
+            raise value
+        port = value
+        deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             try:
                 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.3)
@@ -529,7 +592,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         errors = telegram.validate_config({"token": "123:abc", "tool_profile": "full", "allowed": []})
         self.assertTrue(any("allowlist" in error.lower() for error in errors))
-        self.assertEqual(telegram.validate_config({"token": "123:abc", "tool_profile": "full", "allowed": [7387183839]}), [])
+        self.assertEqual(telegram.validate_config({"token": "123:abc", "tool_profile": "full", "allowed": [111222333]}), [])
 
     def test_telegram_working_status_matches_hermes_style(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -934,8 +997,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         class Sessions:
             def task_snapshot(self, _identity): return {"title": "Perbaiki autentikasi bot", "messages": ["tolong perbaiki login"]}
         with mock.patch.object(telegram, "REPOSITORY_FILE", repository), mock.patch.object(telegram, "_api_call"):
-            telegram._handle_command_update("bot-api", "/savetask", Sessions(), "telegram:7387183839", 7387183839, stop_event=threading.Event(), tool_profile="full", message_id=123)
-        self.assertIn("[Telegram message](tg://openmessage?user_id=7387183839&message_id=123)", repository.read_text(encoding="utf-8"))
+            telegram._handle_command_update("bot-api", "/savetask", Sessions(), "telegram:111222333", 111222333, stop_event=threading.Event(), tool_profile="full", message_id=123)
+        self.assertIn("[Telegram message](tg://openmessage?user_id=111222333&message_id=123)", repository.read_text(encoding="utf-8"))
 
     def test_repository_crud_is_linked_and_matches_name_or_link(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -1017,6 +1080,46 @@ class ZelinePublicCoreTests(unittest.TestCase):
         names = [schema["function"]["name"] for schema in executor.schemas]
         for expected in ("read_file", "write_file", "edit_file", "patch_file", "search_files", "update_task", "run_shell"):
             self.assertIn(expected, names)
+
+    def test_tool_enablement_is_snapshotted_for_one_executor_session(self):
+        """Config changes affect new sessions, not schemas mid-model-turn."""
+        tools = importlib.import_module("zeline.tools")
+        executor = tools.ToolExecutor("telegram:stable", profile="full", workspace=str(self.home))
+        self.assertIn("run_shell", {item["function"]["name"] for item in executor.schemas})
+        with mock.patch.object(tools.config, "DISABLED_TOOLS", frozenset({"run_shell"})):
+            still_same = {item["function"]["name"] for item in executor.schemas}
+            fresh = tools.ToolExecutor("telegram:fresh", profile="full", workspace=str(self.home))
+            fresh_names = {item["function"]["name"] for item in fresh.schemas}
+        self.assertIn("run_shell", still_same)
+        self.assertNotIn("run_shell", fresh_names)
+
+    def test_gateway_runtime_rejects_elevated_profile_without_exact_owner_policy(self):
+        gateways = importlib.import_module("zeline.gateways")
+        base = {
+            "enabled": True,
+            "token": "123456789:valid-looking-test-token",
+            "allowed": ["111222333"],
+            "tool_profile": "full",
+        }
+        errors = gateways.validate_gateway("telegram", dict(base))
+        self.assertTrue(any("owner_identity" in item for item in errors))
+        configured = dict(base, owner_identity="111222333", remote_code_execution_ack=True)
+        self.assertEqual(gateways.validate_gateway("telegram", configured), [])
+        wildcard = dict(configured, tool_profile="workspace", allowed=["*"])
+        self.assertTrue(any("exact owner allowlist" in item for item in gateways.validate_gateway("telegram", wildcard)))
+
+    def test_webhook_runtime_never_accepts_elevated_profile(self):
+        gateways = importlib.import_module("zeline.gateways")
+        cfg = {
+            "enabled": True,
+            "token": "long-enough-test-token",
+            "host": "127.0.0.1",
+            "port": 8765,
+            "tool_profile": "full",
+            "remote_code_execution_ack": True,
+        }
+        errors = gateways.validate_gateway("webhook", cfg)
+        self.assertTrue(any("safe" in item and "webhook" in item.lower() for item in errors))
 
     def test_safe_profile_exposes_deep_research_tool(self):
         tools = importlib.import_module("zeline.tools")

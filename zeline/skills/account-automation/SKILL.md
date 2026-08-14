@@ -9,7 +9,7 @@ description: |
   path. Load when the user asks the agent to "manage my accounts", log
   into a service, or automate actions on GitHub / a web dashboard.
 metadata:
-  hermes:
+  zeline:
     tags: [accounts, automation, github, api, credentials, 2captcha, playwright]
     category: automation
 ---
@@ -98,8 +98,8 @@ Requirements:
 
 ## Credential safety (hard rules)
 
-- Store tokens/keys ONLY in local, gitignored files (e.g.
-  `~/.hermes/scripts/*_tokens.txt`) or the OS keyring. NEVER in a repo,
+- Store tokens/keys ONLY in local, gitignored files inside the target project
+  or the OS keyring. NEVER in a repo,
   skill, or chat log you might push.
 - When pushing anything, scan the diff for token/key patterns first.
 - Prefer scoped tokens (least privilege) over full-account passwords.

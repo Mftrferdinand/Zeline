@@ -307,7 +307,7 @@ crontab -e
 
 ---
 
-## Common OpenClaw/Hermes VPS Patterns
+## Common OpenClaw/Zeline VPS Patterns
 
 ```bash
 # Run agent + telegram bot in screen session
@@ -320,7 +320,7 @@ claude --resume                    # or: bun run telegram
 tail -f ~/.openclaw/logs/*.log
 
 # Check active agents
-ps aux | grep -E 'claude|openclaw|hermes' | grep -v grep
+ps aux | grep -E 'claude|openclaw|zeline' | grep -v grep
 ```
 
 ---

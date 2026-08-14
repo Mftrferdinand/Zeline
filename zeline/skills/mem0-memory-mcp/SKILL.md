@@ -1,16 +1,16 @@
 ---
 name: mem0-memory-mcp
 description: |
-  Connect mem0 (hosted long-term memory) to a Hermes agent or to Zeline
-  as an MCP server, so the agent has semantic long-term memory beyond the
+  Connect mem0 (hosted long-term memory) to Zeline as an MCP server, so the
+  agent has semantic long-term memory beyond the
   built-in char-limited memory. Covers minting an agent API key with the
   mem0 CLI (no email/dashboard needed), the hosted MCP endpoint + auth,
-  wiring it into Hermes (`hermes mcp add`) and Zeline (`~/.zeline/
-  config.json`), and the add/search/get tool surface. Load when the user
+  wiring it into Zeline through `${ZELINE_HOME:-~/.zeline}/config.json`, and
+  the add/search/get tool surface. Load when the user
   asks to install mem0, add long-term memory, or hit the memory char limit.
 metadata:
-  hermes:
-    tags: [mem0, mcp, memory, long-term-memory, zeline, hermes]
+  zeline:
+    tags: [mem0, mcp, memory, long-term-memory, zeline]
     category: automation
 ---
 
@@ -18,8 +18,8 @@ metadata:
 
 mem0 is a hosted long-term memory service. Connected over MCP it gives an
 agent semantic, effectively-unlimited memory — a second layer beyond
-Hermes's built-in (char-capped, injected-every-turn) memory. Same mem0
-account/key works for BOTH Hermes and Zeline (MCP is a shared standard).
+Zeline's built-in local memory. The same mem0 account/key also works with
+other MCP-compatible clients.
 
 ## 1. Mint an API key (agent mode — no email/dashboard)
 
@@ -63,8 +63,8 @@ Claim-code pitfalls (verified live):
   307-redirects to `/mcp/`)
 - Transport: **http** (JSON-RPC over SSE — responses come as
   `event: message\ndata: {...}`)
-- Auth: header `Authorization: Bearer <api_key>` (a raw `Token <key>`
-  also works on the Platform REST API).
+- Auth: MCP header `Authorization: Bearer <key>`. For the Platform REST API,
+  use `Authorization: Token <key>`.
 - 11 tools exposed: `add_memory`, `search_memories`, `get_memories`,
   `get_memory`, `update_memory`, `delete_memory`, `delete_all_memories`,
   `delete_entities`, `list_entities`, `list_events`, `get_event_status`.
@@ -78,19 +78,10 @@ curl -s -X POST https://mcp.mem0.ai/mcp/ \
 # expect: event: message  data: {... "serverInfo":{"name":"mem0",...}}
 ```
 
-## 3a. Wire into Hermes (this agent)
+## 3. Wire into Zeline
 
-```bash
-# interactive prompts: require auth? Y → paste key → enable all tools
-printf 'Y\n%s\ny\n' "$KEY" | hermes mcp add mem0 \
-  --url "https://mcp.mem0.ai/mcp/" --auth header --connect-timeout 25
-hermes mcp list          # shows mem0 ✓ enabled
-hermes mcp test mem0     # lists the 11 tools
-```
-Saved to `~/.hermes/config.yaml`. **Start a NEW session** for the tools
-to load (they don't hot-load mid-session).
-
-## 3b. Wire into Zeline (the framework)
+Zeline's current `mcp add` command does not accept custom HTTP headers. Configure
+authenticated mem0 manually in `${ZELINE_HOME:-~/.zeline}/config.json`.
 
 Zeline reads MCP servers from `~/.zeline/config.json` → `mcp.servers`.
 Add:
@@ -129,10 +120,9 @@ and the memory takes a bit to appear in search/get (mem0 distills the
 message first). Don't expect instant read-after-write; poll `list_events`
 or `get_event_status`, or just wait.
 
-## Hermes memory vs mem0 — when to use which
-- **Hermes built-in memory** (`memory` tool): tiny, injected every turn,
-  best for the handful of always-relevant facts (name, tone, hard rules).
-  Char-capped (~2.2k) — keep it lean.
+## Built-in memory vs mem0 — when to use which
+- **Zeline built-in memory**: local and always available. Use it for compact,
+  always-relevant preferences and rules.
 - **mem0**: large, semantic, fetched on demand via `search_memories`.
   Best for the long tail — project details, past decisions, account maps,
   anything you'd otherwise overflow the built-in store with.
@@ -141,7 +131,7 @@ or `get_event_status`, or just wait.
 
 ## Pitfalls
 - Trailing slash on `/mcp/` matters (else 307).
-- MCP tools only load on a fresh session after `hermes mcp add`.
+- MCP tools only load on a fresh session after changing the configuration.
 - `UID` is read-only in bash — use another var name in test scripts.
 - Agent-mode key is unclaimed until the user runs `mem0 init --email`;
   surface that to the user.
