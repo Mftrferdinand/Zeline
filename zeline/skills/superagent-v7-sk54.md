@@ -94,7 +94,7 @@ Show real values, not `<your_token>`. Use the actual paths if known (`/root/.ope
 - Port not reachable externally → ufw or cloud firewall blocking
 - `out of memory` killed → `dmesg | grep -i kill` confirms OOM, add swap or cap memory
 
-### OpenClaw / Hermes specific
+### OpenClaw / Zeline specific
 - Duplicate Telegram response → `streaming` config has invalid value, set proper boolean
 - Provider auth fail → check both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY`, conflict possible
 - Skill not loading → wrong path in `~/.openclaw/workspace/openclaw-agents.json`

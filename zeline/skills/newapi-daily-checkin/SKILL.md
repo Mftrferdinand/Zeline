@@ -9,7 +9,7 @@ description: |
   the user says "checkin <panel>", adds a new token panel, or asks to
   claim daily quota/credit on a token dashboard.
 metadata:
-  hermes:
+  zeline:
     tags: [checkin, new-api, one-api, turnstile, 2captcha, automation]
     category: productivity
 ---
@@ -90,12 +90,13 @@ Tokens file line format:
 Keep secrets (2Captcha key, tokens, ids) ONLY in local gitignored files
 — never commit them. The template ships with `REPLACE_ME` placeholders.
 
-## Wired panels in THIS profile
+## Example panel scripts
 
-- tabitoken.com — plain token. `~/.hermes/scripts/tabi_checkin.sh` + `tabi_tokens.txt`. sitekey `0x4AAAAAAEGV81TArluaPQGB`.
-- gorouter.app — needs `New-Api-User`. `~/.hermes/scripts/gorouter_checkin.sh` + `gorouter_tokens.txt`. sitekey `0x4AAAAAAELziOpg1Y2gFtAt`.
+- tabitoken.com — plain token; create a project-local script and gitignored token file.
+- gorouter.app — needs `New-Api-User`; create a project-local script and gitignored token file.
 
-Run: `bash ~/.hermes/scripts/<panel>_checkin.sh` — prints per-account result.
+Run the script from its actual project path. This skill does not claim those
+panel-specific scripts or credentials are preinstalled.
 
 ## Report format (user preference — use verbatim)
 

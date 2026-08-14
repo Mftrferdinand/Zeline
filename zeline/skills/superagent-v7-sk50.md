@@ -358,7 +358,7 @@ risk_caps:
 ## SAFETY RAILS
 
 1. **PASSIVE by default**: ACTIVE mode requires explicit operator opt-in per strategy
-2. **Spend Governor**: All on-chain transactions go through `hermes/scripts/governor.py`
+2. **Spend Governor**: All on-chain transactions require an implemented spend governor with caps and a kill switch
 3. **Never leverage without consent**: Borrowing disabled by default
 4. **No single-protocol concentration**: Max 25% per protocol, max 50% per chain
 5. **Auto-pause on exploit news**: Monitors security feeds, pauses affected protocols

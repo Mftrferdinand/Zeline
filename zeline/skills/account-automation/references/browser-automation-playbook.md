@@ -116,8 +116,9 @@ tokens are single-use & expire in minutes → re-solve.
 - A "429 / rate limit" during key creation is OFTEN fake — the action
   frequently succeeded server-side; retry by re-logging-in (acts as a
   browser refresh) and re-reading the list before discarding the account.
-- On Termux, do NOT run a parallel watcher script — 2+ Python processes
-  crash the Hermes gateway. Do retries sequentially in one script.
+- On resource-constrained Termux devices, parallel browser/watch processes have
+  caused instability in observed deployments. Prefer sequential retries unless
+  the target device has been load-tested.
 
 ## Building a Zeline `browser` tool (owner-gated)
 

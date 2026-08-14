@@ -9,7 +9,9 @@
 
 Mode yang bikin agent **makin pinter tiap hari**: belajar dari tiap sesi, mendiagnosa masalah sendiri, **auto-fix hal operasional yang reversible tanpa diminta**, dan ngusulin upgrade buat dirinya — **lewat gerbang yang gak bisa di-bypass**.
 
-Scripts: `tools/memory_engine.py` (substrat belajar) + `tools/reflection.py` (loop + gerbang).
+This skill is an architecture blueprint. It does not bundle `memory_engine.py`,
+`reflection.py`, or an integrity manifest. Implement and test those components
+inside the target project before using the examples below.
 
 ---
 
@@ -67,7 +69,8 @@ NEVER autonomously:
 ✗ Apply proposal-nya sendiri
 ```
 
-`reflection.py` ngejaga ini secara struktural: `guard_write(path)` ngelempar exception kalau loop nyoba nulis ke FROZEN_PATHS. Bukan sekadar aturan di prompt — di-enforce di kode.
+In an implementation, enforce this structurally: `guard_write(path)` should
+reject every protected path. A prompt-only rule is insufficient.
 
 ### SAFE_AUTO_ACTIONS (satu-satunya yang boleh tanpa konfirmasi)
 
@@ -83,9 +86,9 @@ Semua reversible, gak nyentuh dana, gak ubah skill. Apa pun di luar ini → jadi
 ## Alur proposal (gimana agent "upgrade" dirinya dengan aman)
 
 ```
-agent nemu perbaikan → reflection.propose(...) → file di ~/.hermes/proposals/
+agent nemu perbaikan → reflection.propose(...) → project-local proposal record
    → operator review → kalau setuju, operator ubah manual
-   → operator: python tools/skill_integrity.py generate  (re-lock)
+   → operator reviews and records the approved change using the project's actual integrity process
 ```
 
 Operator yang nutup loop. Ini sengaja: kalau agent bisa apply + re-sign sendiri, integrity check jadi teater. Friksi di sini = fitur.
@@ -111,13 +114,13 @@ if can_autofix("retry_with_fallback_rpc"):
 report = daily_cycle(mem)   # learn + hitung proposal pending
 ```
 
-Audit semua aksi otonom: `~/.hermes/reflection-audit.log`.
+Audit semua aksi otonom in a project-local, gitignored audit log.
 
 ---
 
 ## Output ke operator
 
 Pas mode ini aktif & ada sesuatu, agent lapor ringkas (bukan diam-diam):
-> `🔧 auto-fix: rotate RPC Base (ankr timeout). | 📝 1 proposal baru: "fallback RPC permanen" — review di ~/.hermes/proposals/`
+> `🔧 auto-fix: rotate RPC Base (ankr timeout). | 📝 1 proposal baru: "fallback RPC permanen" — review di proposal store proyek.`
 
 Hal otonom yang berhasil = lapor setelahnya. Hal yang butuh keputusan = proposal, tunggu operator.

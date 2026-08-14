@@ -466,32 +466,10 @@ TOGETHER_API_KEY=...
 
 ---
 
-## Add Model — registry LLM dinamis (NEW in v4.0)
+## Configure a model in Zeline
 
-Nambah model LLM apa pun lewat **satu perintah**, langsung masuk cascade R7. Engine: `tools/model_registry.py`.
-
-Command pattern (operator di chat):
-```
-add model
-name: openrouter-llama
-api_key: sk-or-...
-base_url: https://openrouter.ai/api/v1
-model: meta-llama/llama-3.3-70b
-kind: openai            # openai | anthropic (default openai)
-priority: 50            # makin kecil makin diutamakan
-```
-
-Agent → `ModelRegistry().add_model(...)`. Dukung semua yang OpenAI-compatible (OpenRouter, DeepSeek, Groq, Together, Kimi, Ollama/LM Studio lokal, vLLM) + Anthropic-style. Model lokal (Ollama) gak butuh key.
-
-```python
-from model_registry import ModelRegistry
-reg = ModelRegistry()                       # pakai HERMES_MASTER_PW buat enkripsi key
-reg.add_model("groq-fast", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant",
-              api_key="gsk_...", priority=80)
-reg.list_models()                            # key ter-REDACT (gak pernah mentah)
-ans, used = reg.call_with_cascade(messages)  # R7: coba per prioritas, fallback otomatis
-```
-
-**Secret hygiene**: API key disimpan terenkripsi (scrypt+Fernet via `HERMES_MASTER_PW`), gak pernah di-log/print mentah, `list_models()` redacted. Tanpa master pw → registry NOLAK nyimpen key (gak ada plaintext diam-diam). File `model_registry.py` FROZEN (nentuin ke mana prompt/data dikirim).
-
-**Catatan**: agent bakal ngirim prompt (& mungkin data) ke `base_url` yang lo daftarin — tambah cuma yang lo percaya. Provider cascade R7 (di AGENTS.md) sekarang bisa narik model dari registry ini, bukan cuma yang hardcoded.
+Use `zeline model` or `zeline setup model` to configure the runtime provider.
+Never invent a master-password environment variable or assume an external
+`model_registry.py` exists. Store credentials through Zeline's supported config
+flow, keep them out of logs, and only add provider endpoints you trust because
+prompts and tool context are sent to the selected endpoint.
