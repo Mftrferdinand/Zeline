@@ -473,6 +473,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("not found", public_agent_tools.run("load_skill", {"name": "owner-secret-procedure"}))
         self.assertIn("PRIVATE-SKILL-CONTENT-CHECK", owner_tools.run("load_skill", {"name": "owner-secret-procedure"}))
 
+    @unittest.skipIf(
+        sys.platform == "darwin",
+        "GitHub macOS runners can block local HTTP server bind threads; live integration runs on Linux/Windows",
+    )
     def test_webhook_requires_token_and_keeps_identity_namespaced(self):
         webhook = importlib.import_module("zeline.gateways.webhook")
         token = "this-is-a-long-webhook-test-token"
