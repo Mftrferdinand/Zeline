@@ -243,7 +243,7 @@ verify_release_artifact() {
 }
 
 resolve_source_mode() {
-  [ -n "$SOURCE_OVERRIDE" ] || return
+  [ -n "$SOURCE_OVERRIDE" ] || return 0
   [ -f "$SOURCE_OVERRIDE/pyproject.toml" ] || fail "Not a Zeline checkout: $SOURCE_OVERRIDE"
   [ -d "$SOURCE_OVERRIDE/zeline" ] || fail "Not a Zeline checkout: $SOURCE_OVERRIDE"
   SOURCE_DIR="$(CDPATH= cd -- "$SOURCE_OVERRIDE" && pwd)"
