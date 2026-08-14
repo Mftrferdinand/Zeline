@@ -1,33 +1,40 @@
 # Zeline installer for Windows PowerShell.
 #
-# Usage (PowerShell, no admin needed):
-#   irm https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.ps1 | iex
+# Download this v0.2.0 release asset and SHA256SUMS, verify with Get-FileHash,
+# then run (PowerShell, no admin needed):
+#   .\install.ps1
 #
 # Or from a local clone:
 #   git clone https://github.com/Mftrferdinand/Zerolinear.git
 #   cd Zerolinear
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Source .
 #
 # Switches (useful for CI / unattended installs):
 #   -AddToPath      add the user Scripts dir to PATH without prompting
 #   -NoPathUpdate   never touch PATH and never prompt
+#   -PlatformInfo   show Windows requirements without installing
+#   -Source PATH    explicitly build and install a local checkout
 #
 # Optional environment variables:
 #   $env:ZELINE_PYTHON       = "python"       # Python executable to use
-#   $env:ZELINE_INSTALL_DIR  = "C:\zeline"    # unused for pip installs, kept for parity
+
 
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
     [switch]$AddToPath,
-    [switch]$NoPathUpdate
+    [switch]$NoPathUpdate,
+    [switch]$PlatformInfo,
+    [string]$Source
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$RepoUrl = 'https://github.com/Mftrferdinand/Zerolinear.git'
-$Branch  = 'main'
+$Version     = '0.2.0'
+$ReleaseRef  = 'v0.2.0'
+$ReleaseBase = "https://github.com/Mftrferdinand/Zerolinear/releases/download/$ReleaseRef"
+$WheelName   = "zeline-$Version-py3-none-any.whl"
 
 # ---------------------------------------------------------------- utilities
 
@@ -38,9 +45,15 @@ function Write-Warn   { param([string]$Text) Write-Host "[!] $Text" -ForegroundC
 
 function Show-Banner {
     $title    = 'Z  E  L  I  N  E'
-    $subtitle = 'AGENTIC AI BY ZEROLINEAR - v0.1.0'
-    $inner    = $subtitle.Length + 6
-    $bar      = '-' * $inner
+    # Keep the .ps1 source ASCII-safe: Windows PowerShell 5.1 treats UTF-8
+    # without BOM as the legacy ANSI code page. Build box glyphs at runtime.
+    $bullet   = [char]0x2022
+    $subtitle = "AGENTIC AI BY ZEROLINEAR $bullet v$Version"
+    $inner    = 39
+    $tl = [char]0x256D; $tr = [char]0x256E
+    $ml = [char]0x251C; $mr = [char]0x2524
+    $bl = [char]0x2570; $br = [char]0x256F
+    $v  = [char]0x2502; $h  = [char]0x2500
 
     function Format-Centered {
         param([string]$Text, [int]$Width)
@@ -52,13 +65,17 @@ function Show-Banner {
 
     $t = Format-Centered -Text $title    -Width $inner
     $s = Format-Centered -Text $subtitle -Width $inner
+    # Windows PowerShell 5.1 inherits a legacy code page. Switch output to UTF-8
+    # so the same boxed ZELINE identity used on Termux/macOS/Linux survives.
+    try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
     Write-Host ''
-    Write-Host "+$bar+"           -ForegroundColor DarkCyan
-    Write-Host "|$t|"             -ForegroundColor White
-    Write-Host "+$bar+"           -ForegroundColor DarkCyan
-    Write-Host "|$s|"             -ForegroundColor Cyan
-    Write-Host "+$bar+"           -ForegroundColor DarkCyan
+    Write-Host ([string]$tl + ([string]$h * $inner) + [string]$tr) -ForegroundColor DarkBlue
+    Write-Host ([string]$v  + $t + [string]$v)                       -ForegroundColor White
+    Write-Host ([string]$ml + ([string]$h * $inner) + [string]$mr) -ForegroundColor DarkBlue
+    Write-Host ([string]$v  + $s + [string]$v)                       -ForegroundColor Blue
+    Write-Host ([string]$bl + ([string]$h * $inner) + [string]$br) -ForegroundColor DarkBlue
     Write-Host ''
+    Write-Detail 'Platform : Windows PowerShell'
 }
 
 function Resolve-Python {
@@ -112,9 +129,42 @@ function Invoke-Python {
     }
 }
 
+function Get-VerifiedReleaseWheel {
+    param([Parameter(Mandatory)] [string]$Directory)
+
+    $wheel = Join-Path $Directory $WheelName
+    $sums  = Join-Path $Directory 'SHA256SUMS'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBase/$WheelName" -OutFile $wheel
+    Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBase/SHA256SUMS" -OutFile $sums
+
+    $expected = $null
+    foreach ($line in (Get-Content -LiteralPath $sums)) {
+        $parts = @($line -split '\s+', 2)
+        if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -eq $WheelName) {
+            $expected = $parts[0].ToLowerInvariant()
+            break
+        }
+    }
+    if (-not $expected) { throw "SHA256SUMS has no entry for $WheelName" }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $wheel).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { throw "SHA-256 verification failed for $WheelName" }
+    Write-Detail "Verified : $WheelName (SHA-256)"
+    return $wheel
+}
+
 # ---------------------------------------------------------------- preflight
 
 Show-Banner
+if ($PlatformInfo) {
+    Write-Step 'PLATFORM'
+    Write-Detail 'Target       : Windows PowerShell 5.1+ / PowerShell 7+'
+    Write-Detail "Version      : $ReleaseRef (versioned release)"
+    Write-Detail 'Prerequisite : Python 3.10+; Git only for checkout installs'
+    Write-Detail 'Privilege    : per-user install; Administrator is not required'
+    Write-Detail 'Command      : zeline.exe in the Python user Scripts directory'
+    exit 0
+}
 Write-Step 'Installer'
 
 $python = Resolve-Python
@@ -128,29 +178,23 @@ if (-not $python) {
 $pythonLabel = if ($python.Extra) { "$($python.Exe) $($python.Extra)" } else { $python.Exe }
 Write-Detail "Python : $($python.Version) ($pythonLabel)"
 
-# ---------------------------------------------------------------- source
+# ------------------------------------------------------ local checkout / release
 
-$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-$tempDir   = $null
-$sourceDir = $null
+$tempDir    = $null
+$installArg = $null
 
-if ((Test-Path (Join-Path $scriptDir 'pyproject.toml')) -and
-    (Test-Path (Join-Path $scriptDir 'zeline'))) {
-    $sourceDir = $scriptDir
-    Write-Detail "Source : local checkout ($sourceDir)"
+if ($Source) {
+    $installArg = (Resolve-Path -LiteralPath $Source).Path
+    if (-not (Test-Path -LiteralPath (Join-Path $installArg 'pyproject.toml')) -or
+        -not (Test-Path -LiteralPath (Join-Path $installArg 'zeline') -PathType Container)) {
+        throw "Not a Zeline checkout: $Source"
+    }
+    Write-Detail "Source : local checkout ($installArg)"
 } else {
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Write-Fail 'git not found. Install Git for Windows: https://git-scm.com/download/win'
-        exit 1
-    }
-    $tempDir   = Join-Path ([System.IO.Path]::GetTempPath()) ("zeline-" + [guid]::NewGuid().ToString('N'))
-    $sourceDir = Join-Path $tempDir 'zeline'
-    Write-Step 'Downloading Zeline source...'
-    git clone --depth 1 --branch $Branch $RepoUrl $sourceDir
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail 'git clone failed.'
-        exit 1
-    }
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("zeline-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    Write-Step "Downloading verified release $ReleaseRef..."
+    $installArg = Get-VerifiedReleaseWheel -Directory $tempDir
 }
 
 try {
@@ -170,7 +214,7 @@ try {
     Write-Step 'Installing/updating package...'
     # --user keeps the install per-account, so no admin prompt is needed.
     $installLog = Invoke-Python -Python $python -Arguments @(
-        '-m', 'pip', 'install', '--user', '--upgrade', $sourceDir
+        '-m', 'pip', 'install', '--user', '--upgrade', $installArg
     ) 2>&1
     if ($LASTEXITCODE -ne 0) {
         $installLog | ForEach-Object { Write-Host $_ }
@@ -214,7 +258,7 @@ try {
         Write-Detail $scriptsDir
 
         # Decide without prompting when a switch was passed, or when there is no
-        # interactive console (piped `irm | iex`, CI). Read-Host in a
+        # interactive console (downloaded script, CI). Read-Host in a
         # non-interactive session either throws or blocks forever.
         $interactive = -not [Console]::IsInputRedirected
         if ($NoPathUpdate) {

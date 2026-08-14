@@ -30,6 +30,8 @@ from typing import Any
 
 import requests
 
+from zeline import __version__
+
 MCP_TOOL_PREFIX = "mcp__"
 _RPC_TIMEOUT = 30
 _INIT_TIMEOUT = 20
@@ -238,7 +240,7 @@ class MCPServer:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "zeline", "version": "0.1.0"},
+                "clientInfo": {"name": "zeline", "version": __version__},
             },
             timeout=_INIT_TIMEOUT,
         )
@@ -274,13 +276,26 @@ class MCPServer:
         return _content_to_text(result)
 
     def close(self) -> None:
-        if self._process and self._process.poll() is None:
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=3)
-            except Exception:
+        process = self._process
+        if process is not None:
+            if process.poll() is None:
                 try:
-                    self._process.kill()
+                    process.terminate()
+                    process.wait(timeout=3)
+                except Exception:
+                    try:
+                        process.kill()
+                        process.wait(timeout=1)
+                    except Exception:
+                        pass
+            # Popen does not close these file objects merely because the child
+            # exited. Leaving them for GC causes ResourceWarning and leaks OS
+            # handles on long-running multi-session gateways.
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is None:
+                    continue
+                try:
+                    stream.close()
                 except Exception:
                     pass
         self._process = None

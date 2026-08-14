@@ -44,66 +44,75 @@ Zeline — a [Zerolinear](https://zerolinear.com) project, led by [Mftrferdinand
 
 ## Install
 
-**Requirements:** Python 3.10 or newer. WhatsApp also requires Node.js 18+ and npm.
+**Requirements:** Python 3.10+. WhatsApp also needs Node.js 18+ and npm. POSIX
+platforms use a private Python environment; Windows uses a per-user package
+install. Neither requires root/Administrator access.
 
-### Termux
-
-```bash
-pkg install git python -y
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
-zeline setup
-```
-
-### Linux and macOS
+### Termux, Linux, and macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.sh | bash
-zeline setup
-```
-
-To install from a checkout instead:
-
-```bash
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+lines = Path("SHA256SUMS").read_text().splitlines()
+expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
+actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
+if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
+    raise SystemExit("invalid install.sh checksum entry")
+if actual != expected.lower():
+    raise SystemExit("install.sh checksum mismatch")
+print("install.sh SHA-256 verified")
+PY
 bash install.sh
-```
-
-### Windows (PowerShell)
-
-No admin rights needed. Open **PowerShell** (not CMD) and run:
-
-```powershell
-irm https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.ps1 | iex
+export PATH="$HOME/.local/bin:$PATH"  # harmless on Termux; needed on some Linux/macOS shells
 zeline setup
 ```
 
-From a checkout instead:
+### iOS / iPadOS through iSH
 
-```powershell
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+```sh
+apk add bash curl python3 py3-pip
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+lines = Path("SHA256SUMS").read_text().splitlines()
+expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
+actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
+if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
+    raise SystemExit("invalid install.sh checksum entry")
+if actual != expected.lower():
+    raise SystemExit("install.sh checksum mismatch")
+print("install.sh SHA-256 verified")
+PY
+bash install.sh
+zeline setup
 ```
 
-If `zeline` is not recognized after installing, either restart the terminal (the
-installer offers to add the Scripts folder to your PATH) or run it as a module:
+### Windows PowerShell
 
 ```powershell
-py -3 -m zeline.cli
+$base = 'https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0'
+Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
+if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
+.\install.ps1
+zeline setup
 ```
 
-Two Windows-specific notes:
+See the complete [installation guide](docs/installation.md) for package
+prerequisites, platform limitations, checkout installs, updates, PATH fixes, and
+uninstall instructions.
 
-- If typing `python` opens the Microsoft Store, that is a stub, not Python.
-  Install Python from [python.org](https://www.python.org/downloads/) with
-  **Add python.exe to PATH** ticked. The installer detects and skips the stub.
-- Use Windows Terminal or PowerShell 7 for correct box-drawing and arrow keys.
-  The legacy `cmd.exe` console renders the banner with broken characters.
-
-Your configuration is stored locally at `~/.zeline/config.json`. Run a quick check after setup:
+Then inspect the available integrations and health:
 
 ```bash
+zeline tools list
+zeline mcp list
 zeline doctor
 zeline gateway list
 ```
@@ -184,10 +193,15 @@ If you expose the webhook through a tunnel or reverse proxy, use HTTPS and keep 
 ## Command reference
 
 ```text
-zeline                         Set up a gateway first, then open local chat
+zeline                         First run: gateway onboarding; later: local chat
 zeline chat -q "..."           Send one query after gateway + model setup
-zeline setup                   Open the gateway picker (Telegram/WhatsApp/Webhook)
+zeline setup                   First run: gateway picker; later: setup center
+zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline tools list              List native tools, profiles, and enabled state
+zeline tools profile <name>    Set safe|workspace|full for the local CLI
+zeline tools enable|disable T  Toggle one native tool for new sessions
+zeline tools workspace <path>  Set the owner workspace root
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
 zeline config show             Print configuration with masked secrets

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeline"
-version = "0.1.0"
+version = "0.2.0"
 description = "Zeline — an open-source agentic AI framework by Zerolinear."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,6 +49,9 @@ include = ["zeline*"]
 
 [tool.setuptools.package-data]
 zeline = ["skills/*.md", "skills/**/*"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.pyc", "*.pyo", "__pycache__/*", "**/*.pyc", "**/*.pyo", "**/__pycache__/*"]
 
 [tool.setuptools]
 include-package-data = true

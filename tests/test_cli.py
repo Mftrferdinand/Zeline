@@ -109,9 +109,9 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("Webhook", output.getvalue())
         self.assertIn("Cancel", output.getvalue())
 
-    def test_setup_configures_only_selected_gateway_then_directs_model_setup(self):
+    def test_first_run_configures_only_selected_gateway_then_directs_model_setup(self):
         with mock.patch.object(self.cli, "_select_gateway", return_value="telegram"), mock.patch.object(self.cli, "_setup_telegram", return_value=True) as telegram, mock.patch.object(self.cli, "_setup_whatsapp") as whatsapp, mock.patch.object(self.cli, "_setup_webhook") as webhook:
-            result = self.invoke(["setup"])
+            result = self.invoke([])
         telegram.assert_called_once()
         whatsapp.assert_not_called()
         webhook.assert_not_called()
@@ -119,6 +119,136 @@ class ZelineCliTests(unittest.TestCase):
         saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertTrue(saved["gateway_setup_complete"])
         self.assertFalse(saved["setup_complete"])
+
+    def test_setup_command_keeps_first_run_gateway_onboarding_compatibility(self):
+        with mock.patch.object(self.cli, "cmd_setup", return_value=0) as onboarding, \
+             mock.patch.object(self.cli, "cmd_setup_center") as center:
+            self.assertEqual(self.cli.main(["setup"]), 0)
+        onboarding.assert_called_once_with(reset=False)
+        center.assert_not_called()
+
+    def test_tools_list_shows_profiles_and_every_native_tool(self):
+        result = self.invoke(["tools", "list"])
+        self.assertIn("safe", result.lower())
+        self.assertIn("workspace", result.lower())
+        self.assertIn("full", result.lower())
+        self.assertIn("runtime_info", result)
+        self.assertIn("run_shell", result)
+
+    def test_tools_profile_updates_local_cli_profile(self):
+        result = self.invoke(["tools", "profile", "workspace"])
+        self.assertIn("workspace", result.lower())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tools"]["cli_profile"], "workspace")
+
+    def test_tools_profile_can_update_a_gateway_without_exposing_full_publicly(self):
+        result = self.invoke(["tools", "profile", "full", "--gateway", "telegram"], expected_status=2)
+        self.assertIn("allowlist", result.lower())
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"]["allowed"] = ["111222333"]
+        self.config.save_config(cfg)
+        result = self.invoke(
+            [
+                "tools", "profile", "full", "--gateway", "telegram",
+                "--owner", "111222333", "--allow-remote-code-execution",
+            ]
+        )
+        self.assertIn("telegram", result.lower())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["gateways"]["telegram"]["tool_profile"], "full")
+        self.assertEqual(saved["gateways"]["telegram"]["owner_identity"], "111222333")
+
+    def test_tools_full_gateway_rejects_unconfirmed_or_non_allowlisted_owner(self):
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"]["allowed"] = ["111222333"]
+        self.config.save_config(cfg)
+        missing_ack = self.invoke(
+            ["tools", "profile", "full", "--gateway", "telegram", "--owner", "111222333"],
+            expected_status=2,
+        )
+        self.assertIn("remote code execution", missing_ack.lower())
+        wrong_owner = self.invoke(
+            [
+                "tools", "profile", "full", "--gateway", "telegram",
+                "--owner", "999888777", "--allow-remote-code-execution",
+            ],
+            expected_status=2,
+        )
+        self.assertIn("must exactly match", wrong_owner.lower())
+
+    def test_tools_elevated_gateway_rejects_wildcard_allowlist(self):
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"]["allowed"] = ["*"]
+        self.config.save_config(cfg)
+        result = self.invoke(
+            ["tools", "profile", "workspace", "--gateway", "telegram"],
+            expected_status=2,
+        )
+        self.assertIn("exact owner allowlist", result.lower())
+
+    def test_tools_disable_removes_tool_from_executor_and_enable_restores_it(self):
+        self.invoke(["tools", "disable", "run_shell"])
+        tools = importlib.import_module("zeline.tools")
+        executor = tools.ToolExecutor("cli:test", profile="full", workspace=self.home)
+        self.assertNotIn("run_shell", {item["function"]["name"] for item in executor.schemas})
+        self.invoke(["tools", "enable", "run_shell"])
+        executor = tools.ToolExecutor("cli:test", profile="full", workspace=self.home)
+        self.assertIn("run_shell", {item["function"]["name"] for item in executor.schemas})
+
+    def test_tools_workspace_requires_an_existing_directory_and_persists_it(self):
+        missing = self.home / "missing"
+        result = self.invoke(["tools", "workspace", str(missing)], expected_status=2)
+        self.assertIn("not found", result.lower())
+        workspace = self.home / "workspace"
+        workspace.mkdir(parents=True)
+        result = self.invoke(["tools", "workspace", str(workspace)])
+        self.assertIn(str(workspace), result)
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["tools"]["workspace"], str(workspace.resolve()))
+
+    def test_setup_parser_exposes_hermes_style_sections(self):
+        parser = self.cli.build_parser()
+        for section in ("gateway", "model", "tools", "integrations", "agent"):
+            with self.subTest(section=section):
+                parsed = parser.parse_args(["setup", section])
+                self.assertEqual(parsed.setup_section, section)
+
+    def test_setup_section_dispatches_without_repeating_first_run_gateway_flow(self):
+        with mock.patch.object(self.cli, "cmd_setup_tools", return_value=0) as tools_setup, \
+             mock.patch.object(self.cli, "_select_gateway") as gateway_picker:
+            self.assertEqual(self.cli.main(["setup", "tools"]), 0)
+        tools_setup.assert_called_once_with()
+        gateway_picker.assert_not_called()
+
+    def test_bare_setup_opens_setup_center_and_dispatches_selected_section(self):
+        cfg = self.config.config_copy()
+        cfg["gateway_setup_complete"] = True
+        self.config.save_config(cfg)
+        with mock.patch.object(self.cli, "_arrow_menu", side_effect=[2, 5]), \
+             mock.patch.object(self.cli, "cmd_setup_tools", return_value=0) as tools_setup, \
+             mock.patch.object(self.cli, "cmd_setup") as first_run:
+            result = self.invoke(["setup"])
+        tools_setup.assert_called_once_with()
+        first_run.assert_not_called()
+        self.assertIn("setup center", result.lower())
+
+    def test_agent_setup_persists_validated_runtime_preferences(self):
+        answers = iter(["Selena", "12", "80", "n", "y"])
+        with mock.patch.object(self.cli, "_ask", side_effect=lambda *args, **kwargs: next(answers)):
+            result = self.invoke(["setup", "agent"])
+        self.assertIn("agent settings saved", result.lower())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["name"], "Selena")
+        self.assertEqual(saved["agent"]["max_tool_rounds"], 12)
+        self.assertEqual(saved["agent"]["max_sessions"], 80)
+        self.assertFalse(saved["agent"]["stream"])
+        self.assertTrue(saved["agent"]["persist_sessions"])
+
+    def test_agent_setup_rejects_out_of_range_numbers_without_writing(self):
+        with mock.patch.object(self.cli, "_ask", side_effect=["Zeline", "0", "50", "y", "y"]):
+            result = self.invoke(["setup", "agent"], expected_status=2)
+        self.assertIn("max tool rounds", result.lower())
+        self.assertFalse((self.home / "config.json").exists())
 
     def test_bare_zeline_forces_gateway_setup_before_chat(self):
         with mock.patch.object(self.cli, "cmd_setup", return_value=0) as setup, mock.patch.object(self.cli, "cmd_chat") as chat:
@@ -314,7 +444,7 @@ class ZelineCliTests(unittest.TestCase):
         text = output.getvalue()
         # Boxed identity: title + subtitle inside one frame, no ANSI in plain mode.
         self.assertIn("Z  E  L  I  N  E", text)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.1.0", text)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.0", text)
         self.assertIn("╭", text)
         self.assertIn("╰", text)
         self.assertNotIn("\x1b[", text)
@@ -336,7 +466,7 @@ class ZelineCliTests(unittest.TestCase):
         self.assertEqual(parser.prog, "zeline")
         result = self.invoke(["status"], expected_status=1)
         self.assertIn("Z  E  L  I  N  E", result)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.1.0", result)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.0", result)
         self.assertIn("ZEROLINEAR", result)
 
 

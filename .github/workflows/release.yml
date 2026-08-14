@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify tag belongs to merged main history
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Verify tag equals package version
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "v$VERSION" = "$GITHUB_REF_NAME"
+      - name: Build immutable release artifacts
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+          cp install.sh install.ps1 dist/
+          cd dist
+          sha256sum zeline-*.whl zeline-*.tar.gz install.sh install.ps1 > SHA256SUMS
+      - name: Verify artifacts before publish
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          wheel = next(Path('.').glob('zeline-*.whl'))
+          with zipfile.ZipFile(wheel) as z:
+              blocked = [n for n in z.namelist() if '__pycache__' in n or n.endswith('.pyc') or '.zeline' in n or n.endswith('.env')]
+          assert not blocked, blocked
+          PY
+      - name: Generate build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/zeline-*.whl
+            dist/zeline-*.tar.gz
+            dist/install.sh
+            dist/install.ps1
+            dist/SHA256SUMS
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/zeline-*.whl
+            dist/zeline-*.tar.gz
+            dist/install.sh
+            dist/install.ps1
+            dist/SHA256SUMS

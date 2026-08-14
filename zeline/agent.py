@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 import requests
 
-from zeline import config
+from zeline import __version__, config
 from zeline import skills
 from zeline.tools import ToolExecutor
 
@@ -152,7 +152,7 @@ class Zeline:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "zeline/0.1.0",
+            "User-Agent": f"zeline/{__version__}",
         }
         payload: dict[str, Any] = {
             "model": self.model,
@@ -170,7 +170,7 @@ class Zeline:
                 "x-api-key": self.api_key,
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
-                "User-Agent": "zeline/0.1.0",
+                "User-Agent": f"zeline/{__version__}",
             }
             messages: list[dict[str, Any]] = []
             for item in self.messages[1:]:

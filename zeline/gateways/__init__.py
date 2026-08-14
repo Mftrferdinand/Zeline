@@ -43,12 +43,36 @@ class GatewayRuntime:
         return [name for name, thread in self.threads if thread.is_alive()]
 
 
+def _validate_tool_policy(name: str, cfg: dict[str, Any]) -> list[str]:
+    """Fail closed before an elevated gateway becomes a remote execution API."""
+    profile = str(cfg.get("tool_profile", "safe"))
+    if profile == "safe":
+        return []
+    if profile not in {"workspace", "full"}:
+        return [f"invalid {name} tool_profile: {profile}"]
+    # A webhook has one bearer token and a caller-controlled chat_id. It cannot
+    # prove an individual owner identity, so keep it safe-only.
+    if name == "webhook":
+        return ["webhook tool_profile must remain safe; use an owner-allowlisted messaging gateway for elevated tools"]
+    allowed = cfg.get("allowed")
+    owner = str(cfg.get("owner_identity", "")).strip()
+    if not isinstance(allowed, list) or len(allowed) != 1 or str(allowed[0]).strip() in {"", "*"}:
+        return [f"tool_profile {profile} requires one exact owner allowlist entry"]
+    if not owner or owner != str(allowed[0]).strip():
+        return ["owner_identity must exactly match the sole allowlist entry"]
+    if profile == "full" and cfg.get("remote_code_execution_ack") is not True:
+        return ["tool_profile full requires explicit remote_code_execution_ack=true"]
+    return []
+
+
 def validate_gateway(name: str, cfg: dict[str, Any]) -> list[str]:
     module = GATEWAYS.get(name)
     if module is None:
         return [f"unknown gateway: {name}"]
     validator = getattr(module, "validate_config", None)
-    return validator(cfg) if validator else []
+    errors = list(validator(cfg) if validator else [])
+    errors.extend(_validate_tool_policy(name, cfg))
+    return errors
 
 
 def run_all(sessions, cfg: dict[str, dict[str, Any]], names: list[str] | None = None) -> GatewayRuntime:
