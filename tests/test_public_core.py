@@ -271,6 +271,24 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("```html", content)
         self.assertIn("jangan mengarang", content.lower())
 
+    def test_seeded_tmdb_media_maintenance_skill_preserves_existing_player_scope(self):
+        skills = importlib.import_module("zeline.skills")
+        skills.seed_skills()
+        entries = skills.list_skill_entries(include_private=False)
+        self.assertIn(
+            ("public", "tmdb-media-web-maintenance"),
+            {(scope, name) for scope, name, _title, _description in entries},
+        )
+        content = skills.load_skill("tmdb-media-web-maintenance")
+        normalized = content.casefold()
+        self.assertIn("existing player", normalized)
+        self.assertIn("do not automatically remove an existing player", normalized)
+        self.assertIn("do not make an unsupported legal conclusion", normalized)
+        self.assertIn("do not help bypass drm", normalized)
+        self.assertIn("paywall", normalized)
+        self.assertIn("authentication", normalized)
+        self.assertIn("do not obtain pirated media", normalized)
+
     def test_system_prompt_contains_default_response_formatting_rules(self):
         self.assertIn("**bold**", self.config.SYSTEM_PROMPT)
         self.assertIn("fenced code block", self.config.SYSTEM_PROMPT)
