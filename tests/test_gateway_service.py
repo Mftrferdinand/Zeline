@@ -40,6 +40,7 @@ class GatewayServiceTests(unittest.TestCase):
             os.environ["ZELINE_HOME"] = self.old_home
         self.temp.cleanup()
 
+    @unittest.skipIf(os.name == "nt", "start_new_session is POSIX-only; Windows spawn is covered in test_windows_support")
     def test_start_records_pid_and_invokes_cli_gateway_run(self):
         cfg = self.config.config_copy()
         cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
@@ -55,14 +56,14 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertIn("run", command)
         self.assertEqual(command.count("--only"), 2)
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
-        state = json.loads(self.config.PID_FILE.read_text())
+        state = json.loads(self.config.PID_FILE.read_text(encoding="utf-8"))
         self.assertEqual(state["pid"], 43210)
         self.assertEqual(state["start_ticks"], "777")
         self.assertEqual(state["only"], ["telegram", "webhook"])
 
     def test_stop_refuses_pid_reuse_without_signalling_process(self):
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 999, "start_ticks": "old", "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 999, "start_ticks": "old", "only": []}), encoding="utf-8")
         with mock.patch.object(self.service, "_pid_alive", return_value=True), mock.patch.object(self.service, "_process_start_ticks", return_value="new"), mock.patch.object(self.service.os, "kill") as kill:
             stopped, message = self.service.stop(wait_seconds=0)
         self.assertFalse(stopped)
@@ -72,7 +73,7 @@ class GatewayServiceTests(unittest.TestCase):
 
     def test_start_refuses_when_existing_pid_is_alive(self):
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 44, "start_ticks": "valid", "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 44, "start_ticks": "valid", "only": []}), encoding="utf-8")
         with mock.patch.object(self.service, "_process_matches_state", return_value=True), mock.patch.object(self.service.subprocess, "Popen") as popen:
             started, message = self.service.start()
         self.assertFalse(started)
@@ -91,7 +92,7 @@ class GatewayServiceTests(unittest.TestCase):
 
     def test_status_cleans_stale_pid_state(self):
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 98765, "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 98765, "only": []}), encoding="utf-8")
         with mock.patch.object(self.service, "_pid_alive", return_value=False):
             active, message, state = self.service.status()
         self.assertFalse(active)
@@ -99,9 +100,10 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertIsNone(state)
         self.assertFalse(self.config.PID_FILE.exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX process groups (killpg/getpgid) do not exist on Windows; see test_windows_support")
     def test_stop_sends_sigterm_and_removes_state(self):
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}), encoding="utf-8")
         # guard True, then grace-loop sees process gone → graceful stop, no SIGKILL.
         with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), mock.patch.object(self.service.os, "getpgid", return_value=12345), mock.patch.object(self.service.os, "killpg") as killpg:
             stopped, message = self.service.stop(wait_seconds=5, grace_seconds=5)
@@ -111,9 +113,10 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertNotIn("sigkill", message.lower())
         self.assertFalse(self.config.PID_FILE.exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX process groups (killpg/getpgid) do not exist on Windows; see test_windows_support")
     def test_stop_escalates_to_sigkill_when_sigterm_ignored(self):
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}), encoding="utf-8")
         # matches: initial guard True, grace-loop skipped (grace=0), post-SIGKILL check False.
         with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), mock.patch.object(self.service.os, "getpgid", return_value=12345), mock.patch.object(self.service.os, "killpg") as killpg:
             stopped, message = self.service.stop(wait_seconds=1, grace_seconds=0)
@@ -124,9 +127,10 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertIn("sigkill", message.lower())
         self.assertFalse(self.config.PID_FILE.exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX process groups (killpg/getpgid) do not exist on Windows; see test_windows_support")
     def test_stop_falls_back_to_os_kill_without_process_group(self):
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 12345, "start_ticks": "valid", "only": []}), encoding="utf-8")
         with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), mock.patch.object(self.service.os, "getpgid", side_effect=ProcessLookupError), mock.patch.object(self.service.os, "kill") as kill:
             stopped, message = self.service.stop(wait_seconds=5, grace_seconds=5)
         self.assertTrue(stopped)
@@ -136,6 +140,7 @@ class GatewayServiceTests(unittest.TestCase):
     def test_log_tail_is_empty_without_log_file(self):
         self.assertEqual(self.service.tail_log(), "(no gateway log yet)")
 
+    @unittest.skipIf(os.name == "nt", "Windows resolves identity via GetProcessTimes, not ps lstart")
     def test_start_token_falls_back_to_ps_lstart_on_macos(self):
         # Simulasikan macOS/BSD: /proc tidak ada (starttime None) → pakai ps lstart.
         with mock.patch.object(self.service, "_process_start_ticks", return_value=None), \
@@ -147,7 +152,7 @@ class GatewayServiceTests(unittest.TestCase):
         # State baru berbasis start_token harus cocok lewat _process_start_token
         # meski /proc tidak tersedia (macOS), asalkan token identik.
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 555, "start_token": "lstart:X", "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 555, "start_token": "lstart:X", "only": []}), encoding="utf-8")
         state = self.service._load_state()
         with mock.patch.object(self.service, "_pid_alive", return_value=True), \
              mock.patch.object(self.service, "_process_start_token", return_value="lstart:X"):
@@ -161,7 +166,7 @@ class GatewayServiceTests(unittest.TestCase):
         # State lama tanpa token/ticks → verifikasi lewat command line (harus
         # mengandung 'zeline') agar gateway tetap bisa dihentikan.
         self.config.ensure_data_dirs()
-        self.config.PID_FILE.write_text(json.dumps({"pid": 606, "only": []}))
+        self.config.PID_FILE.write_text(json.dumps({"pid": 606, "only": []}), encoding="utf-8")
         state = self.service._load_state()
         with mock.patch.object(self.service, "_pid_alive", return_value=True), \
              mock.patch.object(self.service, "_process_looks_like_zeline", return_value=True):
@@ -185,7 +190,7 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertTrue(started)
         self.assertIn("51515", message)
         kill.assert_not_called()
-        state = json.loads(self.config.PID_FILE.read_text())
+        state = json.loads(self.config.PID_FILE.read_text(encoding="utf-8"))
         self.assertEqual(state["pid"], 51515)
 
 

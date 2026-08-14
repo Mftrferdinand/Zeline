@@ -24,6 +24,105 @@ jobs:
       - name: Compile package
         run: python -m compileall -q zeline
 
+  windows:
+    # Zeline is developed on Termux/Linux, so Windows regressions (termios
+    # imports, os.kill semantics, console code pages) are easy to reintroduce.
+    # This job runs the suite on a real Windows box in PowerShell.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile package
+        run: python -m compileall -q zeline
+
+      - name: Import CLI (guards the termios ModuleNotFoundError)
+        run: python -c "import zeline.cli; print('cli import OK')"
+
+      - name: Console entry point runs
+        run: |
+          zeline --version
+          zeline --help | Select-Object -First 5
+
+      - name: Banner survives the legacy console code page
+        # cp1252/cp437 cannot encode the box-drawing glyphs, and piping to a
+        # file is exactly the case where Python does NOT auto-select UTF-8.
+        #
+        # The exit code is a weak signal here: `zeline doctor` returns 1 when
+        # unconfigured, and an uncaught UnicodeEncodeError also exits 1. So
+        # assert on the output instead. Note $LASTEXITCODE must be cleared,
+        # otherwise the pwsh wrapper propagates doctor's 1 as a step failure.
+        run: |
+          $env:PYTHONIOENCODING = ''
+          zeline doctor *> doctor.txt
+          $text = Get-Content doctor.txt -Raw
+          Write-Host $text
+          if ($text -match 'UnicodeEncodeError|Traceback \(most recent') {
+              throw "zeline doctor crashed on a legacy code page"
+          }
+          if ($text -notmatch 'Zeline doctor') {
+              throw "zeline doctor produced no report"
+          }
+          exit 0
+
+      - name: PID probe must not kill the process it checks
+        # Regression guard: os.kill(pid, 0) is a liveness probe on POSIX but
+        # calls TerminateProcess on Windows. _pid_alive must use kernel32.
+        # NOTE: PowerShell has no heredoc -- the script lives in a file.
+        run: python .github/scripts/check_windows_pid_probe.py
+
+  installer-windows:
+    # Exercise install.ps1 the way a user would, on a clean runner.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run install.ps1 from the checkout
+        # ZELINE_PYTHON pins the interpreter to the one setup-python provisioned.
+        # Without it the installer prefers `py -3`, which on the runner is a
+        # DIFFERENT Python (3.14) with a different per-user Scripts directory —
+        # so the verification step below would look in the wrong place.
+        # -NoPathUpdate keeps the runner's PATH untouched and skips the prompt.
+        run: |
+          $env:ZELINE_PYTHON = 'python'
+          ./install.ps1 -NoPathUpdate
+
+      - name: Installed CLI is usable
+        # Must use the nt_user scheme, NOT userbase + '\Scripts' — that path does
+        # not exist on Windows (it is <userbase>\PythonXY\Scripts).
+        run: |
+          $scripts = python -c "import sysconfig,site;print(sysconfig.get_path('scripts','nt_user',vars={'userbase':site.getuserbase()}))"
+          Write-Host "Scripts dir: $scripts"
+          if (-not (Test-Path (Join-Path $scripts 'zeline.exe'))) {
+              throw "install.ps1 did not produce zeline.exe in $scripts"
+          }
+          $env:PATH = "$env:PATH;$scripts"
+          zeline --version
+          python -c "from zeline import skills; print('skills import OK')"
+
   package:
     runs-on: ubuntu-latest
     steps:

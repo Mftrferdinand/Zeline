@@ -69,6 +69,38 @@ cd Zerolinear
 bash install.sh
 ```
 
+### Windows (PowerShell)
+
+No admin rights needed. Open **PowerShell** (not CMD) and run:
+
+```powershell
+irm https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.ps1 | iex
+zeline setup
+```
+
+From a checkout instead:
+
+```powershell
+git clone https://github.com/Mftrferdinand/Zerolinear.git
+cd Zerolinear
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+If `zeline` is not recognized after installing, either restart the terminal (the
+installer offers to add the Scripts folder to your PATH) or run it as a module:
+
+```powershell
+py -3 -m zeline.cli
+```
+
+Two Windows-specific notes:
+
+- If typing `python` opens the Microsoft Store, that is a stub, not Python.
+  Install Python from [python.org](https://www.python.org/downloads/) with
+  **Add python.exe to PATH** ticked. The installer detects and skips the stub.
+- Use Windows Terminal or PowerShell 7 for correct box-drawing and arrow keys.
+  The legacy `cmd.exe` console renders the banner with broken characters.
+
 Your configuration is stored locally at `~/.zeline/config.json`. Run a quick check after setup:
 
 ```bash

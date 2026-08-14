@@ -243,7 +243,12 @@ def load_skill(name: str, include_private: bool = False) -> str:
             if path.is_file() and path != found and not path.is_symlink():
                 extras.append(str(path.relative_to(skill_dir)))
         if extras:
-            listing = "\n".join(f"- {skill_dir}/{rel}" for rel in extras)
+            # POSIX-style separators keep the listing stable across platforms;
+            # on Windows ``relative_to`` yields backslashes, which broke both the
+            # docs the agent reads back and the tests asserting on this text.
+            listing = "\n".join(
+                f"- {skill_dir.as_posix()}/{Path(rel).as_posix()}" for rel in extras
+            )
             content += (
                 "\n\n---\n### Supporting files for this skill (read with read_file if needed):\n"
                 + listing
