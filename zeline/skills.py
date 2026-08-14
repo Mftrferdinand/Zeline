@@ -16,6 +16,7 @@ konservatif agar tidak ada prosedur lama yang tidak sengaja terekspos.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import time
@@ -28,6 +29,12 @@ PUBLIC_SKILLS_DIR = SKILLS_ROOT / "public"
 PRIVATE_SKILLS_DIR = SKILLS_ROOT / "private"
 MIGRATION_MARKER = SKILLS_ROOT / ".scope-migrated-v1"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# Obsolete bundled skills superseded by framework-level behavior. Delete only
+# byte-identical seeded copies; user-customized files with these names survive.
+LEGACY_BUNDLED_SKILL_DIGESTS = {
+    "tmdb-media-web-maintenance.md": "35f51a79be0c313bec2ec3f014200a00beeee7938173b5a20ccae0e5b62b8a4d",
+}
 
 
 def _safe_name(name: str) -> str:
@@ -69,6 +76,29 @@ def _ensure_dirs() -> None:
     _migrate_legacy_root()
 
 
+def _remove_unmodified_legacy_bundled_skills() -> None:
+    """Remove obsolete seeded copies without deleting user customizations."""
+    public_root = PUBLIC_SKILLS_DIR.resolve()
+    for name, expected_digest in LEGACY_BUNDLED_SKILL_DIGESTS.items():
+        # Migration entries are flat bundled Markdown filenames, never paths.
+        if Path(name).name != name or not name.endswith(".md"):
+            continue
+        path = PUBLIC_SKILLS_DIR / name
+        if path.is_symlink():
+            continue
+        try:
+            resolved = path.resolve(strict=False)
+            # Windows runners may spell one directory as DOS 8.3 vs canonical
+            # long path. Compare filesystem identity, not path-string spelling.
+            if not resolved.parent.samefile(public_root) or not path.is_file():
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest == expected_digest:
+                path.unlink()
+        except OSError:
+            pass
+
+
 def seed_skills(source: str | Path | None = None) -> int:
     """Salin skill bawaan dari paket ke scope public tanpa overwrite.
 
@@ -80,6 +110,7 @@ def seed_skills(source: str | Path | None = None) -> int:
     the installed package directory. Normal callers use the bundled skills.
     """
     _ensure_dirs()
+    _remove_unmodified_legacy_bundled_skills()
     source = Path(source).expanduser().resolve() if source is not None else Path(__file__).resolve().parent / "skills"
     if not source.exists():
         return 0

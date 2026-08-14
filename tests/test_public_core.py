@@ -5,6 +5,7 @@ Jalankan tanpa provider/API key sungguhan:
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import http.client
 import importlib
@@ -329,23 +330,90 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("```html", content)
         self.assertIn("jangan mengarang", content.lower())
 
-    def test_seeded_tmdb_media_maintenance_skill_preserves_existing_player_scope(self):
+    def test_narrow_tmdb_skill_is_not_bundled_after_global_policy_fix(self):
         skills = importlib.import_module("zeline.skills")
         skills.seed_skills()
         entries = skills.list_skill_entries(include_private=False)
-        self.assertIn(
+        self.assertNotIn(
             ("public", "tmdb-media-web-maintenance"),
             {(scope, name) for scope, name, _title, _description in entries},
         )
-        content = skills.load_skill("tmdb-media-web-maintenance")
-        normalized = content.casefold()
-        self.assertIn("existing player", normalized)
-        self.assertIn("do not automatically remove an existing player", normalized)
-        self.assertIn("do not make an unsupported legal conclusion", normalized)
-        self.assertIn("do not help bypass drm", normalized)
-        self.assertIn("paywall", normalized)
-        self.assertIn("authentication", normalized)
-        self.assertIn("do not obtain pirated media", normalized)
+
+    def test_seed_skills_removes_only_known_unmodified_narrow_tmdb_skill(self):
+        skills = importlib.import_module("zeline.skills")
+        old = skills.PUBLIC_SKILLS_DIR / "tmdb-media-web-maintenance.md"
+        old.parent.mkdir(parents=True, exist_ok=True)
+        legacy_content = "# Previously bundled narrow TMDB skill\n"
+        old.write_text(legacy_content, encoding="utf-8")
+        # Hash the persisted bytes: Windows text writes may normalize LF to CRLF.
+        digest = hashlib.sha256(old.read_bytes()).hexdigest()
+
+        with mock.patch.dict(
+            skills.LEGACY_BUNDLED_SKILL_DIGESTS,
+            {"tmdb-media-web-maintenance.md": digest},
+            clear=True,
+        ):
+            skills.seed_skills()
+
+        self.assertFalse(old.exists())
+
+    def test_seed_skills_preserves_customized_narrow_tmdb_skill(self):
+        skills = importlib.import_module("zeline.skills")
+        old = skills.PUBLIC_SKILLS_DIR / "tmdb-media-web-maintenance.md"
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text("# My customized media workflow\n", encoding="utf-8")
+
+        skills.seed_skills()
+
+        self.assertEqual(old.read_text(encoding="utf-8"), "# My customized media workflow\n")
+
+    def test_legacy_media_digest_matches_last_bundled_source(self):
+        skills = importlib.import_module("zeline.skills")
+        # SHA-256 independently captured from the exact file merged in b4bea85.
+        # Keep this literal so a production-map typo fails on shallow CI clones.
+        expected = "35f51a79be0c313bec2ec3f014200a00beeee7938173b5a20ccae0e5b62b8a4d"
+        self.assertEqual(
+            skills.LEGACY_BUNDLED_SKILL_DIGESTS["tmdb-media-web-maintenance.md"],
+            expected,
+        )
+
+    def test_legacy_skill_cleanup_compares_parent_identity_cross_platform(self):
+        skills_source = (SOURCE_ROOT / "zeline" / "skills.py").read_text(encoding="utf-8")
+        self.assertIn("resolved.parent.samefile(public_root)", skills_source)
+        self.assertNotIn("resolved.parent != public_root", skills_source)
+
+    def test_legacy_skill_cleanup_rejects_path_traversal(self):
+        skills = importlib.import_module("zeline.skills")
+        skills._ensure_dirs()
+        victim = skills.SKILLS_ROOT / "outside-public.md"
+        victim.write_text("do not delete\n", encoding="utf-8")
+        digest = hashlib.sha256(victim.read_bytes()).hexdigest()
+
+        with mock.patch.dict(
+            skills.LEGACY_BUNDLED_SKILL_DIGESTS,
+            {"../outside-public.md": digest},
+            clear=True,
+        ):
+            skills.seed_skills()
+
+        self.assertTrue(victim.exists())
+
+    def test_legacy_skill_cleanup_preserves_symlink(self):
+        skills = importlib.import_module("zeline.skills")
+        skills._ensure_dirs()
+        target = skills.SKILLS_ROOT / "outside-target.md"
+        target.write_text("do not delete\n", encoding="utf-8")
+        link = skills.PUBLIC_SKILLS_DIR / "tmdb-media-web-maintenance.md"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink is not supported on this platform")
+
+        skills.seed_skills()
+
+        self.assertTrue(link.is_symlink())
+        self.assertTrue(target.exists())
 
     def test_system_prompt_contains_default_response_formatting_rules(self):
         self.assertIn("**bold**", self.config.SYSTEM_PROMPT)
