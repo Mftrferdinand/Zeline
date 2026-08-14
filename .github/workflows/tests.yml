@@ -101,14 +101,24 @@ jobs:
           python-version: "3.12"
 
       - name: Run install.ps1 from the checkout
-        # -NoPathUpdate keeps the runner's PATH untouched (the next step adds the
-        # Scripts dir itself) and avoids the interactive prompt entirely.
+        # ZELINE_PYTHON pins the interpreter to the one setup-python provisioned.
+        # Without it the installer prefers `py -3`, which on the runner is a
+        # DIFFERENT Python (3.14) with a different per-user Scripts directory —
+        # so the verification step below would look in the wrong place.
+        # -NoPathUpdate keeps the runner's PATH untouched and skips the prompt.
         run: |
+          $env:ZELINE_PYTHON = 'python'
           ./install.ps1 -NoPathUpdate
 
       - name: Installed CLI is usable
+        # Must use the nt_user scheme, NOT userbase + '\Scripts' — that path does
+        # not exist on Windows (it is <userbase>\PythonXY\Scripts).
         run: |
-          $scripts = python -c "import site,os;print(os.path.join(site.getuserbase(),'Scripts'))"
+          $scripts = python -c "import sysconfig,site;print(sysconfig.get_path('scripts','nt_user',vars={'userbase':site.getuserbase()}))"
+          Write-Host "Scripts dir: $scripts"
+          if (-not (Test-Path (Join-Path $scripts 'zeline.exe'))) {
+              throw "install.ps1 did not produce zeline.exe in $scripts"
+          }
           $env:PATH = "$env:PATH;$scripts"
           zeline --version
           python -c "from zeline import skills; print('skills import OK')"
