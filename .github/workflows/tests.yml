@@ -63,13 +63,24 @@ jobs:
 
       - name: Banner survives the legacy console code page
         # cp1252/cp437 cannot encode the box-drawing glyphs, and piping to a
-        # file is the case where Python does NOT auto-select UTF-8.
-        # `zeline doctor` exits 2 when unconfigured, which is expected here.
+        # file is exactly the case where Python does NOT auto-select UTF-8.
+        #
+        # The exit code is a weak signal here: `zeline doctor` returns 1 when
+        # unconfigured, and an uncaught UnicodeEncodeError also exits 1. So
+        # assert on the output instead. Note $LASTEXITCODE must be cleared,
+        # otherwise the pwsh wrapper propagates doctor's 1 as a step failure.
         run: |
           $env:PYTHONIOENCODING = ''
           zeline doctor *> doctor.txt
-          if ($LASTEXITCODE -gt 2) { throw "zeline doctor crashed (exit $LASTEXITCODE)" }
-          Get-Content doctor.txt -TotalCount 12
+          $text = Get-Content doctor.txt -Raw
+          Write-Host $text
+          if ($text -match 'UnicodeEncodeError|Traceback \(most recent') {
+              throw "zeline doctor crashed on a legacy code page"
+          }
+          if ($text -notmatch 'Zeline doctor') {
+              throw "zeline doctor produced no report"
+          }
+          exit 0
 
       - name: PID probe must not kill the process it checks
         # Regression guard: os.kill(pid, 0) is a liveness probe on POSIX but

@@ -182,9 +182,13 @@ try {
 
     # pip --user puts console scripts in the per-user Scripts directory, which
     # is frequently missing from PATH on Windows. Detect and offer to fix it.
-    $scriptsDir = Invoke-Python -Python $python -Arguments @(
-        '-c', 'import site,os;base=site.getuserbase();print(os.path.join(base, "Scripts"))'
-    )
+    #
+    # NOTE: it is NOT site.getuserbase() + "\Scripts". On Windows the nt_user
+    # scheme is <userbase>\PythonXY\Scripts (version-stamped), so joining
+    # "Scripts" directly points at a folder that does not exist and the
+    # zeline.exe check always failed. Ask sysconfig for the real path.
+    $scriptsProbe = 'import sysconfig,site;print(sysconfig.get_path("scripts","nt_user",vars={"userbase":site.getuserbase()}))'
+    $scriptsDir = Invoke-Python -Python $python -Arguments @('-c', $scriptsProbe)
     $scriptsDir = ($scriptsDir | Select-Object -Last 1).Trim()
     $zelineExe  = Join-Path $scriptsDir 'zeline.exe'
 
@@ -197,7 +201,11 @@ try {
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $onPath   = $false
     if ($userPath) {
-        $onPath = ($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $scriptsDir.TrimEnd('\') }).Count -gt 0
+        # Wrap in @() before .Count: with Set-StrictMode, a pipeline that yields
+        # exactly one object has no .Count property in PowerShell 5.1 and the
+        # whole installer aborted with "The property 'Count' cannot be found".
+        $matched = @($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $scriptsDir.TrimEnd('\') })
+        $onPath  = $matched.Count -gt 0
     }
 
     if (-not $onPath) {

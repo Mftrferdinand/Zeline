@@ -310,6 +310,19 @@ class WindowsInstallerTests(unittest.TestCase):
         root = Path(str(importlib.import_module("zeline").__file__)).parent.parent
         self.script = root / "install.ps1"
 
+    def test_installer_resolves_scripts_dir_via_sysconfig(self):
+        """userbase + "\\Scripts" is wrong on Windows (it is <base>\\PythonXY\\Scripts)."""
+        text = self.script.read_text(encoding="utf-8")
+        self.assertIn("nt_user", text)
+        self.assertNotIn('os.path.join(base, "Scripts")', text)
+
+    def test_installer_guards_count_under_strict_mode(self):
+        """A 1-element pipeline has no .Count in PS 5.1 + StrictMode."""
+        text = self.script.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if ".Count" in line and "-split" in line:
+                self.fail(f"unwrapped pipeline .Count under StrictMode: {line.strip()}")
+
     def test_installer_supports_non_interactive_path_switches(self):
         """`irm | iex` and CI have no console: Read-Host must be avoidable."""
         text = self.script.read_text(encoding="utf-8")
