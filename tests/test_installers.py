@@ -182,6 +182,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("git fetch origin main", text)
         self.assertIn('git merge-base --is-ancestor "$GITHUB_SHA" origin/main', text)
 
+    def test_release_notes_are_zeline_controlled_not_history_generated(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        notes = (ROOT / ".github" / "RELEASE_NOTES.md").read_text(encoding="utf-8")
+        self.assertNotIn("generate_release_notes: true", workflow)
+        self.assertIn("body_path: .github/RELEASE_NOTES.md", workflow)
+        self.assertIn("name: Zeline ${{ github.ref_name }}", workflow)
+        self.assertNotIn("aesora", notes.casefold())
+        self.assertIn("Zeline", notes)
+
 
 class InstallationPageTests(unittest.TestCase):
     def test_dedicated_install_page_covers_every_supported_platform(self):
