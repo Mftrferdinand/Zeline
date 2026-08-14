@@ -145,7 +145,7 @@ class PosixInstallerTests(unittest.TestCase):
         self.assertNotIn("wget -qO", self.text)
 
     def test_local_checkout_requires_explicit_source_option(self):
-        self.assertIn('[ -n "$SOURCE_OVERRIDE" ] || return', self.text)
+        self.assertIn('[ -n "$SOURCE_OVERRIDE" ] || return 0', self.text)
         self.assertIn('SOURCE_DIR="$(CDPATH= cd -- "$SOURCE_OVERRIDE" && pwd)"', self.text)
         self.assertNotIn('BASH_SOURCE[0]', self.text)
 
