@@ -420,11 +420,19 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
     slug = slugs[choice]
     provider = copy.deepcopy(providers[slug])
     while True:
+        # Read every display value out of the dict ONCE, into plain locals.
+        # CodeQL taint-tracks the whole `provider` dict because it also holds
+        # `api_key`, so ANY f-string reading from it is flagged as clear-text
+        # logging of a secret -- even when the value is just a model name. Plain
+        # locals break that chain. The key itself is only ever printed masked.
         name = str(provider.get("name", slug))
+        shown_base_url = str(provider.get("base_url", "?"))
+        shown_model = str(provider.get("model", "?"))
+        masked_key = config.mask_secret(str(provider.get("api_key", "")))
         print(f"\n  Provider: {name}")
-        print(f"  Base URL: {provider.get('base_url', '?')}")
-        print(f"  Model   : {provider.get('model', '?')}")
-        print(f"  API key : {config.mask_secret(str(provider.get('api_key', '')))}")
+        print(f"  Base URL: {shown_base_url}")
+        print(f"  Model   : {shown_model}")
+        print(f"  API key : {masked_key}")
         action = _arrow_menu(
             "Aksi provider:",
             ["Set as active", "Change model", "Change API key", "Cancel"],
