@@ -375,7 +375,9 @@ def cmd_setup_agent() -> int:
     )
     config.save_config(cfg)
     print("Agent settings saved.")
-    print(f"  Name       : {name}")
+    # Do not echo setup input: the same prompt path also handles secrets, and
+    # terminals/CI logs are not a safe place for user-supplied values.
+    print("  Name       : saved")
     print(f"  Tool rounds: {rounds}")
     print(f"  Sessions   : {sessions_count}")
     return 0

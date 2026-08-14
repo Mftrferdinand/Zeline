@@ -430,7 +430,6 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_webhook_requires_token_and_keeps_identity_namespaced(self):
         webhook = importlib.import_module("zeline.gateways.webhook")
-        port = free_port()
         token = "this-is-a-long-webhook-test-token"
         received = []
 
@@ -440,17 +439,20 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 return f"reply:{kwargs['text']}"
 
         stop = threading.Event()
+        ready = __import__("queue").Queue()
         thread = threading.Thread(
             target=webhook.start,
             args=(
                 FakeSessions(),
-                {"host": "127.0.0.1", "port": port, "token": token, "tool_profile": "safe"},
+                {"host": "127.0.0.1", "port": 0, "token": token, "tool_profile": "safe"},
                 stop,
+                ready.put,
             ),
             daemon=True,
         )
         thread.start()
-        deadline = time.monotonic() + 3
+        port = ready.get(timeout=5)
+        deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             try:
                 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=0.3)

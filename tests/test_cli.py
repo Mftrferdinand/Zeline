@@ -202,9 +202,10 @@ class ZelineCliTests(unittest.TestCase):
         workspace = self.home / "workspace"
         workspace.mkdir(parents=True)
         result = self.invoke(["tools", "workspace", str(workspace)])
-        self.assertIn(str(workspace), result)
+        reported = result.strip().removeprefix("Workspace: ")
+        self.assertTrue(Path(reported).samefile(workspace))
         saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved["tools"]["workspace"], str(workspace.resolve()))
+        self.assertTrue(Path(saved["tools"]["workspace"]).samefile(workspace))
 
     def test_setup_parser_exposes_hermes_style_sections(self):
         parser = self.cli.build_parser()
