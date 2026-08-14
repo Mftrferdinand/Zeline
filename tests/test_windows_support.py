@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import os
 import sys
 import types
 import unittest
@@ -126,12 +127,22 @@ class WindowsProcessTests(unittest.TestCase):
             self.assertEqual(self.service._process_start_token(1234), "wincreate:99")
 
     def test_sigkill_maps_to_taskkill_tree_on_windows(self):
-        import signal
-
+        # signal.SIGKILL does not exist on Windows, so the module resolves a
+        # force-kill marker at import time. Referencing signal.SIGKILL directly
+        # here would make this test itself fail on Windows.
         with mock.patch.object(self.service, "IS_WINDOWS", True), \
              mock.patch.object(self.service._winproc, "terminate_tree", return_value=True) as taskkill:
-            self.assertTrue(self.service._signal_process(777, signal.SIGKILL))
+            self.assertTrue(self.service._signal_process(777, self.service._SIGKILL))
         taskkill.assert_called_once_with(777)
+
+    def test_force_kill_marker_exists_without_posix_sigkill(self):
+        """stop() must not crash with AttributeError where SIGKILL is absent."""
+        import signal
+
+        self.assertIsNotNone(self.service._SIGKILL)
+        # Must be distinguishable from SIGTERM, otherwise the escalation phase
+        # would repeat the graceful signal instead of force-killing.
+        self.assertNotEqual(self.service._SIGKILL, signal.SIGTERM)
 
     def test_spawn_uses_creationflags_not_start_new_session_on_windows(self):
         """start_new_session is POSIX-only; passing it on Windows raises."""
@@ -211,15 +222,83 @@ class WindowsProcHelperTests(unittest.TestCase):
     def setUp(self):
         self.winproc = importlib.import_module("zeline._winproc")
 
+    @unittest.skipIf(os.name == "nt", "kernel32 IS present on Windows; see the live test below")
     def test_helpers_return_safe_defaults_without_kernel32(self):
         self.assertFalse(self.winproc.available())
         self.assertFalse(self.winproc.pid_alive(1))
         self.assertIsNone(self.winproc.creation_token(1))
 
+    @unittest.skipUnless(os.name == "nt", "requires a real Windows kernel")
+    def test_helpers_work_against_live_process_on_windows(self):
+        """On real Windows the probe must report truthfully and NOT kill."""
+        self.assertTrue(self.winproc.available())
+        me = os.getpid()
+        self.assertTrue(self.winproc.pid_alive(me))
+        self.assertTrue(str(self.winproc.creation_token(me) or "").startswith("wincreate:"))
+        # Still alive after being probed -- the whole point of the fix.
+        self.assertTrue(self.winproc.pid_alive(me))
+        # PID 0 is the System Idle Process and cannot be opened for query.
+        self.assertFalse(self.winproc.pid_alive(0))
+
     def test_creation_flags_include_new_process_group(self):
         # CREATE_NEW_PROCESS_GROUP (0x200) is required for CTRL_BREAK to reach
         # the child on `gateway stop`.
         self.assertTrue(self.winproc.CREATION_FLAGS & 0x00000200)
+
+
+class WindowsPathAndEncodingTests(unittest.TestCase):
+    """Bugs found by running the suite on real Windows in CI."""
+
+    def test_mcp_command_split_keeps_windows_backslashes(self):
+        """shlex.split (POSIX mode) eats backslashes -> WinError 2 on spawn."""
+        mcp = importlib.import_module("zeline.mcp")
+        with mock.patch.object(mcp.os, "name", "nt"):
+            parts = mcp.split_command(r'C:\Python\python.exe C:\srv\server.py')
+        self.assertEqual(parts, [r"C:\Python\python.exe", r"C:\srv\server.py"])
+
+    def test_mcp_command_split_strips_quotes_on_windows(self):
+        mcp = importlib.import_module("zeline.mcp")
+        with mock.patch.object(mcp.os, "name", "nt"):
+            parts = mcp.split_command(r'"C:\Program Files\Py\python.exe" server.py')
+        self.assertEqual(parts, [r"C:\Program Files\Py\python.exe", "server.py"])
+
+    def test_skill_supporting_files_use_forward_slashes(self):
+        """Windows relative_to() yields backslashes; the listing must not."""
+        import tempfile
+        from pathlib import Path
+
+        skills = importlib.import_module("zeline.skills")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        folder = root / "demo"
+        (folder / "references").mkdir(parents=True)
+        skill_md = folder / "SKILL.md"
+        skill_md.write_text("---\nname: demo\ndescription: d\n---\n\nBody\n", encoding="utf-8")
+        (folder / "references" / "extra.md").write_text("x\n", encoding="utf-8")
+
+        with mock.patch.object(skills, "_ensure_dirs"), \
+             mock.patch.object(skills, "_find_skill", return_value=skill_md):
+            content = skills.load_skill("demo")
+
+        self.assertIn("references/extra.md", content)
+        self.assertNotIn("references\\extra.md", content)
+
+    def test_session_store_closes_connections(self):
+        """Windows cannot delete a file that still has an open handle."""
+        import tempfile
+        from pathlib import Path
+
+        store_mod = importlib.import_module("zeline.session_store")
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        db = root / "sessions.db"
+        store = store_mod.SessionPersistence(path=db)
+        store.save("telegram:1", [{"role": "user", "content": "hi"}], title="t")
+        self.assertEqual(store.load("telegram:1")[0][0]["content"], "hi")
+        # With a leaked handle this raises PermissionError (WinError 32).
+        tmp.cleanup()
+        self.assertFalse(db.exists())
 
 
 class WindowsInstallerTests(unittest.TestCase):
@@ -230,6 +309,14 @@ class WindowsInstallerTests(unittest.TestCase):
 
         root = Path(str(importlib.import_module("zeline").__file__)).parent.parent
         self.script = root / "install.ps1"
+
+    def test_installer_supports_non_interactive_path_switches(self):
+        """`irm | iex` and CI have no console: Read-Host must be avoidable."""
+        text = self.script.read_text(encoding="utf-8")
+        self.assertIn("[switch]$AddToPath", text)
+        self.assertIn("[switch]$NoPathUpdate", text)
+        # Must also auto-detect a redirected stdin rather than blocking on it.
+        self.assertIn("IsInputRedirected", text)
 
     def test_installer_exists(self):
         self.assertTrue(self.script.exists(), "install.ps1 is missing")

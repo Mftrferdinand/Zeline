@@ -20,6 +20,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -47,13 +48,19 @@ class SessionPersistence:
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
+        """Buka koneksi baru; pemanggil WAJIB menutupnya (lihat ``closing``).
+
+        ``with sqlite3.connect(...) as conn`` hanya commit/rollback transaksi —
+        koneksinya TETAP terbuka. Di Windows file yang masih dipegang tidak bisa
+        dihapus (WinError 32), jadi setiap pemakaian dibungkus ``closing()``.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.path), timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _ensure_schema(self) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS sessions ("
                 "  key TEXT PRIMARY KEY,"
@@ -69,7 +76,7 @@ class SessionPersistence:
 
     def load(self, identity: str) -> tuple[list[dict[str, Any]], str | None]:
         """Kembalikan (messages, title) untuk sebuah identity, atau ([], None)."""
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             row = conn.execute(
                 "SELECT messages, title FROM sessions WHERE key = ?",
                 (_key(identity),),
@@ -88,7 +95,7 @@ class SessionPersistence:
         """Simpan history penuh (dipangkas ke batas aman) untuk sebuah identity."""
         trimmed = self._trim(messages)
         payload = json.dumps(trimmed, ensure_ascii=False)
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO sessions (key, title, messages, updated_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET messages=excluded.messages, "
@@ -97,7 +104,7 @@ class SessionPersistence:
             )
 
     def reset(self, identity: str) -> bool:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cur = conn.execute("DELETE FROM sessions WHERE key = ?", (_key(identity),))
             return cur.rowcount > 0
 

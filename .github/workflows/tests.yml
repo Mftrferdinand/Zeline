@@ -90,10 +90,10 @@ jobs:
           python-version: "3.12"
 
       - name: Run install.ps1 from the checkout
-        # Answer the "add to PATH?" prompt with "n": mutating the runner's PATH
-        # is pointless, and the next step adds the Scripts dir explicitly.
+        # -NoPathUpdate keeps the runner's PATH untouched (the next step adds the
+        # Scripts dir itself) and avoids the interactive prompt entirely.
         run: |
-          "n" | ./install.ps1
+          ./install.ps1 -NoPathUpdate
 
       - name: Installed CLI is usable
         run: |

@@ -8,13 +8,20 @@
 #   cd Zerolinear
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #
+# Switches (useful for CI / unattended installs):
+#   -AddToPath      add the user Scripts dir to PATH without prompting
+#   -NoPathUpdate   never touch PATH and never prompt
+#
 # Optional environment variables:
 #   $env:ZELINE_PYTHON       = "python"       # Python executable to use
 #   $env:ZELINE_INSTALL_DIR  = "C:\zeline"    # unused for pip installs, kept for parity
 
 #Requires -Version 5.1
 [CmdletBinding()]
-param()
+param(
+    [switch]$AddToPath,
+    [switch]$NoPathUpdate
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -197,8 +204,24 @@ try {
         Write-Host ''
         Write-Warn 'Scripts folder is not on your PATH:'
         Write-Detail $scriptsDir
-        $answer = Read-Host '    Add it to your user PATH now? [Y/n]'
-        if ($answer -eq '' -or $answer -match '^[Yy]') {
+
+        # Decide without prompting when a switch was passed, or when there is no
+        # interactive console (piped `irm | iex`, CI). Read-Host in a
+        # non-interactive session either throws or blocks forever.
+        $interactive = -not [Console]::IsInputRedirected
+        if ($NoPathUpdate) {
+            $shouldAdd = $false
+        } elseif ($AddToPath) {
+            $shouldAdd = $true
+        } elseif (-not $interactive) {
+            $shouldAdd = $false
+            Write-Detail 'Non-interactive session: leaving PATH unchanged (use -AddToPath).'
+        } else {
+            $answer = Read-Host '    Add it to your user PATH now? [Y/n]'
+            $shouldAdd = ($answer -eq '' -or $answer -match '^[Yy]')
+        }
+
+        if ($shouldAdd) {
             $newPath = if ($userPath) { "$userPath;$scriptsDir" } else { $scriptsDir }
             [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
             $env:Path = "$env:Path;$scriptsDir"

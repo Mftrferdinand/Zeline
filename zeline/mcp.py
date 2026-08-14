@@ -41,6 +41,21 @@ def make_tool_name(server: str, tool: str) -> str:
     return f"{MCP_TOOL_PREFIX}{server}__{tool}"
 
 
+def split_command(command: str) -> list[str]:
+    """Pecah string command jadi argv, aman untuk path Windows.
+
+    ``shlex.split`` default POSIX: backslash dianggap escape char, sehingga
+    ``C:\\Python\\python.exe`` jadi ``C:Pythonpython.exe`` dan spawn gagal
+    dengan ``FileNotFoundError [WinError 2]``. Di Windows dipakai
+    ``posix=False`` (backslash literal), lalu tanda kutip sisa dibersihkan
+    karena mode non-POSIX mempertahankannya.
+    """
+    if os.name != "nt":
+        return shlex.split(command)
+    parts = shlex.split(command, posix=False)
+    return [part[1:-1] if len(part) > 1 and part[0] == part[-1] == '"' else part for part in parts]
+
+
 def parse_tool_name(name: str) -> tuple[str, str] | None:
     """Kebalikan make_tool_name; None kalau bukan tool MCP."""
     if not name.startswith(MCP_TOOL_PREFIX):
@@ -133,12 +148,16 @@ class MCPServer:
             raise RuntimeError(f"MCP server '{self.name}' stdio tanpa command.")
         env = {**os.environ, **self.env}
         self._process = subprocess.Popen(
-            shlex.split(self.command),
+            split_command(self.command),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             env=env,
             text=True,
+            # JSON-RPC is UTF-8. Without this, Windows text mode uses the locale
+            # code page (cp1252) and any non-ASCII payload raises/garbles.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._initialized = False

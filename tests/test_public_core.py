@@ -910,7 +910,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         send.assert_called_once_with("bot-api", 42, repository)
         api.assert_not_called()
         self.assertEqual(repository.name, "repository.md")
-        self.assertEqual(repository.read_text(), "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n")
+        self.assertEqual(repository.read_text(encoding="utf-8"), "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n")
 
     def test_telegram_savetask_uses_discussed_title_and_project_link(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -924,7 +924,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             handled = telegram._handle_command_update("bot-api", "/savetask", sessions, "telegram:42", 42, stop_event=threading.Event(), tool_profile="full", message_id=99)
         self.assertTrue(handled)
         self.assertEqual(sessions.identity, "telegram:42")
-        saved = repository.read_text()
+        saved = repository.read_text(encoding="utf-8")
         self.assertIn("| 🟡 | Bangun Dashboard Keuangan Mobile | [finance.example.app](https://finance.example.app) |", saved)
         self.assertEqual(api.call_args.kwargs["text"], "Task saved to repository.md.")
 
@@ -935,7 +935,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def task_snapshot(self, _identity): return {"title": "Perbaiki autentikasi bot", "messages": ["tolong perbaiki login"]}
         with mock.patch.object(telegram, "REPOSITORY_FILE", repository), mock.patch.object(telegram, "_api_call"):
             telegram._handle_command_update("bot-api", "/savetask", Sessions(), "telegram:7387183839", 7387183839, stop_event=threading.Event(), tool_profile="full", message_id=123)
-        self.assertIn("[Telegram message](tg://openmessage?user_id=7387183839&message_id=123)", repository.read_text())
+        self.assertIn("[Telegram message](tg://openmessage?user_id=7387183839&message_id=123)", repository.read_text(encoding="utf-8"))
 
     def test_repository_crud_is_linked_and_matches_name_or_link(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -946,10 +946,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
             self.assertEqual(telegram._save_task(first, 42, 10), "saved")
             self.assertEqual(telegram._save_task(first, 42, 10), "duplicate")
             self.assertEqual(telegram._update_task("old.example.app", updated, 42, 11), "updated")
-            self.assertIn("Dashboard Finance Premium", repository.read_text())
-            self.assertNotIn("old.example.app", repository.read_text())
+            self.assertIn("Dashboard Finance Premium", repository.read_text(encoding="utf-8"))
+            self.assertNotIn("old.example.app", repository.read_text(encoding="utf-8"))
             self.assertEqual(telegram._delete_task("dashboard finance",), "deleted")
-            self.assertEqual(repository.read_text(), telegram.REPOSITORY_HEADER)
+            self.assertEqual(repository.read_text(encoding="utf-8"), telegram.REPOSITORY_HEADER)
 
     def test_completed_task_changes_only_status_to_green(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -957,7 +957,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         with mock.patch.object(telegram, "REPOSITORY_FILE", repository):
             telegram._save_task({"title": "Project alpha", "messages": ["https://alpha.example.app"]}, 42, 1)
             self.assertEqual(telegram._complete_task("alpha.example.app"), "completed")
-            saved = repository.read_text()
+            saved = repository.read_text(encoding="utf-8")
             self.assertIn("| 🟢 | Project Alpha |", saved)
             self.assertNotIn("| 🟡 | Project Alpha |", saved)
             self.assertEqual(telegram._complete_task("project alpha"), "already_completed")
@@ -973,7 +973,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             with mock.patch.object(telegram, "_api_call") as api:
                 telegram._handle_command_update("bot-api", "/completedtask alpha.example.app", object(), "telegram:42", 42, stop_event=threading.Event(), tool_profile="full")
             self.assertEqual(api.call_args.kwargs["text"], "Task marked as finished in repository.md.")
-            self.assertIn("| 🟢 | Project Alpha |", repository.read_text())
+            self.assertIn("| 🟢 | Project Alpha |", repository.read_text(encoding="utf-8"))
 
     def test_telegram_update_and_delete_require_project_name_or_link(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -997,7 +997,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             with mock.patch.object(telegram, "_api_call") as api:
                 telegram._handle_command_update("bot-api", "/deletetask project versi", Sessions(), "telegram:42", 42, stop_event=threading.Event(), tool_profile="full", message_id=3)
             self.assertEqual(api.call_args.kwargs["text"], "Task deleted from repository.md.")
-            self.assertEqual(repository.read_text(), telegram.REPOSITORY_HEADER)
+            self.assertEqual(repository.read_text(encoding="utf-8"), telegram.REPOSITORY_HEADER)
 
     def test_session_task_snapshot_returns_title_and_recent_conversation(self):
         sessions_module = importlib.import_module("zeline.sessions")
@@ -1051,7 +1051,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("OK", executor.run("write_file", {"path": "app.py", "content": "name = 'old'\n"}))
         patched = executor.run("patch_file", {"path": "app.py", "old_text": "'old'", "new_text": "'new'"})
         self.assertIn("patched", patched)
-        self.assertEqual((self.home / "app.py").read_text(), "name = 'new'\n")
+        self.assertEqual((self.home / "app.py").read_text(encoding="utf-8"), "name = 'new'\n")
         task = executor.run("update_task", {"task": "Run tests", "status": "in_progress"})
         self.assertIn("Run tests", task)
         self.assertIn("in_progress", task)

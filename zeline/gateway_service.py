@@ -29,6 +29,13 @@ from zeline.gateways import validate_gateway
 
 IS_WINDOWS = os.name == "nt"
 
+# ``signal.SIGKILL`` does not exist on Windows — merely referencing it raises
+# AttributeError, which crashed ``stop()`` at the escalation step. Windows never
+# uses the value (``_signal_process`` routes force-kills to ``taskkill /T /F``),
+# so any signal number distinct from SIGTERM works as a marker. SIGBREAK (21) is
+# Windows-only and unambiguous; the POSIX path keeps real SIGKILL.
+_SIGKILL = getattr(signal, "SIGKILL", None) or getattr(signal, "SIGBREAK", signal.SIGTERM)
+
 LOG_FILE = config.LOG_DIR / "gateway.log"
 
 
@@ -364,7 +371,7 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
         time.sleep(0.1)
 
     # Fase 2: eskalasi ke SIGKILL (seluruh process group).
-    escalated = _signal_process(pid, signal.SIGKILL)
+    escalated = _signal_process(pid, _SIGKILL)
     kill_deadline = time.monotonic() + max(0.5, wait_seconds - grace_seconds)
     while time.monotonic() < kill_deadline:
         if not _process_matches_state(state):

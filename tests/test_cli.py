@@ -55,7 +55,7 @@ class ZelineCliTests(unittest.TestCase):
     def test_gateway_enable_webhook_generates_secret_and_uses_loopback_default(self):
         result = self.invoke(["gateway", "enable", "webhook"])
         self.assertIn("webhook enabled", result.lower())
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         webhook = saved["gateways"]["webhook"]
         self.assertTrue(webhook["enabled"])
         self.assertEqual(webhook["host"], "127.0.0.1")
@@ -69,18 +69,18 @@ class ZelineCliTests(unittest.TestCase):
         # Config state (dihidupkan) harus jelas terpisah dari status proses.
         self.assertIn("enabled", result)
         self.assertIn("Background process", result)
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertNotIn(saved["gateways"]["webhook"]["token"], result)
 
     def test_gateway_disable_is_persistent(self):
         self.invoke(["gateway", "enable", "webhook"])
         self.invoke(["gateway", "disable", "webhook"])
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertFalse(saved["gateways"]["webhook"]["enabled"])
 
     def test_gateway_token_command_masks_stored_token(self):
         self.invoke(["gateway", "enable", "webhook"])
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         token = saved["gateways"]["webhook"]["token"]
         normal = self.invoke(["gateway", "list"])
         masked = self.invoke(["gateway", "token", "webhook"])
@@ -116,7 +116,7 @@ class ZelineCliTests(unittest.TestCase):
         whatsapp.assert_not_called()
         webhook.assert_not_called()
         self.assertIn("zeline model", result.lower())
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertTrue(saved["gateway_setup_complete"])
         self.assertFalse(saved["setup_complete"])
 
@@ -230,7 +230,7 @@ class ZelineCliTests(unittest.TestCase):
         # Setelah add ada 1 provider: menu = [1]MyProvider [2]Add [3]Remove [4]Cancel -> 4.
         with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), mock.patch.object(self.cli, "_masked_secret_input", return_value="provider-secret"):
             result = self.invoke(["model"])
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertIn("added", result)
         self.assertEqual(saved["provider"], {
             "protocol": "openai",
@@ -257,7 +257,7 @@ class ZelineCliTests(unittest.TestCase):
         # 2 (Remove) -> 2 (Beta, non-aktif). Setelah hapus balik ke menu -> 4 (Cancel).
         with mock.patch("builtins.input", side_effect=["2", "2", "4"]):
             result = self.invoke(["model"])
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertIn("removed", result)
         self.assertNotIn("beta", saved["providers"])
         self.assertIn("alpha", saved["providers"])
@@ -276,7 +276,7 @@ class ZelineCliTests(unittest.TestCase):
         # 2 (Remove) -> 1 (Alpha, aktif) -> ditolak -> balik ke menu -> 4 (Cancel).
         with mock.patch("builtins.input", side_effect=["2", "1", "4"]):
             result = self.invoke(["model"])
-        saved = __import__("json").loads((self.home / "config.json").read_text())
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertIn("active", result.lower())
         self.assertIn("alpha", saved["providers"])
         self.assertIn("beta", saved["providers"])
