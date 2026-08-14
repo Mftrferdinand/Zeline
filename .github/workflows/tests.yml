@@ -24,6 +24,84 @@ jobs:
       - name: Compile package
         run: python -m compileall -q zeline
 
+  windows:
+    # Zeline is developed on Termux/Linux, so Windows regressions (termios
+    # imports, os.kill semantics, console code pages) are easy to reintroduce.
+    # This job runs the suite on a real Windows box in PowerShell.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile package
+        run: python -m compileall -q zeline
+
+      - name: Import CLI (guards the termios ModuleNotFoundError)
+        run: python -c "import zeline.cli; print('cli import OK')"
+
+      - name: Console entry point runs
+        run: |
+          zeline --version
+          zeline --help | Select-Object -First 5
+
+      - name: Banner survives the legacy console code page
+        # cp1252/cp437 cannot encode the box-drawing glyphs, and piping to a
+        # file is the case where Python does NOT auto-select UTF-8.
+        # `zeline doctor` exits 2 when unconfigured, which is expected here.
+        run: |
+          $env:PYTHONIOENCODING = ''
+          zeline doctor *> doctor.txt
+          if ($LASTEXITCODE -gt 2) { throw "zeline doctor crashed (exit $LASTEXITCODE)" }
+          Get-Content doctor.txt -TotalCount 12
+
+      - name: PID probe must not kill the process it checks
+        # Regression guard: os.kill(pid, 0) is a liveness probe on POSIX but
+        # calls TerminateProcess on Windows. _pid_alive must use kernel32.
+        # NOTE: PowerShell has no heredoc -- the script lives in a file.
+        run: python .github/scripts/check_windows_pid_probe.py
+
+  installer-windows:
+    # Exercise install.ps1 the way a user would, on a clean runner.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run install.ps1 from the checkout
+        # Answer the "add to PATH?" prompt with "n": mutating the runner's PATH
+        # is pointless, and the next step adds the Scripts dir explicitly.
+        run: |
+          "n" | ./install.ps1
+
+      - name: Installed CLI is usable
+        run: |
+          $scripts = python -c "import site,os;print(os.path.join(site.getuserbase(),'Scripts'))"
+          $env:PATH = "$env:PATH;$scripts"
+          zeline --version
+          python -c "from zeline import skills; print('skills import OK')"
+
   package:
     runs-on: ubuntu-latest
     steps:

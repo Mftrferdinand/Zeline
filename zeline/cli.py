@@ -22,21 +22,19 @@ from __future__ import annotations
 
 import argparse
 import copy
-import getpass
 import json
 import os
 import re
 import signal
 import sys
-import termios
 import time
-import tty
 from pathlib import Path
 from typing import Any
 
 import requests
 
 from zeline import __version__, config, skills
+from zeline._termkey import raw_mode, read_key, read_menu_key, read_secret
 from zeline.agent import ZelineError
 from zeline.gateways import GATEWAYS, gateway_status, run_all
 from zeline import gateway_service
@@ -109,37 +107,12 @@ def _print_banner() -> None:
 
 
 def _read_secret_key() -> str:
-    return os.read(sys.stdin.fileno(), 1).decode("utf-8", errors="ignore")
+    return read_key()
 
 
 def _masked_secret_input(prompt: str) -> str:
     """Read a secret while rendering one star per character."""
-    if not sys.stdin.isatty():
-        return getpass.getpass(prompt)
-    fd = sys.stdin.fileno()
-    previous = termios.tcgetattr(fd)
-    chars: list[str] = []
-    print(prompt, end="", flush=True)
-    try:
-        tty.setraw(fd)
-        while True:
-            char = _read_secret_key()
-            if char in {"\r", "\n"}:
-                print()
-                break
-            if char == "\x03":
-                raise KeyboardInterrupt
-            if char in {"\x7f", "\b"}:
-                if chars:
-                    chars.pop()
-                    print("\b \b", end="", flush=True)
-                continue
-            if char and char.isprintable():
-                chars.append(char)
-                print("*", end="", flush=True)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
-    return "".join(chars)
+    return read_secret(prompt)
 
 
 def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
@@ -233,24 +206,7 @@ GATEWAY_OPTIONS = (
 
 
 def _read_menu_key() -> str:
-    char = _read_secret_key()
-    if char in {"\r", "\n"}:
-        return "enter"
-    if char == "\x03":
-        raise KeyboardInterrupt
-    if char == "\x1b":
-        second = _read_secret_key()
-        third = _read_secret_key()
-        if second == "[" and third == "A":
-            return "up"
-        if second == "[" and third == "B":
-            return "down"
-        # ESC pressed alone (no arrow sequence) = cancel.
-        if second == "" and third == "":
-            return "cancel"
-    if char in {"q", "Q"}:
-        return "cancel"
-    return ""
+    return read_menu_key()
 
 
 def _select_gateway() -> str:
@@ -266,26 +222,23 @@ def _select_gateway() -> str:
             print("  Invalid choice.")
 
     selected = 0
-    fd = sys.stdin.fileno()
-    previous = termios.tcgetattr(fd)
     print("Select gateway (↑/↓ then Enter):")
-    try:
-        tty.setraw(fd)
-        while True:
-            for index, (_value, label) in enumerate(GATEWAY_OPTIONS):
-                marker = _paint("❯", COLOR_BLUE) if index == selected else " "
-                print(f"\r\033[K  {marker} {label}")
-            key = _read_menu_key()
-            if key == "up":
-                selected = (selected - 1) % len(GATEWAY_OPTIONS)
-            elif key == "down":
-                selected = (selected + 1) % len(GATEWAY_OPTIONS)
-            elif key == "enter":
-                return GATEWAY_OPTIONS[selected][0]
-            print(f"\033[{len(GATEWAY_OPTIONS)}A", end="", flush=True)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
-        print()
+    with raw_mode():
+        try:
+            while True:
+                for index, (_value, label) in enumerate(GATEWAY_OPTIONS):
+                    marker = _paint("❯", COLOR_BLUE) if index == selected else " "
+                    print(f"\r\033[K  {marker} {label}")
+                key = _read_menu_key()
+                if key == "up":
+                    selected = (selected - 1) % len(GATEWAY_OPTIONS)
+                elif key == "down":
+                    selected = (selected + 1) % len(GATEWAY_OPTIONS)
+                elif key == "enter":
+                    return GATEWAY_OPTIONS[selected][0]
+                print(f"\033[{len(GATEWAY_OPTIONS)}A", end="", flush=True)
+        finally:
+            print()
 
 
 def _gateway_cfg(cfg: dict[str, Any], name: str) -> dict[str, Any]:
@@ -533,28 +486,25 @@ def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
             print("  Invalid choice.")
 
     selected = max(0, min(start, len(options) - 1))
-    fd = sys.stdin.fileno()
-    previous = termios.tcgetattr(fd)
     print(title + "  (↑/↓ then Enter, Esc = cancel)")
-    try:
-        tty.setraw(fd)
-        while True:
-            for index, label in enumerate(options):
-                marker = _paint("❯", COLOR_BLUE) if index == selected else " "
-                print(f"\r\033[K  {marker} {label}")
-            key = _read_menu_key()
-            if key == "up":
-                selected = (selected - 1) % len(options)
-            elif key == "down":
-                selected = (selected + 1) % len(options)
-            elif key == "enter":
-                return selected
-            elif key == "cancel":
-                return -1
-            print(f"\033[{len(options)}A", end="", flush=True)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
-        print()
+    with raw_mode():
+        try:
+            while True:
+                for index, label in enumerate(options):
+                    marker = _paint("❯", COLOR_BLUE) if index == selected else " "
+                    print(f"\r\033[K  {marker} {label}")
+                key = _read_menu_key()
+                if key == "up":
+                    selected = (selected - 1) % len(options)
+                elif key == "down":
+                    selected = (selected + 1) % len(options)
+                elif key == "enter":
+                    return selected
+                elif key == "cancel":
+                    return -1
+                print(f"\033[{len(options)}A", end="", flush=True)
+        finally:
+            print()
 
 
 def cmd_model() -> int:
@@ -913,6 +863,13 @@ def cmd_gateway_run(only: list[str] | None = None) -> int:
 
     previous_int = signal.signal(signal.SIGINT, shutdown)
     previous_term = signal.signal(signal.SIGTERM, shutdown)
+    # `gateway stop` on Windows sends CTRL_BREAK_EVENT, which arrives as
+    # SIGBREAK — without this handler the child ignores the graceful phase and
+    # always has to be force-killed with taskkill.
+    previous_break = None
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    if sigbreak is not None:
+        previous_break = signal.signal(sigbreak, shutdown)
     try:
         while runtime.alive:
             time.sleep(0.5)
@@ -921,6 +878,8 @@ def cmd_gateway_run(only: list[str] | None = None) -> int:
     finally:
         signal.signal(signal.SIGINT, previous_int)
         signal.signal(signal.SIGTERM, previous_term)
+        if sigbreak is not None and previous_break is not None:
+            signal.signal(sigbreak, previous_break)
         runtime.stop(timeout=1)
     return 0
 
@@ -1068,7 +1027,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_utf8_stdio() -> None:
+    """Force UTF-8 on stdout/stderr so the banner never crashes the CLI.
+
+    Windows consoles default to a legacy code page (cp1252/cp437) that cannot
+    encode the box-drawing characters and the '>' marker used by the banner and
+    pickers. Printing them raises UnicodeEncodeError and kills the command --
+    especially when output is piped to a file, where Python does not
+    auto-select UTF-8. ``reconfigure`` with ``errors="replace"`` keeps the CLI
+    running and degrades unmappable glyphs to '?' instead of crashing.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Already-detached or non-reconfigurable stream: leave it alone.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_stdio()
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         if not config.GATEWAY_SETUP_COMPLETE:

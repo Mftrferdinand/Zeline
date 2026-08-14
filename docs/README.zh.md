@@ -69,6 +69,38 @@ cd Zerolinear
 bash install.sh
 ```
 
+### Windows（PowerShell）
+
+无需管理员权限。打开 **PowerShell**（不是 CMD），然后运行：
+
+```powershell
+irm https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.ps1 | iex
+zeline setup
+```
+
+若想改为从代码检出安装：
+
+```powershell
+git clone https://github.com/Mftrferdinand/Zerolinear.git
+cd Zerolinear
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+如果安装后无法识别 `zeline`，请重启终端（安装脚本会询问是否将 Scripts
+目录加入 PATH），或以模块方式运行：
+
+```powershell
+py -3 -m zeline.cli
+```
+
+两点 Windows 专属说明：
+
+- 如果输入 `python` 打开的是 Microsoft Store，那是占位程序，不是 Python。
+  请从 [python.org](https://www.python.org/downloads/) 安装 Python，并勾选
+  **Add python.exe to PATH**。安装脚本会检测并跳过该占位程序。
+- 请使用 Windows Terminal 或 PowerShell 7，以正确显示方框线条和方向键。
+  旧版 `cmd.exe` 会把横幅渲染成乱码。
+
 你的配置存储在本地 `~/.zeline/config.json`。安装完成后可快速检查一下：
 
 ```bash

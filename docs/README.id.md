@@ -69,6 +69,39 @@ cd Zerolinear
 bash install.sh
 ```
 
+### Windows (PowerShell)
+
+Tidak perlu hak admin. Buka **PowerShell** (bukan CMD), lalu jalankan:
+
+```powershell
+irm https://raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install.ps1 | iex
+zeline setup
+```
+
+Dari checkout sebagai gantinya:
+
+```powershell
+git clone https://github.com/Mftrferdinand/Zerolinear.git
+cd Zerolinear
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Jika `zeline` tidak dikenali setelah instalasi, mulai ulang terminal (installer
+menawarkan untuk menambahkan folder Scripts ke PATH) atau jalankan sebagai
+modul:
+
+```powershell
+py -3 -m zeline.cli
+```
+
+Dua catatan khusus Windows:
+
+- Jika mengetik `python` malah membuka Microsoft Store, itu stub, bukan Python.
+  Instal Python dari [python.org](https://www.python.org/downloads/) dan
+  centang **Add python.exe to PATH**. Installer mendeteksi dan melewati stub itu.
+- Gunakan Windows Terminal atau PowerShell 7 agar garis kotak dan tombol panah
+  tampil benar. `cmd.exe` lama menampilkan banner dengan karakter rusak.
+
 Konfigurasi Anda disimpan secara lokal di `~/.zeline/config.json`. Jalankan pemeriksaan cepat setelah setup:
 
 ```bash

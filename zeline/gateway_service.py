@@ -23,7 +23,11 @@ from pathlib import Path
 from typing import Any
 
 from zeline import config
+from zeline._winproc import CREATION_FLAGS
+from zeline import _winproc
 from zeline.gateways import validate_gateway
+
+IS_WINDOWS = os.name == "nt"
 
 LOG_FILE = config.LOG_DIR / "gateway.log"
 
@@ -65,6 +69,10 @@ def _remove_state() -> None:
 
 
 def _pid_alive(pid: int) -> bool:
+    # CRITICAL on Windows: os.kill(pid, 0) does not probe, it calls
+    # TerminateProcess and KILLS the target. Use the kernel32 handle check.
+    if IS_WINDOWS:
+        return _winproc.pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -116,10 +124,13 @@ def _ps_field(pid: int, fmt: str) -> str | None:
 def _process_start_token(pid: int) -> str | None:
     """Identitas start process yang stabil & lintas-OS.
 
-    Urutan: ``/proc/<pid>/stat`` (Linux/Android) → ``ps -o lstart`` (macOS/BSD).
-    Prefix (``ticks:``/``lstart:``) dipertahankan supaya token dari mesin yang
-    sama selalu konsisten antara ``start`` dan ``stop``.
+    Urutan: kernel32 ``GetProcessTimes`` (Windows) → ``/proc/<pid>/stat``
+    (Linux/Android) → ``ps -o lstart`` (macOS/BSD). Prefix
+    (``wincreate:``/``ticks:``/``lstart:``) dipertahankan supaya token dari mesin
+    yang sama selalu konsisten antara ``start`` dan ``stop``.
     """
+    if IS_WINDOWS:
+        return _winproc.creation_token(pid)
     ticks = _process_start_ticks(pid)
     if ticks is not None:
         return f"ticks:{ticks}"
@@ -136,12 +147,15 @@ def _process_looks_like_zeline(pid: int) -> bool:
     args`` (macOS/BSD). Dipakai sebagai lapis keamanan tambahan sebelum SIGKILL.
     """
     cmdline = ""
-    try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        cmdline = ""
-    if not cmdline:
-        cmdline = _ps_field(pid, "args") or _ps_field(pid, "command") or ""
+    if IS_WINDOWS:
+        cmdline = _winproc.command_line(pid)
+    else:
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            cmdline = ""
+        if not cmdline:
+            cmdline = _ps_field(pid, "args") or _ps_field(pid, "command") or ""
     cmdline = cmdline.replace("\x00", " ").lower()
     return "zeline" in cmdline
 
@@ -215,6 +229,11 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
         # sebagai namespace package tanpa __init__ → ImportError __version__.
         # PYTHONSAFEPATH=1 (Py3.11+) juga mencegah cwd diprepend ke sys.path.
         child_env = {**os.environ, "PYTHONSAFEPATH": "1"}
+        # ``start_new_session`` is POSIX-only; Windows needs creationflags to
+        # get the same detached-group behaviour (and to avoid a console flash).
+        spawn_kwargs: dict[str, Any] = (
+            {"creationflags": CREATION_FLAGS} if IS_WINDOWS else {"start_new_session": True}
+        )
         process = subprocess.Popen(
             _command(only),
             stdin=subprocess.DEVNULL,
@@ -222,8 +241,8 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
             stderr=subprocess.STDOUT,
             cwd=str(config.DATA_DIR),
             env=child_env,
-            start_new_session=True,
             close_fds=True,
+            **spawn_kwargs,
         )
         # Parent no longer needs descriptor; child inherited it.
         log_handle.close()
@@ -275,7 +294,23 @@ def _signal_process(pid: int, sig: int) -> bool:
     process-group leader. Mengirim ke grup (``killpg``) menjangkau thread poller
     dan subprocess yang di-spawn gateway — inilah yang bikin SIGTERM tunggal
     sering gagal di Termux. Fallback ke ``os.kill`` bila pgid tak terbaca.
+
+    Di Windows tidak ada process group POSIX: SIGTERM dipetakan ke CTRL_BREAK
+    (shutdown anggun untuk process group yang di-spawn dengan
+    CREATE_NEW_PROCESS_GROUP) dan SIGKILL ke ``taskkill /T /F`` yang membunuh
+    seluruh pohon child — padanan terdekat dari ``killpg``.
     """
+    if IS_WINDOWS:
+        if sig == signal.SIGTERM:
+            try:
+                os.kill(pid, signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+                return True
+            except (OSError, ValueError, AttributeError):
+                # CTRL_BREAK can fail when the child is not a group leader;
+                # the caller escalates to SIGKILL, so report failure honestly.
+                return False
+        return _winproc.terminate_tree(pid)
+
     try:
         pgid = os.getpgid(pid)
     except (ProcessLookupError, PermissionError, OSError):
@@ -314,7 +349,11 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
         if not _process_matches_state(state):
             _remove_state()
             return True, "Gateway already stopped."
-        return False, f"No permission to stop PID {pid}."
+        # Di Windows CTRL_BREAK bisa ditolak walau process masih hidup (mis.
+        # child bukan group leader). Jangan menyerah: lanjut ke fase SIGKILL
+        # (taskkill /T /F) di bawah, sama seperti jalur POSIX.
+        if not IS_WINDOWS:
+            return False, f"No permission to stop PID {pid}."
 
     # Fase 1: tunggu shutdown anggun setelah SIGTERM.
     grace_deadline = time.monotonic() + max(0.0, grace_seconds)

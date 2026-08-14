@@ -96,7 +96,10 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("no enabled gateway", result.lower())
 
     def test_gateway_picker_moves_with_arrows_and_selects_one_option(self):
-        with mock.patch.object(self.cli.sys.stdin, "isatty", return_value=True), mock.patch.object(self.cli.sys.stdin, "fileno", return_value=0), mock.patch.object(self.cli.termios, "tcgetattr", return_value=[0]), mock.patch.object(self.cli.termios, "tcsetattr"), mock.patch.object(self.cli.tty, "setraw"), mock.patch.object(self.cli, "_read_menu_key", side_effect=["down", "enter"]):
+        # raw_mode()/read_key() now live in zeline._termkey so the CLI works on
+        # Windows (no termios there). isatty must be True to reach the arrow-key
+        # path; raw_mode is stubbed to a no-op.
+        with mock.patch.object(self.cli.sys.stdin, "isatty", return_value=True), mock.patch.object(self.cli, "raw_mode", lambda: contextlib.nullcontext()), mock.patch.object(self.cli, "_read_menu_key", side_effect=["down", "enter"]):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 selected = self.cli._select_gateway()
@@ -171,7 +174,13 @@ class ZelineCliTests(unittest.TestCase):
 
     def test_masked_secret_input_prints_one_star_per_character(self):
         output = io.StringIO()
-        with mock.patch.object(self.cli.sys.stdin, "isatty", return_value=True), mock.patch.object(self.cli.sys.stdin, "fileno", return_value=0), mock.patch.object(self.cli.termios, "tcgetattr", return_value=[0]), mock.patch.object(self.cli.termios, "tcsetattr"), mock.patch.object(self.cli.tty, "setraw"), mock.patch.object(self.cli, "_read_secret_key", side_effect=["a", "b", "\x7f", "c", "\n"]), contextlib.redirect_stdout(output):
+        # Secret reading moved to zeline._termkey.read_secret; patch its raw_mode
+        # and read_key so the test runs identically on POSIX and Windows.
+        termkey = self.cli.read_secret.__module__
+        import importlib
+
+        tk = importlib.import_module(termkey)
+        with mock.patch.object(tk.sys.stdin, "isatty", return_value=True), mock.patch.object(tk, "raw_mode", lambda: contextlib.nullcontext()), mock.patch.object(tk, "read_key", side_effect=["a", "b", "\x7f", "c", "\n"]), contextlib.redirect_stdout(output):
             value = self.cli._masked_secret_input("API key: ")
         self.assertEqual(value, "ac")
         self.assertIn("API key: **\b \b*", output.getvalue())
@@ -219,7 +228,7 @@ class ZelineCliTests(unittest.TestCase):
         # Arrow-menu fallback (non-TTY) pakai nomor. Tanpa provider tersimpan,
         # menu = [1]Add [2]Remove [3]Cancel. Pilih 1 (Add) -> isi provider.
         # Setelah add ada 1 provider: menu = [1]MyProvider [2]Add [3]Remove [4]Cancel -> 4.
-        with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), mock.patch.object(self.cli.getpass, "getpass", return_value="provider-secret"):
+        with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), mock.patch.object(self.cli, "_masked_secret_input", return_value="provider-secret"):
             result = self.invoke(["model"])
         saved = __import__("json").loads((self.home / "config.json").read_text())
         self.assertIn("added", result)
