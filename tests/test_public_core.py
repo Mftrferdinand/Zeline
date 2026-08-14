@@ -271,6 +271,15 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("```html", content)
         self.assertIn("jangan mengarang", content.lower())
 
+    def test_seeded_tmdb_media_maintenance_skill_preserves_existing_player_scope(self):
+        skills = importlib.import_module("zeline.skills")
+        skills.seed_skills()
+        content = skills.load_skill("tmdb-media-web-maintenance")
+        self.assertIn("existing player", content.lower())
+        self.assertIn("do not automatically remove", content.lower())
+        self.assertIn("license", content.lower())
+        self.assertIn("DRM", content)
+
     def test_system_prompt_contains_default_response_formatting_rules(self):
         self.assertIn("**bold**", self.config.SYSTEM_PROMPT)
         self.assertIn("fenced code block", self.config.SYSTEM_PROMPT)
