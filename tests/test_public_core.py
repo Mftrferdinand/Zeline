@@ -77,6 +77,64 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(self.config.NAME, "Zeline")
         self.assertIn("execute", self.config.SYSTEM_PROMPT.lower())
 
+    def test_system_prompt_avoids_blanket_refusals(self):
+        prompt = " ".join(self.config.SYSTEM_PROMPT.casefold().split())
+        self.assertIn(
+            "evaluate the requested action, not just the topic, project label, technology, "
+            "industry, or the presence of a dual-use component",
+            prompt,
+        )
+        self.assertIn(
+            "routine reading, debugging, maintenance, explanation, formatting, and other benign "
+            "work should not be rejected merely because a nearby use could be risky",
+            prompt,
+        )
+        self.assertIn(
+            "do not refuse the entire request when only one specific step is unsafe, unauthorized, "
+            "or impossible",
+            prompt,
+        )
+        self.assertIn(
+            "refuse only that specific part, explain the boundary briefly, and continue with the "
+            "safe and useful parts immediately",
+            prompt,
+        )
+        self.assertIn(
+            "do not invent legal or policy claims, assume wrongdoing without evidence, or replace "
+            "the user's requested product with a different one by default",
+            prompt,
+        )
+        self.assertIn(
+            "when ownership, authorization, consent, or intended scope genuinely changes what can "
+            "be done and cannot be determined from context, ask one concise clarifying question",
+            prompt,
+        )
+
+    def test_system_prompt_retains_action_safeguards(self):
+        prompt = " ".join(self.config.SYSTEM_PROMPT.casefold().split())
+        self.assertIn(
+            "never promise to bypass safeguards or conceal wrongdoing",
+            prompt,
+        )
+        self.assertIn(
+            "offer the nearest lawful, authorized, technically honest path while preserving the "
+            "user's goal",
+            prompt,
+        )
+        self.assertIn(
+            "only manage the operator's own assets/accounts. refuse third-party credentials or "
+            "targets that don't belong to the operator",
+            prompt,
+        )
+        self.assertIn(
+            "confirm with the operator before actions that move funds or are irreversible",
+            prompt,
+        )
+        self.assertIn(
+            "never log, print raw, or send secrets (private key, seed, api key) to outsiders",
+            prompt,
+        )
+
     def test_existing_zeline_config_keeps_agent_name_and_model(self):
         saved = self.config.config_copy()
         saved["name"] = "Lucian"
