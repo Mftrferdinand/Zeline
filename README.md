@@ -25,8 +25,6 @@ Rather than being tied to a single model, provider, or infrastructure, Zeline is
 
 Run it locally for development or deploy it to your own server or cloud, and connect it to the interfaces you use. The goal is to keep control in the developer's hands: your models, your tools, your infrastructure, your data. Open-source, model-agnostic, extensible, and developer-first.
 
-Zeline — a [Zerolinear](https://zerolinear.com) project, led by [Mftrferdinand](https://mftrferdinand.com).
-
 ## Features
 
 - **Agent core** — an OpenAI-compatible agent loop with tool calling, plus an interactive CLI and one-shot queries
