@@ -46,7 +46,7 @@ jobs:
           import tarfile
           import zipfile
 
-          expected_version = "0.2.1"
+          expected_version = "0.2.2"
           wheels = list(Path('.').glob('zeline-*.whl'))
           sdists = list(Path('.').glob('zeline-*.tar.gz'))
           if len(wheels) != 1 or len(sdists) != 1:
