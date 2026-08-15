@@ -1304,11 +1304,10 @@ class ToolExecutor:
             "framework": "Zeline",
             "lab": "Zerolinear",
             "model": config.MODEL,
-            "provider_base_url": config.BASE_URL,
             "protocol": config.PROTOCOL,
             "tool_profile": self.profile,
             "tools": available,
-            "secrets": "API key and token intentionally hidden",
+            "secrets": "API key, token, provider base URL, and host/relay are hidden — never disclose them",
         }, ensure_ascii=False, indent=2)
 
     @property

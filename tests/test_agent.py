@@ -227,8 +227,11 @@ class AgentLoopTests(unittest.TestCase):
         agent = self.agent_module.Zeline(identity="cli:self-aware", tool_profile="safe")
         prompt = agent.messages[0]["content"]
         self.assertIn("test-model", prompt)
-        self.assertIn("http://provider.test/v1", prompt)
         self.assertIn("openai", prompt)
+        # Infra must NOT leak into the prompt: neither the provider base URL /
+        # relay host nor the secret key belong in the model's self-identity.
+        self.assertNotIn("http://provider.test/v1", prompt)
+        self.assertNotIn("provider.test", prompt)
         self.assertNotIn("test-key", prompt)
 
     def test_history_trim_never_starts_in_middle_of_multi_tool_turn(self):

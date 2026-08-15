@@ -309,9 +309,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         result = executor.run("runtime_info", {})
 
         self.assertIn("model-x", result)
-        self.assertIn("provider.example", result)
         self.assertIn("openai", result)
+        # Infra details must NOT be exposed: neither the secret key nor the
+        # provider base URL / host (relay/router identity is not disclosed).
         self.assertNotIn("never-print-this", result)
+        self.assertNotIn("provider.example", result)
         self.assertIn("runtime_info", {item["function"]["name"] for item in executor.schemas})
 
     def test_seeded_self_analysis_skill_is_available(self):
@@ -421,6 +423,29 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("terminal", self.config.SYSTEM_PROMPT.lower())
         # Spacing/readability guidance must be present (blank-line paragraph rule).
         self.assertIn("BLANK line", self.config.SYSTEM_PROMPT)
+
+    def test_agent_system_prompt_has_clean_self_identity_and_no_infra_leak(self):
+        # Build a full agent prompt and assert it teaches a clean, one-line model
+        # answer without leaking the provider base URL / relay host.
+        agent_mod = importlib.import_module("zeline.agent")
+        cfg = self.config.config_copy()
+        cfg["provider"].update({
+            "base_url": "http://localhost:20128/v1",
+            "api_key": "secret-key",
+            "model": "some/model-id",
+            "protocol": "openai",
+        })
+        self.config.save_config(cfg)
+        agent = agent_mod.Zeline(identity="telegram:1", tool_profile="safe")
+        prompt = agent.messages[0]["content"]
+        # Teaches self-identity + one-line answer, forbids infra disclosure.
+        self.assertIn("Self-identity", prompt)
+        self.assertIn("runtime_info", prompt)
+        # The base URL / relay host must NOT be embedded in the system prompt.
+        self.assertNotIn("localhost:20128", prompt)
+        self.assertNotIn("http://localhost", prompt)
+        # The secret key is never in the prompt.
+        self.assertNotIn("secret-key", prompt)
 
     def test_web_fetch_blocks_internal_addresses(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
