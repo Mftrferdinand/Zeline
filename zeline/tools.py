@@ -1174,23 +1174,45 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset({"full"}),
     ),
+    ToolDef(
+        "delegate_task",
+        "Delegate a focused subtask to a sub-agent that runs in its own isolated context and returns only a concise final summary — keeping this conversation's context clean. Use for self-contained work (research a topic, review/refactor a file, debug an error) where you don't need every intermediate step. The sub-agent knows NOTHING about this chat, so put ALL needed info (paths, constraints, error text, desired output language) in 'context'. It inherits the same tools/workspace under the same profile but cannot delegate further.",
+        {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "What the sub-agent should accomplish (specific, self-contained)."},
+                "context": {"type": "string", "description": "All background the sub-agent needs: file paths, error messages, constraints, output language. Optional but recommended."},
+            },
+            "required": ["goal"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
 ]
 
 
 class ToolExecutor:
     """Tool binding for one session/identity and one security profile."""
 
-    def __init__(self, identity: str, profile: str = "safe", workspace: str | Path | None = None):
+    def __init__(self, identity: str, profile: str = "safe", workspace: str | Path | None = None, depth: int = 0):
         if profile not in SAFE_PROFILES:
             raise ValueError(f"unknown tool profile: {profile}")
         self.identity = identity or "cli:local"
         self.profile = profile
         self.workspace = Path(workspace or config.WORKSPACE).expanduser().resolve(strict=False)
+        # Kedalaman agen: 0 = agen utama. Sub-agent yang dibuat delegate_task
+        # menaikkan depth; delegate_task dinonaktifkan saat depth sudah mencapai
+        # batas (mencegah rekursi tak terbatas / cucu-agent).
+        self.depth = int(depth)
         self.memory = memory.MemoryStore(self.identity)
         # Snapshot once per session. Tool schemas must remain stable throughout
         # a model turn for prompt caching and tool-call consistency; config
         # changes apply when a new ToolExecutor/session is created.
-        disabled = set(getattr(config, "DISABLED_TOOLS", ()))
+        disabled: set[str] = set(getattr(config, "DISABLED_TOOLS", ()))
+        # Batas kedalaman sub-agent: kalau sudah di atau melewati batas,
+        # delegate_task tidak boleh muncul di skema anak (leaf agent).
+        max_depth = int(getattr(config, "MAX_SUBAGENT_DEPTH", getattr(config, "DEFAULT_MAX_SUBAGENT_DEPTH", 1)))
+        if self.depth >= max_depth:
+            disabled.add("delegate_task")
         self._disabled_tools = frozenset(disabled)
         self._native_defs = tuple(
             definition
@@ -1231,7 +1253,46 @@ class ToolExecutor:
             "update_skill": skills.update_skill,
             "execute_code": lambda code: _execute_code(code, self.workspace),
             "run_shell": lambda command: _run_shell(command, self.workspace),
+            "delegate_task": lambda goal, context="": self._delegate_task(goal, context),
         }
+
+    def _delegate_task(self, goal: str, context: str = "") -> str:
+        """Jalankan subtask di sub-agent terisolasi; kembalikan ringkasan akhir.
+
+        Sub-agent punya ToolExecutor & sesi Zeline sendiri (history kosong,
+        depth+1) dengan profil/workspace yang sama, tapi TIDAK bisa memanggil
+        delegate_task lagi (dibatasi MAX_SUBAGENT_DEPTH). Hanya jawaban final
+        yang balik ke agen induk — langkah antara tidak mengotori konteks induk.
+        """
+        goal = (goal or "").strip()
+        if not goal:
+            return "ERROR: delegate_task needs a non-empty goal."
+        # Import di dalam fungsi untuk menghindari circular import (agent → tools).
+        from zeline.agent import Zeline, ZelineError as _ZErr
+
+        brief = goal if not context.strip() else f"{goal}\n\n---\nContext you must use (you have no other memory of the parent conversation):\n{context.strip()}"
+        sub_extra = (
+            "\n\nYou are a SUB-AGENT spawned to complete ONE focused task and report back. "
+            "You have no memory of the parent conversation beyond the brief you were given. "
+            "Do the work with your tools, then reply with a concise, self-contained final "
+            "summary of what you found or did (include concrete results, file paths, or key "
+            "findings the caller needs). Do not ask the caller questions — decide and act."
+        )
+        try:
+            sub = Zeline(
+                identity=f"{self.identity}::sub",
+                tool_profile=self.profile,
+                workspace=str(self.workspace),
+                system_extra=sub_extra,
+                depth=self.depth + 1,
+            )
+            summary = sub.send(brief)
+        except _ZErr as exc:
+            return f"ERROR: sub-agent failed: {exc}"
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"ERROR: sub-agent crashed ({exc.__class__.__name__}): {exc}"
+        summary = (summary or "").strip()
+        return f"[sub-agent result]\n{summary}" if summary else "[sub-agent returned no output]"
 
     def _enabled_native_defs(self) -> tuple[ToolDef, ...]:
         return self._native_defs

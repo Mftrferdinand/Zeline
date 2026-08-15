@@ -82,6 +82,40 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(second_payload["messages"][-1]["tool_call_id"], "call-memory-1")
         self.assertIn("User suka teh", agent.executor.memory.formatted())
 
+    def test_delegate_task_spawns_isolated_subagent_and_returns_summary(self):
+        # Agen utama memanggil delegate_task → sub-agent jalan di konteks
+        # terpisah; hanya ringkasan akhirnya masuk sebagai tool result induk.
+        parent_first = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "call-deleg-1", "type": "function",
+                    "function": {"name": "delegate_task", "arguments": '{"goal":"cari fakta X","context":"pakai ini"}'},
+                }],
+            }}],
+        }
+        parent_second = {"choices": [{"message": {"role": "assistant", "content": "Beres berdasarkan sub-agent."}}]}
+        sub_final = {"choices": [{"message": {"role": "assistant", "content": "Fakta X = 42."}}]}
+        agent = self.agent_module.Zeline(identity="cli:deleg", tool_profile="full")
+        # Urutan requests.post: parent#1 → sub#1 → parent#2.
+        with mock.patch.object(
+            self.agent_module.requests, "post",
+            side_effect=[FakeResponse(parent_first), FakeResponse(sub_final), FakeResponse(parent_second)],
+        ):
+            reply = agent.send("delegasikan tugas ini")
+        self.assertEqual(reply, "Beres berdasarkan sub-agent.")
+        tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
+        self.assertTrue(tool_msgs)
+        self.assertIn("Fakta X = 42.", tool_msgs[-1]["content"])
+        self.assertIn("sub-agent result", tool_msgs[-1]["content"])
+
+    def test_subagent_cannot_delegate_further(self):
+        tools = importlib.import_module("zeline.tools")
+        leaf = tools.ToolExecutor("cli:leaf", profile="full", depth=1)
+        self.assertNotIn("delegate_task", {d.name for d in leaf._enabled_native_defs()})
+        root = tools.ToolExecutor("cli:root", profile="full", depth=0)
+        self.assertIn("delegate_task", {d.name for d in root._enabled_native_defs()})
+
     def test_agent_reports_real_iteration_and_tool_result_events(self):
         first = {
             "choices": [{"message": {

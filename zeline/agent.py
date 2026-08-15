@@ -73,16 +73,19 @@ class Zeline:
         tool_profile: str | None = None,
         workspace: str | None = None,
         system_extra: str = "",
+        depth: int = 0,
     ):
         self.identity = identity or "cli:local"
         self.base_url = config.BASE_URL
         self.api_key = config.API_KEY
         self.model = config.MODEL
         self.protocol = config.PROTOCOL
+        self.depth = int(depth)
         self.executor = ToolExecutor(
             identity=self.identity,
             profile=tool_profile or config.CLI_TOOL_PROFILE,
             workspace=workspace or config.WORKSPACE,
+            depth=self.depth,
         )
         self._system_extra = system_extra
         self.messages: list[dict[str, Any]] = [
