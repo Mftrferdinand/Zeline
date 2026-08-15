@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/DOCS-ZELINE.ZEROLINEAR.COM-7DD3FC?style=for-the-badge&labelColor=334155"></a>
-  <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/TELEGRAM-0A84FF?style=for-the-badge&labelColor=334155&logo=telegram&logoColor=white"></a>
-  <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/BUILT%20BY-ZEROLINEAR.COM-1D4ED8?style=for-the-badge&labelColor=334155"></a>
+  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-7DD3FC?style=flat&labelColor=334155"></a>
+  <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Telegram-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
+  <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/Built%20by-zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
   <br>
-  <a href="../LICENSE"><img src="https://img.shields.io/badge/LICENSE-MIT-7DD3FC?style=for-the-badge&labelColor=334155"></a>
-  <a href="../README.md"><img src="https://img.shields.io/badge/LANG-EN-0A84FF?style=for-the-badge&labelColor=334155"></a>
-  <a href="README.id.md"><img src="https://img.shields.io/badge/LANG-ID-1D4ED8?style=for-the-badge&labelColor=334155"></a>
-  <a href="README.zh.md"><img src="https://img.shields.io/badge/LANG-中文-1E3A8A?style=for-the-badge&labelColor=334155"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-7DD3FC?style=flat&labelColor=334155"></a>
+  <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
+  <a href="README.id.md"><img src="https://img.shields.io/badge/Lang-ID-1D4ED8?style=flat&labelColor=334155"></a>
+  <a href="README.zh.md"><img src="https://img.shields.io/badge/Lang-中文-1E3A8A?style=flat&labelColor=334155"></a>
 </p>
 
 ---
