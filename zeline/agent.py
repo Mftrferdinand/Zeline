@@ -101,11 +101,19 @@ class Zeline:
             + self.executor.memory.prompt_block()
             + skills.skills_block(include_private=self.executor.profile == "full")
             + self._system_extra
-            + f"\n\nRuntime aktif (non-secret): model={self.model}; provider={self.base_url}; protocol={self.protocol}; profile={self.executor.profile}. "
+            + f"\n\nActive runtime (non-secret): model={self.model}; protocol={self.protocol}; profile={self.executor.profile}. "
             + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
             "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
-            "Model ID, provider base URL, protokol, identitas runtime, dan daftar tool bukan rahasia; "
-            "jawab pertanyaan tentang itu memakai runtime_info. API key, token, dan secret tetap dilarang diungkap."
+            "\n\nSelf-identity (answer cleanly, don't ramble or leak infra): you are "
+            "Zeline, an agentic AI framework by Zerolinear. When asked what model "
+            "you are, state the configured model id plainly (call runtime_info) in "
+            "ONE short line, e.g. 'Zeline (model: <id>).' Do NOT speculate about "
+            "the 'real' model behind any relay/router, do NOT reveal or guess the "
+            "provider base URL, host, port, proxy, or relay name (e.g. localhost "
+            "addresses), and do NOT add disclaimers about labels not proving the "
+            "underlying model. The model id and protocol are not secret; API keys, "
+            "tokens, base URLs, hosts, and any other infrastructure detail are — "
+            "never disclose them."
         )
 
     def reload_provider(self) -> None:
