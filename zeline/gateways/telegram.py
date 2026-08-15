@@ -1243,14 +1243,36 @@ def _normalize_markdown(text: str) -> str:
         lines.append(line)
     working = "\n".join(lines)
 
-    # 2) Rapatkan >=3 newline menjadi maksimal satu baris kosong.
+    # 2) Rapatkan >=3 newline menjadi maksimal satu baris kosong. Ini MENJAGA
+    #    pemisah paragraf (\n\n) apa adanya — hanya membuang kelebihan baris
+    #    kosong. Blank line antar paragraf dari model TIDAK pernah di-collapse
+    #    jadi satu \n atau spasi (spacing = keterbacaan).
     working = re.sub(r"\n{3,}", "\n\n", working)
 
-    # 3) Beri satu baris kosong sebelum heading agar mudah dipindai.
-    working = re.sub(r"(?<=\S)\n(#{1,6}\s)", r"\n\n\1", working)
+    # 3) Beri satu baris kosong SEBELUM & SESUDAH heading agar mudah dipindai.
+    working = re.sub(r"(?<=\S)\n(#{1,6}\s)", r"\n\n\1", working)          # sebelum
+    working = re.sub(r"(?m)^(#{1,6}\s.+)\n(?=\S)", r"\1\n\n", working)     # sesudah
 
-    # 4) Buang spasi ganda di dalam prose (bukan di awal baris/indent).
+    # 4) Beri satu baris kosong saat prose langsung menempel ke awal list (biar
+    #    list tidak "nabrak" kalimat pengantar di atasnya) — TAPI jangan pisahkan
+    #    antar item list. Aturannya: baris NON-list diikuti baris list → blank.
+    working = re.sub(
+        r"(?m)^(?P<prev>(?![ \t]*(?:- |\d+\. )).*\S)\n(?=[ \t]*(?:- |\d+\. )\S)",
+        r"\g<prev>\n\n",
+        working,
+    )
+    # Blank line setelah blok list berakhir: baris list diikuti prose non-list.
+    working = re.sub(
+        r"(?m)^(?P<item>[ \t]*(?:- |\d+\. ).+)\n(?=(?![ \t]*(?:- |\d+\. ))[^\s#`])",
+        r"\g<item>\n\n",
+        working,
+    )
+
+    # 5) Buang spasi ganda di dalam prose (bukan di awal baris/indent).
     working = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", working)
+
+    # 6) Rapikan lagi kalau langkah 3-4 memunculkan >2 newline beruntun.
+    working = re.sub(r"\n{3,}", "\n\n", working)
 
     # 5) Kembalikan blok kode.
     for index, block in enumerate(protected):
