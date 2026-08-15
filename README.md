@@ -15,13 +15,6 @@
   <a href="docs/README.zh.md"><img src="https://img.shields.io/badge/LANG-中文-1E3A8A?style=for-the-badge&labelColor=334155"></a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/Mftrferdinand/Zerolinear/stargazers"><img src="https://img.shields.io/github/stars/Mftrferdinand/Zerolinear?style=for-the-badge&labelColor=334155&color=7DD3FC"></a>
-  <a href="https://github.com/Mftrferdinand/Zerolinear/network/members"><img src="https://img.shields.io/github/forks/Mftrferdinand/Zerolinear?style=for-the-badge&labelColor=334155&color=7DD3FC"></a>
-  <a href="https://github.com/Mftrferdinand/Zerolinear/releases"><img src="https://img.shields.io/github/v/release/Mftrferdinand/Zerolinear?style=for-the-badge&labelColor=334155&color=0A84FF"></a>
-  <img src="https://img.shields.io/github/languages/top/Mftrferdinand/Zerolinear?style=for-the-badge&labelColor=334155&color=1D4ED8">
-</p>
-
 ---
 
 # Zeline
