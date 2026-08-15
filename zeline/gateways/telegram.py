@@ -1687,7 +1687,7 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     )
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
               timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
@@ -1765,14 +1765,25 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
+    # Bubble PERTAMA di-reply ke pesan user (reply_to_message_id) supaya jelas
+    # balasan ini untuk pertanyaan yang mana — penting saat user mengirim
+    # beberapa pertanyaan dalam bubble terpisah. Part berikutnya tanpa reply
+    # (biar rantai jawaban tidak menumpuk quote berulang).
+    first_part = True
     for part in _split_message(reply):
+        extra: dict[str, Any] = {}
+        if first_part and reply_to_message_id:
+            extra["reply_to_message_id"] = reply_to_message_id
+            extra["allow_sending_without_reply"] = True
         _api_call(
             api,
             "sendMessage",
             chat_id=chat_id,
             text=_markdown_to_telegram_html(part),
             parse_mode="HTML",
+            **extra,
         )
+        first_part = False
 
     # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
     # background agar tidak menahan balasan. reflect() sendiri menjaga ambang
@@ -1794,7 +1805,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
-def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str) -> threading.Thread:
+def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> threading.Thread:
     """Jalankan turn di worker agar polling tetap menerima /stop dan /steer.
 
     Kirim 'typing…' SEKETIKA (sinkron, dari loop polling) sebelum worker dimulai.
@@ -1802,6 +1813,9 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     di-load, jadi ada jeda terlihat 'diam' sebelum 'sedang mengetik' muncul.
     Satu round-trip sendChatAction sangat cepat (~ratusan ms) dan langsung
     memberi feedback bahwa bot menerima pesan.
+
+    ``reply_to_message_id`` dipakai agar bubble jawaban final nempel (quote) ke
+    pesan user — jelas balasan untuk pertanyaan yang mana saat ada beberapa.
     """
     try:
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
@@ -1816,6 +1830,7 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
             "identity": identity,
             "text": text,
             "tool_profile": tool_profile,
+            "reply_to_message_id": reply_to_message_id,
         },
         name=f"zeline-telegram-{chat_id}",
         daemon=True,
@@ -1862,6 +1877,7 @@ def _dispatch_update(
 
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
+    incoming_message_id = int(message.get("message_id") or 0) or None
     text = str(message.get("text") or "").strip()
     caption = str(message.get("caption") or "").strip()
     document = message.get("document") or {}
@@ -1889,7 +1905,7 @@ def _dispatch_update(
                 command_reply = _handle_command(text, sessions, identity, stop_event=stop_event)
                 _api_call(api, "sendMessage", chat_id=chat_id_int, text=command_reply or "Unknown command. Use /start.")
         else:
-            _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile)
+            _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif document:
         filename = _document_filename(document)
         file_content, error = _download_document(api, token, document)
@@ -1901,7 +1917,7 @@ def _dispatch_update(
             _api_call(api, "sendMessage", chat_id=chat_id_int, text=error)
             return
         prompt = _build_document_prompt(filename, file_text or "", caption)
-        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif photos:
         # Ambil resolusi terbesar (elemen terakhir) untuk kualitas vision.
         largest = photos[-1] if isinstance(photos, list) else {}
@@ -1910,23 +1926,23 @@ def _dispatch_update(
             _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the image.")
             return
         prompt = _build_image_prompt(dest, caption)
-        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif voice:
         dest, error = _download_media_file(api, token, str(voice.get("file_id") or ""), ".ogg")
         if error or dest is None:
             _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the audio.")
             return
         prompt = _build_media_notice_prompt("audio", dest, caption)
-        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif video:
         dest, error = _download_media_file(api, token, str(video.get("file_id") or ""), ".mp4")
         if error or dest is None:
             _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the video.")
             return
         prompt = _build_media_notice_prompt("video", dest, caption)
-        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif caption:
-        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=caption, tool_profile=tool_profile)
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=caption, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     else:
         _api_call(
             api,
