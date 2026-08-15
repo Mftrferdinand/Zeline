@@ -1,7 +1,5 @@
 <p align="center">
   <img src="assets/zerolinear-logo.png" alt="Zerolinear" width="760">
-  <br>
-  <strong>— by Zerolinear, an AI research lab.</strong>
 </p>
 
 <p align="center">
@@ -11,6 +9,8 @@
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
   <a href="docs/README.id.md"><img src="https://img.shields.io/badge/Lang-ID-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="docs/README.zh.md"><img src="https://img.shields.io/badge/Lang-中文-1E3A8A?style=flat&labelColor=334155"></a>
+  <br>
+  <strong>— by Zerolinear, an AI research lab.</strong>
 </p>
 
 ---
