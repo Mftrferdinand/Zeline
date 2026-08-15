@@ -1,6 +1,6 @@
 # Zeline installer for Windows PowerShell.
 #
-# Download this v0.2.0 release asset and SHA256SUMS, verify with Get-FileHash,
+# Download this v0.2.1 release asset and SHA256SUMS, verify with Get-FileHash,
 # then run (PowerShell, no admin needed):
 #   .\install.ps1
 #
@@ -31,8 +31,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Version     = '0.2.0'
-$ReleaseRef  = 'v0.2.0'
+$Version     = '0.2.1'
+$ReleaseRef  = 'v0.2.1'
 $ReleaseBase = "https://github.com/Mftrferdinand/Zerolinear/releases/download/$ReleaseRef"
 $WheelName   = "zeline-$Version-py3-none-any.whl"
 
@@ -147,6 +147,9 @@ function Get-VerifiedReleaseWheel {
         }
     }
     if (-not $expected) { throw "SHA256SUMS has no entry for $WheelName" }
+    if ($expected -notmatch '^[0-9a-f]{64}$') {
+        throw "SHA256SUMS expected digest is not 64 hexadecimal characters for $WheelName"
+    }
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $wheel).Hash.ToLowerInvariant()
     if ($actual -ne $expected) { throw "SHA-256 verification failed for $WheelName" }
     Write-Detail "Verified : $WheelName (SHA-256)"

@@ -4,14 +4,15 @@ Zeline is the open-source agentic AI framework by Zerolinear.
 
 ### Highlights
 
-- Cross-platform CLI and messaging gateways.
-- Secure owner-aware tool profiles.
-- Verified installers and immutable release artifacts.
-- Bundled skills aligned with supported Zeline capabilities.
+- Request-scoped safety: Zeline evaluates the requested action instead of rejecting an entire task by topic, and continues with safe, useful work when only one step is restricted.
+- Safe migration away from an obsolete narrow media skill without overwriting user-customized skills.
+- Cross-platform CLI, messaging gateways, and secure owner-aware tool profiles.
+- Versioned, checksum-verified installers for Termux, Linux, macOS, iSH, and Windows PowerShell.
+- Immutable release artifacts with build provenance.
 
 ### Installation
 
-See the [installation guide](https://github.com/Mftrferdinand/Zerolinear/blob/main/docs/installation.md) for checksum-verified commands on every supported platform.
+See the [installation guide](https://github.com/Mftrferdinand/Zerolinear/blob/v0.2.1/docs/installation.md) for checksum-verified commands on every supported platform.
 
 ### Assets
 
