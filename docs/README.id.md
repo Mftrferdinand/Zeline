@@ -24,8 +24,6 @@ Alih-alih terikat pada satu model, penyedia, atau infrastruktur tertentu, Zeline
 
 Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda sendiri, lalu hubungkan ke antarmuka yang Anda gunakan. Tujuannya adalah menjaga kendali tetap di tangan developer: model Anda, tools Anda, infrastruktur Anda, data Anda. Open-source, model-agnostic, dapat diperluas, dan mengutamakan developer.
 
-Zeline — sebuah proyek [Zerolinear](https://zerolinear.com), dipimpin oleh [Mftrferdinand](https://mftrferdinand.com).
-
 ## Fitur
 
 - **Inti agen** — loop agen yang kompatibel dengan OpenAI beserta pemanggilan tool, ditambah CLI interaktif dan kueri sekali jalan
