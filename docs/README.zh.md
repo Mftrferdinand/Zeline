@@ -7,7 +7,6 @@
 <p align="center">
   <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Telegram-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
-  <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/Built%20by-zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
   <br>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
