@@ -7,7 +7,6 @@
 <p align="center">
   <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Telegram-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
-  <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/Built%20by-zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
   <br>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
@@ -24,8 +23,6 @@ Zeline is an open-source agentic AI framework developed by [Zerolinear](https://
 Rather than being tied to a single model, provider, or infrastructure, Zeline is built around flexibility. Connect your preferred AI models and OpenAI-compatible endpoints, configure providers, integrate tools, and extend the framework to fit how you want your agents to work — models and providers can be swapped without rebuilding the system, keeping the agent architecture portable and adaptable.
 
 Run it locally for development or deploy it to your own server or cloud, and connect it to the interfaces you use. The goal is to keep control in the developer's hands: your models, your tools, your infrastructure, your data. Open-source, model-agnostic, extensible, and developer-first.
-
-Zeline — a [Zerolinear](https://zerolinear.com) project, led by [Mftrferdinand](https://mftrferdinand.com).
 
 ## Features
 

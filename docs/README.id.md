@@ -7,7 +7,6 @@
 <p align="center">
   <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Telegram-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
-  <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/Built%20by-zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
   <br>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
@@ -24,8 +23,6 @@ Zeline adalah framework AI agentik open-source yang dikembangkan oleh [Zerolinea
 Alih-alih terikat pada satu model, penyedia, atau infrastruktur tertentu, Zeline dibangun dengan mengutamakan fleksibilitas. Hubungkan model AI pilihan Anda dan endpoint yang kompatibel dengan OpenAI, konfigurasikan penyedia, integrasikan tools, dan kembangkan framework agar sesuai dengan cara kerja agen yang Anda inginkan — model dan penyedia dapat ditukar tanpa perlu membangun ulang sistem, sehingga arsitektur agen tetap portabel dan mudah beradaptasi.
 
 Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda sendiri, lalu hubungkan ke antarmuka yang Anda gunakan. Tujuannya adalah menjaga kendali tetap di tangan developer: model Anda, tools Anda, infrastruktur Anda, data Anda. Open-source, model-agnostic, dapat diperluas, dan mengutamakan developer.
-
-Zeline — sebuah proyek [Zerolinear](https://zerolinear.com), dipimpin oleh [Mftrferdinand](https://mftrferdinand.com).
 
 ## Fitur
 

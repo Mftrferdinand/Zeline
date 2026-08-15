@@ -7,7 +7,6 @@
 <p align="center">
   <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Telegram-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
-  <a href="https://zerolinear.com"><img src="https://img.shields.io/badge/Built%20by-zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
   <br>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-7DD3FC?style=flat&labelColor=334155"></a>
   <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
@@ -24,8 +23,6 @@ Zeline 是由 [Zerolinear](https://zerolinear.com) 开发的开源智能体 AI �
 Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕灵活性构建。你可以接入自己偏好的 AI 模型和 OpenAI 兼容端点、配置提供商、集成工具，并对框架进行扩展，以契合你希望智能体的工作方式——模型和提供商可以随时替换，无需重建整个系统，从而使智能体架构保持可移植和可适配。
 
 你可以在本地运行它进行开发，或将其部署到自己的服务器或云端，并将其连接到你所使用的界面。我们的目标是让掌控权始终留在开发者手中：你的模型、你的工具、你的基础设施、你的数据。开源、模型无关、可扩展，以开发者为先。
-
-Zeline —— 一个 [Zerolinear](https://zerolinear.com) 项目，由 [Mftrferdinand](https://mftrferdinand.com) 主导。
 
 ## 特性
 
