@@ -417,8 +417,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_system_prompt_contains_default_response_formatting_rules(self):
         self.assertIn("**bold**", self.config.SYSTEM_PROMPT)
-        self.assertIn("fenced code block", self.config.SYSTEM_PROMPT)
+        self.assertIn("fenced block", self.config.SYSTEM_PROMPT)
         self.assertIn("terminal", self.config.SYSTEM_PROMPT.lower())
+        # Spacing/readability guidance must be present (blank-line paragraph rule).
+        self.assertIn("BLANK line", self.config.SYSTEM_PROMPT)
 
     def test_web_fetch_blocks_internal_addresses(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
@@ -1002,6 +1004,33 @@ class ZelinePublicCoreTests(unittest.TestCase):
         cleaned = telegram._normalize_markdown(source)
         # Spasi di dalam blok kode tidak boleh diutak-atik.
         self.assertIn("    x  =  1", cleaned)
+
+    def test_telegram_preserves_paragraph_blank_lines(self):
+        # Regresi: pemisah paragraf (\n\n) dari model HARUS bertahan — jangan
+        # pernah di-collapse jadi satu newline atau spasi sebelum kirim.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = "Paragraf pertama yang cukup panjang.\n\nParagraf kedua yang terpisah."
+        cleaned = telegram._normalize_markdown(source)
+        self.assertIn("\n\n", cleaned)
+        self.assertIn("pertama yang cukup panjang.\n\nParagraf kedua", cleaned)
+
+    def test_telegram_inserts_blank_line_between_prose_and_list(self):
+        # Kalimat pengantar yang menempel ke list dapat blank line supaya rapi,
+        # TAPI antar item list tidak dipisah.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = "Yang aku butuh:\n- item satu\n- item dua\nLalu lanjut kalimat berikutnya."
+        cleaned = telegram._normalize_markdown(source)
+        self.assertIn("Yang aku butuh:\n\n- item satu", cleaned)
+        # Antar item list tetap rapat (satu newline).
+        self.assertIn("- item satu\n- item dua", cleaned)
+        # Setelah list berakhir, prose berikutnya dipisah blank line.
+        self.assertIn("- item dua\n\nLalu lanjut", cleaned)
+
+    def test_telegram_blank_line_after_heading(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = "## Ringkasan\nIsi langsung menempel di bawah heading."
+        cleaned = telegram._normalize_markdown(source)
+        self.assertIn("## Ringkasan\n\nIsi langsung", cleaned)
 
     def test_telegram_agent_reply_uses_html_parse_mode(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
