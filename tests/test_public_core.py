@@ -864,6 +864,47 @@ class ZelinePublicCoreTests(unittest.TestCase):
             )
         self.assertEqual(started, ["halo"])
 
+    def test_dispatch_update_passes_reply_to_message_id(self):
+        # Balasan final harus nempel (quote) ke pesan user supaya jelas menjawab
+        # pertanyaan yang mana ketika user kirim beberapa bubble terpisah.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        captured = {}
+
+        class Sessions:
+            pass
+
+        with mock.patch.object(telegram, "_api_call", return_value={"result": {"message_id": 1}}), \
+             mock.patch.object(telegram, "_start_agent_reply", side_effect=lambda *a, **k: captured.update(k)):
+            update = {"update_id": 6, "message": {"message_id": 4242, "chat": {"id": 111222333}, "text": "pertanyaan kedua"}}
+            telegram._dispatch_update(
+                "bot-api", "token", Sessions(), update,
+                allowed=[111222333], tool_profile="full", stop_event=threading.Event(),
+            )
+        self.assertEqual(captured.get("reply_to_message_id"), 4242)
+
+    def test_send_agent_reply_quotes_user_message(self):
+        # Bubble jawaban pertama dikirim dengan reply_to_message_id; part lanjutan
+        # tidak, dan allow_sending_without_reply=True agar aman bila pesan dihapus.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        class Sessions:
+            def send(self, **_kwargs):
+                return "Jawaban singkat."
+
+        sent = []
+        with mock.patch.object(
+            telegram, "_api_call",
+            side_effect=lambda a, m, **k: sent.append((m, k)) or {"result": {"message_id": len(sent)}},
+        ):
+            telegram._send_agent_reply(
+                "bot-api", Sessions(), chat_id=1, identity="telegram:1",
+                text="hi", tool_profile="safe", reply_to_message_id=777,
+            )
+        msgs = [k for m, k in sent if m == "sendMessage" and k.get("text")]
+        self.assertTrue(msgs, "expected at least one sendMessage")
+        self.assertEqual(msgs[0].get("reply_to_message_id"), 777)
+        self.assertTrue(msgs[0].get("allow_sending_without_reply"))
+
     def test_dispatch_update_denies_unlisted_chat(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         sent = []
