@@ -31,7 +31,7 @@ Run it locally for development or deploy it to your own server or cloud, and con
 - **Session persistence** — conversation history stored in SQLite (`~/.zeline/sessions.db`), so it survives gateway restarts
 - **Skills** — reusable Markdown procedures loaded on demand
 - **Messaging gateways** — Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook
-- **Built-in tools** — web search, web fetch, deep research, HTTP requests, file read/write/edit/search, code execution, and shell
+- **Built-in tools** — web search, web fetch, deep research, HTTP requests, file read/write/edit/search, image analysis, text-to-image generation, code execution, and shell
 - **MCP client** — connect external MCP servers (stdio or HTTP) and expose their tools automatically
 - **Scoped tool profiles** — gate access per surface:
   - `safe` — memory and public skills only; default for messaging gateways

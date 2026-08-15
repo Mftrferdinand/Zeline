@@ -347,7 +347,7 @@ class ZelineCliTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.cli._configure_provider(provider)
-        self.assertEqual(provider, {"base_url": "https://api.example/v1", "api_key": "secret", "model": "claude-b", "name": "Token Harbor", "protocol": "anthropic", "model_verified": True})
+        self.assertEqual(provider, {"base_url": "https://api.example/v1", "api_key": "secret", "model": "claude-b", "image_model": "", "name": "Token Harbor", "protocol": "anthropic", "model_verified": True})
         self.assertIn("Anthropic", output.getvalue())
         self.assertNotIn("secret", output.getvalue())
 
@@ -369,6 +369,7 @@ class ZelineCliTests(unittest.TestCase):
             "base_url": "https://api.example/v1",
             "api_key": "provider-secret",
             "model": "research-model",
+            "image_model": "",
             "name": "My Provider",
         })
         self.assertEqual(saved["providers"]["my-provider"], saved["provider"])

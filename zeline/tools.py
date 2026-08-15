@@ -388,6 +388,110 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
     return answer or "(model returned no description)"
 
 
+# Batas ukuran gambar hasil generate yang ditulis ke workspace (10 MB).
+GENERATED_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_IMAGE_SIZE_ALLOWED = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1792x1024", "1024x1792", "auto"}
+
+
+def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1024") -> str:
+    """Generate an image from a text prompt via the provider's images API.
+
+    Uses the OpenAI-compatible ``/images/generations`` endpoint against the
+    active provider (works with OpenAI, or any router/proxy that forwards it).
+    Requires the owner to have set a text-to-image model (``image_model`` in
+    config, or ``ZELINE_IMAGE_MODEL``). The result is decoded and written into
+    the workspace so it can be sent back or reused by other tools.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return "ERROR: need a text prompt describing the image to generate."
+    image_model = getattr(config, "IMAGE_MODEL", "") or ""
+    if not config.API_KEY or not config.BASE_URL:
+        return "ERROR: provider is not configured for image generation."
+    if not image_model:
+        return (
+            "ERROR: no text-to-image model is configured. The owner can set one with "
+            "`zeline setup` (image model) or the ZELINE_IMAGE_MODEL environment variable, "
+            "e.g. gpt-image-1 or dall-e-3."
+        )
+    size = (size or "1024x1024").strip() or "1024x1024"
+    if size not in _IMAGE_SIZE_ALLOWED:
+        return f"ERROR: unsupported size '{size}'. Allowed: {', '.join(sorted(_IMAGE_SIZE_ALLOWED))}."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() not in _VISION_IMAGE_EXT:
+        return "ERROR: output path must end in .png/.jpg/.jpeg/.webp/.gif."
+    payload = {"model": image_model, "prompt": prompt, "size": size, "n": 1}
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/images/generations",
+            headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=180,
+        )
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout):
+        return (
+            f"ERROR: the image model '{image_model}' did not respond within 180s (timed out). "
+            "The model/route is likely overloaded — try again or switch the image model."
+        )
+    except requests.exceptions.ConnectionError:
+        return f"ERROR: could not connect to the image provider at {config.BASE_URL}. Check the router/proxy is running."
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the image provider ({exc.__class__.__name__}). Try again."
+    if not response.ok:
+        hint = ""
+        if response.status_code in (401, 403):
+            hint = " — the API key is invalid or unauthorized."
+        elif response.status_code == 404:
+            hint = f" — the model '{image_model}' or the images endpoint was not found on this provider."
+        elif response.status_code == 429:
+            hint = " — rate limited or out of credits on the provider."
+        elif response.status_code >= 500:
+            hint = " — the provider is having a server-side problem; try again shortly."
+        return f"ERROR: image provider HTTP {response.status_code}{hint}"
+    try:
+        item = response.json()["data"][0]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "ERROR: image provider returned an unexpected response."
+    # Providers return either inline base64 (b64_json) or a temporary URL.
+    raw: bytes
+    b64 = item.get("b64_json") if isinstance(item, dict) else None
+    if b64:
+        try:
+            raw = base64.b64decode(b64)
+        except (ValueError, TypeError):
+            return "ERROR: image provider returned invalid base64 data."
+    else:
+        img_url = item.get("url") if isinstance(item, dict) else None
+        if not img_url:
+            return "ERROR: image provider returned neither image data nor a URL."
+        try:
+            with requests.get(img_url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True) as img_resp:
+                if not img_resp.ok:
+                    return f"ERROR: could not download generated image (HTTP {img_resp.status_code})."
+                chunks = []
+                total = 0
+                for chunk in img_resp.iter_content(65536):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > GENERATED_IMAGE_MAX_BYTES:
+                        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+                raw = b"".join(chunks)
+        except requests.RequestException as exc:
+            return f"ERROR downloading generated image: {exc.__class__.__name__}: {exc}"
+    if len(raw) > GENERATED_IMAGE_MAX_BYTES:
+        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+    except OSError as exc:
+        return f"ERROR writing image: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, generated image saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
+
+
 def _system_env() -> str:
     """Ringkasan lingkungan sistem: OS/arch, tool/runtime terpasang, port lokal aktif.
 
@@ -941,6 +1045,20 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "generate_image",
+        "Generate an image from a text prompt (text-to-image) and save it into the workspace as a PNG/JPG/WEBP. Use when the user asks to create/draw/render a picture, illustration, logo, or artwork. Requires the owner to have configured an image model. Returns the saved file path.",
+        {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed description of the image to create"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .png/.jpg/.webp"},
+                "size": {"type": "string", "description": "Image size like 1024x1024, 1536x1024, or 1024x1536. Optional (default 1024x1024)."},
+            },
+            "required": ["prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "http_request",
         "Call a REST API/webhook with any method (GET/POST/PUT/PATCH/DELETE), headers, and a JSON body. Unlike web_fetch which only reads GET pages. Internal network addresses are blocked automatically.",
         {
@@ -1099,6 +1217,7 @@ class ToolExecutor:
             "web_fetch": lambda url: _web_fetch(url),
             "deep_research": lambda query: _deep_research(query),
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
+            "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
             "read_file": lambda path: _read_file(path, self.workspace),

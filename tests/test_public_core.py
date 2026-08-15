@@ -513,7 +513,6 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("video", executor.run("analyze_media", {"path_or_url": "clip.mp4"}).lower())
 
     def test_download_file_is_workspace_gated_and_ssrf_protected(self):
-        # safe profile TIDAK boleh punya download_file (nulis ke disk)
         safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         self.assertNotIn("download_file", {item["function"]["name"] for item in safe.schemas})
         # workspace profile punya, tapi SSRF + path escape diblokir
@@ -523,6 +522,31 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("blocked", executor.run("download_file", {"url": "http://169.254.169.254/x", "path": "meta.txt"}))
         self.assertIn("workspace", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
         self.assertFalse((self.home / "escape.txt").exists())
+
+    def test_generate_image_is_owner_gated_and_validates_input(self):
+        # safe profile (gateway publik) TIDAK boleh punya generate_image.
+        safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
+        self.assertNotIn("generate_image", {item["function"]["name"] for item in safe.schemas})
+        # workspace/full punya tool-nya.
+        ws = self.home / "img-ws"
+        ws.mkdir(parents=True, exist_ok=True)
+        executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=ws)
+        self.assertIn("generate_image", {item["function"]["name"] for item in executor.schemas})
+        # Tanpa image_model dikonfigurasi → error ramah, bukan crash.
+        self.config.IMAGE_MODEL = ""
+        self.config.API_KEY = "x"
+        self.config.BASE_URL = "https://api.openai.com/v1"
+        out = executor.run("generate_image", {"prompt": "a red ferrari", "path": "car.png"})
+        self.assertIn("ERROR", out)
+        self.assertIn("image", out.lower())
+        # Dengan image_model diset: ekstensi & ukuran divalidasi sebelum call jaringan.
+        self.config.IMAGE_MODEL = "dall-e-3"
+        self.assertIn("ERROR", executor.run("generate_image", {"prompt": "x", "path": "art.txt"}))
+        self.assertIn("size", executor.run("generate_image", {"prompt": "x", "path": "art.png", "size": "999x999"}).lower())
+        # Path escape di luar workspace diblokir.
+        self.assertIn("workspace", executor.run("generate_image", {"prompt": "x", "path": "../escape.png"}))
+        self.assertFalse((self.home / "escape.png").exists())
+
 
     def _write_fake_mcp_server(self) -> Path:
         self.home.mkdir(parents=True, exist_ok=True)
