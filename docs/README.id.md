@@ -3,12 +3,12 @@
 </p>
 
 <p align="center">
-  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
-  <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Community-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
-  <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-1D4ED8?style=flat&labelColor=334155"></a>
-  <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
-  <a href="README.id.md"><img src="https://img.shields.io/badge/Lang-ID-1D4ED8?style=flat&labelColor=334155"></a>
-  <a href="README.zh.md"><img src="https://img.shields.io/badge/Lang-中文-0A84FF?style=flat&labelColor=334155"></a>
+  <a href="https://zeline.zerolinear.com"><img src="../assets/badges/docs.png" height="20" alt="Docs: zeline.zerolinear.com"></a>
+  <a href="https://t.me/zerolinear"><img src="../assets/badges/community.png" height="20" alt="Community"></a>
+  <a href="../LICENSE"><img src="../assets/badges/license.png" height="20" alt="License: MIT"></a>
+  <a href="../README.md"><img src="../assets/badges/en.png" height="20" alt="Lang: EN"></a>
+  <a href="README.id.md"><img src="../assets/badges/id.png" height="20" alt="Lang: ID"></a>
+  <a href="README.zh.md"><img src="../assets/badges/zh.png" height="20" alt="Lang: 中文"></a>
   <br>
   <strong>Zeline Agentic AI</strong> — oleh Zerolinear, sebuah lab riset AI.
 </p>
