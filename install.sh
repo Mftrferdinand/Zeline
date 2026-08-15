@@ -16,8 +16,8 @@
 #   ZELINE_PYTHON, ZELINE_PLATFORM, ZELINE_INSTALL_ROOT, ZELINE_BIN_DIR
 set -euo pipefail
 
-VERSION="0.2.0"
-REF="v0.2.0"
+VERSION="0.2.1"
+REF="v0.2.1"
 RELEASE_BASE="https://github.com/Mftrferdinand/Zerolinear/releases/download/${REF}"
 WHEEL_NAME="zeline-${VERSION}-py3-none-any.whl"
 PLATFORM="${ZELINE_PLATFORM:-}"
@@ -237,6 +237,10 @@ verify_release_artifact() {
     fi
   done < "$sums"
   [ -n "$expected" ] || fail "SHA256SUMS has no entry for $filename."
+  case "$expected" in
+    *[!0-9a-fA-F]*) fail "SHA256SUMS expected digest is not 64 hexadecimal characters for $filename." ;;
+  esac
+  [ "${#expected}" -eq 64 ] || fail "SHA256SUMS expected digest is not 64 hexadecimal characters for $filename."
   actual="$(file_sha256 "$artifact")"
   [ "$actual" = "$expected" ] || fail "SHA-256 verification failed for $filename."
   detail "Verified : $filename (SHA-256)"

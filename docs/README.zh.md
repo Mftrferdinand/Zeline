@@ -51,7 +51,7 @@ Zeline —— 一个 [Zerolinear](https://zerolinear.com) 项目，由 [Mftrferd
 ### Termux、Linux 和 macOS
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.1
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -74,7 +74,7 @@ zeline setup
 
 ```sh
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0
+BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.1
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -97,10 +97,11 @@ CLI 和 HTTP 集成可在 iSH 中使用，但当 iSH 不在前台时，iOS 可�
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.0'
+$base = 'https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.1'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
+if (-not $expected -or $expected -notmatch '^[0-9a-f]{64}$') { throw 'invalid install.ps1 checksum entry' }
 if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
 .\install.ps1
 zeline setup

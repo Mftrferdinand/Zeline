@@ -10,6 +10,26 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RELEASE_VERSION = "0.2.1"
+RELEASE_TAG = f"v{RELEASE_VERSION}"
+
+
+class ReleaseVersionContractTests(unittest.TestCase):
+    def test_package_installers_and_public_docs_target_v021(self):
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        package_init = (ROOT / "zeline" / "__init__.py").read_text(encoding="utf-8")
+        posix = (ROOT / "install.sh").read_text(encoding="utf-8")
+        windows = (ROOT / "install.ps1").read_text(encoding="utf-8")
+        self.assertIn(f'version = "{RELEASE_VERSION}"', pyproject)
+        self.assertIn(f'__version__ = "{RELEASE_VERSION}"', package_init)
+        self.assertIn(f'VERSION="{RELEASE_VERSION}"', posix)
+        self.assertIn(f'REF="{RELEASE_TAG}"', posix)
+        self.assertIn(f"$Version     = '{RELEASE_VERSION}'", windows)
+        self.assertIn(f"$ReleaseRef  = '{RELEASE_TAG}'", windows)
+        for relative in ("README.md", "docs/README.id.md", "docs/README.zh.md", "docs/installation.md"):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn(f"releases/download/{RELEASE_TAG}", text, relative)
+            self.assertNotIn("releases/download/v0.2.0", text, relative)
 
 
 @unittest.skipIf(os.name == "nt", "install.sh is verified by POSIX/macOS jobs; Windows uses install.ps1")
@@ -34,7 +54,7 @@ class PosixInstallerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Z  E  L  I  N  E", result.stdout)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.0", result.stdout)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.1", result.stdout)
         self.assertIn("╭", result.stdout)
         self.assertIn("╰", result.stdout)
 
@@ -89,7 +109,7 @@ class PosixInstallerTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(version.returncode, 0, version.stderr)
-            self.assertIn("zeline 0.2.0", version.stdout.lower())
+            self.assertIn("zeline 0.2.1", version.stdout.lower())
 
     def test_installer_wrapper_handles_spaces_quotes_and_dollar_in_paths(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -136,13 +156,18 @@ class PosixInstallerTests(unittest.TestCase):
         self.assertIn("newline", result.stderr.lower())
 
     def test_remote_source_is_an_immutable_release_not_main(self):
-        self.assertIn('REF="v0.2.0"', self.text)
+        self.assertIn('REF="v0.2.1"', self.text)
         self.assertNotIn('BRANCH="main"', self.text)
 
     def test_release_downloads_require_hardened_curl(self):
         self.assertIn("--proto '=https'", self.text)
         self.assertIn("--tlsv1.2", self.text)
         self.assertNotIn("wget -qO", self.text)
+
+    def test_posix_installer_rejects_malformed_expected_digest(self):
+        self.assertIn("expected digest is not 64 hexadecimal characters", self.text)
+        self.assertIn('*[!0-9a-fA-F]*)', self.text)
+        self.assertIn('[ "${#expected}" -eq 64 ]', self.text)
 
     def test_local_checkout_requires_explicit_source_option(self):
         self.assertIn('[ -n "$SOURCE_OVERRIDE" ] || return 0', self.text)
@@ -164,9 +189,11 @@ class PowerShellInstallerBrandTests(unittest.TestCase):
 
     def test_windows_remote_install_uses_versioned_checksum_verified_wheel(self):
         text = (ROOT / "install.ps1").read_text(encoding="utf-8")
-        self.assertIn("v0.2.0", text)
+        self.assertIn("v0.2.1", text)
         self.assertIn("SHA256SUMS", text)
         self.assertIn("Get-FileHash -Algorithm SHA256", text)
+        self.assertIn("expected digest is not 64 hexadecimal characters", text)
+        self.assertIn("-notmatch '^[0-9a-f]{64}$'", text)
         self.assertNotIn("git clone --depth 1 --branch", text)
 
     def test_windows_local_checkout_requires_explicit_source_option(self):
@@ -191,6 +218,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("aesora", notes.casefold())
         self.assertIn("Zeline", notes)
 
+    def test_release_audits_wheel_and_sdist_without_optimized_asserts(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("import tarfile", workflow)
+        self.assertIn("zipfile.ZipFile", workflow)
+        self.assertIn("tarfile.open", workflow)
+        for marker in ("__pycache__", ".pytest_cache", ".zeline", ".env", "tmdb-media-web-maintenance"):
+            self.assertIn(marker, workflow)
+        self.assertIn("raise SystemExit", workflow)
+        self.assertNotIn("assert not blocked", workflow)
+
+    def test_release_notes_link_to_immutable_tag(self):
+        notes = (ROOT / ".github" / "RELEASE_NOTES.md").read_text(encoding="utf-8")
+        self.assertIn("blob/v0.2.1/docs/installation.md", notes)
+        self.assertNotIn("blob/main/docs/installation.md", notes)
+
 
 class InstallationPageTests(unittest.TestCase):
     def test_dedicated_install_page_covers_every_supported_platform(self):
@@ -214,10 +256,12 @@ class InstallationPageTests(unittest.TestCase):
                 self.assertNotIn("raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install", text)
                 self.assertNotIn("| bash", text)
                 self.assertNotIn("| iex", text.lower())
-                self.assertIn("v0.2.0", text)
+                self.assertIn("v0.2.1", text)
                 self.assertIn("SHA256SUMS", text)
                 self.assertNotIn("assert actual == expected", text)
                 self.assertIn("raise SystemExit", text)
+                if "powershell" in text.casefold():
+                    self.assertIn("-notmatch '^[0-9a-f]{64}$'", text)
         self.assertIn("SHA256SUMS", (ROOT / "docs" / "installation.md").read_text(encoding="utf-8"))
 
     def test_checkout_docs_require_explicit_source_mode(self):

@@ -29,8 +29,9 @@ jobs:
           test "v$VERSION" = "$GITHUB_REF_NAME"
       - name: Build immutable release artifacts
         run: |
-          python -m pip install --upgrade build
+          python -m pip install --upgrade build twine
           python -m build
+          python -m twine check dist/zeline-*.whl dist/zeline-*.tar.gz
           cp install.sh install.ps1 dist/
           cd dist
           sha256sum zeline-*.whl zeline-*.tar.gz install.sh install.ps1 > SHA256SUMS
@@ -40,11 +41,60 @@ jobs:
           sha256sum -c SHA256SUMS
           python - <<'PY'
           from pathlib import Path
+          import email.parser
+          import re
+          import tarfile
           import zipfile
-          wheel = next(Path('.').glob('zeline-*.whl'))
-          with zipfile.ZipFile(wheel) as z:
-              blocked = [n for n in z.namelist() if '__pycache__' in n or n.endswith('.pyc') or '.zeline' in n or n.endswith('.env')]
-          assert not blocked, blocked
+
+          expected_version = "0.2.1"
+          wheels = list(Path('.').glob('zeline-*.whl'))
+          sdists = list(Path('.').glob('zeline-*.tar.gz'))
+          if len(wheels) != 1 or len(sdists) != 1:
+              raise SystemExit(f"expected exactly one wheel and one sdist: wheels={wheels}; sdists={sdists}")
+          wheel, sdist = wheels[0], sdists[0]
+          blocked_markers = (
+              "__pycache__", ".pytest_cache", ".zeline", ".env",
+              ".incoming-superagent", "tmdb-media-web-maintenance",
+          )
+          blocked_suffixes = (".pyc", ".pyo", ".pem", ".key")
+
+          def blocked(names):
+              return [
+                  name for name in names
+                  if any(marker in name for marker in blocked_markers)
+                  or name.endswith(blocked_suffixes)
+              ]
+
+          with zipfile.ZipFile(wheel) as archive:
+              wheel_names = archive.namelist()
+              wheel_blocked = blocked(wheel_names)
+              metadata_name = next(name for name in wheel_names if name.endswith('.dist-info/METADATA'))
+              metadata = email.parser.Parser().parsestr(archive.read(metadata_name).decode('utf-8'))
+          with tarfile.open(sdist) as archive:
+              sdist_names = archive.getnames()
+              sdist_blocked = blocked(sdist_names)
+              expected_pkg_info = f"zeline-{expected_version}/PKG-INFO"
+              pkg_info_members = [
+                  member for member in archive.getmembers()
+                  if member.isfile() and member.name == expected_pkg_info
+              ]
+              if len(pkg_info_members) != 1:
+                  raise SystemExit(f"expected canonical sdist PKG-INFO: {pkg_info_members}")
+              pkg_info_file = archive.extractfile(pkg_info_members[0])
+              if pkg_info_file is None:
+                  raise SystemExit("could not read sdist PKG-INFO")
+              pkg_info = email.parser.Parser().parsestr(pkg_info_file.read().decode('utf-8'))
+
+          if wheel_blocked or sdist_blocked:
+              raise SystemExit(f"blocked release entries: wheel={wheel_blocked}; sdist={sdist_blocked}")
+          if metadata.get('Name') != 'zeline' or metadata.get('Version') != expected_version:
+              raise SystemExit(f"invalid wheel metadata: {metadata.get('Name')} {metadata.get('Version')}")
+          if pkg_info.get('Name') != 'zeline' or pkg_info.get('Version') != expected_version:
+              raise SystemExit(f"invalid sdist metadata: {pkg_info.get('Name')} {pkg_info.get('Version')}")
+          if not re.fullmatch(rf"zeline-{re.escape(expected_version)}-py3-none-any\.whl", wheel.name):
+              raise SystemExit(f"unexpected wheel filename: {wheel.name}")
+          if sdist.name != f"zeline-{expected_version}.tar.gz":
+              raise SystemExit(f"unexpected sdist filename: {sdist.name}")
           PY
       - name: Generate build provenance
         uses: actions/attest-build-provenance@v2
