@@ -185,6 +185,7 @@ def _configure_provider(provider: dict[str, Any]) -> None:
         "base_url": base_url,
         "api_key": api_key,
         "model": _choose_model(models, str(provider.get("model", ""))),
+        "image_model": str(provider.get("image_model", "")),
         "name": provider_name,
         "protocol": protocol,
         "model_verified": True,
@@ -579,16 +580,18 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
         name = str(provider.get("name", slug))
         shown_base_url = str(provider.get("base_url", "?"))
         shown_model = str(provider.get("model", "?"))
+        shown_image_model = str(provider.get("image_model", "")) or "(none)"
         masked_key = config.mask_secret(str(provider.get("api_key", "")))
         print(f"\n  Provider: {name}")
         print(f"  Base URL: {shown_base_url}")
         print(f"  Model   : {shown_model}")
+        print(f"  Image model: {shown_image_model}")
         print(f"  API key : {masked_key}")
         action = _arrow_menu(
             "Aksi provider:",
-            ["Set as active", "Change model", "Change API key", "Cancel"],
+            ["Set as active", "Change model", "Change image model", "Change API key", "Cancel"],
         )
-        if action == -1 or action == 3:
+        if action == -1 or action == 4:
             return
         if action == 0:  # Set as active
             provider["model_verified"] = True
@@ -614,7 +617,18 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
             config.save_config(cfg)
             chosen_model = str(provider["model"])
             print(f"  Model updated: {chosen_model}")
-        elif action == 2:  # Change API key
+        elif action == 2:  # Change image model
+            new_image_model = _ask(
+                "Image (text-to-image) model, blank to disable",
+                str(provider.get("image_model", "")),
+            ).strip()
+            provider["image_model"] = new_image_model
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            if slug == _active_slug(cfg):
+                cfg["provider"] = copy.deepcopy(provider)
+            config.save_config(cfg)
+            print(f"  Image model updated: {new_image_model or '(none)'}")
+        elif action == 3:  # Change API key
             new_key = _ask("API key", str(provider.get("api_key", "")), secret=True)
             provider["api_key"] = new_key
             cfg["providers"][slug] = copy.deepcopy(provider)

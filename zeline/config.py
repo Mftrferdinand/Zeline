@@ -272,6 +272,10 @@ def _defaults() -> dict[str, Any]:
             "base_url": "https://api.openai.com/v1",
             "api_key": "",
             "model": DEFAULT_MODEL,
+            # Optional dedicated text-to-image model for the generate_image tool
+            # (e.g. "gpt-image-1", "dall-e-3", or a router alias). Empty = the
+            # tool is unavailable until the owner sets one via `zeline setup`.
+            "image_model": "",
         },
         "providers": {},
         "agent": {
@@ -347,6 +351,7 @@ def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
         "base_url": "ZELINE_BASE_URL",
         "api_key": "ZELINE_API_KEY",
         "model": "ZELINE_MODEL",
+        "image_model": "ZELINE_IMAGE_MODEL",
     }
     for field, env_name in mapping.items():
         value = os.environ.get(env_name)
@@ -426,7 +431,7 @@ def new_webhook_token() -> str:
 
 def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
-    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, GATEWAYS, NAME
+    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, IMAGE_MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS
     PROVIDER = cfg["provider"]
@@ -434,6 +439,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
     API_KEY = str(PROVIDER.get("api_key", ""))
     MODEL = str(PROVIDER.get("model", DEFAULT_MODEL))
+    IMAGE_MODEL = str(PROVIDER.get("image_model", ""))
     GATEWAYS = cfg["gateways"]
     NAME = str(cfg.get("name", "Zeline"))
     GATEWAY_SETUP_COMPLETE = bool(cfg.get("gateway_setup_complete", False))
