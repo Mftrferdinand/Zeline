@@ -214,7 +214,7 @@ git log --all --full-history -- '**/.env*'
 
 ---
 
-## OpenClaw / Skill File Specific Audit
+## Zeline / Skill File Specific Audit
 
 ```
 SKILL.md / agent definition red flags:

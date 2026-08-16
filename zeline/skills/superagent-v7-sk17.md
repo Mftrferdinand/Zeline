@@ -103,4 +103,4 @@ print(explain())   # "apa yang agent lakuin & kenapa" dari audit trail
 - Planner/skill-forge/swarm decomposition pakai LLM via `model_registry` (sk7/v4.0) — `add model` dulu kalau cascade kosong.
 - Dashboard butuh port di-expose — amanin dengan auth, default localhost.
 - Voice TTS: `pip install pyttsx3` (gratis, offline). Backtester & explain keyless.
-- Swarm multi-proses pakai delegate OpenClaw — verify API current saat scale.
+- Swarm multi-proses pakai delegate Zeline — verify API current saat scale.

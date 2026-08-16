@@ -26,8 +26,8 @@ Mantau proses yang **operator daftarin eksplisit** (bukan dari input apa pun). R
 ```python
 from watchdog import Watchdog, WatchedProcess, shell_check, shell_restart
 wd = Watchdog([
-    WatchedProcess("openclaw", shell_check("openclaw"),
-                   shell_restart(["psk2", "restart", "openclaw"]), max_restarts_per_hour=5),
+    WatchedProcess("zeline", shell_check("zeline"),
+                   shell_restart(["psk2", "restart", "zeline"]), max_restarts_per_hour=5),
 ])
 await wd.run(notifier, interval_s=30)
 ```

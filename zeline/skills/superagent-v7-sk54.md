@@ -31,7 +31,7 @@ rate-limit   → 429, quota exceeded
 config       → wrong value (NOT missing — value present but wrong)
 ```
 
-The "config wrong value" class is high-priority: past history shows an OpenClaw `streaming` config caused duplicate Telegram responses. Always check this class for daemon/agent bugs.
+The "config wrong value" class is high-priority: past history shows an Zeline `streaming` config caused duplicate Telegram responses. Always check this class for daemon/agent bugs.
 
 ### Step 3 — Diagnose
 ```
@@ -46,7 +46,7 @@ If low confidence — ask for one more piece of evidence, don't guess.
 ```bash
 # Exact command(s), no placeholders
 ```
-Show real values, not `<your_token>`. Use the actual paths if known (`/root/.openclaw/...`).
+Show real values, not `<your_token>`. Use the actual paths if known (`/root/.zeline/...`).
 
 ### Step 5 — Verify
 ```bash
@@ -94,10 +94,10 @@ Show real values, not `<your_token>`. Use the actual paths if known (`/root/.ope
 - Port not reachable externally → ufw or cloud firewall blocking
 - `out of memory` killed → `dmesg | grep -i kill` confirms OOM, add swap or cap memory
 
-### OpenClaw / Zeline specific
+### Zeline / Zeline specific
 - Duplicate Telegram response → `streaming` config has invalid value, set proper boolean
 - Provider auth fail → check both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY`, conflict possible
-- Skill not loading → wrong path in `~/.openclaw/workspace/openclaw-agents.json`
+- Skill not loading → wrong path in `~/.zeline/workspace/zeline-agents.json`
 - Tool call hangs → security guardrail blocking obfuscated bash, simplify command
 
 ---
