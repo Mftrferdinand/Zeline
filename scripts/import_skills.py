@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Konversi skill Hermes (folder SKILL.md + frontmatter) → format flat Zeline.
+"""Konversi skill upstream (folder SKILL.md + frontmatter) → format flat Zeline.
 
 Zeline skill = 1 file .md:
     # <Title>
@@ -7,15 +7,15 @@ Zeline skill = 1 file .md:
     <body markdown>
 
 Konverter ini:
-  - Baca YAML frontmatter Hermes (name/description) → jadi judul + kutipan.
+  - Baca YAML frontmatter upstream (name/description) → jadi judul + kutipan.
   - Inline isi references/*.md kecil (< limit) ke akhir body, karena Zeline
     tidak punya linked files.
-  - Ganti/anotasi tool Hermes-only yang tidak ada di Zeline agar model tidak
+  - Ganti/anotasi tool upstream-only yang tidak ada di Zeline agar model tidak
     mencoba memanggilnya.
   - Tulis ke ~/.zeline/skills/public/<name>.md (tidak menimpa yang sudah ada
     kecuali --force).
 
-Aman dijalankan berulang. Tidak menghapus apa pun di sisi Hermes.
+Aman dijalankan berulang. Tidak menghapus apa pun di sumber upstream.
 """
 from __future__ import annotations
 
@@ -25,13 +25,12 @@ import os
 import re
 import sys
 
-HERMES_SKILLS = os.path.expanduser("~/.hermes/skills")
+# Sumber default: direktori skill upstream (mis. ~/.hermes/skills).
+# Bisa dioverride lewat --src (mis. repo lain).
+SOURCE_DIR = os.path.expanduser("~/.hermes/skills")
 ZELINE_PUBLIC = os.path.expanduser("~/.zeline/skills/public")
 
-# Sumber default; bisa dioverride lewat --src (mis. repo lain: openclaw, awas, dsb).
-SOURCE_DIR = HERMES_SKILLS
-
-# Tool Hermes yang TIDAK ada di Zeline → diganti kalimat netral supaya model
+# Tool upstream yang TIDAK ada di Zeline → diganti kalimat netral supaya model
 # tidak menganggapnya tersedia.
 TOOL_REWRITES = {
     r"\bdelegate_task\b": "kerjakan langsung (tanpa subagent)",
@@ -43,9 +42,9 @@ TOOL_REWRITES = {
 # Tool yang cukup dianotasi (masih relevan konsepnya) — ditandai sebagai N/A.
 TOOL_UNSUPPORTED_NOTE = ["clarify", "cronjob", "vision_analyze", "text_to_speech", "process("]
 
-# Scrub branding Hermes/OpenClaw → Zeline. Skill yang di-import TIDAK boleh
-# menyebut framework asalnya: ini repo/agent milik user (Zeline). Urutan penting
-# (spesifik dulu, kata dasar terakhir).
+# Scrub branding upstream (Hermes/OpenClaw) → Zeline. Skill yang di-import TIDAK
+# boleh menyebut framework asalnya: ini repo/agent milik user (Zeline). Urutan
+# penting (spesifik dulu, kata dasar terakhir).
 BRAND_SCRUBS = [
     (r"Hermes Agent", "Zeline"),
     (r"HermesAgent", "ZelineAgent"),
@@ -110,7 +109,7 @@ def _rewrite_tools(text: str) -> tuple[str, list[str]]:
 
 
 def _scrub_brand(text: str) -> str:
-    """Hapus semua jejak nama Hermes → Zeline (case-aware)."""
+    """Hapus semua jejak branding upstream → Zeline (case-aware)."""
     for pat, repl in BRAND_SCRUBS:
         text = re.sub(pat, repl, text)
     return text
@@ -166,7 +165,7 @@ def convert_one(skill_md: str, force: bool, dry: bool) -> tuple[str, str]:
     # supaya tidak muncul dua "# Title" beruntun.
     body = re.sub(r"^\s*#\s+.+\n+", "", body, count=1)
 
-    # Scrub semua jejak branding Hermes → Zeline dari body, judul, dan deskripsi.
+    # Scrub semua jejak branding upstream → Zeline dari body, judul, dan deskripsi.
     body = _scrub_brand(body)
     desc = _scrub_brand(desc)
     title = _scrub_brand(title)
@@ -200,8 +199,8 @@ def convert_one(skill_md: str, force: bool, dry: bool) -> tuple[str, str]:
 def main() -> int:
     global REF_INLINE_LIMIT
     ap = argparse.ArgumentParser()
-    ap.add_argument("names", nargs="*", help="nama folder skill Hermes yang mau dikonversi")
-    ap.add_argument("--all", action="store_true", help="konversi semua skill Hermes")
+    ap.add_argument("names", nargs="*", help="nama folder skill upstream yang mau dikonversi")
+    ap.add_argument("--all", action="store_true", help="konversi semua skill di direktori sumber")
     ap.add_argument("--force", action="store_true", help="timpa file tujuan bila sudah ada")
     ap.add_argument("--dry", action="store_true", help="jangan tulis, cuma laporkan")
     ap.add_argument("--ref-limit", type=int, default=REF_INLINE_LIMIT, help="batas char untuk inline reference")

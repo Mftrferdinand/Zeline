@@ -965,7 +965,7 @@ def cmd_gateway_start(only: list[str] | None = None) -> int:
     if not started:
         return 1
     # Don't just report 'spawned' — wait for each platform to actually connect
-    # (getMe + polling) and show a live per-gateway status, like Hermes does.
+    # (getMe + polling) and show a live per-gateway status, like Zeline does.
     print("  Connecting…", flush=True)
     ready, lines = gateway_service.wait_until_connected(timeout=90.0)
     for line in lines:

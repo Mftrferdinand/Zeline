@@ -789,7 +789,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(any("allowlist" in error.lower() for error in errors))
         self.assertEqual(telegram.validate_config({"token": "123:abc", "tool_profile": "full", "allowed": [111222333]}), [])
 
-    def test_telegram_working_status_matches_hermes_style(self):
+    def test_telegram_working_status_matches_zeline_style(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider is slow to respond")
         self.assertEqual(telegram._working_status_text(8), "⏳ Working — 8 s")
@@ -1218,14 +1218,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("`zeline doctor`", rendered)
         self.assertIn("```bash", rendered)
 
-    def test_telegram_registers_hermes_style_command_picker(self):
+    def test_telegram_registers_zeline_style_command_picker(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         commands = telegram._telegram_commands()
         self.assertEqual([item["command"] for item in commands], ["start", "model", "status", "repository", "deleterepository", "stop", "new"])
         self.assertEqual(commands[0]["description"], "Start Zeline")
         self.assertIn("active turn", commands[5]["description"].lower())
 
-    def test_telegram_status_reports_hermes_style_runtime_and_coding_tools(self):
+    def test_telegram_status_reports_zeline_style_runtime_and_coding_tools(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         class Sessions:
@@ -1427,7 +1427,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         ok = telegram._safe_progress_line("📖 Reading <code>a.py</code> L1-100")
         self.assertEqual(ok, "📖 Reading <code>a.py</code> L1-100")
 
-    def test_telegram_tool_progress_uses_hermes_style_labels_and_argument_preview(self):
+    def test_telegram_tool_progress_uses_zeline_style_labels_and_argument_preview(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Reading skill test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
