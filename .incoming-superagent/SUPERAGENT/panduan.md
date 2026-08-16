@@ -1,6 +1,6 @@
 # Panduan Operator — Zeline + SUPERAGENT v7.0 IRONCLAW SUPREME
 
-Cara ngomong sama Zeline setelah v7.0 OPENCLAW EDITION + zeline-crypto-agent ke-combo.
+Cara ngomong sama Zeline setelah v7.0 ZELINE EDITION + zeline-crypto-agent ke-combo.
 *Update v7.0 (2026-06-09): Airdrop Intelligence (sk31), CTF/Whitehat (sk32), + observability & safety tooling.*
 
 ---

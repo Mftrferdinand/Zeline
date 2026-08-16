@@ -1,4 +1,4 @@
-# CHANGELOG — SUPERAGENT OPENCLAW EDITION
+# CHANGELOG — SUPERAGENT ZELINE EDITION
 
 Version history. Baseline **v3.1** (2026-05-25) → **v4.0** (2026-06-03) → **v4.1** (2026-06-04) → **v4.1.1** (2026-06-05) → **v4.1.2** (2026-06-05) → **v4.2** (2026-06-09) → **v7.0** (2026-07-08).
 
@@ -451,7 +451,7 @@ Domain marketing/konten sosial (proposal kategori 18–24) + pendalaman sains & 
 
 ---
 
-## v4.0 — OPENCLAW EDITION (2026-06-03)
+## v4.0 — ZELINE EDITION (2026-06-03)
 
 Major release. Dari baseline v3.1, v4.0 nambahin lapisan keamanan/governance penuh, kemampuan belajar sendiri, suite asisten harian, tooling smart-contract lengkap (baca/tulis/deploy), manajemen LLM dinamis, "power pack" orkestrasi, dan skill software-engineering umum. Semua aksi yang nyentuh dana lewat **Spend Governor**; file kritis dijaga **FROZEN_PATHS**.
 

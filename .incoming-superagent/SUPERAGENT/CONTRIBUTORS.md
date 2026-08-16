@@ -1,6 +1,6 @@
 # Contributors
 
-SUPERAGENT v3 OPENCLAW EDITION is built on contributions from the CVC community and the broader operator ecosystem.
+SUPERAGENT v3 ZELINE EDITION is built on contributions from the CVC community and the broader operator ecosystem.
 
 ---
 
