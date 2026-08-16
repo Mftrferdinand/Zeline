@@ -102,16 +102,11 @@ def _telegram_commands() -> list[dict[str, str]]:
     return [
         {"command": "start", "description": "Start Zeline"},
         {"command": "model", "description": "Switch model"},
-        {"command": "status", "description": "Show runtime status"},
+        {"command": "status", "description": "View runtime status"},
         {"command": "repository", "description": "Download repository archive"},
-        {"command": "savetask", "description": "Save the current task"},
-        {"command": "updatetask", "description": "Update task by project or link"},
-        {"command": "completedtask", "description": "Mark task as finished"},
-        {"command": "deletetask", "description": "Delete task by project or link"},
+        {"command": "deleterepository", "description": "Delete a repository entry"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
-        {"command": "steer", "description": "Steer the active turn"},
-        {"command": "promoteskill", "description": "Review & publish a skill to the repo"},
     ]
 
 
@@ -837,12 +832,13 @@ def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
 
 def _new_session_text() -> str:
     return (
-        "🌟 Session reset! Starting fresh.\n"
-        f"✦ Model : {config.MODEL}\n"
-        f"✦ Provider : {_provider_label()}\n"
-        "✦ Context : 0 tokens\n"
-        f"✦ Endpoint : {config.BASE_URL}\n"
-        "✦ Tip : Use /status to check this session."
+        "╭───────────────────🌟\n"
+        "├ Session reset! Starting fresh\n"
+        f"├ Model : {config.MODEL}\n"
+        f"├ Provider : {_provider_label()}\n"
+        "├ Context : 0 tokens\n"
+        f"├ Endpoint : {config.BASE_URL}\n"
+        "╰ Tip : Use /status to check this session."
     )
 
 
@@ -892,36 +888,6 @@ def _matching_row_indexes(rows: list[str], query: str) -> list[int]:
     return [index for index, row in enumerate(rows) if needle and needle in row.casefold()]
 
 
-def _save_task(snapshot: dict[str, object] | None, chat_id: int, message_id: int) -> str:
-    if not snapshot:
-        return "no_task"
-    path, rows = _repository_rows()
-    row = _task_row(snapshot, chat_id, message_id)
-    # Save hanya untuk entri pertama: nama atau URL yang sama dianggap duplikat.
-    title = row.split("|", 4)[2].strip().casefold()
-    url_match = re.search(r"\]\(([^)]+)\)", row)
-    url = url_match.group(1).casefold() if url_match else ""
-    if any(title in existing.casefold() or (url and url in existing.casefold()) for existing in rows):
-        return "duplicate"
-    rows.append(row)
-    _write_repository_rows(path, rows)
-    return "saved"
-
-
-def _update_task(query: str, snapshot: dict[str, object] | None, chat_id: int, message_id: int) -> str:
-    if not snapshot:
-        return "no_task"
-    path, rows = _repository_rows()
-    matches = _matching_row_indexes(rows, query)
-    if not matches:
-        return "not_found"
-    if len(matches) > 1:
-        return "ambiguous"
-    rows[matches[0]] = _task_row(snapshot, chat_id, message_id)
-    _write_repository_rows(path, rows)
-    return "updated"
-
-
 def _delete_task(query: str) -> str:
     path, rows = _repository_rows()
     matches = _matching_row_indexes(rows, query)
@@ -932,21 +898,6 @@ def _delete_task(query: str) -> str:
     rows.pop(matches[0])
     _write_repository_rows(path, rows)
     return "deleted"
-
-
-def _complete_task(query: str) -> str:
-    path, rows = _repository_rows()
-    matches = _matching_row_indexes(rows, query)
-    if not matches:
-        return "not_found"
-    if len(matches) > 1:
-        return "ambiguous"
-    index = matches[0]
-    if rows[index].startswith("| 🟢 |"):
-        return "already_completed"
-    rows[index] = rows[index].replace("| 🟡 |", "| 🟢 |", 1)
-    _write_repository_rows(path, rows)
-    return "completed"
 
 
 def _handle_command_update(
@@ -982,15 +933,15 @@ def _handle_command_update(
         _api_call(
             api, "sendMessage", chat_id=chat_id,
             text=(
-                "╭─ <b>Zeline Gateway Status</b>\n"
+                "╭───────────────🚥\n"
+                "├ <b>Zeline Gateway Status</b>\n"
                 f"├ Session ID : <code>{html.escape(str(status['session_id']))}</code>\n"
                 f"├ Provider : <code>{html.escape(_provider_label())}</code>\n"
                 f"├ Model : <code>{html.escape(str(status['model']))}</code>\n"
                 f"├ Title : {html.escape(str(status['title']))}\n"
                 f"├ Context : {html.escape(str(status['context']))}\n"
                 f"├ Agent Running : {'Yes' if status['agent_running'] else 'No'}\n"
-                "├ Platform : Telegram\n"
-                "╰───────────────"
+                "╰ Platform : Telegram"
             ), parse_mode="HTML",
         )
         return True
@@ -999,51 +950,15 @@ def _handle_command_update(
         if not _send_document(api, chat_id, repository):
             _api_call(api, "sendMessage", chat_id=chat_id, text="Failed to send the repository archive.")
         return True
-    if command == "/savetask":
-        snapshot = sessions.task_snapshot(identity)
-        result = _save_task(snapshot, chat_id, message_id)
-        reply = {
-            "saved": "Task saved to repository.md.",
-            "duplicate": "Task already exists. Use /updatetask <project or link>.",
-            "no_task": "No task to save. Start a task first.",
-        }[result]
-        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
-        return True
-    if command == "/updatetask":
+    if command == "/deleterepository":
         if not args:
-            reply = "Usage: /updatetask <project or link>"
-        else:
-            result = _update_task(args, sessions.task_snapshot(identity), chat_id, message_id)
-            reply = {
-                "updated": "Task updated in repository.md.",
-                "not_found": "Task not found. Mention its project name or link.",
-                "ambiguous": "Multiple tasks matched. Use a more specific project name or link.",
-                "no_task": "No current task data available for the update.",
-            }[result]
-        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
-        return True
-    if command == "/completedtask":
-        if not args:
-            reply = "Usage: /completedtask <project or link>"
-        else:
-            result = _complete_task(args)
-            reply = {
-                "completed": "Task marked as finished in repository.md.",
-                "already_completed": "Task is already marked as finished.",
-                "not_found": "Task not found. Mention its project name or link.",
-                "ambiguous": "Multiple tasks matched. Use a more specific project name or link.",
-            }[result]
-        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
-        return True
-    if command == "/deletetask":
-        if not args:
-            reply = "Usage: /deletetask <project or link>"
+            reply = "Usage: /deleterepository <project or link>"
         else:
             result = _delete_task(args)
             reply = {
-                "deleted": "Task deleted from repository.md.",
-                "not_found": "Task not found. Mention its project name or link.",
-                "ambiguous": "Multiple tasks matched. Use a more specific project name or link.",
+                "deleted": "Repository entry deleted from repository.md.",
+                "not_found": "Entry not found. Mention its project name or link.",
+                "ambiguous": "Multiple entries matched. Use a more specific project name or link.",
             }[result]
         _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
         return True
@@ -1075,30 +990,6 @@ def _handle_command_update(
             )
         sessions.reset(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=_new_session_text())
-        return True
-    if command == "/steer":
-        if not args:
-            _api_call(api, "sendMessage", chat_id=chat_id, text="Usage: /steer <prompt>")
-            return True
-        if sessions.steer(identity, args):
-            preview = args[:60] + ("..." if len(args) > 60 else "")
-            _api_call(api, "sendMessage", chat_id=chat_id, text=f"⏩ Steer queued — arrives after the next tool call: '{preview}'")
-        else:
-            _start_agent_reply(
-                api, sessions, chat_id=chat_id, identity=identity,
-                text=args, tool_profile=tool_profile,
-            )
-        return True
-    if command == "/promoteskill":
-        # Publikasi skill ke repo dengan approval + scan sensitif. Hanya
-        # bermakna untuk owner (profile full); selain itu tolak halus.
-        if tool_profile != "full":
-            _api_call(api, "sendMessage", chat_id=chat_id, text="This command is for the Zeline operator only.")
-            return True
-        if not args:
-            _api_call(api, "sendMessage", chat_id=chat_id, text="Usage: /promoteskill <nama-skill>")
-            return True
-        _handle_promote_skill(api, chat_id, args.strip())
         return True
     return False
 
