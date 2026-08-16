@@ -66,7 +66,28 @@ BRAND_SCRUBS = [
     (r"clawhub", "skillhub"),
     (r"~/\.claw\b", "~/.zeline"),
     (r"\bthe lobster way\b", "the Zeline way"),
+    # Bundled corpus branding: skill lama menyebut nama pack sebelum rebrand.
+    (r"SUPERAGENT V7 IRONCLAW", "ZELINE ZENITH"),
+    (r"SUPERAGENT V[0-9.]+", "ZELINE ZENITH"),
+    (r"Superagent V[0-9.]+", "Zeline Zenith"),
+    (r"superagent-v[0-9]+", "zeline-zenith"),
+    (r"SUPERAGENT_", "ZELINE_ZENITH_"),
+    (r"~/\.superagent\b", "~/.zeline"),
+    (r"\bSUPERAGENT\b", "ZELINE ZENITH"),
+    (r"\bSuperagent\b", "Zeline Zenith"),
+    (r"\bSuperAgent\b", "Zeline Zenith"),
+    (r"\bsuperagent\b", "zeline-zenith"),
+    (r"\bIRONCLAW\b", "ZENITH"),
+    (r"\bIronclaw\b", "Zenith"),
+    (r"\bironclaw\b", "zenith"),
 ]
+
+# Term yang TIDAK BOLEH lolos ke skill hasil import. Dicek setelah semua scrub
+# jalan: kalau masih ada, BRAND_SCRUBS bocor dan harus diperbaiki, bukan
+# dibiarkan menulis file yang mengembalikan branding upstream.
+FORBIDDEN_TERMS = (
+    "hermes", "openclaw", "clawhub", "aesora", "superagent", "ironclaw",
+)
 
 REF_INLINE_LIMIT = 12_000  # char; reference lebih besar dari ini hanya diringkas judulnya
 
@@ -184,6 +205,12 @@ def convert_one(skill_md: str, force: bool, dry: bool) -> tuple[str, str]:
 
     out = header + body.rstrip() + footer + "\n"
 
+    leaked = sorted({term for term in FORBIDDEN_TERMS if term in out.casefold()})
+    if leaked:
+        # Menulis file di sini akan mengembalikan branding upstream ke korpus.
+        # Gagalkan skill ini dan minta BRAND_SCRUBS diperbaiki dulu.
+        return name, f"FAIL (branding lolos scrub: {', '.join(leaked)})"
+
     dest = os.path.join(ZELINE_PUBLIC, f"{name}.md")
     if os.path.exists(dest) and not force:
         return name, "SKIP (sudah ada)"
@@ -233,10 +260,16 @@ def main() -> int:
             else:
                 print(f"  ?? tidak ketemu: {want}")
 
+    failed = 0
     for p in targets:
         name, status = convert_one(p, force=args.force, dry=args.dry)
+        if status.startswith("FAIL"):
+            failed += 1
         print(f"  {status:22} {name}")
     print(f"\nTotal diproses: {len(targets)}  ->  {ZELINE_PUBLIC}")
+    if failed:
+        print(f"GAGAL: {failed} skill masih menyisakan branding upstream — perbaiki BRAND_SCRUBS.")
+        return 1
     return 0
 
 
