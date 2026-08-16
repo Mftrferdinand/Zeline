@@ -82,6 +82,20 @@ _STARTUP_VERIFY_TIMEOUT = 30
 # ~1s ekstra; dengan keep-alive turun ke ~0.3s. urllib3 pool-nya thread-safe.
 _HTTP = requests.Session()
 
+# Alias tampilan untuk prefix rute pada ID model. Router OpenAI-compatible
+# memberi ID seperti `Gr/claude-opus-5` dan katalog `/models` tidak membawa nama
+# panjang rutenya, jadi tanpa tabel ini halaman picker cuma menampilkan
+# singkatan. Prefix di luar tabel dipakai apa adanya — menambah rute baru tidak
+# mewajibkan mengedit ini.
+_VENDOR_LABELS = {
+    "gr": "GoRouter",
+    "tabi": "TabiToken",
+    "cx": "Codex",
+    "nvidia": "NVIDIA",
+    "oc": "OpenModel",
+    "bai": "B.ai",
+}
+
 
 def _telegram_commands() -> list[dict[str, str]]:
     """Menu command ringkas seperti surface Telegram Hermes."""
@@ -539,8 +553,58 @@ def _start_working_heartbeat(
     return worker
 
 
-def _model_picker_payload(models: list[str], current_model: str, provider_index: int | None = None, provider_name: str = "") -> tuple[str, dict[str, Any]]:
-    """Bangun inline picker dengan callback pendek agar aman di batas 64 byte."""
+def _vendor_label(key: str) -> str:
+    """Nama tampilan untuk satu grup model (segmen prefix sebelum '/').
+
+    Router seperti 9Router memberi ID model berprefix rute (`Gr/…`, `tabi/…`,
+    `cx/…`) dan `/models` hanya mengembalikan prefix itu di `owned_by` — tidak
+    ada nama panjangnya. Tabel alias kecil ini membuat halaman picker terbaca
+    ("GoRouter") alih-alih memaksa aes menghafal singkatan. Prefix yang tidak
+    dikenal ditampilkan apa adanya, jadi tabel ini tidak wajib dirawat.
+    """
+    if not key:
+        return "Other"
+    return _VENDOR_LABELS.get(key.lower(), key)
+
+
+def _model_vendor_groups(models: list[str]) -> list[tuple[str, list[int]]]:
+    """Kelompokkan model per prefix rute, urut sesuai kemunculan di katalog.
+
+    Mengembalikan indeks GLOBAL (posisi di `models`) supaya callback pemilihan
+    model tetap `model:<provider>:<index>` dan jalur ganti model tidak berubah.
+    """
+    groups: dict[str, list[int]] = {}
+    order: list[str] = []
+    for index, model in enumerate(models):
+        key = model.split("/", 1)[0] if "/" in model else ""
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(index)
+    return [(key, groups[key]) for key in order]
+
+
+def _model_picker_payload(
+    models: list[str],
+    current_model: str,
+    provider_index: int | None = None,
+    provider_name: str = "",
+    group_index: int = 0,
+) -> tuple[str, dict[str, Any]]:
+    """Bangun inline picker dengan callback pendek agar aman di batas 64 byte.
+
+    Bila katalog provider berisi beberapa rute (mis. 9Router menyajikan Gr,
+    tabi, dan cx sekaligus), model dipecah PER RUTE dan ditampilkan satu
+    halaman per rute dengan tombol Next/Prev. Satu daftar 22 model campur
+    membuat aes harus scroll jauh dan label harus memakai ID penuh supaya tidak
+    ambigu; dipisah per rute, labelnya cukup nama modelnya saja dan nama rute
+    naik ke teks status di atas tombol.
+    """
+    groups = _model_vendor_groups(models) if provider_index is not None else []
+    if len(groups) > 1:
+        return _grouped_model_picker_payload(
+            models, current_model, provider_index, provider_name, groups, group_index
+        )
     buttons = []
     # Deteksi label yang bakal tabrakan bila hanya diambil segmen terakhir.
     # Di router seperti 9Router, ID model berprefix rute (mis. `Gr/claude-opus-4-8`
@@ -568,6 +632,49 @@ def _model_picker_payload(models: list[str], current_model: str, provider_index:
         (f"Select a model\nProvider: {provider_name}\nCurrent: {current_model or 'unknown'}" if provider_name else f"Select a model\nCurrent: {current_model or 'unknown'}"),
         {"inline_keyboard": rows},
     )
+
+
+def _grouped_model_picker_payload(
+    models: list[str],
+    current_model: str,
+    provider_index: int,
+    provider_name: str,
+    groups: list[tuple[str, list[int]]],
+    group_index: int,
+) -> tuple[str, dict[str, Any]]:
+    """Satu halaman picker = satu rute. Next/Prev berputar antar rute."""
+    total = len(groups)
+    page = group_index % total  # berputar: Next di halaman terakhir kembali ke awal
+    key, indices = groups[page]
+    label_name = _vendor_label(key)
+
+    buttons = []
+    for index in indices:
+        model = models[index]
+        # Dalam satu rute prefix-nya sama, jadi nama model saja sudah jelas.
+        label = model.rsplit("/", 1)[-1]
+        if model == current_model:
+            label = f"✓ {label}"
+        buttons.append({"text": label[:60], "callback_data": f"model:{provider_index}:{index}"})
+    per_row = 2 if all(len(button["text"]) <= 22 for button in buttons) else 1
+    rows = [buttons[index:index + per_row] for index in range(0, len(buttons), per_row)]
+
+    navigation = []
+    if total > 2:
+        navigation.append({"text": "‹ Prev", "callback_data": f"grp:{provider_index}:{(page - 1) % total}"})
+    navigation.append({"text": "Next ›", "callback_data": f"grp:{provider_index}:{(page + 1) % total}"})
+    rows.append(navigation)
+    rows.append([{"text": "« Back", "callback_data": "provider:back"}])
+    rows.append([{"text": "✗ Cancel", "callback_data": "model:cancel"}])
+
+    header = f"{provider_name} › {label_name}" if provider_name else label_name
+    next_label = _vendor_label(groups[(page + 1) % total][0])
+    text = (
+        f"Select a model\n{header}  ({page + 1}/{total})\n"
+        f"{len(indices)} models · Next › {next_label}\n"
+        f"Current: {current_model or 'unknown'}"
+    )
+    return text, {"inline_keyboard": rows}
 
 
 def _configured_providers() -> list[dict[str, str]]:
@@ -1142,6 +1249,27 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
     providers = _configured_providers()
     if data == "provider:back":
         picker_text, markup = _provider_picker_payload(providers, _active_provider_slug(providers))
+        _edit_interactive(api, chat_id, message_id, picker_text, reply_markup=markup)
+        return
+    if data.startswith("grp:"):
+        # Pindah halaman rute pada picker model. Indeks halaman ikut di callback
+        # (bukan state proses) supaya tombol tetap hidup setelah gateway restart.
+        parts = data.split(":")
+        try:
+            provider_index = int(parts[1])
+            group_index = int(parts[2])
+            provider = providers[provider_index]
+        except (ValueError, IndexError):
+            _edit_interactive(api, chat_id, message_id, "Model selection expired. Run /model again.")
+            return
+        models = _discover_provider_models(provider)
+        picker_text, markup = _model_picker_payload(
+            models,
+            provider.get("model", ""),
+            provider_index,
+            provider.get("name", provider["slug"]),
+            group_index,
+        )
         _edit_interactive(api, chat_id, message_id, picker_text, reply_markup=markup)
         return
     if data.startswith("provider:"):
