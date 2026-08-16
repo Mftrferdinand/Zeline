@@ -18,7 +18,7 @@ set -euo pipefail
 
 VERSION="0.2.2"
 REF="v0.2.2"
-RELEASE_BASE="https://github.com/Mftrferdinand/Zerolinear/releases/download/${REF}"
+RELEASE_BASE="https://github.com/Mftrferdinand/Zeline/releases/download/${REF}"
 WHEEL_NAME="zeline-${VERSION}-py3-none-any.whl"
 PLATFORM="${ZELINE_PLATFORM:-}"
 PLATFORM_INFO=0
@@ -395,4 +395,4 @@ printf '  Tools        : zeline tools list\n'
 printf '  Integrations : zeline mcp list\n'
 printf '  Health       : zeline doctor\n'
 printf '  Release      : %s\n' "$REF"
-printf '  Docs         : https://github.com/Mftrferdinand/Zerolinear\n'
+printf '  Docs         : https://github.com/Mftrferdinand/Zeline\n'

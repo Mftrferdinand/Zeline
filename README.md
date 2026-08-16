@@ -48,7 +48,7 @@ install. Neither requires root/Administrator access.
 ### Termux, Linux, and macOS
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -71,7 +71,7 @@ zeline setup
 
 ```sh
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -92,7 +92,7 @@ zeline setup
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2'
+$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
