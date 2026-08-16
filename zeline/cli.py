@@ -925,6 +925,14 @@ def cmd_gateway_list() -> int:
         print(f"\nBackground process: RUNNING (PID {pid}).")
     else:
         print("\nBackground process: not running — run `zeline gateway start`.")
+    # Poller yang tidak kita spawn (mis. `zeline gateway run` di tab lain) tidak
+    # tercatat di PID file, jadi dulu tampak seperti "not running" padahal ia
+    # aktif menjawab pesan — sumber kebingungan "kok jawabannya dobel?".
+    # Kunci proses melihatnya, jadi laporkan apa adanya.
+    holder = gateway_service.lock_holder_pid()
+    if holder != 0 and holder != int((state or {}).get("pid", 0)):
+        where = f"PID {holder}" if holder > 0 else "unknown PID"
+        print(f"Unmanaged poller: DETECTED ({where}) — a `gateway run` outside `gateway start`.")
     return 0
 
 
@@ -1022,6 +1030,28 @@ def cmd_gateway_run(only: list[str] | None = None) -> int:
     if not config.API_KEY:
         print("API key is empty. Run `zeline setup` before gateway run.")
         return 2
+    # Kunci eksklusif OS: penjaga NYATA terhadap gateway ganda. PID file hanya
+    # ditulis oleh `gateway start`, jadi dua `gateway run` di dua tab Termux
+    # dulu sama-sama lolos dan mem-poll token yang sama → tiap pesan dijawab
+    # dua kali. Kunci dipegang kernel selama proses hidup dan lepas otomatis
+    # saat proses mati (termasuk SIGKILL), jadi tidak ada stale lock.
+    lock = gateway_service.GatewayLock()
+    if not lock.acquire():
+        holder = gateway_service.lock_holder_pid()
+        where = f"PID {holder}" if holder > 0 else "another process"
+        print(
+            f"Another gateway is already polling ({where}). "
+            "Stop it first with `zeline gateway stop`; duplicate process refused."
+        )
+        return 1
+    try:
+        return _run_gateway_loop(only)
+    finally:
+        lock.release()
+
+
+def _run_gateway_loop(only: list[str] | None) -> int:
+    """Loop gateway foreground. Dipisah agar kunci proses dilepas di satu tempat."""
     _print_banner()
     print("==> Starting gateway…")
     sessions = SessionStore()
