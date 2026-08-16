@@ -2,7 +2,7 @@
 """
 tools/skill_integrity.py — Skill Integrity Verification  (v4.0)
 
-Kenapa ada: riset keamanan OpenClaw (190 advisory) nyatet skill jahat lewat
+Kenapa ada: riset keamanan Zeline (190 advisory) nyatet skill jahat lewat
 jalur distribusi plugin adalah vektor serangan nyata — sebuah skill bisa
 nyelipin two-stage dropper di dalam konteks LLM, lolos dari exec pipeline.
 Buat agent yang pegang private key, itu gak bisa ditawar.
@@ -21,8 +21,8 @@ Exit code: 0 = bersih, 1 = ada perubahan/temuan, 2 = error (lock hilang, dll).
 Wiring: panggil `verify` di HEARTBEAT/boot. Kalau exit != 0 → tahan operasi
 on-chain sampai operator review (lihat sk11.md §Skill Integrity).
 
-Signing pakai `cryptography` (sudah jadi dep Hermes). Private key signing
-disimpan operator di luar repo (HERMES_SIGNING_KEY = path file PEM).
+Signing pakai `cryptography` (sudah jadi dep Zeline). Private key signing
+disimpan operator di luar repo (ZELINE_SIGNING_KEY = path file PEM).
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent          # .../openclaw
+ROOT = Path(__file__).resolve().parent.parent          # .../zeline
 LOCK = ROOT / "SKILLS.lock"
 
 # File yang ikut di-hash: semua skill, reference, script, dan core agent files.
@@ -79,7 +79,7 @@ def build_manifest() -> dict:
 
 # ───────────────── optional Ed25519 signing ─────────────────
 def _sign(manifest_hash: str) -> str | None:
-    key_path = os.environ.get("HERMES_SIGNING_KEY")
+    key_path = os.environ.get("ZELINE_SIGNING_KEY")
     if not key_path:
         return None
     try:
@@ -87,7 +87,7 @@ def _sign(manifest_hash: str) -> str | None:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         priv = load_pem_private_key(Path(key_path).expanduser().read_bytes(), password=None)
         if not isinstance(priv, Ed25519PrivateKey):
-            print("WARN: HERMES_SIGNING_KEY bukan Ed25519 — skip signing", file=sys.stderr)
+            print("WARN: ZELINE_SIGNING_KEY bukan Ed25519 — skip signing", file=sys.stderr)
             return None
         sig = priv.sign(bytes.fromhex(manifest_hash))
         return base64.b64encode(sig).decode()
@@ -97,7 +97,7 @@ def _sign(manifest_hash: str) -> str | None:
 
 
 def _verify_sig(manifest_hash: str, sig_b64: str) -> bool | None:
-    pub_path = os.environ.get("HERMES_VERIFY_KEY")
+    pub_path = os.environ.get("ZELINE_VERIFY_KEY")
     if not pub_path:
         return None   # gak ada public key → skip (bukan fail)
     try:
@@ -149,7 +149,7 @@ def cmd_verify(args) -> int:
     if "signature_ed25519" in locked:
         ok = _verify_sig(locked["manifest_sha256"], locked["signature_ed25519"])
         sig_state = {True: "✅ signature valid", False: "🛑 SIGNATURE INVALID",
-                     None: "⚠️ signature ada tapi HERMES_VERIFY_KEY belum di-set"}[ok]
+                     None: "⚠️ signature ada tapi ZELINE_VERIFY_KEY belum di-set"}[ok]
         if ok is False:
             print("🛑 TANDA TANGAN MANIFEST TIDAK VALID — SKILLS.lock kemungkinan dirusak.", file=sys.stderr)
             return 1
@@ -173,7 +173,7 @@ def cmd_verify(args) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Hermes skill integrity verifier (v4.0)")
+    ap = argparse.ArgumentParser(description="Zeline skill integrity verifier (v4.0)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("generate"); g.add_argument("--sign", action="store_true")
     v = sub.add_parser("verify"); v.add_argument("--strict", action="store_true")

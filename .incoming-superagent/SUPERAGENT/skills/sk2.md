@@ -54,7 +54,7 @@ python3.11 -m venv /opt/venv
 echo 'source /opt/venv/bin/activate' >> ~/.bashrc
 ```
 
-### Bun (faster Node alt, used for OpenClaw plugins)
+### Bun (faster Node alt, used for Zeline plugins)
 
 ```bash
 curl -fsSL https://bun.sh/install | bash
@@ -304,20 +304,20 @@ crontab -e
 
 ---
 
-## Common OpenClaw/Hermes VPS Patterns
+## Common Zeline/Zeline VPS Patterns
 
 ```bash
 # Run agent + telegram bot in screen session
 screen -S claude-bot
-cd ~/.openclaw/workspace
+cd ~/.zeline/workspace
 claude --resume                    # or: bun run telegram
 # Ctrl-A D to detach
 
-# Tail openclaw logs while in another session
-tail -f ~/.openclaw/logs/*.log
+# Tail zeline logs while in another session
+tail -f ~/.zeline/logs/*.log
 
 # Check active agents
-ps aux | grep -E 'claude|openclaw|hermes' | grep -v grep
+ps aux | grep -E 'claude|zeline|zeline' | grep -v grep
 ```
 
 ---

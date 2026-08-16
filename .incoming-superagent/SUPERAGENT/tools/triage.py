@@ -101,10 +101,10 @@ def format_digest(digest: dict) -> str:
 
 if __name__ == "__main__":
     msgs = [
-        Message("telegram", "bos", "URGENT: server down, cek dong @hermes", ts=time.time()),
+        Message("telegram", "bos", "URGENT: server down, cek dong @zeline", ts=time.time()),
         Message("discord", "randomguy", "gm semua", ts=time.time() - 7200),
         Message("telegram", "partner", "claim window LayerZero expire 2 jam lagi!", ts=time.time()),
         Message("discord", "spammer", "join my group", ts=time.time() - 100),
     ]
-    d = triage(msgs, vips={"bos", "partner"}, my_handles={"@hermes"})
+    d = triage(msgs, vips={"bos", "partner"}, my_handles={"@zeline"})
     print(format_digest(d))

@@ -21,7 +21,7 @@ integrity check) atau nguras dana. Jadi:
 - Self-improve TIDAK PERNAH: sign tx, ubah spend cap, regenerate SKILLS.lock,
                   matiin governor, atau ubah dirinya sendiri (reflection.py).
 
-Semua aksi otonom dicatat ke audit log (~/.hermes/reflection-audit.log).
+Semua aksi otonom dicatat ke audit log (~/.zeline/reflection-audit.log).
 """
 from __future__ import annotations
 
@@ -32,15 +32,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-ROOT = Path(__file__).resolve().parent.parent           # .../openclaw
-PROPOSALS_DIR = Path(os.environ.get("HERMES_PROPOSALS", "~/.hermes/proposals")).expanduser()
-AUDIT_LOG = Path(os.environ.get("HERMES_REFLECTION_AUDIT", "~/.hermes/reflection-audit.log")).expanduser()
+ROOT = Path(__file__).resolve().parent.parent           # .../zeline
+PROPOSALS_DIR = Path(os.environ.get("ZELINE_PROPOSALS", "~/.zeline/proposals")).expanduser()
+AUDIT_LOG = Path(os.environ.get("ZELINE_REFLECTION_AUDIT", "~/.zeline/reflection-audit.log")).expanduser()
 
 # ── HARD GUARDS — jangan longgarin tanpa paham konsekuensinya ──
 FROZEN_PATHS = {
     "SOUL.md", "AGENTS.md", "USER.md",
-    "skills/hermes/references/governor.md", "skills/hermes/scripts/governor.py",
-    "skills/hermes/scripts/mev.py", "skills/hermes/references/security.md",
+    "skills/zeline/references/governor.md", "skills/zeline/scripts/governor.py",
+    "skills/zeline/scripts/mev.py", "skills/zeline/references/security.md",
     "tools/skill_integrity.py", "tools/reflection.py", "SKILLS.lock",
     "skills/sk55.md", "tools/watchdog.py", "tools/vault.py", "tools/model_registry.py",
     "tools/planner.py", "tools/swarm.py", "tools/automation.py", "tools/skill_forge.py",
@@ -188,16 +188,16 @@ if __name__ == "__main__":
     print("can_autofix('rotate_rpc'):", can_autofix("rotate_rpc"))
     print("can_autofix('sign_tx'):", can_autofix("sign_tx"))
     try:
-        guard_write("skills/hermes/scripts/governor.py")
+        guard_write("skills/zeline/scripts/governor.py")
     except PermissionError as e:
         print("guard works:", str(e)[:60], "...")
     import tempfile, os as _os
-    _os.environ["HERMES_PROPOSALS"] = tempfile.mkdtemp()
-    globals()["PROPOSALS_DIR"] = Path(_os.environ["HERMES_PROPOSALS"])
+    _os.environ["ZELINE_PROPOSALS"] = tempfile.mkdtemp()
+    globals()["PROPOSALS_DIR"] = Path(_os.environ["ZELINE_PROPOSALS"])
     pth = propose(Proposal("tambah fallback RPC Base", "ankr timeout berulang",
-                           "skills/hermes/scripts/browser_engine.py",
+                           "skills/zeline/scripts/browser_engine.py",
                            "tambah endpoint llamarpc ke pool Base"))
     print("proposal written:", pth.name)
     pth2 = propose(Proposal("ubah cap governor", "mau naikin limit",
-                            "skills/hermes/scripts/governor.py", "ubah default cap"))
+                            "skills/zeline/scripts/governor.py", "ubah default cap"))
     print("frozen proposal flagged requires_operator:", "requires_operator_approval: **True**" in pth2.read_text())

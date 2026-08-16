@@ -6,8 +6,8 @@ Dukung OpenAI-compatible (OpenRouter/DeepSeek/Groq/Together/Kimi/Ollama lokal/
 LM Studio/vLLM/dll) dan Anthropic-style.
 
 SECRET HYGIENE: API key disimpan TERENKRIPSI (scrypt+Fernet, key dari
-HERMES_MASTER_PW) — gak pernah di-log/print mentah. list_models() ngasih key
-ter-redact. Tanpa HERMES_MASTER_PW, registry NOLAK nyimpen key (gak ada plaintext
+ZELINE_MASTER_PW) — gak pernah di-log/print mentah. list_models() ngasih key
+ter-redact. Tanpa ZELINE_MASTER_PW, registry NOLAK nyimpen key (gak ada plaintext
 diam-diam). File ini FROZEN — self-improve gak boleh ngeditnya (nentuin ke mana
 prompt/data dikirim + pegang key).
 
@@ -39,7 +39,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.backends import default_backend
 
 Kind = Literal["openai", "anthropic"]
-DEFAULT_DB = Path(os.environ.get("HERMES_MODELS_DB", "~/.hermes/models.db")).expanduser()
+DEFAULT_DB = Path(os.environ.get("ZELINE_MODELS_DB", "~/.zeline/models.db")).expanduser()
 
 
 @dataclass
@@ -55,7 +55,7 @@ class ModelConfig:
 
 class ModelRegistry:
     def __init__(self, master_pw: Optional[str] = None, db_path: Path = DEFAULT_DB):
-        self.master_pw = master_pw or os.environ.get("HERMES_MASTER_PW")
+        self.master_pw = master_pw or os.environ.get("ZELINE_MASTER_PW")
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.db_path))
@@ -95,7 +95,7 @@ class ModelRegistry:
             c = self._cipher()
             if c is None:
                 raise RuntimeError(
-                    "HERMES_MASTER_PW belum di-set — registry NOLAK nyimpen API key "
+                    "ZELINE_MASTER_PW belum di-set — registry NOLAK nyimpen API key "
                     "tanpa enkripsi. Set master password dulu (secret hygiene).")
             enc = c.encrypt(api_key.encode()).decode()
         self.db.execute(
@@ -172,7 +172,7 @@ def _dispatch(cfg: ModelConfig, messages: list[dict], max_tokens: int) -> str:
 
 if __name__ == "__main__":
     import tempfile
-    os.environ["HERMES_MASTER_PW"] = "test-pw"
+    os.environ["ZELINE_MASTER_PW"] = "test-pw"
     reg = ModelRegistry(db_path=Path(tempfile.mktemp()))
     print(reg.add_model("openrouter-llama", "https://openrouter.ai/api/v1",
                         "meta-llama/llama-3.3-70b", api_key="sk-or-secret123", priority=50))

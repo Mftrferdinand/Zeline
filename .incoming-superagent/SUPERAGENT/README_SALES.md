@@ -3,7 +3,7 @@
 ### Sovereign Autonomous AI Agent Framework — Production-Grade, Battle-Tested
 
 > **Execute anything. Engineered with guardrails.**
-> A complete agent "brain" you drop onto any tool-capable LLM runtime (Hermes, Claude Code, Cursor, Codex, OpenClaw) to turn it into a crypto-native, self-directing, team-ready execution engine.
+> A complete agent "brain" you drop onto any tool-capable LLM runtime (Zeline, Claude Code, Cursor, Codex, Zeline) to turn it into a crypto-native, self-directing, team-ready execution engine.
 
 ---
 
@@ -16,7 +16,7 @@
 | **Codebase** | 43,000+ lines, 130 Python files, zero-dep core |
 | **Tests** | ✅ **337 / 337 passing** — every critical path verified |
 | **Runtime** | Python 3.11+ · stdlib core · optional `[crypto]` extras |
-| **Portability** | Runs on Hermes · Claude Code · Cursor · Codex · OpenClaw |
+| **Portability** | Runs on Zeline · Claude Code · Cursor · Codex · Zeline |
 | **Always-on cost** | ~3.5k tokens (progressive disclosure — skills load on-demand) |
 
 ---
@@ -50,7 +50,7 @@ SUPERAGENT V7:   "Already executing. Here are the safeguards — say the word to
 
 **Automation & Ops** — Telegram bots, cron/webhooks, daily briefing engine, watchdog/self-healing, voice, desktop control, vault.
 
-Plus a dedicated **Hermes crypto runtime** (H1–H10): swap, bridge, DeFi, sniping, monitoring, NFT, contract read/write, deploy.
+Plus a dedicated **Zeline crypto runtime** (H1–H10): swap, bridge, DeFi, sniping, monitoring, NFT, contract read/write, deploy.
 
 ---
 
@@ -75,10 +75,10 @@ pip install eth-account web3        # core runs on stdlib alone
 
 # 4. Verify integrity
 python3 tools/counts.py             # metrics
-python3 -m pytest tools/tests/ skills/hermes/tests/ -q   # 337 tests
+python3 -m pytest tools/tests/ skills/zeline/tests/ -q   # 337 tests
 
 # 5. Load into your runtime
-#    Hermes/OpenClaw → point workspace at this folder (see DEPLOY.md)
+#    Zeline/Zeline → point workspace at this folder (see DEPLOY.md)
 #    Claude Code     → drop as CLAUDE.md context + skills
 #    Cursor          → attach as .cursorrules / context files
 ```
@@ -97,10 +97,10 @@ SUPERAGENT/
 ├── USER.md            # ⚙️ YOUR profile (fill in)
 ├── MEMORY.md          # ⚙️ YOUR long-term memory (fill in)
 ├── skills/            # 82 skills (load on trigger)
-│   └── hermes/        # H1–H10 crypto runtime + scripts + tests
+│   └── zeline/        # H1–H10 crypto runtime + scripts + tests
 ├── tools/             # 61 tools + 35 test files
 │   └── ctf/           # full-auto CTF coordinator + sandbox
-└── hermes-bridge/     # cross-runtime adapter
+└── zeline-bridge/     # cross-runtime adapter
 ```
 
 ---

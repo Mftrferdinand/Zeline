@@ -1,9 +1,0 @@
-# Optional dev/test tooling for the Hermes crypto scripts.
-# NOTE: the test suite runs with the standard library alone (see tests/README.md);
-# these are only needed if you want lint + the pytest runner.
-pytest>=8.0
-ruff>=0.6
-
-# Runtime deps (for actually executing the scripts against live chains) live in
-# the skill README under "Dependencies" — install those separately, e.g.:
-#   pip install web3 eth-account mnemonic httpx solders solana cryptography

@@ -40,19 +40,19 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# ── Optional Hermes Bridge import ──
-_HERMES_BRIDGE_AVAILABLE = False
-_HermesNativeBridge = None
+# ── Optional Zeline Bridge import ──
+_ZELINE_BRIDGE_AVAILABLE = False
+_ZelineNativeBridge = None
 _BridgeResult = None
 try:
-    _hermes_bridge_path = Path(__file__).parent.parent / "hermes-bridge"
-    if str(_hermes_bridge_path) not in sys.path:
-        sys.path.insert(0, str(_hermes_bridge_path))
-    from adapter import HermesNativeBridge as _HermesNativeBridge
+    _zeline_bridge_path = Path(__file__).parent.parent / "zeline-bridge"
+    if str(_zeline_bridge_path) not in sys.path:
+        sys.path.insert(0, str(_zeline_bridge_path))
+    from adapter import ZelineNativeBridge as _ZelineNativeBridge
     from adapter import BridgeResult as _BridgeResult
-    _HERMES_BRIDGE_AVAILABLE = True
+    _ZELINE_BRIDGE_AVAILABLE = True
 except ImportError as e:
-    _hermes_import_error = str(e)
+    _zeline_import_error = str(e)
 
 logger = logging.getLogger(__name__)
 
@@ -558,16 +558,16 @@ class RevenueOptimizer:
         Scans, ranks, and prepares an execution plan for the best opportunity.
         By default, SIMULATES ONLY — no real transactions.
 
-        When broadcast=True, routes the execution through the Hermes Native Bridge
+        When broadcast=True, routes the execution through the Zeline Native Bridge
         for real on-chain transaction broadcast.
 
         Args:
             broadcast: If True, attempts to broadcast real transactions via
-                       Hermes bridge. DANGEROUS — requires explicit opt-in.
+                       Zeline bridge. DANGEROUS — requires explicit opt-in.
             strategy_filter: Optional strategy whitelist.
             dry_run: If True (default), simulate everything including
                      gas estimation and tx construction.
-            bridge_config: Optional dict of overrides for Hermes bridge arguments
+            bridge_config: Optional dict of overrides for Zeline bridge arguments
                            (chain, token, amount, from_chain, to_chain, etc.).
                            Only used when broadcast=True.
 
@@ -604,12 +604,12 @@ class RevenueOptimizer:
         plan = self._build_plan(top, broadcast=broadcast, dry_run=dry_run)
 
         if broadcast and not dry_run:
-            # ── Real broadcast via Hermes Bridge ──
+            # ── Real broadcast via Zeline Bridge ──
             bridge_result = self.broadcast_execution(plan, bridge_config=bridge_config)
 
             if bridge_result.success:
                 self.breaker.deploy(top.strategy, top.capital_required_usd)
-                print(f"📡 Broadcast via Hermes: {bridge_result.tool}")
+                print(f"📡 Broadcast via Zeline: {bridge_result.tool}")
                 if bridge_result.tx_hash:
                     print(f"   tx: {bridge_result.tx_hash}")
                 if bridge_result.output:
@@ -717,13 +717,13 @@ class RevenueOptimizer:
             warnings=warnings,
         )
 
-    # ── Real Broadcast via Hermes Bridge ───────────────────────────
+    # ── Real Broadcast via Zeline Bridge ───────────────────────────
 
     @staticmethod
-    def _strategy_to_hermes_tool(strategy: StrategyType) -> str:
-        """Map a revenue strategy to a Hermes bridge tool.
+    def _strategy_to_zeline_tool(strategy: StrategyType) -> str:
+        """Map a revenue strategy to a Zeline bridge tool.
 
-        Returns the Hermes tool name, or empty string if no mapping exists.
+        Returns the Zeline tool name, or empty string if no mapping exists.
         """
         _MAP: dict[StrategyType, str] = {
             StrategyType.CROSS_CHAIN_ARB: "bridge",
@@ -731,17 +731,17 @@ class RevenueOptimizer:
             StrategyType.YIELD_AGGREGATION: "contract-write",
             StrategyType.NFT_TRADING: "mint-nft",
             StrategyType.BASIS_TRADING: "contract-write",
-            # MEV is executor-native (flashbots relay) — no Hermes tool mapping
+            # MEV is executor-native (flashbots relay) — no Zeline tool mapping
         }
         return _MAP.get(strategy, "")
 
     @staticmethod
-    def _build_hermes_args(
+    def _build_zeline_args(
         strategy: StrategyType,
         opp: Opportunity,
         bridge_config: Optional[dict] = None,
     ) -> dict:
-        """Build Hermes bridge arguments from an opportunity.
+        """Build Zeline bridge arguments from an opportunity.
 
         Uses bridge_config overrides when provided, otherwise derives
         reasonable defaults from the opportunity metadata.
@@ -753,7 +753,7 @@ class RevenueOptimizer:
                            to_chain, token, amount. Falls back to metadata.
 
         Returns:
-            dict of Hermes tool arguments.
+            dict of Zeline tool arguments.
         """
         cfg = bridge_config or {}
         meta = opp.metadata
@@ -796,7 +796,7 @@ class RevenueOptimizer:
             }
 
         elif strategy == StrategyType.MEV:
-            # MEV bundles go through flashbots relay, not Hermes
+            # MEV bundles go through flashbots relay, not Zeline
             # Return empty — broadcast_execution handles this case
             return {}
 
@@ -807,77 +807,77 @@ class RevenueOptimizer:
         plan: ExecutionPlan,
         bridge_config: Optional[dict] = None,
     ) -> BridgeResult:
-        """Route a ranked opportunity through the Hermes Native Bridge for
+        """Route a ranked opportunity through the Zeline Native Bridge for
         real on-chain execution.
 
-        Resolves strategy → Hermes tool, builds arguments from the
-        opportunity, calls HermesNativeBridge.call_tool(), and logs
+        Resolves strategy → Zeline tool, builds arguments from the
+        opportunity, calls ZelineNativeBridge.call_tool(), and logs
         the result to treasury and execution log.
 
         Args:
             plan: The execution plan to broadcast (must have an opportunity).
             bridge_config: Optional overrides for chain, token, amount, etc.
-                           See _build_hermes_args() for accepted keys per strategy.
+                           See _build_zeline_args() for accepted keys per strategy.
 
         Returns:
             A BridgeResult dataclass (success, tx_hash, output, error, etc.)
-            OR a synthetic BridgeResult if Hermes bridge is not installed.
+            OR a synthetic BridgeResult if Zeline bridge is not installed.
 
         Raises:
             Does NOT raise — all failures are captured in BridgeResult.error
         """
         opp = plan.opportunity
         strategy = opp.strategy
-        tool_name = self._strategy_to_hermes_tool(strategy)
+        tool_name = self._strategy_to_zeline_tool(strategy)
 
-        # ── MEV special case: flashbots relay, not Hermes ──
+        # ── MEV special case: flashbots relay, not Zeline ──
         if strategy == StrategyType.MEV:
             return _synthetic_mev_result(strategy.value, plan)
 
-        # ── No Hermes mapping ──
+        # ── No Zeline mapping ──
         if not tool_name:
             result = _BridgeResult(
                 success=False,
                 tool="unknown",
-                action=f"No Hermes bridge mapping for {strategy.value}",
+                action=f"No Zeline bridge mapping for {strategy.value}",
                 output="",
-                error=f"Strategy '{strategy.value}' has no Hermes tool mapping. "
+                error=f"Strategy '{strategy.value}' has no Zeline tool mapping. "
                       f"Run with broadcast=False to simulate.",
-            ) if _HERMES_BRIDGE_AVAILABLE else _synthetic_bridge_result(
+            ) if _ZELINE_BRIDGE_AVAILABLE else _synthetic_bridge_result(
                 success=False,
                 tool="unknown",
                 action=f"No mapping for {strategy.value}",
-                error=f"Strategy '{strategy.value}' has no Hermes tool mapping.",
+                error=f"Strategy '{strategy.value}' has no Zeline tool mapping.",
             )
             self._log_broadcast(plan, result)
             return result
 
         # ── Bridge not available ──
-        if not _HERMES_BRIDGE_AVAILABLE:
+        if not _ZELINE_BRIDGE_AVAILABLE:
             result = _synthetic_bridge_result(
                 success=False,
                 tool=tool_name,
                 action="bridge_unavailable",
-                error=f"Hermes bridge not available: {_hermes_import_error}. "
-                      f"Install hermes-bridge or set HERMES_ROOT.",
+                error=f"Zeline bridge not available: {_zeline_import_error}. "
+                      f"Install zeline-bridge or set ZELINE_ROOT.",
             )
             self._log_broadcast(plan, result)
             return result
 
         # ── Build arguments ──
-        hermes_args = self._build_hermes_args(strategy, opp, bridge_config)
+        zeline_args = self._build_zeline_args(strategy, opp, bridge_config)
 
-        # ── Execute via Hermes Native Bridge ──
+        # ── Execute via Zeline Native Bridge ──
         try:
-            bridge = _HermesNativeBridge()
-            result = bridge.call_tool(tool_name, hermes_args)
+            bridge = _ZelineNativeBridge()
+            result = bridge.call_tool(tool_name, zeline_args)
         except Exception as exc:
             result = _BridgeResult(
                 success=False,
                 tool=tool_name,
                 action=f"Broadcast {strategy.value}",
                 output="",
-                error=f"Hermes bridge call failed: {exc}",
+                error=f"Zeline bridge call failed: {exc}",
             )
 
         # ── Log to treasury & execution log ──
@@ -995,7 +995,7 @@ class RevenueOptimizer:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Bridge Helpers (synthetic results when Hermes not installed)
+#  Bridge Helpers (synthetic results when Zeline not installed)
 # ──────────────────────────────────────────────────────────────────────
 
 def _synthetic_bridge_result(
@@ -1007,7 +1007,7 @@ def _synthetic_bridge_result(
     error: str = "",
     chain: str = "",
 ) -> Any:
-    """Build a synthetic BridgeResult-like object when Hermes bridge
+    """Build a synthetic BridgeResult-like object when Zeline bridge
     is not installed. Mimics the BridgeResult dataclass shape."""
     # If BridgeResult dataclass is available (partial import succeeded),
     # use it. Otherwise build a simple object.
@@ -1048,7 +1048,7 @@ def _synthetic_bridge_result(
 
 
 def _synthetic_mev_result(strategy_name: str, plan: ExecutionPlan) -> Any:
-    """MEV bundles go through flashbots relay, not Hermes bridge.
+    """MEV bundles go through flashbots relay, not Zeline bridge.
 
     Returns a synthetic BridgeResult noting this path.
     """
@@ -1057,7 +1057,7 @@ def _synthetic_mev_result(strategy_name: str, plan: ExecutionPlan) -> Any:
         tool="flashbots",
         action=f"MEV bundle for {strategy_name}",
         output=(
-            f"MEV execution routed through flashbots relay (not Hermes bridge). "
+            f"MEV execution routed through flashbots relay (not Zeline bridge). "
             f"Expected profit: ${plan.expected_profit_net_usd:,.2f}. "
             f"Steps: {'; '.join(plan.steps[:3])}"
         ),

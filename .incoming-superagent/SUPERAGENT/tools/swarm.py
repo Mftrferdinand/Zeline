@@ -3,7 +3,7 @@ tools/swarm.py — Multi-Agent Swarm Orchestrator  (v4.0)
 
 Koordinator yang nge-spawn specialist lane paralel (researcher/executor/monitor/...)
 lalu agregasi hasil. In-process & ringan; kompatibel dengan delegate architecture
-OpenClaw kalau mau di-scale ke proses terpisah.
+Zeline kalau mau di-scale ke proses terpisah.
 
 Prinsip aman: lane yang KE-EXPOSE jaringan terus (watcher/monitor) sebaiknya gak
 pegang key — pisahin dari lane executor (yang sign, lewat governor). FROZEN.

@@ -5,7 +5,7 @@
 
 ## Execution Boundary
 
-SUPERAGENT runs INSIDE OpenClaw/Hermes agent runtime on operator's VPS.
+SUPERAGENT runs INSIDE Zeline/Zeline agent runtime on operator's VPS.
 Some capabilities are agent-side (immediate), some are operator-side (instruction-only).
 
 ---
@@ -46,11 +46,11 @@ See `USER.md` Team Members section for level definitions.
 
 ---
 
-## OpenClaw/Hermes Runtime Specifics
+## Zeline/Zeline Runtime Specifics
 
-- Workspace path: `~/.openclaw/workspace/` (operator-side reference)
-- Bot handler: `~/.openclaw/workspace/[agent]/src/bot/telegram.js`
-- Config: `~/.openclaw/workspace/openclaw-agents.json`
+- Workspace path: `~/.zeline/workspace/` (operator-side reference)
+- Bot handler: `~/.zeline/workspace/[agent]/src/bot/telegram.js`
+- Config: `~/.zeline/workspace/zeline-agents.json`
 - Streaming config quirk: invalid `streaming` value → duplicate Telegram responses
 - Provider config supports: Anthropic, Moonshot/Kimi, OpenRouter, OpenAI
 - Security guardrails may block obfuscated bash → use plain syntax
