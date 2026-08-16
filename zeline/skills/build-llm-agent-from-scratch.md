@@ -53,7 +53,7 @@ Once the loop runs, add persistence so the agent remembers across sessions and c
 When the user hands you a large third-party skill pack (e.g. a zipped agent framework with 80+ `.md` skills) to bundle as built-in public skills:
 - **Copy into the package's bundled skills dir, not the user's data dir.** `seed_skills()` copies `zeline/skills/*.md` → `~/.zeline/skills/public/` (never overwriting customized ones). So drop the imported files into the source `zeline/skills/` and they seed on next `setup` or an explicit `skills.seed_skills()` call. Seeding is idempotent — returns count of newly-copied files.
 - **Dedup before importing.** Skill packs ship reference-only stubs marked `# ⚠️ MERGED into X.md` on line 1, plus legacy duplicate variants of the same content (e.g. `m*`/`x*` mirrors of the canonical `sk*` series). Skip both: filter the MERGED stubs by first-line check, and keep only the canonical series to avoid a doubled corpus. State clearly to the user which variants you dropped and offer to include them if wanted.
-- **Namespace + normalize on import.** Prefix names (`superagent-v7-<stem>`) so they don't collide with the agent's own skills, and rewrite each file's first heading + `>` blockquote into the agent's expected skill format (`# <desc>` / `> <desc>`), since `_parse()` reads line-1 `# ` as name and first `>` as description for `skills_block()`. Do this in one `execute_code` pass over the files, not file-by-file.
+- **Namespace + normalize on import.** Prefix names (`zeline-zenith-<stem>`) so they don't collide with the agent's own skills, and rewrite each file's first heading + `>` blockquote into the agent's expected skill format (`# <desc>` / `> <desc>`), since `_parse()` reads line-1 `# ` as name and first `>` as description for `skills_block()`. Do this in one `execute_code` pass over the files, not file-by-file.
 - **Rework the system prompt into a runtime persona** when bundling a persona-driven pack: make it execution-first + skill-aware (explicit "call load_skill before acting" rule) + anti-fabrication, and add a regression test asserting the persona wording is present in `SYSTEM_PROMPT` and the seeded corpus is loadable via `load_skill`.
 
 ### Restarting the gateway after code changes — use the framework's own start/stop
@@ -123,7 +123,7 @@ Supporting files: `references/nine-router-agent-notes.md` — exact event-stream
 
 Session-verified recipe for importing a third-party skill pack (80+ `.md` files
 from a zipped agent framework) as built-in public skills. Applied to Zeline
-importing the Superagent V7 pack.
+importing the Zeline Zenith pack.
 
 ## How the agent's skill seeding works (Zeline reference)
 - `zeline/skills.py::seed_skills()` copies `zeline/skills/*.md` (package-bundled)
@@ -144,12 +144,12 @@ importing the Superagent V7 pack.
    - Keep only the canonical series (`sk*`), drop legacy mirror variants
      (`m*`, `x*`) that duplicate the same content under a different prefix.
 3. **Normalize + namespace** each kept file, writing to the package bundled dir
-   `zeline/skills/superagent-v7-<stem>.md`:
-   - New heading line: `# <human description> [Superagent V7]`
+   `zeline/skills/zeline-zenith-<stem>.md`:
+   - New heading line: `# <human description> [Zeline Zenith]`
    - New blockquote: `> <human description> — modul ... (sumber: <stem>).`
    - Strip the original `# skX — ...` heading from the body to avoid a dup H1.
    - Derive `<human description>` by stripping the `skX — ` prefix and trailing
-     `(SUPERAGENT V7)` / `(... consolidated)` tags from the original heading.
+     `(ZELINE ZENITH)` / `(... consolidated)` tags from the original heading.
 4. **Seed**: `python -c "from zeline import skills; print(skills.seed_skills())"`
    — should report the count you imported (e.g. 60).
 
@@ -160,7 +160,7 @@ importing the Superagent V7 pack.
   owner-only safety defaults (no third-party creds, confirm irreversible ops,
   never log/print secrets).
 - Add regression tests asserting the persona wording is in `SYSTEM_PROMPT` and a
-  seeded corpus skill is loadable (`load_skill("superagent-v7-sk0")` returns real
+  seeded corpus skill is loadable (`load_skill("zeline-zenith-sk0")` returns real
   content).
 
 ## Result shape from the applied session
