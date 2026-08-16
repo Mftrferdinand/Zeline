@@ -1862,6 +1862,54 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(telegram._format_agent_error("Provider says out of credits").startswith("🪫 Quota/Auth —"))
         self.assertNotIn("401, 403, 429", telegram._format_agent_error("The provider returned HTTP 403 — unauthorized."))
 
+    def test_telegram_startup_survives_transient_getme_failure(self):
+        """Satu ReadTimeout saat startup TIDAK boleh mematikan gateway.
+
+        Bug: `getMe` dipanggil attempts=1, jadi satu timeout (biasa di Termux)
+        bikin gateway berhenti dengan "token could not be verified" — bot mati
+        total dan /model tidak dijawab, padahal tokennya valid.
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        import requests as _rq
+
+        class OK:
+            ok = True
+            status_code = 200
+            def json(self): return {"ok": True, "result": {"username": "zerolinearbot"}}
+
+        calls = {"n": 0}
+        def flaky(url, json=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise _rq.ReadTimeout("boom")
+            return OK()
+
+        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram._HTTP, "post", side_effect=flaky):
+            username, failure = telegram._verify_token("bot-api")
+        self.assertEqual(username, "zerolinearbot")
+        self.assertEqual(failure, "")
+        self.assertEqual(calls["n"], 3)
+
+    def test_telegram_startup_stops_immediately_on_real_token_rejection(self):
+        """401/404 = token benar-benar salah → berhenti, jangan retry sia-sia."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        class Unauthorized:
+            ok = False
+            status_code = 401
+            def json(self): return {"ok": False, "description": "Unauthorized"}
+
+        calls = {"n": 0}
+        def rejected(url, json=None, timeout=None):
+            calls["n"] += 1
+            return Unauthorized()
+
+        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram._HTTP, "post", side_effect=rejected):
+            username, failure = telegram._verify_token("bot-api")
+        self.assertIsNone(username)
+        self.assertIn("rejected by Telegram", failure)
+        self.assertEqual(calls["n"], 1)  # no pointless retry
+
     def test_telegram_stop_cancels_active_turn_without_stopping_gateway(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 

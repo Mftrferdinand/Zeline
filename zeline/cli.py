@@ -959,7 +959,7 @@ def cmd_gateway_start(only: list[str] | None = None) -> int:
     # Don't just report 'spawned' — wait for each platform to actually connect
     # (getMe + polling) and show a live per-gateway status, like Hermes does.
     print("  Connecting…", flush=True)
-    ready, lines = gateway_service.wait_until_connected(timeout=30.0)
+    ready, lines = gateway_service.wait_until_connected(timeout=90.0)
     for line in lines:
         icon = "✅" if ready else "⚠️"
         print(f"  {icon} {line}")
@@ -984,7 +984,7 @@ def cmd_gateway_restart(only: list[str] | None = None) -> int:
     if not started:
         return 1
     print("  Connecting…", flush=True)
-    ready, lines = gateway_service.wait_until_connected(timeout=30.0)
+    ready, lines = gateway_service.wait_until_connected(timeout=90.0)
     for line in lines:
         icon = "✅" if ready else "⚠️"
         print(f"  {icon} {line}")

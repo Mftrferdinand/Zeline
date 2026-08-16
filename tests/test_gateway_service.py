@@ -61,6 +61,62 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertEqual(state["start_ticks"], "777")
         self.assertEqual(state["only"], ["telegram", "webhook"])
 
+    def test_wait_until_connected_ignores_fatal_lines_from_previous_start(self):
+        """Baris fatal dari start LAMA tidak boleh membuat start baru dianggap gagal.
+
+        Bug: wait_until_connected membaca SELURUH gateway.log, jadi satu
+        "token could not be verified" dari percobaan sebelumnya terus terbaca
+        dan CLI melaporkan ⚠️ walaupun proses baru terhubung normal.
+        """
+        self.config.ensure_data_dirs()
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
+        self.config.save_config(cfg)
+        stale = "  [telegram] token could not be verified; gateway stopped.\n"
+        self.service.LOG_FILE.write_text(stale, encoding="utf-8")
+        offset = len(stale.encode("utf-8"))
+        self.config.PID_FILE.write_text(
+            json.dumps({"pid": 4242, "start_ticks": "1", "only": ["telegram"], "log_offset": offset}),
+            encoding="utf-8",
+        )
+        with self.service.LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write("  [telegram] @zerolinearbot connected via polling\n")
+        with mock.patch.object(self.service, "_process_matches_state", return_value=True):
+            ready, lines = self.service.wait_until_connected(timeout=2.0)
+        self.assertTrue(ready, msg=f"expected connected, got {lines}")
+        self.assertEqual(lines, ["telegram: connected"])
+
+    def test_wait_until_connected_reports_fatal_from_current_start(self):
+        """Kegagalan token dari start SEKARANG tetap harus dilaporkan."""
+        self.config.ensure_data_dirs()
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
+        self.config.save_config(cfg)
+        self.service.LOG_FILE.write_text("", encoding="utf-8")
+        self.config.PID_FILE.write_text(
+            json.dumps({"pid": 4242, "start_ticks": "1", "only": ["telegram"], "log_offset": 0}),
+            encoding="utf-8",
+        )
+        with self.service.LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write("  [telegram] token could not be verified (rejected by Telegram: Unauthorized); gateway stopped.\n")
+        with mock.patch.object(self.service, "_process_matches_state", return_value=True):
+            ready, lines = self.service.wait_until_connected(timeout=2.0)
+        self.assertFalse(ready)
+        self.assertTrue(any("could not be verified" in line for line in lines))
+
+    def test_start_records_log_offset_for_readiness_watch(self):
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
+        self.config.save_config(cfg)
+        self.config.ensure_data_dirs()
+        self.service.LOG_FILE.write_text("old line\n", encoding="utf-8")
+        process = mock.Mock(pid=43211)
+        with mock.patch.object(self.service.subprocess, "Popen", return_value=process), mock.patch.object(self.service, "_process_start_ticks", return_value="777"):
+            started, _message = self.service.start(only=["telegram"])
+        self.assertTrue(started)
+        state = json.loads(self.config.PID_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(state["log_offset"], len("old line\n"))
+
     def test_stop_refuses_pid_reuse_without_signalling_process(self):
         self.config.ensure_data_dirs()
         self.config.PID_FILE.write_text(json.dumps({"pid": 999, "start_ticks": "old", "only": []}), encoding="utf-8")

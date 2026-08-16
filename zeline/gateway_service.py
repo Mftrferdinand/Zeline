@@ -225,6 +225,15 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
         # `a+` means users can inspect logs after a crash, while source code
         # never has to invoke a shell or interpolate paths.
         log_handle = LOG_FILE.open("a", encoding="utf-8")
+        # Catat posisi log SEBELUM child menulis apa pun. wait_until_connected
+        # hanya boleh membaca dari titik ini ke depan; kalau membaca seluruh
+        # file, satu baris fatal dari percobaan start yang LAMA ("token could
+        # not be verified") akan dibaca ulang dan dilaporkan sebagai kegagalan
+        # padahal proses baru terhubung normal.
+        try:
+            log_offset = LOG_FILE.stat().st_size
+        except OSError:
+            log_offset = 0
         try:
             os.chmod(LOG_FILE, 0o600)
         except OSError:
@@ -273,6 +282,9 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
         "only": only,
         "started_at": time.time(),
         "command": _command(only),
+        # Dibaca wait_until_connected supaya baris log dari start SEBELUMNYA
+        # tidak ikut dinilai.
+        "log_offset": log_offset,
     }
     _write_private(config.PID_FILE, json.dumps(state, ensure_ascii=False) + "\n")
     target = ", ".join(only) if only else "all enabled gateways"
@@ -386,18 +398,25 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
     return False, f"PID {pid} did not die even after SIGKILL. Check manually: ps | grep zeline. Log: {LOG_FILE}"
 
 
-def wait_until_connected(timeout: float = 25.0) -> tuple[bool, list[str]]:
+def wait_until_connected(timeout: float = 90.0) -> tuple[bool, list[str]]:
     """Watch the gateway log until each enabled platform reports 'connected',
     or a fatal error / timeout. Returns (all_ready, status_lines).
 
     The child process prints '[telegram] @<bot> connected via polling' once it
     finishes getMe + setMyCommands. We tail the log for those markers so
     `zeline gateway start` can confirm real readiness instead of just 'spawned'.
+
+    Only reads log written by THIS child (from `log_offset` recorded at spawn).
+    Reading the whole file made an old fatal line from a previous start get
+    re-detected, so a healthy gateway was reported as failed. The default
+    timeout is generous because token verification now retries: on a slow
+    Termux connection a legitimate startup was measured at ~43s.
     """
     state = _load_state()
     if not state:
         return False, ["gateway process not running"]
     only = state.get("only", [])
+    log_offset = int(state.get("log_offset", 0) or 0)
     expected = [
         name for name, gw in config.GATEWAYS.items()
         if gw.get("enabled", False) and (not only or name in only)
@@ -405,26 +424,28 @@ def wait_until_connected(timeout: float = 25.0) -> tuple[bool, list[str]]:
     connected: dict[str, bool] = {}
     fatal: list[str] = []
     deadline = time.monotonic() + timeout
-    last_size = 0
     while time.monotonic() < deadline:
         # Process died before connecting → surface it, don't hang.
         if not _process_matches_state(_load_state() or {}):
             return False, ["gateway process exited before connecting — check `zeline gateway log`"]
         try:
-            text = LOG_FILE.read_text(encoding="utf-8", errors="replace")
+            with LOG_FILE.open("r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(min(log_offset, LOG_FILE.stat().st_size))
+                text = handle.read()
         except OSError:
             text = ""
-        last_size = len(text)
         for line in text.splitlines():
             for name in expected:
                 if f"[{name}]" in line and "connected via polling" in line:
                     connected[name] = True
-                if f"[{name}]" in line and ("could not be verified" in line or "not started" in line):
+                if f"[{name}]" in line and (("could not be verified" in line) or ("not started" in line)):
                     fatal.append(line.strip())
-        if fatal:
-            return False, fatal
+        # Terhubung menang atas baris fatal: kalau child akhirnya connect,
+        # kegagalan verifikasi sebelumnya hanyalah percobaan yang sudah pulih.
         if all(connected.get(name) for name in expected):
             return True, [f"{name}: connected" for name in expected]
+        if fatal:
+            return False, fatal
         time.sleep(0.4)
     # Timed out — report which platforms are still pending.
     pending = [name for name in expected if not connected.get(name)]
