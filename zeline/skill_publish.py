@@ -1,6 +1,6 @@
 """Publikasi skill pemilik ke repo Zerolinear dengan approval + scan sensitif.
 
-Alur aman (dipicu ``/promoteskill <nama>`` di Telegram, owner-only):
+Alur aman (dipicu oleh callback publish di Telegram, owner-only):
 
     1. Muat isi skill (private/public).
     2. Scrub identitas pribadi (nama, email, chat-id, project) -> placeholder.
