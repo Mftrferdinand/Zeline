@@ -259,15 +259,36 @@ class GatewayServiceTests(unittest.TestCase):
         # Kunci pertama dapat; percobaan kedua HARUS gagal selama yang pertama
         # masih memegang. Ini inti pencegahan dua poller pada satu token.
         first = self.service.GatewayLock()
+        second = self.service.GatewayLock()
+        # Rilis lewat addCleanup: kalau satu assert gagal, fd tetap ditutup.
+        # Di Windows fd yang menggantung membuat TemporaryDirectory gagal dihapus
+        # (WinError 32) sehingga satu kegagalan jadi dua laporan error.
+        self.addCleanup(first.release)
+        self.addCleanup(second.release)
         self.assertTrue(first.acquire())
         self.assertEqual(self.service.lock_holder_pid(), os.getpid())
-        second = self.service.GatewayLock()
         self.assertFalse(second.acquire())
         first.release()
         # Setelah dilepas, kunci harus bebas lagi (tidak ada stale lock).
         self.assertEqual(self.service.lock_holder_pid(), 0)
         self.assertTrue(second.acquire())
         second.release()
+
+    def test_lock_pid_region_is_readable_and_not_corrupted_by_shorter_pid(self):
+        # PID ditulis di luar byte yang dikunci (Windows mengunci mandatory, jadi
+        # byte terkunci tidak bisa dibaca handle lain) dan dipad lebar tetap
+        # supaya PID pendek tidak menyisakan digit dari PID panjang sebelumnya.
+        lock = self.service.GatewayLock()
+        self.addCleanup(lock.release)
+        with mock.patch.object(self.service.os, "getpid", return_value=123456):
+            self.assertTrue(lock.acquire())
+            self.assertEqual(self.service.lock_holder_pid(), 123456)
+        lock.release()
+        again = self.service.GatewayLock()
+        self.addCleanup(again.release)
+        with mock.patch.object(self.service.os, "getpid", return_value=999):
+            self.assertTrue(again.acquire())
+            self.assertEqual(self.service.lock_holder_pid(), 999)
 
     def test_start_refuses_when_another_process_holds_lock(self):
         # Skenario nyata: `zeline gateway run` foreground di tab lain tidak

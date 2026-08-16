@@ -50,6 +50,15 @@ LOG_FILE = config.LOG_DIR / "gateway.log"
 #     ada masalah "stale lock" seperti pada file penanda biasa.
 LOCK_FILE = config.DATA_DIR / "gateway.lock"
 
+# Byte 0 adalah region yang DIKUNCI; PID pemegang ditulis mulai byte 8.
+# Alasannya Windows: ``msvcrt.locking`` mengunci rentang byte secara MANDATORY,
+# sehingga membaca byte yang terkunci dari handle lain gagal dengan WinError 33
+# dan pemegangnya jadi tak teridentifikasi. Dengan memisahkan region kunci dari
+# region data, PID tetap bisa dibaca proses lain di semua OS.
+_LOCK_PID_OFFSET = 8
+# Lebar tetap region PID supaya penulisan berikutnya tidak menyisakan digit lama.
+_LOCK_PID_WIDTH = 24
+
 
 class GatewayLock:
     """Kunci eksklusif OS: hanya satu proses gateway boleh polling.
@@ -69,6 +78,7 @@ class GatewayLock:
             if IS_WINDOWS:
                 import msvcrt
 
+                os.lseek(fd, 0, os.SEEK_SET)  # kunci HARUS byte 0, bukan posisi acak
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
             else:
                 import fcntl
@@ -92,8 +102,11 @@ class GatewayLock:
             return False
         self._fd = fd
         try:
-            os.truncate(fd, 0)
-            os.write(fd, f"{os.getpid()}\n".encode())
+            # Tulis PID di luar byte terkunci supaya tetap terbaca proses lain.
+            # Dipad lebar tetap: tanpa itu PID pendek yang menimpa PID panjang
+            # (999 menimpa 123456) menyisakan digit lama di belakangnya.
+            os.lseek(fd, _LOCK_PID_OFFSET, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}".ljust(_LOCK_PID_WIDTH).encode())
             os.fsync(fd)
         except OSError:
             pass
@@ -104,7 +117,12 @@ class GatewayLock:
             return
         fd, self._fd = self._fd, None
         try:
-            if not IS_WINDOWS:
+            if IS_WINDOWS:
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+            else:
                 import fcntl
 
                 fcntl.flock(fd, fcntl.LOCK_UN)
@@ -126,18 +144,28 @@ def lock_holder_pid() -> int:
     """PID proses yang sedang memegang kunci gateway, 0 bila kunci bebas.
 
     Diuji dengan mencoba mengambil kunci lalu melepasnya lagi. Bila gagal,
-    kunci sedang dipegang dan PID dibaca dari isi file (best-effort: kalau tidak
-    terbaca, kembalikan -1 yang berarti "dipegang, PID tak diketahui").
+    kunci sedang dipegang dan PID dibaca dari region data (byte 8+). Bila PID
+    tidak terbaca, kembalikan -1 = "dipegang, PID tak diketahui" — pemanggil
+    tetap tahu ada yang polling walau tidak tahu siapa.
     """
     probe = GatewayLock()
     if probe.acquire():
         probe.release()
         return 0
+    fd = None
     try:
-        raw = LOCK_FILE.read_text(encoding="utf-8").strip()
-        return int(raw.splitlines()[0])
+        fd = os.open(LOCK_FILE, os.O_RDONLY)
+        os.lseek(fd, _LOCK_PID_OFFSET, os.SEEK_SET)
+        raw = os.read(fd, _LOCK_PID_WIDTH).decode("utf-8", errors="replace").strip()
+        return int(raw.split()[0])
     except (OSError, ValueError, IndexError):
         return -1
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 
