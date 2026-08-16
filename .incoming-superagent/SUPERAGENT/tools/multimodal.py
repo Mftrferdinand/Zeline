@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-WHISPER_MODEL = os.environ.get("HERMES_WHISPER_MODEL", "base")   # tiny/base/small/medium
+WHISPER_MODEL = os.environ.get("ZELINE_WHISPER_MODEL", "base")   # tiny/base/small/medium
 
 
 # ───────────────── Voice → text (lokal, gratis) ─────────────────

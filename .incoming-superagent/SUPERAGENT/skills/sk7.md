@@ -482,13 +482,13 @@ Agent → `ModelRegistry().add_model(...)`. Dukung semua yang OpenAI-compatible 
 
 ```python
 from model_registry import ModelRegistry
-reg = ModelRegistry()                       # pakai HERMES_MASTER_PW buat enkripsi key
+reg = ModelRegistry()                       # pakai ZELINE_MASTER_PW buat enkripsi key
 reg.add_model("groq-fast", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant",
               api_key="gsk_...", priority=80)
 reg.list_models()                            # key ter-REDACT (gak pernah mentah)
 ans, used = reg.call_with_cascade(messages)  # R7: coba per prioritas, fallback otomatis
 ```
 
-**Secret hygiene**: API key disimpan terenkripsi (scrypt+Fernet via `HERMES_MASTER_PW`), gak pernah di-log/print mentah, `list_models()` redacted. Tanpa master pw → registry NOLAK nyimpen key (gak ada plaintext diam-diam). File `model_registry.py` FROZEN (nentuin ke mana prompt/data dikirim).
+**Secret hygiene**: API key disimpan terenkripsi (scrypt+Fernet via `ZELINE_MASTER_PW`), gak pernah di-log/print mentah, `list_models()` redacted. Tanpa master pw → registry NOLAK nyimpen key (gak ada plaintext diam-diam). File `model_registry.py` FROZEN (nentuin ke mana prompt/data dikirim).
 
 **Catatan**: agent bakal ngirim prompt (& mungkin data) ke `base_url` yang lo daftarin — tambah cuma yang lo percaya. Provider cascade R7 (di AGENTS.md) sekarang bisa narik model dari registry ini, bukan cuma yang hardcoded.

@@ -1,13 +1,13 @@
-# Panduan Operator — Hermes + SUPERAGENT v7.0 IRONCLAW SUPREME
+# Panduan Operator — Zeline + SUPERAGENT v7.0 IRONCLAW SUPREME
 
-Cara ngomong sama Hermes setelah v7.0 OPENCLAW EDITION + hermes-crypto-agent ke-combo.
+Cara ngomong sama Zeline setelah v7.0 OPENCLAW EDITION + zeline-crypto-agent ke-combo.
 *Update v7.0 (2026-06-09): Airdrop Intelligence (sk31), CTF/Whitehat (sk32), + observability & safety tooling.*
 
 ---
 
 ## Daftar Isi
 
-**Operasi crypto (Hermes runtime)**
+**Operasi crypto (Zeline runtime)**
 
 1\. [Mode default vs mode cepat](#mode-default-vs-mode-cepat)  
 2\. [Mint NFT](#mint-nft)  
@@ -43,13 +43,13 @@ Cara ngomong sama Hermes setelah v7.0 OPENCLAW EDITION + hermes-crypto-agent ke-
 20\. [Skill non-crypto (v7.0) — contoh ngomong](#skill-non-crypto-v41--contoh-ngomong)  
 21\. [Cheat sheet — natural language ke skill route](#cheat-sheet--natural-language-ke-skill-route)  
 22\. [Yang perlu Kakak siapin sebelum mulai](#yang-perlu-kakak-siapin-sebelum-mulai)  
-23\. [Cara cepat verify](#cara-cepat-verify-v42--hermes-udah-jalan)
+23\. [Cara cepat verify](#cara-cepat-verify-v42--zeline-udah-jalan)
 
 ---
 
 ## Mode default vs mode cepat
 
-Hermes punya 2 mode operasi. Default = aman, mode cepat = fire and forget.
+Zeline punya 2 mode operasi. Default = aman, mode cepat = fire and forget.
 
 ### Default — confirm before signing
 Tiap tx penting dapat plan ringkas + gate `(y/n)`. Cocok buat:
@@ -67,10 +67,10 @@ Skip prompt per tx. Tx pertama tetap dapat 1-line summary (info only, bukan gate
 
 ```
 Kakak: auto_confirm on
-Hermes: [AUTO_CONFIRM] ON. tx akan fire tanpa gate sampai sesi ini berakhir atau lo set off.
+Zeline: [AUTO_CONFIRM] ON. tx akan fire tanpa gate sampai sesi ini berakhir atau lo set off.
 
 Kakak: auto_confirm off
-Hermes: [AUTO_CONFIRM] OFF. balik ke mode safe.
+Zeline: [AUTO_CONFIRM] OFF. balik ke mode safe.
 ```
 
 Operational rails yang TETAP nyala walau auto_confirm on:
@@ -88,7 +88,7 @@ Operational rails yang TETAP nyala walau auto_confirm on:
 Kakak: mint NFT https://opensea.io/assets/base/0xABC.../1
 ```
 
-Hermes auto:
+Zeline auto:
 - Parse URL → chain `base`, contract `0xABC...`
 - Probe mint function (publicMint, mint, claim, dst)
 - Detect price via `mintPrice()` / Seadrop config
@@ -132,7 +132,7 @@ Kakak: mint https://app.manifold.xyz/c/12345
 Kakak: mint https://zora.co/collect/base:0xABC.../1
 ```
 
-Hermes pakai protocol-specific handler (Manifold instanceId fetch, Zora 1155 protocol fee).
+Zeline pakai protocol-specific handler (Manifold instanceId fetch, Zora 1155 protocol fee).
 
 ---
 
@@ -163,7 +163,7 @@ Lanjut? (y/n)
 Kakak: sell semua $PEPE di wallet#1, ke USDC
 ```
 
-Hermes:
+Zeline:
 - Cek balance PEPE di wallet
 - Quote via 1inch
 - Tampilkan plan
@@ -173,7 +173,7 @@ Hermes:
 ```
 Kakak: swap 1000 USDC ke ETH di arbitrum via jupiter
 ```
-(Jupiter buat Solana. Untuk EVM, default 1inch — Hermes auto-koreksi.)
+(Jupiter buat Solana. Untuk EVM, default 1inch — Zeline auto-koreksi.)
 
 ---
 
@@ -205,14 +205,14 @@ Lanjut? (y/n)
 Kakak: bridge 0.1 ETH dari eth ke base, route paling murah
 ```
 
-Hermes pakai LI.FI aggregator, pilih route optimal otomatis (Across / Stargate / native / Hop — mana yang termurah).
+Zeline pakai LI.FI aggregator, pilih route optimal otomatis (Across / Stargate / native / Hop — mana yang termurah).
 
 ### Bridge ke non-EVM (Solana via Mayan)
 ```
 Kakak: bridge 100 USDC dari base ke solana
 ```
 
-Hermes pakai Wormhole + Mayan untuk EVM ↔ Solana. Wallet Solana harus udah ke-import di vault.
+Zeline pakai Wormhole + Mayan untuk EVM ↔ Solana. Wallet Solana harus udah ke-import di vault.
 
 ---
 
@@ -252,7 +252,7 @@ Saat pair baru terdeteksi:
 Kakak: snipe mint NFT collection https://opensea.io/collection/<slug>, watch dari sekarang sampai mint open
 ```
 
-Hermes pantau status drop (read `getPublicDrop()` Seadrop config), fire mint detik mint window buka.
+Zeline pantau status drop (read `getPublicDrop()` Seadrop config), fire mint detik mint window buka.
 
 ### Stop sniper
 ```
@@ -301,7 +301,7 @@ Kakak: linea voyage tasks pakai 25 wallet
 Kakak: daily check-in airdrop X pakai semua wallet, jam 8 pagi WIB
 ```
 
-Hermes setup cron job, jalan otomatis tiap hari.
+Zeline setup cron job, jalan otomatis tiap hari.
 
 ---
 
@@ -342,7 +342,7 @@ ACTION: kalau ini bukan elo, kirim front-run tx revoke SEKARANG
 Kakak: anti-drainer auto-revoke mode on untuk wallet#1
 ```
 
-Kalau Hermes detect approval ke contract non-whitelist → otomatis broadcast revoke tx dengan gas lebih tinggi, race-condition dengan drainer.
+Kalau Zeline detect approval ke contract non-whitelist → otomatis broadcast revoke tx dengan gas lebih tinggi, race-condition dengan drainer.
 
 ---
 
@@ -371,14 +371,14 @@ Lanjut? (y/n)
 Kakak: sweep floor Pudgy Penguins, 5 unit, max avg 10 ETH per piece
 ```
 
-Hermes pakai Reservoir aggregator (cek listing terendah cross-marketplace: OpenSea, Blur, LooksRare). Bulk fulfill dalam 1 tx kalau bisa.
+Zeline pakai Reservoir aggregator (cek listing terendah cross-marketplace: OpenSea, Blur, LooksRare). Bulk fulfill dalam 1 tx kalau bisa.
 
 ### List NFT buat dijual
 ```
 Kakak: list NFT #5678 dari koleksi 0xMy... di opensea, harga 1.5 ETH, expire 7 hari
 ```
 
-Hermes sign EIP-712 Seaport order → post ke OpenSea API. Listing live di marketplace.
+Zeline sign EIP-712 Seaport order → post ke OpenSea API. Listing live di marketplace.
 
 ### Magic Eden / Tensor (Solana)
 ```
@@ -422,14 +422,14 @@ tx:       https://basescan.org/tx/...
 Kakak: copy-trade wallet 0xWhale..., ukuran 5% dari ukuran mereka, max $500 per trade
 ```
 
-Hermes monitor whale wallet → mirror buy ukuran kecil di wallet Kakak, filter stablecoin transfer dan low-value noise.
+Zeline monitor whale wallet → mirror buy ukuran kecil di wallet Kakak, filter stablecoin transfer dan low-value noise.
 
 ### NFT whale alert
 ```
 Kakak: alert kalau ada whale beli NFT > 10 ETH di koleksi blue chip
 ```
 
-Hermes pakai Reservoir WebSocket stream — push notif real-time.
+Zeline pakai Reservoir WebSocket stream — push notif real-time.
 
 ### Floor drop alert
 ```
@@ -440,7 +440,7 @@ Kakak: alert kalau floor BAYC drop > 5% dalam 1 jam
 
 ## Airdrop Intelligence (sk31) — BARU v7.0
 
-Skill khusus AirdropFinder: ubah siklus airdrop jadi keputusan ber-angka. Semua tool **offline & deterministik** — data on-chain diambil dulu lewat sk10/hermes, sk31 yang nge-judge & nyusun rencana. Fund movement (claim/exit) tetap lewat Spend Governor.
+Skill khusus AirdropFinder: ubah siklus airdrop jadi keputusan ber-angka. Semua tool **offline & deterministik** — data on-chain diambil dulu lewat sk10/zeline, sk31 yang nge-judge & nyusun rencana. Fund movement (claim/exit) tetap lewat Spend Governor.
 
 ### 1. Eligibility scorer — wallet ini layak gak?
 ```
@@ -652,7 +652,7 @@ Plus yang jalan otomatis:
 
 ## Alpha & farming intelligence (sk33 · sk34 · sk36) — update v7.0
 
-Tiga modul baru biar farming Kakak dari hulu ke hilir ber-angka: nemu proyek duluan → hitung ROI → tau kapan keluar. Semua offline & deterministik, data mentah diambil sk10/sk22/hermes dulu.
+Tiga modul baru biar farming Kakak dari hulu ke hilir ber-angka: nemu proyek duluan → hitung ROI → tau kapan keluar. Semua offline & deterministik, data mentah diambil sk10/sk22/zeline dulu.
 
 ### Alpha radar (sk33) — nemu airdrop SEBELUM diumumkan
 ```
@@ -773,7 +773,7 @@ Render video = skill `remotion_video`; TTS = `voice.py`. Skor hook = prediksi he
 
 ## Session control commands
 
-Cukup ngomong langsung ke Hermes, gak perlu syntax khusus:
+Cukup ngomong langsung ke Zeline, gak perlu syntax khusus:
 
 | Command | Effect |
 |---|---|
@@ -816,7 +816,7 @@ Kakak: rename wallet 0xAbC...d4F1 jadi "farming-base-1"
 Kakak: swap 100 USDC pakai farming-base-1
 ```
 
-Hermes pakai alias mulai sesi berikutnya.
+Zeline pakai alias mulai sesi berikutnya.
 
 ---
 
@@ -834,7 +834,7 @@ Sample output:
 ┌─────┬────────────────────┬─────────────┬──────┬─────────┐
 │ id  │ name               │ status      │ cpu  │ memory  │
 ├─────┼────────────────────┼─────────────┼──────┼─────────┤
-│ 0   │ hermes (main)      │ online      │ 2%   │ 142 MB  │
+│ 0   │ zeline (main)      │ online      │ 2%   │ 142 MB  │
 │ 1   │ lz-farming         │ online      │ 0.5% │ 48 MB   │
 │ 2   │ sniper-base        │ online      │ 1%   │ 36 MB   │
 │ 3   │ anti-drainer       │ online      │ 0.3% │ 22 MB   │
@@ -872,27 +872,27 @@ Tabel cepat: Kakak ngomong apa → skill apa yang fire.
 |---|---|---|
 | "mint NFT [URL]" | sk13 | `skills/sk13.md` |
 | "mass mint pakai N wallet" | sk13 + sk12 + sk10 | mint + batch + Web3 |
-| "swap X ke Y di [chain]" | H1 | `hermes/references/swap.md` |
+| "swap X ke Y di [chain]" | H1 | `zeline/references/swap.md` |
 | "jual semua $TOKEN" | H1 | swap.md |
-| "bridge dari A ke B" | H2 | `hermes/references/bridge.md` |
-| "stake ETH di lido" | H3 | `hermes/references/defi.md` |
+| "bridge dari A ke B" | H2 | `zeline/references/bridge.md` |
+| "stake ETH di lido" | H3 | `zeline/references/defi.md` |
 | "supply USDC ke aave" | H3 | defi.md |
 | "open long ETH di GMX" | H3 | defi.md (perp section) |
 | "snipe token baru di [chain]" | H4 + sk10 | sniping.md + Web3 |
 | "snipe mint NFT [URL]" | H4 + sk13 | sniping + minter |
-| "pantau wallet [addr]" | H5 | `hermes/references/monitoring.md` |
+| "pantau wallet [addr]" | H5 | `zeline/references/monitoring.md` |
 | "alert kalau whale beli > $X" | H5 + sk4 | monitoring + TG bot |
 | "mempool watch [wallet]" | H5 | monitoring (sniffer section) |
 | "tracker smart money" | H5 | monitoring (Nansen/Arkham) |
-| "beli NFT [token] di [marketplace]" | H6 | `hermes/references/nft.md` |
+| "beli NFT [token] di [marketplace]" | H6 | `zeline/references/nft.md` |
 | "list NFT gua dijual" | H6 | nft.md |
 | "floor sweep [collection]" | H6 | nft.md (Reservoir) |
-| "sign in dApp pakai SIWE" | H7 | `hermes/references/web3_connect.md` |
+| "sign in dApp pakai SIWE" | H7 | `zeline/references/web3_connect.md` |
 | "resolve ENS [name].eth" | H7 | web3_connect.md |
 | "layerzero farming N wallet" | H2 + H1 + sk12 | bridge + swap + batch |
 | "zksync / linea farming" | H2 + H1 + sk12 | sama pattern |
-| "buat wallet baru di [chain]" | sk10 / hermes/wallets.md | tergantung chain |
-| "import wallet dari seed" | hermes/wallets.md | (security strict mode) |
+| "buat wallet baru di [chain]" | sk10 / zeline/wallets.md | tergantung chain |
+| "import wallet dari seed" | zeline/wallets.md | (security strict mode) |
 | "audit kontrak [addr]" | sk11 | `skills/sk11.md` |
 | "kenapa bot gua duplikat" | sk54 + sk4 | debug + telegram |
 | "deploy ke VPS" | sk2 | `skills/sk2.md` |
@@ -959,7 +959,7 @@ Tabel cepat: Kakak ngomong apa → skill apa yang fire.
 
 ## Skill v7.0 — contoh ngomong (Airdrop Intelligence & Whitehat)
 
-Net-new di v7.0. Semua tool offline+deterministik; data on-chain didelegasi ke sk10/hermes; fund movement lewat Spend Governor.
+Net-new di v7.0. Semua tool offline+deterministik; data on-chain didelegasi ke sk10/zeline; fund movement lewat Spend Governor.
 
 ### Airdrop Intelligence (sk31)
 ```
@@ -1070,34 +1070,34 @@ Robot fisik / VLA real = gate R9 + meta-action STOP selalu menang. Sains = dispa
 1. **VPS akses** — ✅ udah punya `root@vmi3159875`
 2. **Master password vault** — buat sekarang, minimum 16 char, simpan di password manager
 3. **RPC primary + fallback per chain** — minimum 2 endpoint per chain (rotating biar gak rate-limit). Recommended: Alchemy / Infura / QuickNode + 1 public RPC sebagai fallback
-4. **Test wallet kecil dulu** — generate wallet baru via Hermes, isi $20-50 buat smoke test, jangan langsung pakai wallet utama
-5. **Telegram bot baru buat alert** — bikin via @BotFather, taro token-nya di `HERMES_TG_BOT_TOKEN`. Jangan pakai bot yang sama dengan channel publik Kakak
-6. **API key opsional** — skip dulu kalau belum, Hermes auto-fallback:
+4. **Test wallet kecil dulu** — generate wallet baru via Zeline, isi $20-50 buat smoke test, jangan langsung pakai wallet utama
+5. **Telegram bot baru buat alert** — bikin via @BotFather, taro token-nya di `ZELINE_TG_BOT_TOKEN`. Jangan pakai bot yang sama dengan channel publik Kakak
+6. **API key opsional** — skip dulu kalau belum, Zeline auto-fallback:
    - 1inch (swap): free tier OK
    - Reservoir (NFT): free tier OK
    - Nansen (smart money): paid, paling akurat — opsional
    - Arkham: free tier OK
    - Zerion / Birdeye (portfolio): free tier OK
 
-Setelah 6 hal ini ready → Hermes bisa langsung run. Mau gua bikin **bootstrap script** otomatis (install + env setup + first wallet gen + smoke test), atau Kakak prefer setup manual step-by-step?
+Setelah 6 hal ini ready → Zeline bisa langsung run. Mau gua bikin **bootstrap script** otomatis (install + env setup + first wallet gen + smoke test), atau Kakak prefer setup manual step-by-step?
 
 ---
 
-## Cara cepat verify v7.0 + hermes udah jalan
+## Cara cepat verify v7.0 + zeline udah jalan
 
 Setelah install + restart, cek 5 hal:
 
 ```bash
 # 1. Agent boot tanpa error
-pm2 logs hermes --lines 20
+pm2 logs zeline --lines 20
 # harus muncul: [BOOT] v7.0 IRONCLAW SUPREME loaded
 
 # 2. Env var ke-load
-env | grep -E "HERMES_|RPC_|ARKHAM_" | head -10
+env | grep -E "ZELINE_|RPC_|ARKHAM_" | head -10
 
 # 3. Skill ke-baca (sekarang sk1-sk32 + sk52-sk58)
-ls ~/.openclaw/workspace/openclaw/skills/
-# harus liat: sk0-sk32, sk52-sk58, hermes/
+ls ~/.zeline/workspace/zeline/skills/
+# harus liat: sk0-sk32, sk52-sk58, zeline/
 
 # 4. Integrity OK (PENTING — boot rail)
 python3 tools/skill_integrity.py verify
@@ -1105,7 +1105,7 @@ python3 tools/skill_integrity.py verify
 
 # 5. Test offline hijau (zero leak)
 bash tools/tests/run_tests.sh           # 85 tests OK
-bash skills/hermes/tests/run_tests.sh   # 44 tests OK
+bash skills/zeline/tests/run_tests.sh   # 44 tests OK
 # total 129 pass, 0 ResourceWarning di -W error::ResourceWarning
 ```
 

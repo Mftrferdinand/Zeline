@@ -18,8 +18,8 @@ SUPERAGENT v3 OPENCLAW EDITION is built on contributions from the CVC community 
 
 ## Acknowledgements
 
-- Hermes Crypto Agent skill toolkit — integrated as `skills/hermes/` deep reference layer
-- OpenClaw / Hermes agent runtime — host platform
+- Zeline Crypto Agent skill toolkit — integrated as `skills/zeline/` deep reference layer
+- Zeline / Zeline agent runtime — host platform
 
 ---
 

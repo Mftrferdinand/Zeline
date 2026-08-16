@@ -8,7 +8,7 @@ Proves the full SUPERAGENT V7 pipeline works end-to-end:
     auth → bridge → revenue → P&L
 
 Stage 1: team_auth.py       — Cryptographic challenge-response (ECDSA sig verification)
-Stage 2: hermes_bridge.py   — Cross-chain bridge status check & route discovery
+Stage 2: zeline_bridge.py   — Cross-chain bridge status check & route discovery
 Stage 3: revenue_optimizer.py — Opportunity scanning via real 1inch API + gas oracle
 Stage 4: treasury.py        — Transaction logging + P&L report generation
 
@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # ─── PATH SETUP ───
 SCRIPT_DIR = Path(__file__).resolve().parent         # tools/
-PKG_DIR = SCRIPT_DIR.parent                          # openclaw/
+PKG_DIR = SCRIPT_DIR.parent                          # zeline/
 ROOT_DIR = PKG_DIR.parent                            # SUPERAGENT/
 for p in [str(SCRIPT_DIR), str(PKG_DIR), str(ROOT_DIR)]:
     if p not in sys.path:
@@ -310,9 +310,9 @@ def run_stage_auth(config_path: Path) -> Dict[str, Any]:
 def run_stage_bridge() -> Dict[str, Any]:
     _head("STAGE 2: BRIDGE — Cross-Chain Route Discovery")
 
-    from tools.hermes_bridge import HermesBridgeAdapter, CHAINS, BRIDGE_PROTOCOLS
+    from tools.zeline_bridge import ZelineBridgeAdapter, CHAINS, BRIDGE_PROTOCOLS
 
-    adapter = HermesBridgeAdapter()
+    adapter = ZelineBridgeAdapter()
 
     _sub("2.1 — Bridge Adapter Health Check")
     health = adapter.health_check()

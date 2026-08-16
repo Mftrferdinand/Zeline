@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional, Literal
 
 Kind = Literal["address", "snippet", "command", "template"]
-DEFAULT_DB = Path(os.environ.get("HERMES_VAULT_DB", "~/.hermes/vault.db")).expanduser()
+DEFAULT_DB = Path(os.environ.get("ZELINE_VAULT_DB", "~/.zeline/vault.db")).expanduser()
 _ADDR_RE = re.compile(r"^(0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$")  # EVM / base58-ish
 
 

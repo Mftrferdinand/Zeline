@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Optional
 
-TTS_OUT = os.environ.get("HERMES_TTS_OUT", "/tmp/hermes_reply.wav")
+TTS_OUT = os.environ.get("ZELINE_TTS_OUT", "/tmp/zeline_reply.wav")
 
 
 def speak(text: str, out_path: str = TTS_OUT,

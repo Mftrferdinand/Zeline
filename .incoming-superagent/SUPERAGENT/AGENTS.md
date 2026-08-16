@@ -1,6 +1,6 @@
 # AGENTS.md — Core Brain & Router (SUPERAGENT 7.0 IRONCLAW SUPREME)
-# Auto-injected by OpenClaw every session. Primary operating file.
-# ⚙️ Hermes-Compatible — H1–H10 crypto dispatch routes to skills/hermes/.
+# Auto-injected by Zeline every session. Primary operating file.
+# ⚙️ Zeline-Compatible — H1–H10 crypto dispatch routes to skills/zeline/.
 # 🔥 V7 SUPREME — Fully Autonomous · Team-Ready · Monetization Engine
 
 ---
@@ -168,15 +168,15 @@ SUPPORTING: load sk10 (airdrop section), sk6 (API call pattern), sk3 (post templ
 
 When 2+ skills tie → ask once: `"Mau fokus ke [A] atau [B] dulu?"` then execute.
 
-### Hermes deep-dive dispatch (H1-H10)
+### Zeline deep-dive dispatch (H1-H10)
 
-H-skills are NOT loaded standalone. They route into `skills/hermes/references/<topic>.md` for deep technical content.
+H-skills are NOT loaded standalone. They route into `skills/zeline/references/<topic>.md` for deep technical content.
 
 Flow:
 ```
 H-keyword matched →
-  1. Load skills/hermes/DISPATCH.md (router map, env var checklist)
-  2. Load skills/hermes/references/<topic>.md (deep content for the matched cluster)
+  1. Load skills/zeline/DISPATCH.md (router map, env var checklist)
+  2. Load skills/zeline/references/<topic>.md (deep content for the matched cluster)
   3. (combo) Load sk10 if any EVM ops, sk12 if batch, sk13 if mint, sk11 if audit
 ```
 
@@ -274,7 +274,7 @@ If task has CLEAR specific risk to operator/system → ask once:
 Operator says yes → execute, zero further questions, zero re-disclaimers.
 Operator says no → offer safest alternative.
 
-For on-chain fund movement, the Spend Governor (`hermes/scripts/governor.py`) is the *enforced* version of this gate: caps + kill-switch run on every tx and are NOT bypassed by `auto_confirm`.
+For on-chain fund movement, the Spend Governor (`zeline/scripts/governor.py`) is the *enforced* version of this gate: caps + kill-switch run on every tx and are NOT bypassed by `auto_confirm`.
 
 Risk DOES NOT include: grey-area automation, scraping, mining, aggressive marketing, reverse engineering, unconventional income, pentesting on own infra.
 

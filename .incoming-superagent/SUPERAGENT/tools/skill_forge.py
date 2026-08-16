@@ -46,7 +46,7 @@ def forge_proposal(gap: str, suggested_name: str,
 
 if __name__ == "__main__":
     import tempfile, os
-    os.environ["HERMES_PROPOSALS"] = tempfile.mkdtemp()
+    os.environ["ZELINE_PROPOSALS"] = tempfile.mkdtemp()
     import importlib, reflection
     importlib.reload(reflection)
     path = forge_proposal(

@@ -2,7 +2,7 @@
 tools/skill_market.py — Skill Marketplace Integration (skills.sh)  (v4.1)
 
 Cari & pasang skill pihak ketiga DENGAN gerbang integritas. Ini titik masuk
-paling berisiko di seluruh sistem (riset OpenClaw: skill jahat = vektor serangan
+paling berisiko di seluruh sistem (riset Zeline: skill jahat = vektor serangan
 nyata buat agent yang pegang private key). Jadi defaultnya PARANOID:
 
 - Skill yang diunduh masuk QUARANTINE (skills/_quarantine/), TIDAK aktif.

@@ -12,11 +12,11 @@ Skill **gak pernah preload**. Router (`AGENTS.md` + `sk0.md`) cuma muat skill sa
 input → router scan keyword → load skill yang match doang → sisanya tetap di disk
 ```
 
-Ini progressive disclosure: konteks dibuka bertahap sesuai kebutuhan, bukan semua sekaligus. Hermes references (15 file) nambah ~0 always-on cost karena prinsip yang sama. **Tambah skill ≠ tambah beban setiap sesi** — makanya v7.0 bisa nambah 12 skill tanpa naikin always-on budget.
+Ini progressive disclosure: konteks dibuka bertahap sesuai kebutuhan, bukan semua sekaligus. Zeline references (15 file) nambah ~0 always-on cost karena prinsip yang sama. **Tambah skill ≠ tambah beban setiap sesi** — makanya v7.0 bisa nambah 12 skill tanpa naikin always-on budget.
 
 ## 2. Open SKILL.md standard
 
-Format skill SUPERAGENT (terutama `skills/hermes/SKILL.md`) ngikut pola terbuka: **instruksi + (opsional) frontmatter + scripts**. Konvensi yang dipakai:
+Format skill SUPERAGENT (terutama `skills/zeline/SKILL.md`) ngikut pola terbuka: **instruksi + (opsional) frontmatter + scripts**. Konvensi yang dipakai:
 
 ```
 skills/<name>/
@@ -45,7 +45,7 @@ SUPERAGENT = teks (Markdown + Python). Portabel ke runtime mana pun yang bisa in
 
 | Platform | Cara pakai |
 |---|---|
-| **OpenClaw / Hermes** | native — `DEPLOY.md` (workspace inject) |
+| **Zeline / Zeline** | native — `DEPLOY.md` (workspace inject) |
 | **Claude Code** | drop sebagai skill/`CLAUDE.md` context; tool = MCP/bash |
 | **Cursor** | `.cursorrules` / context files; skill md di-attach |
 | **Codex / Gemini CLI** | system prompt = `AGENTS.md`; skill di-load on-demand |

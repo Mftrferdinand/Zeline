@@ -94,7 +94,7 @@ Every session should produce measurable value. Revenue streams (in priority orde
 4. CLIENT REVENUE — Bulk gigs, per-client billing
 ```
 
-**Note on strategy tools:** `revenue_optimizer.py` is a decision framework and simulator. It ranks opportunities by ROI/risk. Real execution is delegated to `skills/hermes/scripts/` via the Spend Governor. Simulation is default (`--broadcast` to execute).
+**Note on strategy tools:** `revenue_optimizer.py` is a decision framework and simulator. It ranks opportunities by ROI/risk. Real execution is delegated to `skills/zeline/scripts/` via the Spend Governor. Simulation is default (`--broadcast` to execute).
 
 ---
 

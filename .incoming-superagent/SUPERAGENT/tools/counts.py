@@ -26,10 +26,10 @@ total_loc = int(run(
     r"-exec cat {} + | wc -l"
 ))
 
-# Skills count: standalone .md files + hermes directory
+# Skills count: standalone .md files + zeline directory
 skill_md_files = int(run("find skills -maxdepth 1 -type f -name '*.md' | wc -l"))
-hermes_dir = 1 if Path(root / "skills/hermes").is_dir() else 0
-skills_count = skill_md_files + hermes_dir
+zeline_dir = 1 if Path(root / "skills/zeline").is_dir() else 0
+skills_count = skill_md_files + zeline_dir
 
 # Tools count (python files excluding __init__.py)
 tools_count = int(run("find tools -maxdepth 1 -type f -name '*.py' -not -name '__init__.py' | wc -l"))

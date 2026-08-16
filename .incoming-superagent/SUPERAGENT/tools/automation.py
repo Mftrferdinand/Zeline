@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Awaitable, Any, Optional
 
-DEFAULT_DB = Path(os.environ.get("HERMES_AUTOMATION_DB", "~/.hermes/automation.db")).expanduser()
+DEFAULT_DB = Path(os.environ.get("ZELINE_AUTOMATION_DB", "~/.zeline/automation.db")).expanduser()
 TRIGGERS = {"webhook", "schedule", "price", "onchain_event", "custom"}
 
 

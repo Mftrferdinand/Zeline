@@ -1,16 +1,16 @@
-# DEPLOY.md — Pasang SUPERAGENT V7.0 di OpenClaw (dari nol)
+# DEPLOY.md — Pasang SUPERAGENT V7.0 di Zeline (dari nol)
 
-Panduan deploy *agent*-nya ke runtime OpenClaw di VPS lo. (Beda dari `skills/hermes/references/deploy.md` yang itu soal deploy *smart contract*.)
+Panduan deploy *agent*-nya ke runtime Zeline di VPS lo. (Beda dari `skills/zeline/references/deploy.md` yang itu soal deploy *smart contract*.)
 
-> Ini **menggantikan** instruksi quick-start lama di README. Jalur workspace V7: `~/.openclaw/workspace/superagent-v7/`.
+> Ini **menggantikan** instruksi quick-start lama di README. Jalur workspace V7: `~/.zeline/workspace/superagent-v7/`.
 
 ---
 
 ## 0. Prasyarat
 
 ```bash
-# OpenClaw udah keinstall & jalan (gateway)
-openclaw --version
+# Zeline udah keinstall & jalan (gateway)
+zeline --version
 
 # Python 3.10+ dan pip
 python3 --version
@@ -20,23 +20,23 @@ python3 --version
 
 ## 1. Taruh workspace
 
-OpenClaw nge-inject bootstrap file (AGENTS.md, SOUL.md, IDENTITY.md, USER.md, TOOLS.md) dari **root workspace**. Jadi jangan nest di subfolder — arahin workspace langsung ke folder `openclaw/` ini.
+Zeline nge-inject bootstrap file (AGENTS.md, SOUL.md, IDENTITY.md, USER.md, TOOLS.md) dari **root workspace**. Jadi jangan nest di subfolder — arahin workspace langsung ke folder `zeline/` ini.
 
 ```bash
-# salin folder openclaw ke lokasi tetap
-cp -r openclaw ~/.openclaw/workspace/superagent-v7
+# salin folder zeline ke lokasi tetap
+cp -r zeline ~/.zeline/workspace/superagent-v7
 
-# init config OpenClaw kalau belum
-openclaw setup           # bikin ~/.openclaw/openclaw.json
+# init config Zeline kalau belum
+zeline setup           # bikin ~/.zeline/zeline.json
 ```
 
-Edit `~/.openclaw/openclaw.json`, arahin workspace ke folder tadi:
+Edit `~/.zeline/zeline.json`, arahin workspace ke folder tadi:
 
 ```json
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.openclaw/workspace/superagent-v7"
+      "workspace": "~/.zeline/workspace/superagent-v7"
     }
   }
 }
@@ -49,9 +49,9 @@ Sekarang AGENTS.md / SOUL.md / IDENTITY.md / USER.md / TOOLS.md / HEARTBEAT.md /
 ## 2. Install dependency Python
 
 ```bash
-cd ~/.openclaw/workspace/superagent-v7
+cd ~/.zeline/workspace/superagent-v7
 
-# inti Hermes (wallet, swap, web3, dll)
+# inti Zeline (wallet, swap, web3, dll)
 pip install web3 eth-account mnemonic solders solana httpx \
             cryptography pysui aptos-sdk tonsdk base58 bip-utils \
             ens hyperliquid-python-sdk websockets
@@ -91,7 +91,7 @@ brew install chafa ffmpeg               # ASCII/retro video
 
 ```bash
 cp .env.example .env
-nano .env                 # isi HERMES_MASTER_PW [WAJIB] + RPC + key yang lo pakai
+nano .env                 # isi ZELINE_MASTER_PW [WAJIB] + RPC + key yang lo pakai
 ```
 
 Edit **USER.md** (masih template) — ini WAJIB sebelum first run:
@@ -104,9 +104,9 @@ Edit **USER.md** (masih template) — ini WAJIB sebelum first run:
 Set spend cap governor di `.env` (sangat disarankan):
 
 ```bash
-HERMES_MAX_TX_USD=500
-HERMES_DAILY_CAP_USD=2000
-HERMES_SESSION_CAP_USD=1000
+ZELINE_MAX_TX_USD=500
+ZELINE_DAILY_CAP_USD=2000
+ZELINE_SESSION_CAP_USD=1000
 ```
 
 ---
@@ -118,7 +118,7 @@ Generate manifest di sumber tepercaya (mesin lo), supaya tampering kedeteksi:
 ```bash
 python tools/skill_integrity.py generate            # tulis SKILLS.lock
 # opsional, tandatangani:
-# export HERMES_SIGNING_KEY=~/.hermes/sign.pem
+# export ZELINE_SIGNING_KEY=~/.zeline/sign.pem
 # python tools/skill_integrity.py generate --sign
 ```
 
@@ -134,29 +134,29 @@ Boot sequence V7 otomatis jalanin `verify` — kalau exit != 0, operasi on-chain
 
 ---
 
-## 5. Konfigurasi Hermes
+## 5. Konfigurasi Zeline
 
-Pastikan konfigurasi runtime Hermes udah bener:
+Pastikan konfigurasi runtime Zeline udah bener:
 
 ```bash
-# Cek config Hermes
-hermes config list
+# Cek config Zeline
+zeline config list
 
 # Set model default (pakai yang ada di API keys lo)
-hermes config set model "b.ai/deepseek-v4-pro"    # atau "anthropic/claude-sonnet-4-20250514"
+zeline config set model "b.ai/deepseek-v4-pro"    # atau "anthropic/claude-sonnet-4-20250514"
 
 # Enable tools yang dibutuhkan
-hermes tools list
+zeline tools list
 ```
 
-H1–H10 crypto dispatch **auto-route** dari AGENTS.md keyword table — gak perlu config tambahan. Hermes references (15 file) load on-demand, zero always-on cost.
+H1–H10 crypto dispatch **auto-route** dari AGENTS.md keyword table — gak perlu config tambahan. Zeline references (15 file) load on-demand, zero always-on cost.
 
 ---
 
 ## 6. Restart & cek
 
 ```bash
-pm2 restart openclaw      # atau: systemctl restart openclaw / screen -r
+pm2 restart zeline      # atau: systemctl restart zeline / screen -r
 ```
 
 Cek boot sequence jalan (lihat AGENTS.md): inject identity → TIME → sk0 registry → USER → MEMORY → integrity verify → reflection cycle → autonomous scan → profit ledger init → briefing if due.
@@ -177,7 +177,7 @@ Tes cepat dari channel (Telegram/chat):
 ```bash
 # alert engine (poll terus)        → jalanin sebagai service/background task
 # daily briefing (sekali/hari)     → cron, contoh jam 7 WIB:
-0 7 * * *  cd ~/.openclaw/workspace/superagent-v7 && python -c "..."   # wire push_briefing ke notifier lo
+0 7 * * *  cd ~/.zeline/workspace/superagent-v7 && python -c "..."   # wire push_briefing ke notifier lo
 # watchdog (mantau proses)         → service interval 30s
 ```
 
@@ -186,13 +186,13 @@ Tes cepat dari channel (Telegram/chat):
 ## Checklist ringkas
 
 ```
-☐ openclaw setup → workspace = ~/.openclaw/workspace/superagent-v7
+☐ zeline setup → workspace = ~/.zeline/workspace/superagent-v7
 ☐ pip install deps inti (+ playwright/whisper/foundry sesuai fitur)
-☐ cp .env.example .env → isi HERMES_MASTER_PW + RPC + caps governor
+☐ cp .env.example .env → isi ZELINE_MASTER_PW + RPC + caps governor
 ☐ edit USER.md (identity + team + billing)
 ☐ python tools/skill_integrity.py generate  →  SKILLS.lock
-☐ hermes config set model [model-choice]
-☐ restart openclaw → tes "siapa lo?"
+☐ zeline config set model [model-choice]
+☐ restart zeline → tes "siapa lo?"
 ☐ (opsional) jadwalkan briefing/alert/watchdog
 ```
 
@@ -204,6 +204,6 @@ Tes cepat dari channel (Telegram/chat):
 - **`integrity verify` exit 1 di VPS** → wajar kalau lo edit file pasca-generate; audit (sk11) lalu `generate` ulang. Kalau lo gak ngedit apa-apa → investigasi, JANGAN jalanin operasi on-chain.
 - **RPC publik timeout** → wajar (rate-limited). Isi `RPC_EVM_*` dengan endpoint lo / pakai RPCRouter failover.
 - **`forge`/`playwright`/`whisper` not found** → fitur terkait kasih pesan install, sisanya tetap jalan.
-- **Update config gak kebaca** → restart gateway OpenClaw.
+- **Update config gak kebaca** → restart gateway Zeline.
 - **Team member gak kedeteksi** → cek USER.md — pastikan team table sudah diisi, restart agent.
-- **Profit ledger kosong** → pastikan MEMORY.md punya REVENUE LOG section, hermes config tools include profit_ledger.
+- **Profit ledger kosong** → pastikan MEMORY.md punya REVENUE LOG section, zeline config tools include profit_ledger.

@@ -21,7 +21,7 @@ Knowledge cutoff: **2026-01-31**. Past this date, time MUST come from external s
 
 ## 5-Layer Architecture
 
-Ordered by reliability — Hermes checks Layer 1 first, falls through.
+Ordered by reliability — Zeline checks Layer 1 first, falls through.
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -173,7 +173,7 @@ Once time is known, cache for the session.
 
 ### State pattern
 ```
-[HERMES INTERNAL STATE]
+[ZELINE INTERNAL STATE]
 session_start_time : 2026-05-25T11:54:00+07:00
 session_user_tz    : Asia/Jakarta
 last_time_check    : 2026-05-25T12:15:00+07:00
@@ -320,4 +320,4 @@ When any skill needs time:
 
 ---
 
-*Hermes is no longer time-blind. Source-aware. Drift-aware. Honest when uncertain.*
+*Zeline is no longer time-blind. Source-aware. Drift-aware. Honest when uncertain.*

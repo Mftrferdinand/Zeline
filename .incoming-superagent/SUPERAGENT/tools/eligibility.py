@@ -4,7 +4,7 @@ tools/eligibility.py — Airdrop Eligibility Scorer  (v4.2, sk31)
 
 Kasih statistik on-chain sebuah wallet → skor "seberapa mungkin lolos kriteria
 airdrop" + apa yang KURANG biar makin kuat. Murni logika scoring; pengambilan data
-on-chain didelegasi ke sk10/hermes (RPC, explorer) — tool ini gak nyentuh jaringan,
+on-chain didelegasi ke sk10/zeline (RPC, explorer) — tool ini gak nyentuh jaringan,
 jadi bisa di-eval offline & deterministik.
 
 Model skor: weighted rubric. Tiap kriteria punya target & bobot; skor = berapa dekat

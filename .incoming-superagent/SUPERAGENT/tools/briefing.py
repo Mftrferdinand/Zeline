@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-STATE = Path(os.environ.get("HERMES_BRIEFING_STATE", "~/.hermes/briefing-last.txt")).expanduser()
-PROPOSALS_DIR = Path(os.environ.get("HERMES_PROPOSALS", "~/.hermes/proposals")).expanduser()
+STATE = Path(os.environ.get("ZELINE_BRIEFING_STATE", "~/.zeline/briefing-last.txt")).expanduser()
+PROPOSALS_DIR = Path(os.environ.get("ZELINE_PROPOSALS", "~/.zeline/proposals")).expanduser()
 
 
 @dataclass

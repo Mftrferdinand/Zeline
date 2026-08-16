@@ -10,7 +10,7 @@ Version history. Baseline **v3.1** (2026-05-25) → **v4.0** (2026-06-03) → **
 
 MAJOR RELEASE. SUPERAGENT single-user v4.2 → SUPERAGENT V7 IRONCLAW SUPREME. Fully autonomous, team-ready, monetization-focused, offensive-capable. Engineering-first identity upgrade. Zero backward compatibility breaks — all existing skill/tool files from v4.2 work unchanged. Bootstrap files (SOUL.md, AGENTS.md, USER.md, MEMORY.md, HEARTBEAT.md) are new.
 
-**HEADLINE:** IRONCLAW V7 SOUL with autonomous doctrine (Cruise/Hunter/Sovereign/War modes), team hierarchy Level 0-3, monetization engine, offensive security toolkit. 12 autonomous triggers. 4 execution modes. Enhanced core rules R11-R12. 82 total skills (sk1-sk51, sk52-sk58, H1-H10, hermes). IRONCLAW SUPREME codename. File count: 264, always-on token budget: ~3.5k.
+**HEADLINE:** IRONCLAW V7 SOUL with autonomous doctrine (Cruise/Hunter/Sovereign/War modes), team hierarchy Level 0-3, monetization engine, offensive security toolkit. 12 autonomous triggers. 4 execution modes. Enhanced core rules R11-R12. 82 total skills (sk1-sk51, sk52-sk58, H1-H10, zeline). IRONCLAW SUPREME codename. File count: 264, always-on token budget: ~3.5k.
 
 ---
 
@@ -104,7 +104,7 @@ Operator-configurable per-action-type. SAFE_AUTO_ACTIONS = everything except fun
 
 ### 🔄 RENAMING
 
-- **Workspace path**: `~/.openclaw/workspace/superagent-v3/` → `~/.openclaw/workspace/superagent-v7/`
+- **Workspace path**: `~/.zeline/workspace/superagent-v3/` → `~/.zeline/workspace/superagent-v7/`
 - **Codename**: IRONCLAW → IRONCLAW SUPREME
 - **Identity**: SUPERAGENT v4.2 → SUPERAGENT V7
 - **SOUL.md**: v6 Compact → IRONCLAW V7 — engineering-first sovereign execution
@@ -126,7 +126,7 @@ Operator-configurable per-action-type. SAFE_AUTO_ACTIONS = everything except fun
 
 ### 📚 DOCS
 
-- **DEPLOY.md** — Complete rewrite: workspace path → `~/.openclaw/workspace/superagent-v7/`, SKILLS.lock verification step, team config in USER.md, Hermes configuration section, 59 skills mention.
+- **DEPLOY.md** — Complete rewrite: workspace path → `~/.zeline/workspace/superagent-v7/`, SKILLS.lock verification step, team config in USER.md, Zeline configuration section, 59 skills mention.
 - **README.md** — Updated install paths, skill count → 58, skill architecture table with all 59 skills, v7.0 upgrade guide.
 - **USER.md** — v7 version: Team Members table (Level 0-3 definitions), Billing section with all fields, trigger phrases including "profit"/"revenue"/"P&L".
 - **MEMORY.md** — v7 version: TEAM CONTEXT section, REVENUE LOG with CURRENT_SESSION_P&L + monthly aggregates.
@@ -219,7 +219,7 @@ Operator-configurable per-action-type. SAFE_AUTO_ACTIONS = everything except fun
 
 - All existing skill files (sk0-sk48, sk52-sk58) unchanged from v4.2
 - All existing Python tools unchanged from v4.2
-- Hermes H1-H10 unchanged
+- Zeline H1-H10 unchanged
 - `.env.example` unchanged (new vars are optional additions)
 - SKILLS.lock regenerated (covers new files, old hashes unchanged)
 - Old workspace path (`superagent-v3`/`superagent`) still works if not migrated — just missing v7 features
@@ -228,8 +228,8 @@ Operator-configurable per-action-type. SAFE_AUTO_ACTIONS = everything except fun
 
 ### 🔢 NUMBERS
 
-- **82 skills**: sk1-sk48 + sk49-sk51 (new) + sk52-sk58 + H1-H10 + hermes
-- **264 files** total (skills, tools, tests, bootstrap, docs, hermes)
+- **82 skills**: sk1-sk48 + sk49-sk51 (new) + sk52-sk58 + H1-H10 + zeline
+- **264 files** total (skills, tools, tests, bootstrap, docs, zeline)
 - **12 autonomous triggers**
 - **4 execution modes**: Cruise, Hunter, Sovereign, War
 - **4 team levels**: 0 (Sovereign), 1 (Commander), 2 (Operator), 3 (Observer)
@@ -262,7 +262,7 @@ Update aditif **dalam v4.2** — versi TIDAK naik. Nambah kategori CTF **AI/LLM*
 
 ## v4.2 (update 2026-06-12) — CTF SWARM INTEGRATION (sk43–sk47 + tools/ctf)
 
-Update aditif **dalam v4.2** — versi TIDAK naik. Integrasi paket CTF agent (karya the operator) ke dalam SUPERAGENT, kompatibel dengan sk32 (CTF/whitehat) yang sudah ada. Nambah **5 sub-skill kategori** (sk43–sk47) + **package `tools/ctf/`** (orchestrator helpers + full-auto coordinator runtime + sandbox) + **24 test offline baru**. Total skill **49 → 54** (sk1–sk47 · sk52–sk57). **216 test offline hijau** (44 hermes + 172 tools), zero ResourceWarning.
+Update aditif **dalam v4.2** — versi TIDAK naik. Integrasi paket CTF agent (karya the operator) ke dalam SUPERAGENT, kompatibel dengan sk32 (CTF/whitehat) yang sudah ada. Nambah **5 sub-skill kategori** (sk43–sk47) + **package `tools/ctf/`** (orchestrator helpers + full-auto coordinator runtime + sandbox) + **24 test offline baru**. Total skill **49 → 54** (sk1–sk47 · sk52–sk57). **216 test offline hijau** (44 zeline + 172 tools), zero ResourceWarning.
 
 ### 🚩 Arsitektur
 - **sk32** naik peran jadi **orchestrator/router CTF**: triage → cek scope → dispatch ke sub-skill kategori → validasi flag → writeup.
@@ -285,7 +285,7 @@ Update aditif **dalam v4.2** — versi TIDAK naik. Integrasi paket CTF agent (ka
 
 ## v4.2 (update 2026-06-12) — GROWTH & PROTECTION EXTENSION (sk33–sk42)
 
-Update aditif **dalam v4.2** — versi TIDAK naik. Nambah **10 skill opsional** (sk33–sk42) + **10 tool baru** + **63 test baru**. Semua offline, deterministik, zero-dep; on-chain read didelegasi ke sk10/hermes, fund movement tetap via Spend Governor, time logic via `now` injected (TIME.md). Identitas inti & safety machinery utuh. **192 test offline hijau** (44 hermes + 148 tools), zero ResourceWarning.
+Update aditif **dalam v4.2** — versi TIDAK naik. Nambah **10 skill opsional** (sk33–sk42) + **10 tool baru** + **63 test baru**. Semua offline, deterministik, zero-dep; on-chain read didelegasi ke sk10/zeline, fund movement tetap via Spend Governor, time logic via `now` injected (TIME.md). Identitas inti & safety machinery utuh. **192 test offline hijau** (44 zeline + 148 tools), zero ResourceWarning.
 
 ### 🛠️ Skill baru (load on-trigger)
 - **sk33 — Pre-TGE Alpha Radar**: skor proyek 0-100 + tier (cold/watch/warm/hot) dari sinyal pre-token (points program, testnet, VC, momentum); token udah ada → cap 30.
@@ -310,10 +310,10 @@ Update aditif **dalam v4.2** — versi TIDAK naik. Nambah **10 skill opsional** 
 
 ## v4.2 — WHITEHAT & AIRDROP INTELLIGENCE (2026-06-09)
 
-Rilis aditif besar. Nambah **2 skill** (sk31, sk32) + **10 tool baru** + extend `eval.py`, plus **6 perbaikan** dari audit internal. Identitas inti crypto + dev (IRONCLAW) utuh — skill baru load on-trigger. Safety machinery (governor, SKILLS.lock, integrity boot) tetap, malah diperkuat. **129 test offline hijau** (44 hermes + 85 tools), zero ResourceWarning.
+Rilis aditif besar. Nambah **2 skill** (sk31, sk32) + **10 tool baru** + extend `eval.py`, plus **6 perbaikan** dari audit internal. Identitas inti crypto + dev (IRONCLAW) utuh — skill baru load on-trigger. Safety machinery (governor, SKILLS.lock, integrity boot) tetap, malah diperkuat. **129 test offline hijau** (44 zeline + 85 tools), zero ResourceWarning.
 
 ### 🛠️ Skill baru
-- **sk31 — Airdrop Intelligence**: 4 tahap ber-angka — eligibility scorer, sybil self-audit, claim-window calendar, exit planner. Semua offline/deterministik; data on-chain didelegasi ke sk10/hermes; time selalu di-inject (TIME.md).
+- **sk31 — Airdrop Intelligence**: 4 tahap ber-angka — eligibility scorer, sybil self-audit, claim-window calendar, exit planner. Semua offline/deterministik; data on-chain didelegasi ke sk10/zeline; time selalu di-inject (TIME.md).
 - **sk32 — CTF / Whitehat Toolkit**: triage kategori, multi-decode, classic crypto (caesar/xor/vigenere), hash-id. **Legal & in-scope only** (R9 gate buat target asing). Stdlib-only & pasif.
 
 ### 🔧 Tool baru
@@ -352,7 +352,7 @@ Rilis aditif kecil. Nambah **1 skill orkestrator** + **2 tool** + test. Identita
 - **Doctrine "browser = last resort"**: garapan bulk dikerjain lewat kode & API; headless browser cuma kalau data render-only & gak ada endpoint yang bisa direplikasi.
 - **Orkestrator, bukan duplikat** — sk30 nyetir & delegasi:
   - Pattern A (harvest/scrape API) → parse_curl + paginate + extract + BulkRunner, delegasi sk6/sk5, browser_engine (H8) last resort.
-  - Pattern B (mass akun/airdrop/on-chain) → BulkRunner + Checkpoint, delegasi sk10 + hermes, **wajib lewat Spend Governor**.
+  - Pattern B (mass akun/airdrop/on-chain) → BulkRunner + Checkpoint, delegasi sk10 + zeline, **wajib lewat Spend Governor**.
   - Pattern C (integrasi API & otomasi job) → RequestSpec + retry + provider cascade, delegasi sk6/sk16/sk4.
 - Terdaftar di `INDEX.md`, `sk0.md` registry, dan router `AGENTS.md` (keyword weights). High-weight sk30 spesifik (garapan, harvest, scrape API, anti-browser, parse curl) supaya gak nyolong "bulk" generik dari sk12.
 
@@ -368,9 +368,9 @@ Rilis aditif kecil. Nambah **1 skill orkestrator** + **2 tool** + test. Identita
 
 ## v4.1.1 — CODE QUALITY & TESTS (2026-06-05)
 
-Maintenance/hardening patch. **No behaviour or capability changes** to the agent — identitas inti crypto + dev (IRONCLAW) utuh. Fokus: keandalan script Hermes crypto + test suite offline.
+Maintenance/hardening patch. **No behaviour or capability changes** to the agent — identitas inti crypto + dev (IRONCLAW) utuh. Fokus: keandalan script Zeline crypto + test suite offline.
 
-### 🐛 Bug fixes (Hermes crypto scripts)
+### 🐛 Bug fixes (Zeline crypto scripts)
 - **Mutable-default dataclass bugs** diperbaiki — bisa bikin state bocor antar-instance:
   - `swap_engine.py` → `SwapResult.warnings` sekarang `field(default_factory=list)`
   - `nft_engine.py` → `NFTResult.tx_hashes` sekarang `field(default_factory=list)`
@@ -378,7 +378,7 @@ Maintenance/hardening patch. **No behaviour or capability changes** to the agent
 - **`bridge_engine.py` relative-import fragile** — `from .swap_engine import ...` gagal kalau script dipakai flat/standalone (persis cara yang README anjurkan). Sekarang ada fallback ke import top-level, jadi jalan di dua mode (package & template).
 
 ### ✅ Testing (baru)
-- Test suite **offline, zero-dependency** di `skills/hermes/tests/` (stdlib `unittest`; jalan juga di `pytest`). 44 test, semua hijau.
+- Test suite **offline, zero-dependency** di `skills/zeline/tests/` (stdlib `unittest`; jalan juga di `pytest`). 44 test, semua hijau.
 - `_bootstrap.py` nge-stub paket berat (web3/eth_account/httpx/solana/…) lewat import hook → bisa nguji logika murni tanpa install apa-apa & tanpa jaringan.
 - Coverage: governor (allow/block/halt, caps, rate-limit trip, kill-switch), SIWE/signature helpers, mempool filter, RPC failover, jitter & run-state dedupe, explorer URL, default-list safety.
 - Tooling dev: `pyproject.toml` (config pytest + ruff), `requirements-dev.txt`, `tests/run_tests.sh`, `tests/README.md`.
@@ -446,7 +446,7 @@ Domain marketing/konten sosial (proposal kategori 18–24) + pendalaman sains & 
 - **Kejujuran desain**: "141+ scientific tools" = dispatch ke library matang + verifikasi, BUKAN klaim built-in palsu. Analitik konten butuh data real platform; tanpa itu heuristik bertanda estimasi.
 
 ### Ringkasan angka
-- 37 skill (sk0–sk29 + sk52–sk58), 28 tool, 15 reference Hermes (tak berubah dari v4.0), +`STANDARD.md`.
+- 37 skill (sk0–sk29 + sk52–sk58), 28 tool, 15 reference Zeline (tak berubah dari v4.0), +`STANDARD.md`.
 - Semua skill baru = modul opsional, on-trigger; always-on token budget tetap ~3.5k (progressive disclosure).
 
 ---
@@ -456,7 +456,7 @@ Domain marketing/konten sosial (proposal kategori 18–24) + pendalaman sains & 
 Major release. Dari baseline v3.1, v4.0 nambahin lapisan keamanan/governance penuh, kemampuan belajar sendiri, suite asisten harian, tooling smart-contract lengkap (baca/tulis/deploy), manajemen LLM dinamis, "power pack" orkestrasi, dan skill software-engineering umum. Semua aksi yang nyentuh dana lewat **Spend Governor**; file kritis dijaga **FROZEN_PATHS**.
 
 ### 🛡 Keamanan & governance
-- **Spend Governor** — circuit breaker di tiap tx: cap per-tx / harian / sesi (USD), batas slippage, auto-HALT pas gas spike / rate-limit, simulation gate, kill-switch manual. `auto_confirm` matiin prompt, **bukan** governor. → `skills/hermes/references/governor.md`, `scripts/governor.py`
+- **Spend Governor** — circuit breaker di tiap tx: cap per-tx / harian / sesi (USD), batas slippage, auto-HALT pas gas spike / rate-limit, simulation gate, kill-switch manual. `auto_confirm` matiin prompt, **bukan** governor. → `skills/zeline/references/governor.md`, `scripts/governor.py`
 - **MEV protection** — swap & snipe lewat private relay (Flashbots Protect / MEV Blocker), bukan mempool publik; fallback-with-warning yang jujur. → `scripts/mev.py`
 - **Skill integrity verify** — manifest SHA-256 (+ opsional Ed25519) dicek saat boot; file skill yang berubah/baru/hilang nahan operasi on-chain sampai diaudit. → `tools/skill_integrity.py`, `SKILLS.lock`
 - **FROZEN_PATHS** — file kritis (SOUL, AGENTS, governor, integrity, reflection, vault, watchdog, model_registry, planner, swarm, automation, skill_forge) **gak bisa diedit** oleh loop self-improve. Di-enforce di kode (`guard_write`).
@@ -488,7 +488,7 @@ Major release. Dari baseline v3.1, v4.0 nambahin lapisan keamanan/governance pen
 - **`DEPLOY.md`** — panduan deploy VPS yang akurat (menggantikan quick-start lama).
 
 ### Ringkasan angka
-- 22 skill (sk0–sk17 + sk52–sk55), ~30+ script Python, 15 reference Hermes.
+- 22 skill (sk0–sk17 + sk52–sk55), ~30+ script Python, 15 reference Zeline.
 - Lapisan baru: governance, self-improve, daily assistant, contract read/write/deploy, model registry, power pack, software engineering.
 
 ---
@@ -500,9 +500,9 @@ Rilis dasar yang jadi titik tolak v4.0.
 ### Headline changes
 - 🆕 **3 new skills**: sk10 Web3, sk11 Security, sk12 Batch
 - 🆕 **NFT minter skill**: sk13 (universal mint with auto-gas, OpenSea/Manifold/Zora)
-- 🆕 **Hermes Crypto Agent absorbed**: full deep-crypto layer at `skills/hermes/` (10 refs + 8 Python templates)
+- 🆕 **Zeline Crypto Agent absorbed**: full deep-crypto layer at `skills/zeline/` (10 refs + 8 Python templates)
 - ⏰ **TIME.md** — 5-layer time-awareness architecture (system inject → tool → cache → infer → disclose). No more time-blind hallucination on deadlines/cron/vesting/claim windows.
-- ⚡ **Smarter router**: priority-weighted keywords, multi-skill orchestration, H1-H7 hermes dispatch
+- ⚡ **Smarter router**: priority-weighted keywords, multi-skill orchestration, H1-H7 zeline dispatch
 - 🛠 **sk4 Telegram** now production-grade (anti-duplicate, webhook mode, multi-bot)
 - 🤖 **sk7 AI** rewritten: streaming, function calling, provider fallback chain, cost tracking
 - 🖥 **sk2 VPS** expanded: systemd, tmux, nginx security headers, backup automation
@@ -513,13 +513,13 @@ Rilis dasar yang jadi titik tolak v4.0.
 | File | Why |
 |---|---|
 | `skills/sk10.md` | Web3 ops: RPC fallback, BIP39 wallet gen, NonceManager, simulate→send→wait, eligibility O(1) checker, mass farming with p-limit, multicall, Solana basics. |
-| `skills/sk11.md` | Security audits: skill-file injection checklist, Solidity red flags, suspicious package signals, secret leak detection, OpenClaw-specific safety. |
+| `skills/sk11.md` | Security audits: skill-file injection checklist, Solidity red flags, suspicious package signals, secret leak detection, Zeline-specific safety. |
 | `skills/sk12.md` | Batch patterns: p-limit, asyncio.gather, token bucket, progress tracking, resume-from-failure checkpoint. |
 | `skills/sk13.md` | **Universal NFT minter**: parse OpenSea/Manifold/Zora URL atau raw address, auto-detect mint fn + price, auto-gas, simulate→send→wait. Combo sk12 buat mass mint. |
-| `skills/hermes/*` | **Hermes Crypto Agent** — deep-crypto skill (SKILL.md + references + Python templates). H1-H7 dispatch (swap/bridge/defi/sniping/mempool/NFT/SIWE). EVM + Solana + Sui + Aptos + TON. |
+| `skills/zeline/*` | **Zeline Crypto Agent** — deep-crypto skill (SKILL.md + references + Python templates). H1-H7 dispatch (swap/bridge/defi/sniping/mempool/NFT/SIWE). EVM + Solana + Sui + Aptos + TON. |
 | `TIME.md` | **5-layer time-awareness**. Solves LLM time-blindness. Strict mode buat crypto cron/deadline/vesting/claim. Contributor: 👁⃤Fiⱥnͥ.ⱥsͣsͫⱥn 𓂀 ([@fianassan25](https://t.me/fianassan25)). |
 | `CONTRIBUTORS.md` | Credits — CVC Owner + Member contributions. |
-| `panduan.md` | Operator usage guide (12 sections + cheat sheet) dengan contoh Hermes nyata. |
+| `panduan.md` | Operator usage guide (12 sections + cheat sheet) dengan contoh Zeline nyata. |
 | `CHANGELOG.md` | This file. |
 | `INDEX.md` | One-line index of all files. |
 
@@ -528,7 +528,7 @@ Rilis dasar yang jadi titik tolak v4.0.
 - **`IDENTITY.md`** — 3 response speed tiers, Web3 operator voice, anti motivational filler.
 - **`SOUL.md`** — 2 hard stops (CSAM, mass-casualty weapons), single risk gate, doktrin permisif buat crypto ops.
 - **`HEARTBEAT.md`** — continuity triggers, token discipline (warn 60% / compact 80%), resume protocol.
-- **`TOOLS.md`** — agent-side vs operator-side, OpenClaw streaming config bug (`streaming: false` boolean).
+- **`TOOLS.md`** — agent-side vs operator-side, Zeline streaming config bug (`streaming: false` boolean).
 - **`USER.md`** — template fill-in + trigger phrases + domain focus.
 - **`MEMORY.md`** — compact format (1 baris/entry), 30-day window, monthly compaction.
 - **`skills/sk0–sk9, sk52–sk54`** — registry diperluas, reflection loop, escape hatch, crypto monetization (sk1), VPS bootstrap (sk2), airdrop template + CT voice (sk3), Telegram rewrite anti-duplicate (sk4), O(1) lookup (sk5), circuit breaker (sk6), AI rewrite + fallback (sk7), PDF hyperlinks (sk8), Web3 UI (sk9), audits (sk52), pre-mortem (sk53), error library (sk54).
@@ -536,6 +536,6 @@ Rilis dasar yang jadi titik tolak v4.0.
 ### Known good combos (multi-skill load)
 - "bikin bot Telegram + bayar TON" → sk4 + sk6 + sk10
 - "mass mint 300 wallet" → sk13 + sk12 + sk10
-- "swap 1000 USDC ke ETH di base" → H1 (hermes/swap.md) + sk10
+- "swap 1000 USDC ke ETH di base" → H1 (zeline/swap.md) + sk10
 - "farming airdrop layerzero 50 wallet" → H2 + H1 + sk12
 - "buat landing page web3" → sk9 + sk10

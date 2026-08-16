@@ -7,7 +7,7 @@ Ubah farming airdrop dari nebak jadi keputusan ber-angka. Lacak tiap posisi farm
 keep/trim/drop, deteksi wallet nganggur yang cuma bakar gas.
 
 Murni logika (offline, deterministik). Data biaya/aktivitas mentah didelegasi ke
-sk10/hermes (on-chain) + cost_ledger.py. Zero-dep (dataclasses).
+sk10/zeline (on-chain) + cost_ledger.py. Zero-dep (dataclasses).
 """
 from __future__ import annotations
 

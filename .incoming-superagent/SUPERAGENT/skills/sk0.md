@@ -100,20 +100,20 @@ sk58  | Problem shaping & decision support  | problem shaping, brainstorming, si
 2+ matches:    pick PRIMARY (highest score), load it fully
                pull SUPPORTING (>50% of primary's score) section-by-section
 ambiguous tie: ask once — "Fokus ke [A] atau [B] dulu?"
-H-skill hit:   load skills/hermes/DISPATCH.md FIRST, then specific reference
+H-skill hit:   load skills/zeline/DISPATCH.md FIRST, then specific reference
 ```
 
-### Hermes routing
-H1-H10 are NOT standalone files. They map to `skills/hermes/references/*.md`:
+### Zeline routing
+H1-H10 are NOT standalone files. They map to `skills/zeline/references/*.md`:
 ```
-H1 → hermes/references/swap.md       H2 → hermes/references/bridge.md
-H3 → hermes/references/defi.md       H4 → hermes/references/sniping.md
-H5 → hermes/references/monitoring.md  H6 → hermes/references/nft.md
-H7 → hermes/references/web3_connect.md H8 → hermes/references/browser.md
-H9 → hermes/references/contract_read.md + contract_write.md
-H10 → hermes/references/deploy.md
+H1 → zeline/references/swap.md       H2 → zeline/references/bridge.md
+H3 → zeline/references/defi.md       H4 → zeline/references/sniping.md
+H5 → zeline/references/monitoring.md  H6 → zeline/references/nft.md
+H7 → zeline/references/web3_connect.md H8 → zeline/references/browser.md
+H9 → zeline/references/contract_read.md + contract_write.md
+H10 → zeline/references/deploy.md
 ```
-Load `hermes/DISPATCH.md` once per session if any H-skill fires.
+Load `zeline/DISPATCH.md` once per session if any H-skill fires.
 
 ---
 

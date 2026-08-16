@@ -71,26 +71,26 @@
 - `skills/sk50.md` — Autonomous Monetization Engine: treasury, P&L, revenue optimization, passive income *(v7.0 NEW)*
 - `skills/sk51.md` — Offensive Security & Red-Team Ops: exploit dev, C2, post-exploitation, MITRE ATT&CK *(v7.0 NEW)*
 
-### Hermes Crypto Agent (deep refs, loaded via H1-H7 dispatch)
-- `skills/hermes/SKILL.md` — hermes principles + capability index
-- `skills/hermes/DISPATCH.md` — bridge to v3 router, env var checklist, safety rails
-- `skills/hermes/README.md` — install + dependency list
-- `skills/hermes/references/wallets.md` — multi-chain wallet gen + import (EVM/Solana/Sui/Aptos/TON)
-- `skills/hermes/references/swap.md` — 1inch + Jupiter + DEX router fallback
-- `skills/hermes/references/nft.md` — Seaport / Blur / Reservoir / Magic Eden / Tensor
-- `skills/hermes/references/sniping.md` — PairCreated listener + honeypot.is + GoPlus gate
-- `skills/hermes/references/airdrop_automation.md` — multi-wallet runner + jitter + resume
-- `skills/hermes/references/bridge.md` — LI.FI + Stargate + Across + native L1↔L2
-- `skills/hermes/references/defi.md` — Aave V3 / Lido / GMX V2 / Hyperliquid / Pendle
-- `skills/hermes/references/web3_connect.md` — SIWE / WalletConnect v2 / EIP-712 / EIP-1271 / ENS
-- `skills/hermes/references/monitoring.md` — mempool + smart money + NFT whale + contract listener (12 sections)
-- `skills/hermes/references/security.md` — encrypted vault (scrypt + Fernet)
-- `skills/hermes/references/governor.md` — spend governor / circuit breaker *(v4.0)*
-- `skills/hermes/references/browser.md` — Playwright dApp automation + governed signing *(v4.0)*
-- `skills/hermes/references/contract_read.md` — universal multi-chain contract reader *(v4.0)*
-- `skills/hermes/references/contract_write.md` — universal contract write, gated via governor *(v4.0)*
-- `skills/hermes/references/deploy.md` — crypto dev: compile/test/deploy/verify, CREATE2 *(v4.0)*
-- `skills/hermes/scripts/` — 10 Python templates (wallet_manager, swap_engine, nft_engine, bridge_engine, web3_connect, monitoring, monitoring_advanced, airdrop_runner, **governor**, **mev**, **browser_engine** *(v4.0)*)
+### Zeline Crypto Agent (deep refs, loaded via H1-H7 dispatch)
+- `skills/zeline/SKILL.md` — zeline principles + capability index
+- `skills/zeline/DISPATCH.md` — bridge to v3 router, env var checklist, safety rails
+- `skills/zeline/README.md` — install + dependency list
+- `skills/zeline/references/wallets.md` — multi-chain wallet gen + import (EVM/Solana/Sui/Aptos/TON)
+- `skills/zeline/references/swap.md` — 1inch + Jupiter + DEX router fallback
+- `skills/zeline/references/nft.md` — Seaport / Blur / Reservoir / Magic Eden / Tensor
+- `skills/zeline/references/sniping.md` — PairCreated listener + honeypot.is + GoPlus gate
+- `skills/zeline/references/airdrop_automation.md` — multi-wallet runner + jitter + resume
+- `skills/zeline/references/bridge.md` — LI.FI + Stargate + Across + native L1↔L2
+- `skills/zeline/references/defi.md` — Aave V3 / Lido / GMX V2 / Hyperliquid / Pendle
+- `skills/zeline/references/web3_connect.md` — SIWE / WalletConnect v2 / EIP-712 / EIP-1271 / ENS
+- `skills/zeline/references/monitoring.md` — mempool + smart money + NFT whale + contract listener (12 sections)
+- `skills/zeline/references/security.md` — encrypted vault (scrypt + Fernet)
+- `skills/zeline/references/governor.md` — spend governor / circuit breaker *(v4.0)*
+- `skills/zeline/references/browser.md` — Playwright dApp automation + governed signing *(v4.0)*
+- `skills/zeline/references/contract_read.md` — universal multi-chain contract reader *(v4.0)*
+- `skills/zeline/references/contract_write.md` — universal contract write, gated via governor *(v4.0)*
+- `skills/zeline/references/deploy.md` — crypto dev: compile/test/deploy/verify, CREATE2 *(v4.0)*
+- `skills/zeline/scripts/` — 10 Python templates (wallet_manager, swap_engine, nft_engine, bridge_engine, web3_connect, monitoring, monitoring_advanced, airdrop_runner, **governor**, **mev**, **browser_engine** *(v4.0)*)
 
 ### Meta
 - `skills/sk52.md` — self-audit, system refinement

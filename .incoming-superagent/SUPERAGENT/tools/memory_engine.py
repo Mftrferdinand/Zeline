@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional, Literal
 
 Kind = Literal["fact", "lesson", "preference", "decision", "blocker"]
-DEFAULT_DB = Path(os.environ.get("HERMES_MEMORY_DB", "~/.hermes/memory.db")).expanduser()
+DEFAULT_DB = Path(os.environ.get("ZELINE_MEMORY_DB", "~/.zeline/memory.db")).expanduser()
 _WORD = re.compile(r"[a-z0-9]{2,}")
 _STOP = {"the", "and", "for", "yang", "dan", "untuk", "gak", "aja", "ini", "itu", "ke", "di"}
 

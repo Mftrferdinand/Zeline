@@ -103,15 +103,15 @@ def cmd_auth(args) -> int:
 
 
 def cmd_bridge(args) -> int:
-    """Show HermesBridge status (multi-chain bridge adapter)."""
-    print("🌉 SUPERAGENT V7 — HermesBridge Status")
+    """Show ZelineBridge status (multi-chain bridge adapter)."""
+    print("🌉 SUPERAGENT V7 — ZelineBridge Status")
 
-    # Try hermes_bridge adapter first (v7)
+    # Try zeline_bridge adapter first (v7)
     try:
-        from hermes_bridge import HermesBridgeAdapter
+        from zeline_bridge import ZelineBridgeAdapter
 
-        adapter = HermesBridgeAdapter()
-        print("   ✅ HermesBridgeAdapter loaded (V7)")
+        adapter = ZelineBridgeAdapter()
+        print("   ✅ ZelineBridgeAdapter loaded (V7)")
         print(f"   → Supported protocols: {', '.join(adapter.list_protocols()) if hasattr(adapter, 'list_protocols') else 'LayerZero, Stargate, LI.FI, Across'}")
 
         # Quick status check on common routes
@@ -128,7 +128,7 @@ def cmd_bridge(args) -> int:
     except ImportError:
         pass
 
-    # Fallback: try skills/hermes bridge_engine
+    # Fallback: try skills/zeline bridge_engine
     try:
         from bridge_engine import BridgeEngine
 
@@ -188,14 +188,14 @@ def cmd_deploy_gateway(args) -> int:
         # Fall through to manual instructions
 
     # Fallback: manual instructions
-    print("   ℹ️  Gateway deployment via OpenClaw/Hermes runtime.")
+    print("   ℹ️  Gateway deployment via Zeline/Zeline runtime.")
     print()
     print("   Manual steps:")
-    print("   1. Ensure openclaw gateway is running:  openclaw gateway status")
-    print("   2. Configure nodes:                     openclaw gateway nodes add ...")
-    print("   3. Start gateway:                       openclaw gateway start")
+    print("   1. Ensure zeline gateway is running:  zeline gateway status")
+    print("   2. Configure nodes:                     zeline gateway nodes add ...")
+    print("   3. Start gateway:                       zeline gateway start")
     print()
-    print("   💡 For automated deploy, see skills/hermes/scripts/deploy_engine.py")
+    print("   💡 For automated deploy, see skills/zeline/scripts/deploy_engine.py")
     return 0
 
 
@@ -567,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_auth.set_defaults(func=cmd_auth)
 
     # ── bridge ──
-    p_bridge = sub.add_parser("bridge", help="HermesBridge operations")
+    p_bridge = sub.add_parser("bridge", help="ZelineBridge operations")
     p_bridge.add_argument("action", nargs="?", default="status",
                           choices=["status"], help="Bridge action (default: status)")
     p_bridge.set_defaults(func=cmd_bridge)
