@@ -629,7 +629,7 @@ def _model_picker_payload(
         rows.append([{"text": "« Back", "callback_data": "provider:back"}])
     rows.append([{"text": "✗ Cancel", "callback_data": "model:cancel"}])
     return (
-        (f"Select a model\nProvider: {provider_name}\nCurrent: {current_model or 'unknown'}" if provider_name else f"Select a model\nCurrent: {current_model or 'unknown'}"),
+        (f"Select a model\n{provider_name} • {len(models)} models\nCurrent: {current_model or 'unknown'}" if provider_name else f"Select a model\nCurrent: {current_model or 'unknown'}"),
         {"inline_keyboard": rows},
     )
 
@@ -670,8 +670,8 @@ def _grouped_model_picker_payload(
     header = f"{provider_name} › {label_name}" if provider_name else label_name
     next_label = _vendor_label(groups[(page + 1) % total][0])
     text = (
-        f"Select a model\n{header}  ({page + 1}/{total})\n"
-        f"{len(indices)} models · Next › {next_label}\n"
+        f"Select a model ({page + 1}/{total})\n"
+        f"{header} • {len(indices)} models\n"
         f"Current: {current_model or 'unknown'}"
     )
     return text, {"inline_keyboard": rows}
@@ -803,12 +803,21 @@ def _format_token_count(value: Any) -> str | None:
 
 
 def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
-    """Build the English model-switch confirmation with capability details."""
+    """Build the model-switch confirmation with capability details."""
     provider_name = provider.get("name", provider.get("slug", "")) if provider else _provider_label()
+
+    # Cari label rute (mis. "GoRouter" untuk prefix "Gr") untuk tampilan yang
+    # sama dengan picker — supaya user tahu rute mana yang dipilih.
+    route_label = ""
+    if "/" in selected:
+        prefix = selected.split("/", 1)[0]
+        route_label = f" › {_vendor_label(prefix)}"
+
     lines = [
-        "✅ <b>Model switched</b>",
-        f"├ Model    : <code>{html.escape(selected)}</code>",
-        f"├ Provider : <code>{html.escape(str(provider_name))}</code>",
+        "╭───────────♻️",
+        "├ <b>Model Switched</b>",
+        f"├ Provider : <code>{html.escape(str(provider_name))}{html.escape(route_label)}</code>",
+        f"├ Model : <code>{html.escape(selected)}</code>",
     ]
 
     meta = _fetch_model_capabilities(provider, selected)
@@ -818,26 +827,11 @@ def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
     context_window = _format_token_count(caps.get("contextWindow"))
     max_output = _format_token_count(caps.get("maxOutput"))
     if context_window:
-        lines.append(f"├ Context  : {context_window} tokens")
+        lines.append(f"├ Context : {context_window} tokens")
     if max_output:
-        lines.append(f"├ Max out  : {max_output} tokens")
+        lines.append(f"├ Max out : {max_output} tokens")
 
-    # Compact capability flags — only show the ones that are true.
-    flags: list[str] = []
-    if caps.get("vision"):
-        flags.append("vision")
-    if caps.get("tools"):
-        flags.append("tools")
-    if caps.get("reasoning"):
-        flags.append("reasoning")
-    if caps.get("search"):
-        flags.append("search")
-    if caps.get("pdf"):
-        flags.append("pdf")
-    if flags:
-        lines.append(f"├ Supports : {', '.join(flags)}")
-
-    lines.append("╰ Saved globally · conversation context preserved.")
+    lines.append("╰ Saved to config.yaml (--global)")
     return "\n".join(lines)
 
 
@@ -974,10 +968,12 @@ def _handle_command_update(
         _api_call(
             api, "sendMessage", chat_id=chat_id,
             text=(
-                f"Zeline is ready.\nModel: {config.MODEL}\n\n"
-                "/model — switch model\n/status — show runtime status\n"
-                "/stop — stop the active turn\n/new — start a new session\n"
-                "/steer <prompt> — guide the active turn"
+                "Command to setup :\n"
+                "/model — Switch model\n"
+                "/status — View runtime status\n"
+                "/stop — Stop the active turn\n"
+                "/new — Start a new session\n\n"
+                "Send a message to start a task"
             ),
         )
         return True

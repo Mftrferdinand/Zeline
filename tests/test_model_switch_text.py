@@ -13,7 +13,7 @@ class ModelSwitchTextTests(unittest.TestCase):
         self.assertIsNone(telegram._format_token_count(0))
         self.assertEqual(telegram._format_token_count(512), "512")
 
-    def test_switch_text_is_english_with_capabilities(self):
+    def test_switch_text_has_box_and_route_label(self):
         caps = {
             "capabilities": {
                 "contextWindow": 1_000_000,
@@ -26,23 +26,25 @@ class ModelSwitchTextTests(unittest.TestCase):
         }
         with mock.patch.object(telegram, "_fetch_model_capabilities", return_value=caps):
             text = telegram._model_switch_text("Gr/claude-opus-4-8", {"name": "9Router", "slug": "9router"})
+        self.assertIn("Model Switched", text)
+        self.assertIn("9Router › GoRouter", text)
+        self.assertIn("Gr/claude-opus-4-8", text)
+        self.assertIn("1M tokens", text)
+        self.assertIn("128K tokens", text)
+        self.assertIn("Saved to config.yaml", text)
         # No Indonesian leftover
         self.assertNotIn("Konteks", text)
         self.assertNotIn("dijaga", text)
-        # Has the detail fields
-        self.assertIn("Model switched", text)
-        self.assertIn("1M tokens", text)
-        self.assertIn("128K tokens", text)
-        self.assertIn("vision", text)
-        self.assertIn("context preserved", text)
+        # No capability flags line (removed per owner request)
+        self.assertNotIn("vision", text)
+        self.assertNotIn("Supports", text)
 
     def test_switch_text_degrades_without_capabilities(self):
         with mock.patch.object(telegram, "_fetch_model_capabilities", return_value={}):
             text = telegram._model_switch_text("some/model", {"name": "P", "slug": "p"})
-        # Still valid, still English, just no token lines
-        self.assertIn("Model switched", text)
+        self.assertIn("Model Switched", text)
         self.assertNotIn("tokens", text)
-        self.assertIn("context preserved", text)
+        self.assertIn("Saved to config.yaml", text)
 
 
 if __name__ == "__main__":
