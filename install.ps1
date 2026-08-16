@@ -5,8 +5,8 @@
 #   .\install.ps1
 #
 # Or from a local clone:
-#   git clone https://github.com/Mftrferdinand/Zerolinear.git
-#   cd Zerolinear
+#   git clone https://github.com/Mftrferdinand/Zeline.git
+#   cd Zeline
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Source .
 #
 # Switches (useful for CI / unattended installs):
@@ -33,7 +33,7 @@ Set-StrictMode -Version Latest
 
 $Version     = '0.2.2'
 $ReleaseRef  = 'v0.2.2'
-$ReleaseBase = "https://github.com/Mftrferdinand/Zerolinear/releases/download/$ReleaseRef"
+$ReleaseBase = "https://github.com/Mftrferdinand/Zeline/releases/download/$ReleaseRef"
 $WheelName   = "zeline-$Version-py3-none-any.whl"
 
 # ---------------------------------------------------------------- utilities
@@ -310,7 +310,7 @@ try {
     Write-Host 'Then verify:'
     Write-Host '  zeline doctor'
     Write-Host ''
-    Write-Host 'Docs: https://github.com/Mftrferdinand/Zerolinear'
+    Write-Host 'Docs: https://github.com/Mftrferdinand/Zeline'
 }
 finally {
     if ($tempDir -and (Test-Path $tempDir)) {

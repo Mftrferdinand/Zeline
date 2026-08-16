@@ -15,6 +15,23 @@ RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 
 class ReleaseVersionContractTests(unittest.TestCase):
+    def test_public_urls_use_canonical_repo_name(self):
+        """Nama repo lama cuma hidup lewat redirect GitHub — jangan diandalkan."""
+        pages = [
+            ROOT / "README.md",
+            ROOT / "docs" / "README.id.md",
+            ROOT / "docs" / "README.zh.md",
+            ROOT / "docs" / "installation.md",
+            ROOT / "install.sh",
+            ROOT / "install.ps1",
+            ROOT / "pyproject.toml",
+            ROOT / ".github" / "RELEASE_NOTES.md",
+        ]
+        for page in pages:
+            text = page.read_text(encoding="utf-8")
+            with self.subTest(page=page.name):
+                self.assertNotIn("Mftrferdinand/Zerolinear", text)
+
     def test_package_installers_and_public_docs_target_v021(self):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         package_init = (ROOT / "zeline" / "__init__.py").read_text(encoding="utf-8")
@@ -254,7 +271,7 @@ class InstallationPageTests(unittest.TestCase):
         for page in pages:
             text = page.read_text(encoding="utf-8")
             with self.subTest(page=page.name):
-                self.assertNotIn("raw.githubusercontent.com/Mftrferdinand/Zerolinear/main/install", text)
+                self.assertNotIn("raw.githubusercontent.com/Mftrferdinand/Zeline/main/install", text)
                 self.assertNotIn("| bash", text)
                 self.assertNotIn("| iex", text.lower())
                 self.assertIn("v0.2.2", text)

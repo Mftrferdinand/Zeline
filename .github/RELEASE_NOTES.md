@@ -15,7 +15,7 @@ Zeline is the open-source agentic AI framework by Zerolinear.
 
 ### Installation
 
-See the [installation guide](https://github.com/Mftrferdinand/Zerolinear/blob/v0.2.2/docs/installation.md) for checksum-verified commands on every supported platform.
+See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.2.2/docs/installation.md) for checksum-verified commands on every supported platform.
 
 ### Assets
 

@@ -1,4 +1,4 @@
-"""Publikasi skill pemilik ke repo Zerolinear dengan approval + scan sensitif.
+"""Publikasi skill pemilik ke repo Zeline dengan approval + scan sensitif.
 
 Alur aman (dipicu oleh callback publish di Telegram, owner-only):
 
@@ -209,7 +209,7 @@ def publish(name: str, scrubbed_content: str) -> str:
     root = _repo_root()
     if root is None:
         return (
-            "GAGAL: repo git Zerolinear tidak ditemukan dari package ini "
+            "GAGAL: repo git Zeline tidak ditemukan dari package ini "
             "(instalasi non-repo). Publish dibatalkan; tidak ada yang di-push."
         )
 

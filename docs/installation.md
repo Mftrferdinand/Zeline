@@ -28,7 +28,7 @@ WhatsApp also needs Node.js 18+ and npm. Release installers and packages are
 immutable tag assets. Verify them against `SHA256SUMS` before execution:
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -53,7 +53,7 @@ checksum manifest.
 If GitHub CLI is installed, independently verify that provenance with:
 
 ```bash
-gh attestation verify zeline-0.2.2-py3-none-any.whl --repo Mftrferdinand/Zerolinear
+gh attestation verify zeline-0.2.2-py3-none-any.whl --repo Mftrferdinand/Zeline
 ```
 
 ## Termux
@@ -63,7 +63,7 @@ Install Termux from F-Droid or GitHub (the Play Store build is obsolete), then:
 ```bash
 pkg update -y
 pkg install python curl -y
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -95,7 +95,7 @@ Debian / Ubuntu:
 ```bash
 sudo apt update
 sudo apt install python3 python3-venv curl -y
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -117,7 +117,7 @@ Fedora:
 
 ```bash
 sudo dnf install python3 curl -y
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -139,7 +139,7 @@ Arch Linux:
 
 ```bash
 sudo pacman -S --needed python curl
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -166,7 +166,7 @@ Install Apple command-line tools and Homebrew Python if needed:
 ```bash
 xcode-select --install
 brew install python
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -196,7 +196,7 @@ Use [iSH](https://ish.app/), an Alpine Linux shell for iOS/iPadOS:
 ```sh
 apk update
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -225,7 +225,7 @@ Open **PowerShell** or **Windows Terminal**, not Command Prompt. Administrator
 rights are not required:
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zerolinear/releases/download/v0.2.2'
+$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
@@ -249,16 +249,16 @@ zeline.cli` or `py -3 -m zeline.cli`) when it leaves PATH unchanged.
 POSIX platforms:
 
 ```bash
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
+git clone https://github.com/Mftrferdinand/Zeline.git
+cd Zeline
 bash install.sh --source .
 ```
 
 Windows PowerShell:
 
 ```powershell
-git clone https://github.com/Mftrferdinand/Zerolinear.git
-cd Zerolinear
+git clone https://github.com/Mftrferdinand/Zeline.git
+cd Zeline
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Source .
 ```
 
@@ -346,4 +346,4 @@ zeline gateway list
 - **Windows box characters look wrong** — use Windows Terminal or PowerShell 7.
 
 Repository and issue tracker:
-[github.com/Mftrferdinand/Zerolinear](https://github.com/Mftrferdinand/Zerolinear)
+[github.com/Mftrferdinand/Zeline](https://github.com/Mftrferdinand/Zeline)

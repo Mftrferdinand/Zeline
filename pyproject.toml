@@ -40,9 +40,9 @@ dev = ["build>=1.2"]
 zeline = "zeline.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/Mftrferdinand/Zerolinear"
-Repository = "https://github.com/Mftrferdinand/Zerolinear"
-Issues = "https://github.com/Mftrferdinand/Zerolinear/issues"
+Homepage = "https://github.com/Mftrferdinand/Zeline"
+Repository = "https://github.com/Mftrferdinand/Zeline"
+Issues = "https://github.com/Mftrferdinand/Zeline/issues"
 
 [tool.setuptools.packages.find]
 include = ["zeline*"]
