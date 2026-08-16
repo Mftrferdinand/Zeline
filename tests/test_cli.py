@@ -207,7 +207,7 @@ class ZelineCliTests(unittest.TestCase):
         saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertTrue(Path(saved["tools"]["workspace"]).samefile(workspace))
 
-    def test_setup_parser_exposes_hermes_style_sections(self):
+    def test_setup_parser_exposes_zeline_style_sections(self):
         parser = self.cli.build_parser()
         for section in ("gateway", "model", "tools", "integrations", "agent"):
             with self.subTest(section=section):
