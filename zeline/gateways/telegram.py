@@ -1012,7 +1012,7 @@ def _promote_preview_text(plan: "skill_publish.PublishPlan") -> str:
                 f"(baris {finding.line_no}): <code>{html.escape(finding.excerpt)}</code>"
             )
         lines.append("")
-        lines.append("Bersihkan baris di atas dari skill dulu, lalu jalankan /promoteskill lagi.")
+        lines.append("Bersihkan baris di atas dari skill dulu, lalu coba publikasi lagi.")
     else:
         lines.append("✅ <b>Scan sensitif 3-lapis:</b> BERSIH (tidak ada rahasia/identitas/infra bocor)")
         lines.append("")
@@ -1087,7 +1087,7 @@ def _handle_publish_callback(api: str, chat_id: int, message_id: int, data: str)
         return
     payload = _pop_publish_payload(token)
     if payload is None:
-        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Sesi publish sudah kedaluwarsa. Jalankan /promoteskill lagi.")
+        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Sesi publish sudah kedaluwarsa.")
         return
     name, scrubbed = payload
     _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=f"⏳ Mem-publish '{name}' ke repo…")
