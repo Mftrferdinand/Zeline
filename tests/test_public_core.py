@@ -812,7 +812,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 raise _rq.ConnectionError("boom")
             return OKResp()
 
-        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram.requests, "post", side_effect=flaky):
+        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram._HTTP, "post", side_effect=flaky):
             out = telegram._api_call("bot-api", "sendMessage", chat_id=1, text="hi")
         self.assertIsNotNone(out)
         self.assertEqual(calls["n"], 3)  # retried until it went through
@@ -825,7 +825,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         def always_fail(url, json=None, timeout=None):
             calls["n"] += 1
             raise _rq.ConnectionError("boom")
-        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram.requests, "post", side_effect=always_fail):
+        with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram._HTTP, "post", side_effect=always_fail):
             out = telegram._api_call("bot-api", "answerCallbackQuery", callback_query_id="x")
         self.assertIsNone(out)
         self.assertEqual(calls["n"], 1)  # no retry
@@ -852,7 +852,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 return Resp(False, {"ok": False, "description": "Bad Request: can't parse entities: Can't find end tag \"pre\""})
             return Resp(True, {"ok": True, "result": {"message_id": 1}})
 
-        with mock.patch.object(telegram.requests, "post", side_effect=fake_post):
+        with mock.patch.object(telegram._HTTP, "post", side_effect=fake_post):
             out = telegram._api_call(
                 "bot-api", "sendMessage", chat_id=1,
                 text='🖥️ Zeline Terminal\n<pre>which cloudflared 2&gt;/dev/null &amp;&amp; echo done</pre>',
@@ -1725,6 +1725,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # Second call within TTL must hit the cache (no second HTTP request).
         telegram = importlib.import_module("zeline.gateways.telegram")
         telegram._MODELS_CACHE.clear()
+        telegram._MODEL_META_CACHE.clear()
         provider = {"base_url": "https://prov.example/v1", "api_key": "k", "model": "m"}
 
         class FakeResp:
@@ -1732,7 +1733,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def json(self):
                 return {"data": [{"id": "a"}, {"id": "b"}]}
 
-        with mock.patch.object(telegram.requests, "get", return_value=FakeResp()) as get:
+        with mock.patch.object(telegram._HTTP, "get", return_value=FakeResp()) as get:
             first = telegram._discover_provider_models(provider)
             second = telegram._discover_provider_models(provider)
         self.assertEqual(first, ["a", "b"])
@@ -1740,6 +1741,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # Only ONE HTTP call despite two lookups → cache works.
         self.assertEqual(get.call_count, 1)
         telegram._MODELS_CACHE.clear()
+        telegram._MODEL_META_CACHE.clear()
 
     def test_telegram_model_root_picker_lists_named_providers_first(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -1801,6 +1803,64 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn("New session started", confirm)
         methods = [call.args[1] for call in api.call_args_list]
         self.assertEqual(methods, ["answerCallbackQuery", "editMessageText"])
+
+    def test_telegram_interactive_edit_retries_and_falls_back_to_send(self):
+        """Tap tombol tidak boleh 'hilang' saat satu edit gagal (bug tap-2x).
+
+        editMessageText dulu attempts=1, jadi satu ConnectionError sesaat bikin
+        tap pertama tampak tidak berefek. Sekarang edit interaktif diretry dan,
+        kalau tetap gagal, hasilnya dikirim sebagai pesan baru.
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        with mock.patch.object(telegram, "_api_call", return_value=None) as api:
+            telegram._edit_interactive("bot-api", 42, 9, "Select a model")
+        methods = [call.args[1] for call in api.call_args_list]
+        self.assertEqual(methods, ["editMessageText", "sendMessage"])
+        self.assertEqual(api.call_args_list[0].kwargs["attempts"], telegram._INTERACTIVE_ATTEMPTS)
+        self.assertGreater(telegram._INTERACTIVE_ATTEMPTS, 1)
+
+    def test_telegram_not_modified_edit_counts_as_success(self):
+        """'message is not modified' bukan kegagalan → jangan kirim duplikat."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+
+        class Response:
+            ok = False
+            status_code = 400
+            def json(self): return {"ok": False, "description": "Bad Request: message is not modified"}
+
+        with mock.patch.object(telegram._HTTP, "post", return_value=Response()):
+            result = telegram._api_call("bot-api", "editMessageText", chat_id=1, message_id=2, text="same")
+        self.assertIsNotNone(result)
+        self.assertTrue(result.get("ok"))
+
+    def test_telegram_model_capabilities_reuse_picker_catalog_without_second_call(self):
+        """Konfirmasi ganti model harus pakai cache /models, bukan request kedua."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        telegram._MODELS_CACHE.clear()
+        telegram._MODEL_META_CACHE.clear()
+        provider = {"slug": "p", "name": "P", "base_url": "https://api.example/v1", "api_key": "key", "model": "model-a"}
+        payload = {"data": [{"id": "model-a", "capabilities": {"contextWindow": 128000}}, {"id": "model-b"}]}
+
+        class Response:
+            ok = True
+            def json(self): return payload
+
+        with mock.patch.object(telegram._HTTP, "get", return_value=Response()) as get:
+            models = telegram._discover_provider_models(provider)
+            caps = telegram._fetch_model_capabilities(provider, "model-a")
+        self.assertEqual(models, ["model-a", "model-b"])
+        self.assertEqual(caps.get("capabilities", {}).get("contextWindow"), 128000)
+        self.assertEqual(get.call_count, 1)
+        telegram._MODELS_CACHE.clear()
+        telegram._MODEL_META_CACHE.clear()
+
+    def test_telegram_error_badge_shows_only_the_actual_status_code(self):
+        """Badge error harus menyebut kode yang benar-benar terjadi, bukan daftar."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        self.assertTrue(telegram._format_agent_error("The provider returned HTTP 403 — unauthorized.").startswith("🪫 403 —"))
+        self.assertTrue(telegram._format_agent_error("The provider returned HTTP 429 — rate limited.").startswith("🪫 429 —"))
+        self.assertTrue(telegram._format_agent_error("Provider says out of credits").startswith("🪫 Quota/Auth —"))
+        self.assertNotIn("401, 403, 429", telegram._format_agent_error("The provider returned HTTP 403 — unauthorized."))
 
     def test_telegram_stop_cancels_active_turn_without_stopping_gateway(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
