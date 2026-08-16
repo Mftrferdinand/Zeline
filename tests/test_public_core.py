@@ -147,10 +147,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(normalized["name"], "Lucian")
         self.assertEqual(normalized["provider"]["model"], "keep-this-model")
 
-    def test_seeded_superagent_skill_corpus_is_available_to_public_gateway(self):
+    def test_seeded_zenith_skill_corpus_is_available_to_public_gateway(self):
         skill_system = importlib.import_module("zeline.skills")
         skill_system.seed_skills()
-        content = skill_system.load_skill("superagent-v7-sk0")
+        content = skill_system.load_skill("zeline-zenith-sk0")
         self.assertIn("Skill Registry", content)
 
     def test_bundled_skills_do_not_expose_upstream_branding(self):
@@ -167,7 +167,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
             and path.suffix.lower() not in source_suffixes
         )
         self.assertEqual(unknown, [])
-        upstream_terms = ("hermes", "openclaw", "clawhub", "aesora")
+        upstream_terms = (
+            "hermes", "openclaw", "clawhub", "aesora",
+            "superagent", "ironclaw",
+        )
         leaked = []
         for path in sources:
             folded = path.read_text(encoding="utf-8").casefold()
@@ -175,6 +178,50 @@ class ZelinePublicCoreTests(unittest.TestCase):
             if hits:
                 leaked.append(f"{path.relative_to(skill_root)}: {','.join(hits)}")
         self.assertEqual(leaked, [])
+
+    def test_renamed_zenith_corpus_is_bundled_under_new_name_only(self):
+        skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
+        zenith = sorted(path.name for path in skill_root.glob("zeline-zenith-sk*.md"))
+        self.assertEqual(len(zenith), 60)
+        self.assertEqual(sorted(skill_root.glob("superagent-v7-*.md")), [])
+
+    def test_legacy_digest_map_covers_every_renamed_zenith_skill(self):
+        skills = importlib.import_module("zeline.skills")
+        legacy = {
+            name for name in skills.LEGACY_BUNDLED_SKILL_DIGESTS
+            if name.startswith("superagent-v7-sk")
+        }
+        self.assertEqual(
+            legacy,
+            {f"superagent-v7-sk{index}.md" for index in range(60)},
+        )
+        for name, digests in skills.LEGACY_BUNDLED_SKILL_DIGESTS.items():
+            with self.subTest(name=name):
+                # Tuple-of-digests, never a bare string: a str would make the
+                # ``digest in expected`` check match on substrings.
+                self.assertIsInstance(digests, tuple)
+                self.assertTrue(digests)
+                for digest in digests:
+                    self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_seed_skills_removes_any_shipped_revision_of_renamed_skill(self):
+        skills = importlib.import_module("zeline.skills")
+        stale = skills.PUBLIC_SKILLS_DIR / "superagent-v7-sk2.md"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        # sk2 shipped two distinct revisions; the older one must still be cleaned.
+        for digest in skills.LEGACY_BUNDLED_SKILL_DIGESTS["superagent-v7-sk2.md"]:
+            stale.write_text("placeholder\n", encoding="utf-8")
+            with mock.patch.dict(
+                skills.LEGACY_BUNDLED_SKILL_DIGESTS,
+                {"superagent-v7-sk2.md": (
+                    hashlib.sha256(stale.read_bytes()).hexdigest(),
+                    digest,
+                )},
+                clear=True,
+            ):
+                skills.seed_skills()
+            with self.subTest(digest=digest):
+                self.assertFalse(stale.exists())
 
     def test_bundled_skills_do_not_invent_renamed_runtime_contracts(self):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
@@ -354,7 +401,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.dict(
             skills.LEGACY_BUNDLED_SKILL_DIGESTS,
-            {"tmdb-media-web-maintenance.md": digest},
+            {"tmdb-media-web-maintenance.md": (digest,)},
             clear=True,
         ):
             skills.seed_skills()
@@ -376,9 +423,9 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # SHA-256 independently captured from the exact file merged in b4bea85.
         # Keep this literal so a production-map typo fails on shallow CI clones.
         expected = "35f51a79be0c313bec2ec3f014200a00beeee7938173b5a20ccae0e5b62b8a4d"
-        self.assertEqual(
-            skills.LEGACY_BUNDLED_SKILL_DIGESTS["tmdb-media-web-maintenance.md"],
+        self.assertIn(
             expected,
+            skills.LEGACY_BUNDLED_SKILL_DIGESTS["tmdb-media-web-maintenance.md"],
         )
 
     def test_legacy_skill_cleanup_compares_parent_identity_cross_platform(self):
@@ -395,7 +442,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.dict(
             skills.LEGACY_BUNDLED_SKILL_DIGESTS,
-            {"../outside-public.md": digest},
+            {"../outside-public.md": (digest,)},
             clear=True,
         ):
             skills.seed_skills()
@@ -2074,7 +2121,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_telegram_accepts_zip_larger_than_legacy_256_kb_limit(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         payload = b"z" * (729 * 1024)
-        document = {"file_name": "SUPERAGENT-V7-FORSALE-FINAL.zip", "file_size": len(payload), "file_id": "zip-file"}
+        document = {"file_name": "ZELINE-ZENITH-FORSALE-FINAL.zip", "file_size": len(payload), "file_id": "zip-file"}
         response = mock.Mock(ok=True, content=payload)
         with mock.patch.object(telegram, "_api_call", return_value={"result": {"file_path": "documents/zip-file"}}), \
              mock.patch.object(telegram.requests, "get", return_value=response):

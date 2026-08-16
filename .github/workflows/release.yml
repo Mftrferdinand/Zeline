@@ -54,7 +54,7 @@ jobs:
           wheel, sdist = wheels[0], sdists[0]
           blocked_markers = (
               "__pycache__", ".pytest_cache", ".zeline", ".env",
-              ".incoming-superagent", "tmdb-media-web-maintenance",
+              ".incoming-zeline-zenith", "tmdb-media-web-maintenance",
           )
           blocked_suffixes = (".pyc", ".pyo", ".pem", ".key")
 
