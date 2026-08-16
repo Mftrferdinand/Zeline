@@ -38,9 +38,14 @@ REPOSITORY_FILE = config.DATA_DIR / "repository.md"
 REPOSITORY_HEADER = "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n"
 _URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 
-# Cache katalog /models per base_url agar picker /model tidak memanggil network
-# berkali-kali (tap provider lalu render model). TTL pendek supaya tetap fresh.
+# Cache katalog /models per base_url (TTL) agar picker /model tidak memanggil
+# network berkali-kali (tap provider lalu render model, lalu baca capabilities).
+# _MODELS_CACHE menyimpan daftar id; _MODEL_META_CACHE menyimpan entri mentah
+# (capabilities dst) dari payload YANG SAMA, supaya konfirmasi ganti model tidak
+# perlu memukul /models untuk kedua kalinya (dulu inilah yang bikin tap model
+# terasa "nggak ngapa-ngapain" lalu harus ditap 2x).
 _MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_MODEL_META_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
 _MODELS_CACHE_TTL = 300.0  # detik
 
 # Retry untuk error jaringan sementara. Method yang MENGIRIM hasil ke user
@@ -59,6 +64,17 @@ _RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
 # akhir (sendMessage biasa) yang tetap diretry supaya tidak pernah hilang.
 _PROGRESS_TIMEOUT = 6
 _PROGRESS_ATTEMPTS = 1
+
+# Edit yang MERUPAKAN jawaban atas tap tombol (picker provider/model) HARUS
+# diretry. Dulu editMessageText selalu attempts=1, jadi satu ConnectionError
+# sesaat (biasa di Termux) bikin tap PERTAMA seolah tidak ngapa-ngapain dan aes
+# harus tap 2x. Bedakan dari edit progres: yang ini interaktif & kritis.
+_INTERACTIVE_ATTEMPTS = 3
+
+# Satu Session dipakai bersama supaya koneksi TLS ke api.telegram.org di-reuse
+# (keep-alive). Handshake ulang tiap panggilan bikin setiap tap tombol bayar
+# ~1s ekstra; dengan keep-alive turun ke ~0.3s. urllib3 pool-nya thread-safe.
+_HTTP = requests.Session()
 
 
 def _telegram_commands() -> list[dict[str, str]]:
@@ -278,7 +294,12 @@ def _format_agent_error(message: str) -> str:
         or "rate limited" in low
         or "out of credits" in low
     ):
-        return f"🪫 401, 403, 429 — {message}"
+        # Tampilkan hanya kode HTTP yang benar-benar terjadi (mis. 403), bukan
+        # daftar statis semua kode auth/kuota. Kalau tak ada kode di pesan
+        # (mis. "rate limited"), pakai label kuota generik.
+        code_match = re.search(r"http\s*(401|403|429)", low)
+        badge = code_match.group(1) if code_match else "Quota/Auth"
+        return f"🪫 {badge} — {message}"
     if "too long" in low or "maksimum" in low or ("context" in low and "limit" in low) or "terlalu panjang" in low:
         return f"🪫 Limit Text/Context — {message}"
     return f"❌ Zeline hit a problem — {message}"
@@ -575,50 +596,59 @@ def _provider_picker_payload(providers: list[dict[str, str]], current_slug: str)
     return "Select a provider", {"inline_keyboard": rows}
 
 
-def _discover_provider_models(provider: dict[str, str]) -> list[str]:
-    # Cache per base_url (TTL) supaya tap provider → tap model tidak memicu
-    # dua network call ke /models. Tanpa ini picker terasa lambat 1-3 menit
-    # kalau provider (mis. 9Router yang proxy ke upstream) sedang lemot.
-    base = provider.get("base_url", "").rstrip("/")
+def _fetch_models_catalog(base_url: str, api_key: str, *, timeout: int = 12) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Ambil /models SEKALI lalu isi kedua cache (id list + metadata per id).
+
+    Dipakai oleh picker dan oleh teks konfirmasi ganti model. Tanpa ini,
+    `_fetch_model_capabilities` melakukan panggilan /models KEDUA sesudah tap
+    model — di jaringan Termux itu tambahan ~1-20s yang membuat tap pertama
+    tampak tidak berefek (aes harus tap 2x).
+    """
+    base = str(base_url or "").rstrip("/")
+    if not base:
+        return [], {}
     now = time.monotonic()
-    cached = _MODELS_CACHE.get(base)
-    if cached and now - cached[0] < _MODELS_CACHE_TTL:
-        return cached[1]
+    cached_ids = _MODELS_CACHE.get(base)
+    cached_meta = _MODEL_META_CACHE.get(base)
+    if cached_ids and cached_meta and now - cached_ids[0] < _MODELS_CACHE_TTL:
+        return cached_ids[1], cached_meta[1]
     try:
-        response = requests.get(
-            f"{provider.get('base_url', '').rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {provider.get('api_key', '')}"},
-            timeout=12,
+        response = _HTTP.get(
+            f"{base}/models",
+            headers={"Authorization": f"Bearer {api_key or ''}"},
+            timeout=timeout,
         )
         payload = response.json() if response.ok else {}
-        models = [str(item.get("id", "")).strip() for item in payload.get("data", []) if isinstance(item, dict) and item.get("id")]
-        result = list(dict.fromkeys(models)) or ([provider.get("model", "")] if provider.get("model") else [])
-        if result:
-            _MODELS_CACHE[base] = (now, result)
-        return result
     except (requests.RequestException, ValueError):
-        return [provider.get("model", "")] if provider.get("model") else []
+        return [], {}
+    if not isinstance(payload, dict):
+        return [], {}
+    ids: list[str] = []
+    meta: dict[str, dict[str, Any]] = {}
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id", "")).strip()
+        if not model_id:
+            continue
+        ids.append(model_id)
+        meta[model_id] = item
+    ids = list(dict.fromkeys(ids))
+    if ids:
+        _MODELS_CACHE[base] = (now, ids)
+        _MODEL_META_CACHE[base] = (now, meta)
+    return ids, meta
+
+
+def _discover_provider_models(provider: dict[str, str]) -> list[str]:
+    ids, _ = _fetch_models_catalog(provider.get("base_url", ""), provider.get("api_key", ""))
+    return ids or ([provider.get("model", "")] if provider.get("model") else [])
 
 
 def _discover_models() -> list[str]:
     """Ambil katalog model live dari provider OpenAI-compatible."""
-    try:
-        response = requests.get(
-            f"{config.BASE_URL.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {config.API_KEY}"},
-            timeout=20,
-        )
-        if not response.ok:
-            return [config.MODEL] if config.MODEL else []
-        payload = response.json()
-        models = [
-            str(item.get("id", "")).strip()
-            for item in payload.get("data", [])
-            if isinstance(item, dict) and str(item.get("id", "")).strip()
-        ] if isinstance(payload, dict) else []
-        return list(dict.fromkeys(models)) or ([config.MODEL] if config.MODEL else [])
-    except (requests.RequestException, ValueError):
-        return [config.MODEL] if config.MODEL else []
+    ids, _ = _fetch_models_catalog(config.BASE_URL, config.API_KEY, timeout=20)
+    return ids or ([config.MODEL] if config.MODEL else [])
 
 
 def _provider_label() -> str:
@@ -631,33 +661,16 @@ def _provider_label() -> str:
 def _fetch_model_capabilities(provider: dict[str, str] | None, model_id: str) -> dict[str, Any]:
     """Return the raw capabilities/metadata dict for one model id, or {}.
 
-    Uses the active provider's ``/models`` catalog (9Router-style entries carry
-    ``capabilities`` with contextWindow/maxOutput/vision/tools/reasoning). Safe:
-    returns an empty dict on any network/parse error so the caller can degrade
-    gracefully.
+    Reads from the SHARED /models catalog cache (`_fetch_models_catalog`), which
+    the picker already warmed a moment earlier — so confirming a model switch
+    costs no extra network round-trip. Safe: returns {} on any error so the
+    caller degrades gracefully.
     """
     base = (provider or {}).get("base_url") if provider else config.BASE_URL
     key = (provider or {}).get("api_key") if provider else config.API_KEY
-    base = str(base or "").rstrip("/")
-    if not base:
-        return {}
-    try:
-        response = requests.get(
-            f"{base}/models",
-            headers={"Authorization": f"Bearer {key or ''}"},
-            timeout=12,
-        )
-        if not response.ok:
-            return {}
-        payload = response.json()
-    except (requests.RequestException, ValueError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    for item in payload.get("data", []):
-        if isinstance(item, dict) and str(item.get("id", "")).strip() == model_id:
-            return item
-    return {}
+    _, meta = _fetch_models_catalog(str(base or ""), str(key or ""))
+    entry = meta.get(model_id)
+    return entry if isinstance(entry, dict) else {}
 
 
 def _format_token_count(value: Any) -> str | None:
@@ -1085,20 +1098,37 @@ def _handle_publish_callback(api: str, chat_id: int, message_id: int, data: str)
     _api_call(api, "sendMessage", chat_id=chat_id, text=result)
 
 
+def _edit_interactive(api: str, chat_id: int, message_id: int, text: str, **extra: Any) -> None:
+    """Edit pesan sebagai JAWABAN atas tap tombol — tidak boleh senyap gagal.
+
+    Bug yang diperbaiki: `editMessageText` tidak ada di `_RETRYABLE_METHODS`, jadi
+    satu ConnectionError sesaat (sering di Termux) membuat tap PERTAMA pada
+    picker `/model` tampak tidak ngapa-ngapain — aes harus tap 2x (sekali untuk
+    buka daftar model, sekali lagi untuk benar-benar ganti). Di sini edit diretry
+    beberapa kali; kalau tetap gagal, kirim pesan baru supaya hasil tap selalu
+    kelihatan alih-alih hilang tanpa jejak.
+    """
+    result = _api_call(
+        api, "editMessageText", chat_id=chat_id, message_id=message_id,
+        text=text, attempts=_INTERACTIVE_ATTEMPTS, timeout=20, **extra,
+    )
+    if result is None:
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, **extra)
+
+
 def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
     callback_id = str(callback.get("id", ""))
     data = str(callback.get("data", ""))
     message = callback.get("message") or {}
     chat_id = int((message.get("chat") or {}).get("id", 0))
     message_id = int(message.get("message_id", 0))
-    # Callback query sudah di-answer di polling loop sebelum thread ini dispawn
-    # (menghentikan spinner tombol dengan cepat). Answer kedua di sini tidak
-    # perlu; Telegram akan mengabaikannya. Dibiarkan sebagai no-op defensif bila
-    # fungsi dipanggil langsung dari jalur lain.
+    # Hentikan spinner tombol SECEPATNYA lalu kerjakan sisanya. Tidak diretry:
+    # callback query cepat basi ("query is too old") dan menahan di sini justru
+    # menunda edit yang user tunggu.
     if callback_id:
         _api_call(api, "answerCallbackQuery", timeout=10, callback_query_id=callback_id)
     if data == "model:cancel":
-        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Model selection cancelled.")
+        _edit_interactive(api, chat_id, message_id, "Model selection cancelled.")
         return
     if data.startswith("pub:"):
         _handle_publish_callback(api, chat_id, message_id, data)
@@ -1106,18 +1136,18 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
     providers = _configured_providers()
     if data == "provider:back":
         picker_text, markup = _provider_picker_payload(providers, _active_provider_slug(providers))
-        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=picker_text, reply_markup=markup)
+        _edit_interactive(api, chat_id, message_id, picker_text, reply_markup=markup)
         return
     if data.startswith("provider:"):
         try:
             provider_index = int(data.split(":", 1)[1])
             provider = providers[provider_index]
         except (ValueError, IndexError):
-            _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Provider selection expired. Run /model again.")
+            _edit_interactive(api, chat_id, message_id, "Provider selection expired. Run /model again.")
             return
         models = _discover_provider_models(provider)
         picker_text, markup = _model_picker_payload(models, provider.get("model", ""), provider_index, provider.get("name", provider["slug"]))
-        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=picker_text, reply_markup=markup)
+        _edit_interactive(api, chat_id, message_id, picker_text, reply_markup=markup)
         return
     if not data.startswith("model:"):
         return
@@ -1132,7 +1162,7 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
             models = _discover_models()
             selected = models[int(parts[1])]
     except (ValueError, IndexError):
-        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text="Model selection expired. Run /model again.")
+        _edit_interactive(api, chat_id, message_id, "Model selection expired. Run /model again.")
         return
     cfg = config.stored_config_copy()
     if provider is not None:
@@ -1144,7 +1174,7 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
         cfg["provider"]["model"] = selected
     config.save_config(cfg)
     sessions.switch_provider(f"telegram:{chat_id}")
-    _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id, text=_model_switch_text(selected, provider), parse_mode="HTML")
+    _edit_interactive(api, chat_id, message_id, _model_switch_text(selected, provider), parse_mode="HTML")
 
 
 _FENCED_CODE_RE = re.compile(r"```([A-Za-z0-9_+.-]*)\n?(.*?)```", re.DOTALL)
@@ -1351,7 +1381,7 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
     attempts = max(1, attempts)
     for attempt in range(attempts):
         try:
-            response = requests.post(f"{api}/{method}", json=params, timeout=timeout)
+            response = _HTTP.post(f"{api}/{method}", json=params, timeout=timeout)
             payload = response.json()
             if response.ok and payload.get("ok"):
                 return payload
@@ -1369,7 +1399,7 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
                     stripped = re.sub(r"<[^>]+>", "", str(plain["text"]))
                     plain["text"] = html.unescape(stripped)
                 try:
-                    retry = requests.post(f"{api}/{method}", json=plain, timeout=timeout)
+                    retry = _HTTP.post(f"{api}/{method}", json=plain, timeout=timeout)
                     rp = retry.json()
                     if retry.ok and rp.get("ok"):
                         return rp
@@ -1377,9 +1407,12 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
                     pass
                 return None
             # "message is not modified" = edit konten identik (picker dibuka
-            # ulang), harmless → jangan spam log & jangan retry.
-            if "message is not modified" not in description:
-                print(f"  [telegram] {method} failed: {description}", flush=True)
+            # ulang), harmless → jangan spam log & jangan retry. Perlakukan
+            # sebagai SUKSES: isi pesan sudah sesuai yang diminta, jadi pemanggil
+            # interaktif tidak boleh menganggapnya gagal lalu mengirim duplikat.
+            if "message is not modified" in description:
+                return {"ok": True, "result": True}
+            print(f"  [telegram] {method} failed: {description}", flush=True)
             return None  # error tingkat-API, retry tidak menolong
         except (requests.RequestException, ValueError) as exc:
             # Error jaringan sementara → backoff & coba lagi (kecuali attempt terakhir).
@@ -1394,7 +1427,7 @@ def _send_document(api: str, chat_id: int, path: Path) -> bool:
     """Kirim dokumen Telegram tanpa caption atau pesan teks kedua."""
     try:
         with path.open("rb") as document:
-            response = requests.post(
+            response = _HTTP.post(
                 f"{api}/sendDocument",
                 data={"chat_id": str(chat_id)},
                 files={"document": (path.name, document, "text/markdown")},
