@@ -1857,7 +1857,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
             telegram._handle_callback("bot-api", callback, object())
         edit = api.call_args_list[-1]
         self.assertEqual(edit.args[1], "editMessageText")
-        self.assertIn("Provider: Token Harbor", edit.kwargs["text"])
+        self.assertIn("Token Harbor", edit.kwargs["text"])
+        self.assertIn("• 2 models", edit.kwargs["text"])
         buttons = [button for row in edit.kwargs["reply_markup"]["inline_keyboard"] for button in row]
         self.assertIn({"text": "« Back", "callback_data": "provider:back"}, buttons)
 
@@ -1892,7 +1893,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(sessions.switched_id, "telegram:42")
         self.assertIsNone(sessions.reset_id)
         confirm = api.call_args.kwargs["text"]
-        self.assertIn("context preserved", confirm)
+        self.assertIn("Model Switched", confirm)
+        self.assertIn("model-b", confirm)
         self.assertNotIn("Konteks", confirm)
         self.assertNotIn("New session started", confirm)
         methods = [call.args[1] for call in api.call_args_list]
