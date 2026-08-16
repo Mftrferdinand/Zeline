@@ -167,11 +167,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
             and path.suffix.lower() not in source_suffixes
         )
         self.assertEqual(unknown, [])
+        upstream_terms = ("hermes", "openclaw", "clawhub", "aesora")
         leaked = []
         for path in sources:
-            text = path.read_text(encoding="utf-8")
-            if "hermes" in text.casefold():
-                leaked.append(str(path.relative_to(skill_root)))
+            folded = path.read_text(encoding="utf-8").casefold()
+            hits = sorted(term for term in upstream_terms if term in folded)
+            if hits:
+                leaked.append(f"{path.relative_to(skill_root)}: {','.join(hits)}")
         self.assertEqual(leaked, [])
 
     def test_bundled_skills_do_not_invent_renamed_runtime_contracts(self):
