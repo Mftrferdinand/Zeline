@@ -74,7 +74,8 @@ class GatewayServiceTests(unittest.TestCase):
         self.config.save_config(cfg)
         stale = "  [telegram] token could not be verified; gateway stopped.\n"
         self.service.LOG_FILE.write_text(stale, encoding="utf-8")
-        offset = len(stale.encode("utf-8"))
+        # Ukuran byte nyata, bukan len(str) — Windows menulis CRLF.
+        offset = self.service.LOG_FILE.stat().st_size
         self.config.PID_FILE.write_text(
             json.dumps({"pid": 4242, "start_ticks": "1", "only": ["telegram"], "log_offset": offset}),
             encoding="utf-8",
@@ -110,12 +111,15 @@ class GatewayServiceTests(unittest.TestCase):
         self.config.save_config(cfg)
         self.config.ensure_data_dirs()
         self.service.LOG_FILE.write_text("old line\n", encoding="utf-8")
+        # Bandingkan dengan ukuran BYTE di disk, bukan panjang string: di Windows
+        # "\n" ditulis sebagai CRLF, jadi len(str) meleset satu byte per baris.
+        expected_offset = self.service.LOG_FILE.stat().st_size
         process = mock.Mock(pid=43211)
         with mock.patch.object(self.service.subprocess, "Popen", return_value=process), mock.patch.object(self.service, "_process_start_ticks", return_value="777"):
             started, _message = self.service.start(only=["telegram"])
         self.assertTrue(started)
         state = json.loads(self.config.PID_FILE.read_text(encoding="utf-8"))
-        self.assertEqual(state["log_offset"], len("old line\n"))
+        self.assertEqual(state["log_offset"], expected_offset)
 
     def test_stop_refuses_pid_reuse_without_signalling_process(self):
         self.config.ensure_data_dirs()

@@ -429,9 +429,12 @@ def wait_until_connected(timeout: float = 90.0) -> tuple[bool, list[str]]:
         if not _process_matches_state(_load_state() or {}):
             return False, ["gateway process exited before connecting — check `zeline gateway log`"]
         try:
-            with LOG_FILE.open("r", encoding="utf-8", errors="replace") as handle:
+            # Baca BINER lalu decode: seek() pada file mode teks hanya sah untuk
+            # cookie dari tell(), bukan offset byte sembarang (dan CRLF di
+            # Windows bikin posisi teks ≠ posisi byte).
+            with LOG_FILE.open("rb") as handle:
                 handle.seek(min(log_offset, LOG_FILE.stat().st_size))
-                text = handle.read()
+                text = handle.read().decode("utf-8", errors="replace")
         except OSError:
             text = ""
         for line in text.splitlines():
