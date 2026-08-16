@@ -71,6 +71,12 @@ _PROGRESS_ATTEMPTS = 1
 # harus tap 2x. Bedakan dari edit progres: yang ini interaktif & kritis.
 _INTERACTIVE_ATTEMPTS = 3
 
+# Verifikasi token saat startup: JANGAN menyerah setelah satu timeout. Latensi
+# ke api.telegram.org dari Termux terukur 1.5-15.8s dan sesekali ReadTimeout;
+# satu kegagalan bukan bukti token salah. Timeout longgar + beberapa percobaan.
+_STARTUP_VERIFY_ATTEMPTS = 4
+_STARTUP_VERIFY_TIMEOUT = 30
+
 # Satu Session dipakai bersama supaya koneksi TLS ke api.telegram.org di-reuse
 # (keep-alive). Handshake ulang tiap panggilan bikin setiap tap tombol bayar
 # ~1s ekstra; dengan keep-alive turun ke ~0.3s. urllib3 pool-nya thread-safe.
@@ -2007,17 +2013,53 @@ def _dispatch_update(
         )
 
 
+def _verify_token(api: str) -> tuple[str | None, str]:
+    """Verifikasi token saat startup. Return (username, alasan-gagal).
+
+    Bug yang diperbaiki: dulu `getMe` dipanggil sekali (`attempts=1`), dan SATU
+    ReadTimeout — biasa saja di Termux, latensi terukur 1.5-15.8s — bikin gateway
+    langsung berhenti dengan "token could not be verified". Efeknya bot mati
+    total dan `/model` tidak dijawab sama sekali, padahal tokennya valid.
+
+    Sekarang: network error diretry dengan backoff, dan gateway hanya menolak
+    jalan kalau Telegram BENAR-BENAR menolak tokennya (401/404). Itu pembedaan
+    yang penting — "jaringan lagi jelek" bukan "token salah".
+    """
+    last_error = "no response"
+    for attempt in range(_STARTUP_VERIFY_ATTEMPTS):
+        try:
+            response = _HTTP.post(f"{api}/getMe", json={}, timeout=_STARTUP_VERIFY_TIMEOUT)
+        except (requests.RequestException, ValueError) as exc:
+            last_error = f"network: {exc.__class__.__name__}"
+        else:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            if response.ok and payload.get("ok"):
+                return str((payload.get("result") or {}).get("username", "?")), ""
+            description = str(payload.get("description", f"HTTP {response.status_code}"))[:160]
+            # Penolakan otentikasi nyata → berhenti sekarang, retry tidak menolong.
+            if response.status_code in (401, 404):
+                return None, f"rejected by Telegram: {description}"
+            last_error = description
+        if attempt < _STARTUP_VERIFY_ATTEMPTS - 1:
+            delay = min(2.0 * (attempt + 1), 8.0)
+            print(f"  [telegram] getMe {last_error}; retry in {delay:.0f}s", flush=True)
+            time.sleep(delay)
+    return None, last_error
+
+
 def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     token = str(cfg["token"]).strip()
     api = API_TEMPLATE.format(token=token)
     allowed = cfg.get("allowed", [])
     tool_profile = str(cfg.get("tool_profile", "safe"))
 
-    me = _api_call(api, "getMe", timeout=20)
-    if not me:
-        print("  [telegram] token could not be verified; gateway stopped.", flush=True)
+    username, failure = _verify_token(api)
+    if username is None:
+        print(f"  [telegram] token could not be verified ({failure}); gateway stopped.", flush=True)
         return
-    username = str((me.get("result") or {}).get("username", "?"))
     print(f"  [telegram] @{username} connected via polling", flush=True)
     _api_call(api, "setMyCommands", commands=_telegram_commands())
 
