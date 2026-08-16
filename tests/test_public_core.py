@@ -891,6 +891,43 @@ class ZelinePublicCoreTests(unittest.TestCase):
             )
         self.assertEqual(started, ["halo"])
 
+    def test_update_trace_summarizes_without_leaking_message_content(self):
+        # Log gateway harus cukup untuk diagnosa 'kenapa bot diam' TAPI bukan
+        # arsip percakapan: isi pesan tidak boleh masuk log.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        secret = "saldo rekening 12345 rahasia"
+        trace = telegram._update_trace(
+            {"update_id": 1, "message": {"chat": {"id": 77}, "from": {"id": 88}, "text": secret}}
+        )
+        self.assertIn("chat=77", trace)
+        self.assertIn("user=88", trace)
+        self.assertIn(f"len={len(secret)}", trace)
+        self.assertNotIn("rahasia", trace)
+        self.assertNotIn("12345", trace)
+
+    def test_update_trace_labels_commands_media_and_callbacks(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # Nama command dicatat (berguna: '/model dijawab?'), argumen tidak.
+        command = telegram._update_trace(
+            {"message": {"chat": {"id": 1}, "from": {"id": 2}, "text": "/model bai/secret-model"}}
+        )
+        self.assertIn("command=/model", command)
+        self.assertNotIn("secret-model", command)
+        # Media dikenali per jenis supaya jelas jalur mana yang dipakai. Muatan
+        # dibuat non-kosong seperti update Telegram nyata — _dispatch_update juga
+        # memakai truthiness yang sama, jadi dict kosong memang bukan media.
+        self.assertIn("photo", telegram._update_trace({"message": {"chat": {"id": 1}, "photo": [{"file_id": "p"}]}}))
+        self.assertIn("document", telegram._update_trace({"message": {"chat": {"id": 1}, "document": {"file_id": "d"}}}))
+        self.assertIn("audio", telegram._update_trace({"message": {"chat": {"id": 1}, "voice": {"file_id": "v"}}}))
+        self.assertIn("video", telegram._update_trace({"message": {"chat": {"id": 1}, "video": {"file_id": "m"}}}))
+        # callback_data aman: itu identitas tombol buatan kita, bukan teks user.
+        callback = telegram._update_trace(
+            {"callback_query": {"id": "9", "data": "grp:0:1", "from": {"id": 5}, "message": {"chat": {"id": 6}}}}
+        )
+        self.assertIn("callback", callback)
+        self.assertIn("data=grp:0:1", callback)
+        self.assertIn("chat=6", callback)
+
     def test_dispatch_update_passes_reply_to_message_id(self):
         # Balasan final harus nempel (quote) ke pesan user supaya jelas menjawab
         # pertanyaan yang mana ketika user kirim beberapa bubble terpisah.
@@ -1966,6 +2003,53 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIsNone(username)
         self.assertIn("rejected by Telegram", failure)
         self.assertEqual(calls["n"], 1)  # no pointless retry
+
+    def test_telegram_polling_logs_outage_summary_and_recovery(self):
+        """Log harus menjelaskan 'kenapa bot diam', bukan 233 baris retry.
+
+        Sebelumnya tiap kegagalan getUpdates dicetak satu baris ("retry #233"),
+        menenggelamkan baris penting dan tidak pernah mencatat kapan polling
+        PULIH — jadi 'Zeline tadi diam' cuma bisa ditebak dari offset.
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        _rq = importlib.import_module("requests")
+
+        class OkResponse:
+            ok = True
+            status_code = 200
+            def json(self): return {"ok": True, "result": []}
+
+        stop_event = threading.Event()
+        calls = {"n": 0}
+
+        def flaky(url, params=None, timeout=None):
+            calls["n"] += 1
+            # 25 kegagalan beruntun, lalu pulih, lalu hentikan loop.
+            if calls["n"] <= 25:
+                raise _rq.ConnectionError("network down")
+            stop_event.set()
+            return OkResponse()
+
+        printed: list[str] = []
+        with mock.patch.object(telegram, "_verify_token", return_value=("zerolinearbot", "")), \
+             mock.patch.object(telegram, "_api_call"), \
+             mock.patch.object(telegram, "_load_offset", return_value=0), \
+             mock.patch.object(telegram, "_save_offset"), \
+             mock.patch.object(telegram.requests, "get", side_effect=flaky), \
+             mock.patch.object(stop_event, "wait", return_value=False), \
+             mock.patch("builtins.print", side_effect=lambda *a, **k: printed.append(str(a[0]) if a else "")):
+            telegram.start(object(), {"token": "123:abc", "allowed": [1], "tool_profile": "safe"}, stop_event)
+
+        errors = [line for line in printed if "polling error" in line]
+        recovered = [line for line in printed if "polling recovered" in line]
+        # Diringkas: error pertama + tiap 20 percobaan, BUKAN 25 baris.
+        self.assertEqual(len(errors), 2, msg=f"expected throttled error lines, got {errors}")
+        self.assertIn("retry #1", errors[0])
+        self.assertIn("cannot receive messages", errors[0])
+        self.assertIn("retry #20", errors[1])
+        # Baris PULIH ada dan menyebut jumlah percobaan gagal.
+        self.assertEqual(len(recovered), 1, msg=f"expected one recovery line, got {printed[-5:]}")
+        self.assertIn("25 failed attempts", recovered[0])
 
     def test_telegram_stop_cancels_active_turn_without_stopping_gateway(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

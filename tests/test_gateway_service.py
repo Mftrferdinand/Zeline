@@ -253,6 +253,125 @@ class GatewayServiceTests(unittest.TestCase):
         state = json.loads(self.config.PID_FILE.read_text(encoding="utf-8"))
         self.assertEqual(state["pid"], 51515)
 
+    # --- Kunci proses: penjaga terhadap gateway ganda (jawaban dobel) ---
+
+    def test_lock_is_exclusive_and_reports_holder(self):
+        # Kunci pertama dapat; percobaan kedua HARUS gagal selama yang pertama
+        # masih memegang. Ini inti pencegahan dua poller pada satu token.
+        #
+        # Rilis di finally (bukan addCleanup) supaya fd sudah tertutup SEBELUM
+        # tearDown menghapus temp dir — di Windows fd terbuka membuat
+        # TemporaryDirectory gagal menghapus gateway.lock (WinError 32) dan satu
+        # assert gagal jadi dua laporan.
+        first = self.service.GatewayLock()
+        second = self.service.GatewayLock()
+        try:
+            self.assertTrue(first.acquire())
+            self.assertEqual(self.service.lock_holder_pid(), os.getpid())
+            self.assertFalse(second.acquire())
+            first.release()
+            # Setelah dilepas, kunci harus bebas lagi (tidak ada stale lock).
+            self.assertEqual(self.service.lock_holder_pid(), 0)
+            self.assertTrue(second.acquire())
+        finally:
+            first.release()
+            second.release()
+
+    def test_lock_pid_region_is_readable_and_not_corrupted_by_shorter_pid(self):
+        # PID ditulis di luar byte yang dikunci (Windows mengunci mandatory, jadi
+        # byte terkunci tidak bisa dibaca handle lain) dan dipad lebar tetap
+        # supaya PID pendek tidak menyisakan digit dari PID panjang sebelumnya.
+        #
+        # Rilis WAJIB di finally, bukan addCleanup: cleanup berjalan SETELAH
+        # tearDown, jadi fd yang masih terbuka membuat TemporaryDirectory gagal
+        # menghapus gateway.lock di Windows (WinError 32).
+        lock = self.service.GatewayLock()
+        try:
+            with mock.patch.object(self.service.os, "getpid", return_value=123456):
+                self.assertTrue(lock.acquire())
+                self.assertEqual(self.service.lock_holder_pid(), 123456)
+        finally:
+            lock.release()
+        again = self.service.GatewayLock()
+        try:
+            with mock.patch.object(self.service.os, "getpid", return_value=999):
+                self.assertTrue(again.acquire())
+                self.assertEqual(self.service.lock_holder_pid(), 999)
+        finally:
+            again.release()
+
+    def test_start_refuses_when_another_process_holds_lock(self):
+        # Skenario nyata: `zeline gateway run` foreground di tab lain tidak
+        # menulis PID file, jadi status() bilang "tidak jalan". Tanpa cek kunci,
+        # start() spawn poller KEDUA → tiap pesan dijawab dua kali.
+        cfg = self.config.config_copy()
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
+        self.config.save_config(cfg)
+        held = self.service.GatewayLock()
+        self.assertTrue(held.acquire())
+        try:
+            with mock.patch.object(self.service.subprocess, "Popen") as popen:
+                started, message = self.service.start(only=["telegram"])
+        finally:
+            held.release()
+        self.assertFalse(started)
+        popen.assert_not_called()  # tidak ada proses kedua yang di-spawn
+        self.assertIn("already polling", message)
+        self.assertFalse(self.config.PID_FILE.exists())
+
+    def test_stop_kills_unmanaged_poller_found_via_lock(self):
+        # `gateway run` tidak punya PID file. Dulu `stop` menjawab "not running"
+        # dan meninggalkannya hidup — lalu `start` menambah poller kedua.
+        self.config.ensure_data_dirs()
+        self.service.LOCK_FILE.write_text("31337\n", encoding="utf-8")
+        with mock.patch.object(self.service, "lock_holder_pid", return_value=31337), \
+             mock.patch.object(self.service, "_process_looks_like_zeline", return_value=True), \
+             mock.patch.object(self.service, "_signal_process", return_value=True) as signaled, \
+             mock.patch.object(self.service, "_pid_alive", return_value=False):
+            stopped, message = self.service.stop(wait_seconds=1.0, grace_seconds=0.2)
+        self.assertTrue(stopped)
+        self.assertIn("31337", message)
+        self.assertIn("unmanaged", message)
+        self.assertEqual(signaled.call_args.args[0], 31337)
+
+    def test_stop_does_not_kill_foreign_lock_holder(self):
+        # Kalau pemegang kunci BUKAN proses Zeline, jangan bunuh apa pun —
+        # membunuh PID asing jauh lebih berbahaya daripada gagal stop.
+        self.config.ensure_data_dirs()
+        with mock.patch.object(self.service, "lock_holder_pid", return_value=999), \
+             mock.patch.object(self.service, "_process_looks_like_zeline", return_value=False), \
+             mock.patch.object(self.service, "_signal_process") as signaled:
+            stopped, message = self.service.stop(wait_seconds=1.0, grace_seconds=0.2)
+        self.assertFalse(stopped)
+        signaled.assert_not_called()
+        self.assertIn("not look like a Zeline gateway", message)
+
+    def test_stop_sweeps_second_poller_after_managed_stop(self):
+        # Proses terkelola mati, tapi masih ada poller lain memegang kunci
+        # (sisa dari sebelum kunci ada). `stop` harus menyapunya juga, kalau
+        # tidak `start` berikutnya kembali menghasilkan jawaban dobel.
+        self.config.ensure_data_dirs()
+        self.config.PID_FILE.write_text(
+            json.dumps({"pid": 4242, "start_ticks": "1", "only": []}), encoding="utf-8"
+        )
+        killed: list[int] = []
+
+        def fake_signal(pid, _sig):
+            killed.append(pid)
+            return True
+
+        with mock.patch.object(self.service, "_process_matches_state", side_effect=[True, False]), \
+             mock.patch.object(self.service, "lock_holder_pid", return_value=7777), \
+             mock.patch.object(self.service, "_process_looks_like_zeline", return_value=True), \
+             mock.patch.object(self.service, "_pid_alive", return_value=False), \
+             mock.patch.object(self.service, "_signal_process", side_effect=fake_signal):
+            stopped, message = self.service.stop(wait_seconds=1.0, grace_seconds=0.2)
+        self.assertTrue(stopped)
+        self.assertIn(4242, killed)
+        self.assertIn(7777, killed)
+        self.assertIn("second poller", message)
+        self.assertFalse(self.config.PID_FILE.exists())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

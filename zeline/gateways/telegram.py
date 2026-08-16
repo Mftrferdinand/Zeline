@@ -1702,6 +1702,46 @@ def _allowed(chat_id: int, allowed: list[Any]) -> bool:
     return not allowed or str(chat_id) in {str(item) for item in allowed}
 
 
+def _update_trace(update: dict[str, Any]) -> str:
+    """Ringkasan satu update untuk log — cukup untuk diagnosa, tanpa isi pesan.
+
+    Isi pesan SENGAJA tidak dicatat: log gateway bukan arsip percakapan, dan
+    menuliskannya membuat file log jadi salinan chat (termasuk hal sensitif).
+    Yang dicatat hanya yang dibutuhkan saat menelusuri 'kenapa bot diam':
+    jenis update, chat/user-nya, dan bentuk muatannya (teks/command/media).
+    """
+    callback = update.get("callback_query") or {}
+    if callback:
+        message = callback.get("message") or {}
+        chat_id = (message.get("chat") or {}).get("id", "?")
+        user_id = (callback.get("from") or {}).get("id", "?")
+        # callback_data aman dicatat: itu identitas tombol buatan kita sendiri
+        # (mis. `grp:0:1`), bukan teks yang user tulis.
+        return f"callback chat={chat_id} user={user_id} data={str(callback.get('data', ''))[:32]}"
+    message = update.get("message") or {}
+    if not message:
+        return f"other keys={','.join(k for k in update if k != 'update_id')[:60]}"
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id", "?")
+    user_id = (message.get("from") or {}).get("id", "?")
+    text = str(message.get("text") or "").strip()
+    if text.startswith("/"):
+        kind = f"command={text.split()[0][:24]}"  # nama command saja, tanpa argumen
+    elif text:
+        kind = f"text len={len(text)}"
+    elif message.get("photo"):
+        kind = "photo"
+    elif message.get("document"):
+        kind = "document"
+    elif message.get("voice") or message.get("audio"):
+        kind = "audio"
+    elif message.get("video") or message.get("video_note"):
+        kind = "video"
+    else:
+        kind = "empty"
+    return f"message chat={chat_id} user={user_id} {kind}"
+
+
 def _document_filename(document: dict[str, Any]) -> str:
     filename = str(document.get("file_name") or "").strip()
     return Path(filename).name or "file"
@@ -2202,6 +2242,9 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     # 'diam' selalu kelihatan di log, bukan misteri.
     consecutive_errors = 0
     last_heartbeat = time.monotonic()
+    # Kapan padamnya jaringan mulai (None = sedang sehat). Dipakai untuk
+    # melaporkan durasi padam + baris PULIH, bukan cuma nomor retry.
+    outage_since: float | None = None
     while not stop_event.is_set():
         try:
             now = time.monotonic()
@@ -2225,7 +2268,15 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                     # sama. Log jelas + backoff supaya tidak spam & tidak spin CPU;
                     # begitu instance duplikat mati, polling pulih sendiri.
                     if response.status_code == 409 or "conflict" in description.lower():
-                        print("  [telegram] 409 Conflict — instance lain sedang polling token ini. Menunggu…", flush=True)
+                        # Kunci proses (gateway.lock) mencegah duplikat di mesin
+                        # INI; 409 yang masih lolos berarti poller lain di mesin
+                        # atau host lain memakai token yang sama. Sebutkan itu
+                        # supaya user tidak mengira bot-nya rusak.
+                        print(
+                            "  [telegram] 409 Conflict — another poller is using this bot token "
+                            "(another device/host, or a webhook). Only one may poll at a time; waiting…",
+                            flush=True,
+                        )
                         consecutive_errors += 1
                         stop_event.wait(min(3 + consecutive_errors, 15))
                         continue
@@ -2240,11 +2291,36 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 # Error jaringan sementara (Termux drop): backoff naik lalu reset
                 # saat pulih. TIDAK PERNAH keluar loop → bot auto-recover sendiri.
                 consecutive_errors += 1
-                print(f"  [telegram] polling error: {exc.__class__.__name__} (retry #{consecutive_errors})", flush=True)
+                if outage_since is None:
+                    outage_since = time.monotonic()
+                # JANGAN cetak tiap percobaan. Padamnya jaringan Termux bisa
+                # ratusan retry beruntun ("retry #233") yang menenggelamkan baris
+                # penting lain di log dan menggelembungkan file. Cetak error
+                # pertama, lalu ringkasan berkala saja — informasinya sama, tanpa
+                # spam. Yang benar-benar dibutuhkan justru baris PULIH di bawah.
+                if consecutive_errors == 1 or consecutive_errors % 20 == 0:
+                    down_for = time.monotonic() - outage_since
+                    print(
+                        f"  [telegram] polling error: {exc.__class__.__name__} "
+                        f"(retry #{consecutive_errors}, down {down_for:.0f}s) — "
+                        "bot cannot receive messages while this lasts",
+                        flush=True,
+                    )
                 stop_event.wait(min(3 + consecutive_errors, 15))
                 continue
 
+            # getUpdates sukses. Bila baru saja padam, catat PULIHNYA + berapa
+            # lama: inilah yang membuat 'tadi Zeline diam' bisa dijelaskan dari
+            # log alih-alih ditebak dari pergerakan offset.
+            if outage_since is not None:
+                print(
+                    f"  [telegram] polling recovered after {time.monotonic() - outage_since:.0f}s "
+                    f"({consecutive_errors} failed attempts); messages sent during the outage arrive now",
+                    flush=True,
+                )
+                outage_since = None
             consecutive_errors = 0  # getUpdates sukses → reset backoff
+
         except Exception as exc:  # jaring pengaman terakhir: apa pun jangan bunuh loop
             print(f"  [telegram] polling loop recovered from: {exc.__class__.__name__}: {exc}", flush=True)
             stop_event.wait(2)
@@ -2252,6 +2328,12 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
 
         for update in payload.get("result", []):
             update_id = int(update.get("update_id", -1))
+            # Jejak satu baris per update MASUK. Tanpa ini, log hanya berisi
+            # error, jadi saat bot "diam" tidak ada cara membedakan (a) update
+            # tidak pernah sampai dari (b) sampai tapi gagal dibalas — dulu
+            # harus ditebak lewat pergerakan offset. Ringkas & tanpa isi pesan
+            # supaya log tidak jadi arsip percakapan.
+            print(f"  [telegram] update {update_id} in: {_update_trace(update)}", flush=True)
             # Bungkus SETIAP update: satu pesan bermasalah tidak boleh menjatuhkan
             # loop polling. Offset tetap maju di finally supaya update rusak tidak
             # diproses ulang tanpa henti (poison message).

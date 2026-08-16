@@ -438,6 +438,35 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("gateway stop", result.lower())
         run_all.assert_not_called()
 
+    def test_gateway_run_refuses_when_lock_is_held_by_another_run(self):
+        # Dua `zeline gateway run` (dua tab Termux) dulu sama-sama lolos karena
+        # tidak ada yang menulis PID file → dua poller pada satu token → tiap
+        # pesan dijawab DUA KALI. Kunci proses yang menutup celah ini.
+        cfg = self.config.config_copy()
+        cfg["provider"]["api_key"] = "test-key"
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
+        self.config.save_config(cfg)
+        held = self.cli.gateway_service.GatewayLock()
+        self.assertTrue(held.acquire())
+        try:
+            with mock.patch.object(self.cli, "run_all") as run_all:
+                result = self.invoke(["gateway", "run"], expected_status=1)
+        finally:
+            held.release()
+        self.assertIn("already polling", result.lower())
+        self.assertIn("gateway stop", result.lower())
+        run_all.assert_not_called()
+
+    def test_gateway_list_flags_unmanaged_poller(self):
+        # Poller di luar `gateway start` tidak punya PID file, jadi dulu
+        # dilaporkan "not running" padahal aktif menjawab — user bingung kenapa
+        # jawabannya dobel. Sekarang kunci membuatnya terlihat.
+        with mock.patch.object(self.cli.gateway_service, "status", return_value=(False, "not running", None)), \
+             mock.patch.object(self.cli.gateway_service, "lock_holder_pid", return_value=31337):
+            result = self.invoke(["gateway", "list"])
+        self.assertIn("unmanaged poller", result.lower())
+        self.assertIn("31337", result)
+
     def test_zeline_wordmark_and_product_subtitle_are_precise_in_plain_mode(self):
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
             output = io.StringIO()

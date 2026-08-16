@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from zeline import config
 from zeline._winproc import CREATION_FLAGS
@@ -37,6 +37,136 @@ IS_WINDOWS = os.name == "nt"
 _SIGKILL = getattr(signal, "SIGKILL", None) or getattr(signal, "SIGBREAK", signal.SIGTERM)
 
 LOG_FILE = config.LOG_DIR / "gateway.log"
+
+# Kunci eksklusif proses gateway. PID file saja TIDAK cukup mencegah gateway
+# ganda: hanya `gateway start` (spawn background) yang menulis PID file,
+# sedangkan `gateway run` foreground tidak. Akibatnya satu `gateway run` di
+# terminal jadi tak terlihat, `gateway start` menyimpulkan "tidak jalan", lalu
+# spawn poller KEDUA untuk token yang sama → tiap pesan dijawab dua kali.
+#
+# Kunci ini dipegang kernel pada file descriptor selama proses hidup, jadi:
+#   - proses kedua langsung ditolak, siapa pun yang menjalankannya,
+#   - kunci lepas OTOMATIS saat proses mati (termasuk SIGKILL/crash), jadi tidak
+#     ada masalah "stale lock" seperti pada file penanda biasa.
+LOCK_FILE = config.DATA_DIR / "gateway.lock"
+
+# Byte 0 adalah region yang DIKUNCI; PID pemegang ditulis mulai byte 8.
+# Alasannya Windows: ``msvcrt.locking`` mengunci rentang byte secara MANDATORY,
+# sehingga membaca byte yang terkunci dari handle lain gagal dengan WinError 33
+# dan pemegangnya jadi tak teridentifikasi. Dengan memisahkan region kunci dari
+# region data, PID tetap bisa dibaca proses lain di semua OS.
+_LOCK_PID_OFFSET = 8
+# Lebar tetap region PID supaya penulisan berikutnya tidak menyisakan digit lama.
+_LOCK_PID_WIDTH = 24
+
+
+class GatewayLock:
+    """Kunci eksklusif OS: hanya satu proses gateway boleh polling.
+
+    Dipakai dua lapis. ``gateway run`` MEMEGANG kunci selama hidupnya (penjaga
+    sebenarnya), dan ``start()`` MENGINTIP kunci sebelum spawn supaya penolakan
+    terlihat langsung di terminal user, bukan cuma terkubur di log child.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or LOCK_FILE
+        self._fd: int | None = None
+
+    def _lock_fd(self, fd: int) -> bool:
+        """Ambil kunci non-blocking pada fd. False = dipegang proses lain."""
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)  # kunci HARUS byte 0, bukan posisi acak
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, ImportError):
+            return False
+        return True
+
+    def acquire(self) -> bool:
+        """True bila kunci didapat. Simpan PID pemegang untuk pesan error."""
+        config.ensure_data_dirs()
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            # Tidak bisa membuat file kunci (mis. FS read-only): jangan menahan
+            # gateway yang sah — jatuh ke penjagaan PID file seperti dulu.
+            return True
+        if not self._lock_fd(fd):
+            os.close(fd)
+            return False
+        self._fd = fd
+        try:
+            # Tulis PID di luar byte terkunci supaya tetap terbaca proses lain.
+            # Dipad lebar tetap: tanpa itu PID pendek yang menimpa PID panjang
+            # (999 menimpa 123456) menyisakan digit lama di belakangnya.
+            os.lseek(fd, _LOCK_PID_OFFSET, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}".ljust(_LOCK_PID_WIDTH).encode())
+            os.fsync(fd)
+        except OSError:
+            pass
+        return True
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        fd, self._fd = self._fd, None
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except (OSError, ImportError):
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def __enter__(self) -> "GatewayLock":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.release()
+
+
+def lock_holder_pid() -> int:
+    """PID proses yang sedang memegang kunci gateway, 0 bila kunci bebas.
+
+    Diuji dengan mencoba mengambil kunci lalu melepasnya lagi. Bila gagal,
+    kunci sedang dipegang dan PID dibaca dari region data (byte 8+). Bila PID
+    tidak terbaca, kembalikan -1 = "dipegang, PID tak diketahui" — pemanggil
+    tetap tahu ada yang polling walau tidak tahu siapa.
+    """
+    probe = GatewayLock()
+    if probe.acquire():
+        probe.release()
+        return 0
+    fd = None
+    try:
+        fd = os.open(LOCK_FILE, os.O_RDONLY)
+        os.lseek(fd, _LOCK_PID_OFFSET, os.SEEK_SET)
+        raw = os.read(fd, _LOCK_PID_WIDTH).decode("utf-8", errors="replace").strip()
+        return int(raw.split()[0])
+    except (OSError, ValueError, IndexError):
+        return -1
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -206,6 +336,18 @@ def start(only: list[str] | None = None) -> tuple[bool, str]:
         current = _load_state() or {}
         return False, f"Gateway is already running (PID {current.get('pid', '?')})."
 
+    # Penjaga kedua: proses gateway yang TIDAK kita spawn (mis. `zeline gateway
+    # run` di tab Termux lain, atau child lama yang PID file-nya sudah terhapus)
+    # tetap memegang kunci. Tanpa cek ini, spawn di bawah menghasilkan DUA
+    # poller pada token yang sama dan setiap pesan dijawab dua kali.
+    holder = lock_holder_pid()
+    if holder != 0:
+        where = f"PID {holder}" if holder > 0 else "another process"
+        return False, (
+            f"A gateway is already polling ({where}) — it holds {LOCK_FILE.name}. "
+            "Stop it first with `zeline gateway stop`; duplicate process refused."
+        )
+
     only = list(dict.fromkeys(only or []))  # dedupe while preserving user order
     for name in only:
         if name not in config.GATEWAYS:
@@ -346,6 +488,43 @@ def _signal_process(pid: int, sig: int) -> bool:
         return False
 
 
+def _stop_pid(
+    pid: int,
+    label: str,
+    wait_seconds: float,
+    grace_seconds: float,
+    alive: Callable[[], bool] | None = None,
+) -> tuple[bool, str]:
+    """SIGTERM → grace → SIGKILL pada satu PID, lalu laporkan hasilnya.
+
+    ``alive`` adalah predikat "proses masih ada?" agar pemanggil dapat memakai
+    verifikasi ketat (pid + start-token dari state) atau cek sederhana untuk
+    poller tak terkelola yang tidak punya state.
+    """
+    still_alive: Callable[[], bool] = alive or (lambda: _pid_alive(pid))
+
+    if not _signal_process(pid, signal.SIGTERM):
+        if not still_alive():
+            return True, f"Gateway already stopped ({label})."
+        if not IS_WINDOWS:
+            return False, f"No permission to stop PID {pid} ({label})."
+
+    grace_deadline = time.monotonic() + max(0.0, grace_seconds)
+    while time.monotonic() < grace_deadline:
+        if not still_alive():
+            return True, f"Gateway stopped ({label}, PID {pid})."
+        time.sleep(0.1)
+
+    escalated = _signal_process(pid, _SIGKILL)
+    kill_deadline = time.monotonic() + max(0.5, wait_seconds - grace_seconds)
+    while time.monotonic() < kill_deadline:
+        if not still_alive():
+            suffix = " (required SIGKILL)" if escalated else ""
+            return True, f"Gateway stopped ({label}, PID {pid}){suffix}."
+        time.sleep(0.1)
+    return False, f"PID {pid} ({label}) did not die even after SIGKILL. Check manually: ps | grep zeline"
+
+
 def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, str]:
     """Hentikan gateway: SIGTERM → (grace) → SIGKILL otomatis, lalu bersihkan state.
 
@@ -353,49 +532,49 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
     mematikan proses. Kita naikkan ke SIGKILL setelah ``grace_seconds`` dan kirim
     ke seluruh process group, sehingga ``gateway stop`` tidak lagi meninggalkan
     proses zombie.
+
+    Juga menghentikan poller TAK TERKELOLA: `zeline gateway run` foreground tidak
+    menulis PID file, jadi dulu `stop` menjawab "not running" padahal ada proses
+    yang masih menjawab pesan — lalu `start` menambah poller kedua dan setiap
+    balasan jadi dobel. Kunci proses (gateway.lock) membuat poller itu terlihat.
     """
     state = _load_state()
     if not state:
         _remove_state()
+        holder = lock_holder_pid()
+        if holder > 0 and _process_looks_like_zeline(holder):
+            return _stop_pid(holder, "unmanaged `gateway run`", wait_seconds, grace_seconds)
+        if holder != 0:
+            return False, (
+                f"Something holds {LOCK_FILE.name} but it does not look like a Zeline gateway. "
+                "Check manually: ps | grep zeline"
+            )
         return False, "Gateway is not running."
     pid = int(state["pid"])
     if not _process_matches_state(state):
         _remove_state()
+        # State basi bukan jaminan bersih: bisa jadi child lama mati tapi ada
+        # `gateway run` lain yang masih polling. Sapu juga lewat kunci.
+        holder = lock_holder_pid()
+        if holder > 0 and holder != pid and _process_looks_like_zeline(holder):
+            return _stop_pid(holder, "unmanaged `gateway run`", wait_seconds, grace_seconds)
         return False, "Gateway is not running (PID state was not a matching Zeline process; cleared)."
 
-    if not _signal_process(pid, signal.SIGTERM):
-        # Proses sudah hilang atau tak bisa di-signal.
-        if not _process_matches_state(state):
-            _remove_state()
-            return True, "Gateway already stopped."
-        # Di Windows CTRL_BREAK bisa ditolak walau process masih hidup (mis.
-        # child bukan group leader). Jangan menyerah: lanjut ke fase SIGKILL
-        # (taskkill /T /F) di bawah, sama seperti jalur POSIX.
-        if not IS_WINDOWS:
-            return False, f"No permission to stop PID {pid}."
-
-    # Fase 1: tunggu shutdown anggun setelah SIGTERM.
-    grace_deadline = time.monotonic() + max(0.0, grace_seconds)
-    while time.monotonic() < grace_deadline:
-        if not _process_matches_state(state):
-            _remove_state()
-            return True, "Gateway stopped."
-        time.sleep(0.1)
-
-    # Fase 2: eskalasi ke SIGKILL (seluruh process group).
-    escalated = _signal_process(pid, _SIGKILL)
-    kill_deadline = time.monotonic() + max(0.5, wait_seconds - grace_seconds)
-    while time.monotonic() < kill_deadline:
-        if not _process_matches_state(state):
-            _remove_state()
-            suffix = " (required SIGKILL)" if escalated else ""
-            return True, f"Gateway stopped{suffix}."
-        time.sleep(0.1)
-
-    if not _process_matches_state(state):
+    ok, message = _stop_pid(
+        pid, "managed", wait_seconds, grace_seconds,
+        alive=lambda: _process_matches_state(state),
+    )
+    if ok:
         _remove_state()
-        return True, "Gateway stopped (required SIGKILL)."
-    return False, f"PID {pid} did not die even after SIGKILL. Check manually: ps | grep zeline. Log: {LOG_FILE}"
+        # Sapu poller kedua yang mungkin ikut hidup (proses lama dari sebelum
+        # kunci ada). Tanpa ini `stop` melapor sukses padahal masih ada yang
+        # menjawab pesan, dan `start` berikutnya bikin dobel lagi.
+        holder = lock_holder_pid()
+        if holder > 0 and holder != pid and _process_looks_like_zeline(holder):
+            swept_ok, swept = _stop_pid(holder, "second poller", wait_seconds, grace_seconds)
+            message = f"{message} {swept}" if swept_ok else f"{message} WARNING: {swept}"
+        return True, message
+    return False, f"{message} Log: {LOG_FILE}"
 
 
 def wait_until_connected(timeout: float = 90.0) -> tuple[bool, list[str]]:
