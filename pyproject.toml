@@ -45,7 +45,8 @@ Repository = "https://github.com/Mftrferdinand/Zeline"
 Issues = "https://github.com/Mftrferdinand/Zeline/issues"
 
 [tool.setuptools.packages.find]
-include = ["zeline*"]
+include = ["zeline", "zeline.*"]
+exclude = ["zeline-zenith*", "tests*"]
 
 [tool.setuptools.package-data]
 zeline = ["skills/*.md", "skills/**/*"]
