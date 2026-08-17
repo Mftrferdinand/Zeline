@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z64 — Content Creation, Strategy & Signal Amplification (v4.2 consolidated)
+
+> zeline-zenith-zeline-zenith-z64 — Content Creation, Strategy & Signal Amplification (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z64).
 # MERGED: zeline-zenith-zeline-zenith-z64 (creation) + zeline-zenith-z19 (strategy/social media) — July 2026
 
 ---
@@ -85,7 +87,7 @@ Slide 9: CTA (save + share)
 - Pertanyaan retoris di akhir: "Lo udah join belum?" / "Mau ikutan?"
 ```
 
-### Airdrop Campaign Template (Kakak-style format)
+### Airdrop Campaign Template (user-preferred format)
 
 ```
 New Airdrops : [Name Project]

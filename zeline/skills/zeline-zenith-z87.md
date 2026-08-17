@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z87 — CTF Forensics & Stego
+
+> zeline-zenith-zeline-zenith-z87 — CTF Forensics & Stego — modul Zeline Zenith (sumber: zeline-zenith-z87).
 # Load ONLY when: CTF forensics, stego, steganography, pcap, memory dump, volatility, binwalk, carving, exiftool, zsteg, steghide, file identification, USB keystroke, DNS exfil, dispatched by z22 forensics
 # ⚠️ DISPATCHED by zeline-zenith-z22 (CTF/Whitehat) — this file kept for detailed playbooks only
 

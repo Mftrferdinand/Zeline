@@ -1,5 +1,7 @@
 # zeline-zenith-zeline-zenith-z75 — Daily Assistant: Briefing & Alerts (NEW in v4.0)
 
+> zeline-zenith-zeline-zenith-z75 — Daily Assistant: Briefing & Alerts (NEW in v4.0) — modul Zeline Zenith (sumber: zeline-zenith-z75).
+
 > **Related:** For watchdog/process-monitoring, vault/snippet storage, voice/screenshot input, and inbox triage → see **z16 (Daily Assistant II)**
 
 ---

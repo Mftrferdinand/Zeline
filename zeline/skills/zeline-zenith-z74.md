@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z74 — Universal NFT Minter
+
+> zeline-zenith-zeline-zenith-z74 — Universal NFT Minter — modul Zeline Zenith (sumber: zeline-zenith-z74).
 # Load ONLY when: mint, NFT, opensea, manifold, zora, seadrop, mint nft, mint contract, claim NFT, mint url
 
 ---
@@ -370,7 +372,7 @@ Then scan ABI for any `payable` function with `mint` in name → try those.
 
 ---
 
-## Speed mode (Kakak's "tanpa mikir")
+## Speed mode (user's "tanpa mikir")
 Default behavior: **fire and forget**.
 - Skip confirmation prompts
 - Auto-pick first viable mint function
@@ -395,7 +397,7 @@ If user says "hati-hati" / "simulate first" / "cek dulu" → enable dry-run mode
 
 ---
 
-## Failure modes Kakak should know
+## Failure modes user should know
 - **`execution reverted: NotEnabled`** → public mint not active yet, check `saleActive()` or wait
 - **`InsufficientFunds`** → price miscalculated, retry with verbose price detection
 - **`AlreadyMinted`** → wallet hit per-wallet cap, switch wallet

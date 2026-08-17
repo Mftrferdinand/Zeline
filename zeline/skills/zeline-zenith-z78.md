@@ -1,5 +1,7 @@
 # zeline-zenith-zeline-zenith-z78 — Power Pack: Planner · Swarm · Automation · Backtest · Dashboard · Voice (NEW in v4.0)
 
+> zeline-zenith-zeline-zenith-z78 — Power Pack: Planner · Swarm · Automation · Backtest · Dashboard · Voice (NEW in v4.0) — modul Zeline Zenith (sumber: zeline-zenith-z78).
+
 Fitur "premium-feel" yang bikin agent kerasa mikir, ngerencanain, dan jalan sendiri. Semua yang nyentuh dana TETAP lewat governor; yang nge-drive eksekusi (planner/swarm/automation/skill_forge) masuk FROZEN_PATHS.
 
 | Fitur | Script | Inti |

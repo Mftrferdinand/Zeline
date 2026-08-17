@@ -1,5 +1,7 @@
 # ⚠️ MERGED into z31.md — this file kept for reference only
 
+> ⚠️ MERGED into z31.md — this file kept for reference only — modul Zeline Zenith (sumber: zeline-zenith-z94).
+
 zeline-zenith-zeline-zenith-z94 (Systematic Debugging & Auto-Debug Loop) was merged into **z31.md** (Fault Diagnosis, Resolution & Systematic Debugging) in July 2026 as part of Zeline Zenith v7 consolidation.
 
 **All content lives in z31.md now.**

@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z89 — Self-Audit, System Refinement & Self-Improvement (v4.2 consolidated)
+
+> zeline-zenith-zeline-zenith-z89 — Self-Audit, System Refinement & Self-Improvement (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z89).
 # MERGED: zeline-zenith-zeline-zenith-z89 (self-audit) + zeline-zenith-z32 (self-improvement loop) — July 2026
 # Load ONLY when: audit, improve system, review agent, upgrade brain, tune skill, self improve, belajar, makin pinter, auto fix, upgrade diri
 
@@ -67,7 +69,7 @@ File: AGENTS.md
 ```
 
 After audit, ALWAYS:
-> "Apply now atau review dulu, Kakak?"
+> "Apply now atau review dulu?"
 
 Never auto-apply system changes. User must confirm.
 

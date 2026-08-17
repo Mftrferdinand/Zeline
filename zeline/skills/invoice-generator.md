@@ -98,7 +98,7 @@ Ask user which variant they need, or infer from context:
 
 ## Pitfalls
 
-- User's name/company: confirm exact spelling (e.g. "the user" not "the user Ferdinand"). User has corrected this before.
+- User's name/company: confirm exact spelling (e.g. use the exact name the user gives). User has corrected this before.
 - The Vertex42 template has specific layout (DATE/INVOICE #/CUSTOMER ID on right side) — do NOT left-align these
 - Tax rate is percentage in decimal (0.11 = 11%) — the script handles formatting
 - Currency symbol is configurable via the `currency` parameter
