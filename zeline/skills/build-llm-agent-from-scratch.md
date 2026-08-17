@@ -160,7 +160,7 @@ importing the Zeline Zenith pack.
   owner-only safety defaults (no third-party creds, confirm irreversible ops,
   never log/print secrets).
 - Add regression tests asserting the persona wording is in `SYSTEM_PROMPT` and a
-  seeded corpus skill is loadable (`load_skill("zeline-zenith-sk0")` returns real
+  seeded corpus skill is loadable (`load_skill("zeline-zenith-z0")` returns real
   content).
 
 ## Result shape from the applied session
