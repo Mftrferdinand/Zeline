@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "zeline-zenith"
+version = "7.0.0"
+description = "Zeline Zenith — Sovereign Autonomous Agent Framework. 82 skills, 61 tools, production-grade."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Commercial — see LICENSE"}
+authors = [{name = "Zeline Zenith", email = "you@example.com"}]
+keywords = ["ai-agent", "autonomous", "web3", "crypto", "automation", "llm"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    # Core: stdlib-only (zero required deps)
+    # Optional: install extras for full features
+]
+
+[project.optional-dependencies]
+crypto = ["eth-account>=0.11", "web3>=6.0"]
+zeline = []  # Zeline runtime provides its own deps
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[project.scripts]
+zeline-zenith = "tools.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
