@@ -225,6 +225,27 @@ LEGACY_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Bundled skills whose content was corrected in-place (not renamed). seed_skills()
+# never overwrites existing files, so without this map a user on the pre-fix
+# revision keeps the stale copy forever. Each entry lists every digest the file
+# shipped with before the fix, on both POSIX (LF) and Windows (CRLF) line
+# endings — seed_skills() compares bytes, and a CRLF checkout hashes differently.
+# User-customized files (any digest not listed here) are always preserved.
+BUNDLED_SKILL_UPDATE_DIGESTS: dict[str, tuple[str, ...]] = {
+    "zeline-zenith-sk0.md": (
+        # origin/main pre-fix, LF
+        "577d36a35e97b4c461e769c723dc4a6187e99dd4646c5584f59e7d759be67a09",
+        # same content with CRLF (Windows checkout)
+        "629a599da79b90c6016d739ba19fe70afb8d7d79d56649507ef36d2767c7ba9a",
+    ),
+    "zeline-zenith-sk52.md": (
+        # origin/main pre-fix, LF
+        "9afdaf5bf7613db366046418fb07cc90952ece1734c88d2aa4e839fefa39f0e6",
+        # same content with CRLF (Windows checkout)
+        "3bc375a999d48666cf809245298864710879ba4a6a799a617595ddec06114b78",
+    ),
+}
+
 
 def _safe_name(name: str) -> str:
     normalized = name.strip().lower().replace(" ", "-")
@@ -288,6 +309,42 @@ def _remove_unmodified_legacy_bundled_skills() -> None:
             pass
 
 
+def _refresh_known_bundled_revisions(source: Path) -> int:
+    """Overwrite seeded copies that still match a known pre-fix revision.
+
+    seed_skills() never overwrites existing files, which is the right default
+    for user customizations. But when a bundled skill is corrected in-place
+    (not renamed), a user on the old revision keeps the stale copy forever.
+    This hook removes that copy before seeding so the fresh source replaces it.
+
+    Only files whose current bytes match a digest in BUNDLED_SKILL_UPDATE_DIGESTS
+    are touched. A user-customized file (any other digest) is always preserved.
+    Returns the number of stale copies removed.
+    """
+    if not BUNDLED_SKILL_UPDATE_DIGESTS:
+        return 0
+    public_root = PUBLIC_SKILLS_DIR.resolve()
+    removed = 0
+    for name, expected_digests in BUNDLED_SKILL_UPDATE_DIGESTS.items():
+        # Only refresh files that actually ship from the current source.
+        if not (source / name).is_file():
+            continue
+        path = PUBLIC_SKILLS_DIR / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            resolved = path.resolve(strict=False)
+            if not resolved.parent.samefile(public_root):
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest in expected_digests:
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def seed_skills(source: str | Path | None = None) -> int:
     """Salin skill bawaan dari paket ke scope public tanpa overwrite.
 
@@ -303,6 +360,7 @@ def seed_skills(source: str | Path | None = None) -> int:
     source = Path(source).expanduser().resolve() if source is not None else Path(__file__).resolve().parent / "skills"
     if not source.exists():
         return 0
+    _refresh_known_bundled_revisions(source)
     copied = 0
     # 1) skill flat: satu file .md langsung di root skills/
     for item in source.glob("*.md"):
@@ -427,7 +485,16 @@ def _find_skill(name: str, include_private: bool) -> Path | None | str:
         folder = directory / normalized / "SKILL.md"
         if folder.is_file():
             return folder
-    # 2) fuzzy match berdasar nama unit skill.
+    # 2) Alias pendek korpus Zenith. Registry bawaan menggunakan ``sk0`` …
+    # ``sk59``, sedangkan nama file publiknya memakai prefix
+    # ``zeline-zenith-``. Tangani ini sebelum fuzzy matching agar ``sk1``
+    # tidak berbenturan dengan ``sk10`` … ``sk19``.
+    if re.fullmatch(r"sk(?:[0-9]|[1-5][0-9])", normalized):
+        for directory in directories:
+            canonical = directory / f"zeline-zenith-{normalized}.md"
+            if canonical.is_file():
+                return canonical
+    # 3) fuzzy match berdasar nama unit skill.
     candidates: list[Path] = []
     for directory in directories:
         for unit_name, skill_md in _iter_skill_units(directory):

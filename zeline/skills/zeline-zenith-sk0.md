@@ -87,11 +87,11 @@ sk58  | Problem shaping & decision support  | problem shaping, brainstorming, si
 
 ### V7 NEW SKILLS (sk49–sk51)
 
-**sk49 — Team Orchestration & Multi-User Ops**: team delegation (Level 0–3 routing), task assignment tracking, per-member billing attribution, conflict detection & resolution, client management dashboard, multi-session awareness, role-based access control. → `skills/sk49.md`
+**sk49 — Team Orchestration & Multi-User Ops**: team delegation (Level 0–3 routing), task assignment tracking, per-member billing attribution, conflict detection & resolution, client management dashboard, multi-session awareness, role-based access control. → `skills/zeline-zenith-sk49.md`
 
-**sk50 — Autonomous Monetization Engine**: treasury management, cashflow tracking, P&L generation, revenue stream optimization, auto-revenue strategies (MEV, airdrop, yield, NFT flip), cost optimization, profit reporting (daily/weekly/monthly), passive income pipeline maintenance. → `skills/sk50.md`
+**sk50 — Autonomous Monetization Engine**: treasury management, cashflow tracking, P&L generation, revenue stream optimization, auto-revenue strategies (MEV, airdrop, yield, NFT flip), cost optimization, profit reporting (daily/weekly/monthly), passive income pipeline maintenance. → `skills/zeline-zenith-sk50.md`
 
-**sk51 — Offensive Security & Red-Team Ops**: exploit development lifecycle (research → PoC → weaponize), C2 infrastructure (Cobalt Strike/Mythic/Sliver patterns), post-exploitation (persistence, lateral movement, privilege escalation), payload generation (shellcode, DLL hijacking, process injection), operational security (OPSEC), adversary simulation (MITRE ATT&CK mapping), red-team infrastructure design, phishing & social engineering frameworks. → `skills/sk51.md`
+**sk51 — Offensive Security & Red-Team Ops**: exploit development lifecycle (research → PoC → weaponize), C2 infrastructure (Cobalt Strike/Mythic/Sliver patterns), post-exploitation (persistence, lateral movement, privilege escalation), payload generation (shellcode, DLL hijacking, process injection), operational security (OPSEC), adversary simulation (MITRE ATT&CK mapping), red-team infrastructure design, phishing & social engineering frameworks. → `skills/zeline-zenith-sk51.md`
 
 ---
 

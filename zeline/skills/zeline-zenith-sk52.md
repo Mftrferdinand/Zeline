@@ -52,7 +52,7 @@ MEDIUM: [...]
 LOW:    [polish]
 
 [PROPOSED EDITS]
-File: skills/sk4.md
+File: skills/zeline-zenith-sk4.md
   Line ~120: add keyword "callback_query"
   Reason: bug session referenced inline keyboard, sk4 didn't load
 

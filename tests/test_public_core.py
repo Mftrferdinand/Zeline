@@ -153,6 +153,110 @@ class ZelinePublicCoreTests(unittest.TestCase):
         content = skill_system.load_skill("zeline-zenith-sk0")
         self.assertIn("Skill Registry", content)
 
+    def test_zenith_short_aliases_resolve_without_prefix_collisions(self):
+        """The registry's skN shortcuts must select exactly their intended skill."""
+        skill_system = importlib.import_module("zeline.skills")
+        skill_system.seed_skills()
+
+        for index in range(60):
+            with self.subTest(index=index):
+                content = skill_system.load_skill(f"sk{index}")
+                self.assertNotIn("ERROR", content)
+                self.assertIn(f"(sumber: sk{index}).", content)
+
+    def test_bundled_skill_cross_references_use_canonical_zenith_paths(self):
+        skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
+        stale_paths = []
+        for path in sorted(skill_root.rglob("*.md")):
+            matches = re.findall(r"skills/sk[0-9]+\.md", path.read_text(encoding="utf-8"))
+            stale_paths.extend(f"{path.relative_to(skill_root)}: {match}" for match in matches)
+        self.assertEqual(stale_paths, [])
+
+    def test_seed_skills_refreshes_known_unmodified_bundled_revision(self):
+        skills = importlib.import_module("zeline.skills")
+        source_root = self.home / "bundled-revision-source"
+        source_root.mkdir(parents=True)
+        replacement = source_root / "zeline-zenith-sk0.md"
+        replacement.write_text("# Fixed registry\n\n> replacement\n", encoding="utf-8")
+        target = skills.PUBLIC_SKILLS_DIR / replacement.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# Original registry\n\n> old\n", encoding="utf-8")
+        old_digest = hashlib.sha256(target.read_bytes()).hexdigest()
+
+        with mock.patch.dict(
+            skills.BUNDLED_SKILL_UPDATE_DIGESTS,
+            {replacement.name: (old_digest,)},
+            clear=True,
+        ):
+            skills.seed_skills(source=source_root)
+
+        self.assertEqual(target.read_bytes(), replacement.read_bytes())
+
+    def test_seed_skills_preserves_customized_bundled_skill_during_refresh(self):
+        skills = importlib.import_module("zeline.skills")
+        source_root = self.home / "custom-bundled-revision-source"
+        source_root.mkdir(parents=True)
+        replacement = source_root / "zeline-zenith-sk0.md"
+        replacement.write_text("# Fixed registry\n\n> replacement\n", encoding="utf-8")
+        target = skills.PUBLIC_SKILLS_DIR / replacement.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        custom = b"# My custom registry\n\n> keep this\n"
+        target.write_bytes(custom)
+        known_stock_digest = hashlib.sha256(b"# Original registry\n\n> old\n").hexdigest()
+
+        with mock.patch.dict(
+            skills.BUNDLED_SKILL_UPDATE_DIGESTS,
+            {replacement.name: (known_stock_digest,)},
+            clear=True,
+        ):
+            skills.seed_skills(source=source_root)
+
+        self.assertEqual(target.read_bytes(), custom)
+
+    def test_seed_skills_refresh_does_not_follow_symlink(self):
+        skills = importlib.import_module("zeline.skills")
+        skills._ensure_dirs()
+        source_root = self.home / "symlink-bundled-revision-source"
+        source_root.mkdir(parents=True)
+        replacement = source_root / "zeline-zenith-sk0.md"
+        replacement.write_text("# Fixed registry\n\n> replacement\n", encoding="utf-8")
+        victim = skills.SKILLS_ROOT / "outside-refresh-target.md"
+        original = b"# Outside target\n"
+        victim.write_bytes(original)
+        target = skills.PUBLIC_SKILLS_DIR / replacement.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.symlink_to(victim)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlink is not supported on this platform")
+        digest = hashlib.sha256(victim.read_bytes()).hexdigest()
+
+        with mock.patch.dict(
+            skills.BUNDLED_SKILL_UPDATE_DIGESTS,
+            {replacement.name: (digest,)},
+            clear=True,
+        ):
+            skills.seed_skills(source=source_root)
+
+        self.assertTrue(target.is_symlink())
+        self.assertEqual(victim.read_bytes(), original)
+
+    def test_zenith_cross_reference_update_map_covers_pre_fix_revisions(self):
+        skills = importlib.import_module("zeline.skills")
+        expected = {
+            "zeline-zenith-sk0.md": {
+                "577d36a35e97b4c461e769c723dc4a6187e99dd4646c5584f59e7d759be67a09",
+                "629a599da79b90c6016d739ba19fe70afb8d7d79d56649507ef36d2767c7ba9a",
+            },
+            "zeline-zenith-sk52.md": {
+                "9afdaf5bf7613db366046418fb07cc90952ece1734c88d2aa4e839fefa39f0e6",
+                "3bc375a999d48666cf809245298864710879ba4a6a799a617595ddec06114b78",
+            },
+        }
+        for name, digests in expected.items():
+            with self.subTest(name=name):
+                self.assertTrue(digests.issubset(skills.BUNDLED_SKILL_UPDATE_DIGESTS[name]))
+
     def test_bundled_skills_do_not_expose_upstream_branding(self):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
         source_suffixes = {".md", ".txt", ".py", ".sh", ".ts", ".json", ".yml", ".yaml"}
