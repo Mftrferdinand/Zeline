@@ -182,7 +182,7 @@ masks, scores, logits = predictor.predict(
 ### Box prompts
 
 ```python
-# Bounding box [x1, y1, x2, y2]
+# Bounding box [z29, y1, z30, y2]
 input_box = np.array([425, 600, 700, 875])
 
 masks, scores, logits = predictor.predict(
@@ -406,7 +406,7 @@ predictor.set_image(rgb_image)
 
 # Segment region of interest
 masks, scores, _ = predictor.predict(
-    box=np.array([x1, y1, x2, y2]),  # ROI bounding box
+    box=np.array([z29, y1, z30, y2]),  # ROI bounding box
     multimask_output=True
 )
 ```
@@ -646,9 +646,9 @@ point = np.array([[x, y]])  # Correct
 h, w = image.shape[:2]
 assert 0 <= x < w and 0 <= y < h, "Point outside image"
 
-# For bounding boxes: [x1, y1, x2, y2]
-box = np.array([x1, y1, x2, y2])
-assert x1 < x2 and y1 < y2, "Invalid box coordinates"
+# For bounding boxes: [z29, y1, z30, y2]
+box = np.array([z29, y1, z30, y2])
+assert z29 < z30 and y1 < y2, "Invalid box coordinates"
 ```
 
 ### Empty or incorrect masks
@@ -658,7 +658,7 @@ assert x1 < x2 and y1 < y2, "Invalid box coordinates"
 **Solutions**:
 ```python
 # Try multiple prompts
-input_points = np.array([[x1, y1], [x2, y2]])
+input_points = np.array([[z29, y1], [z30, y2]])
 input_labels = np.array([1, 1])  # Multiple foreground points
 
 # Add background points
@@ -666,14 +666,14 @@ input_points = np.array([[obj_x, obj_y], [bg_x, bg_y]])
 input_labels = np.array([1, 0])  # 1=foreground, 0=background
 
 # Use box prompt for large objects
-box = np.array([x1, y1, x2, y2])
+box = np.array([z29, y1, z30, y2])
 masks, scores, _ = predictor.predict(box=box, multimask_output=False)
 
 # Combine box and point
 masks, scores, _ = predictor.predict(
     point_coords=np.array([[center_x, center_y]]),
     point_labels=np.array([1]),
-    box=np.array([x1, y1, x2, y2]),
+    box=np.array([z29, y1, z30, y2]),
     multimask_output=True
 )
 
@@ -940,7 +940,7 @@ input_labels = np.array([1, 1, 1, 1, 1])
 
 # Use bounding box
 masks, _, _ = predictor.predict(
-    box=np.array([x1, y1, x2, y2]),
+    box=np.array([z29, y1, z30, y2]),
     multimask_output=False
 )
 
@@ -965,7 +965,7 @@ for point in points:
 | `index out of bounds` | Invalid coordinates | Check point/box bounds |
 | `checkpoint not found` | Wrong path | Use absolute path |
 | `unexpected key` | Model/checkpoint mismatch | Match model type |
-| `invalid box coordinates` | x1 > x2 or y1 > y2 | Fix box format |
+| `invalid box coordinates` | z29 > z30 or y1 > y2 | Fix box format |
 
 ## Getting Help
 
