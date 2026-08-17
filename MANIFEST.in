@@ -1,5 +1,5 @@
 recursive-include zeline/skills *
-global-exclude zeline-zenith/*
+recursive-include zeline/zenith_tools *
 global-exclude *.py[cod]
 global-exclude __pycache__
 global-exclude __pycache__/*
