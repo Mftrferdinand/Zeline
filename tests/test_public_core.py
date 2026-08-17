@@ -286,7 +286,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_renamed_zenith_corpus_is_bundled_under_new_name_only(self):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
         zenith = sorted(path.name for path in skill_root.glob("zeline-zenith-z*.md"))
-        self.assertEqual(len(zenith), 95)
+        self.assertGreaterEqual(len(zenith), 109)
         self.assertEqual(sorted(skill_root.glob("superagent-v7-*.md")), [])
 
     def test_legacy_digest_map_covers_every_renamed_zenith_skill(self):
