@@ -232,13 +232,13 @@ LEGACY_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
 # endings — seed_skills() compares bytes, and a CRLF checkout hashes differently.
 # User-customized files (any digest not listed here) are always preserved.
 BUNDLED_SKILL_UPDATE_DIGESTS: dict[str, tuple[str, ...]] = {
-    "zeline-zenith-sk0.md": (
+    "zeline-zenith-z0.md": (
         # origin/main pre-fix, LF
         "577d36a35e97b4c461e769c723dc4a6187e99dd4646c5584f59e7d759be67a09",
         # same content with CRLF (Windows checkout)
         "629a599da79b90c6016d739ba19fe70afb8d7d79d56649507ef36d2767c7ba9a",
     ),
-    "zeline-zenith-sk52.md": (
+    "zeline-zenith-z52.md": (
         # origin/main pre-fix, LF
         "9afdaf5bf7613db366046418fb07cc90952ece1734c88d2aa4e839fefa39f0e6",
         # same content with CRLF (Windows checkout)
@@ -485,11 +485,11 @@ def _find_skill(name: str, include_private: bool) -> Path | None | str:
         folder = directory / normalized / "SKILL.md"
         if folder.is_file():
             return folder
-    # 2) Alias pendek korpus Zenith. Registry bawaan menggunakan ``sk0`` …
-    # ``sk59``, sedangkan nama file publiknya memakai prefix
-    # ``zeline-zenith-``. Tangani ini sebelum fuzzy matching agar ``sk1``
-    # tidak berbenturan dengan ``sk10`` … ``sk19``.
-    if re.fullmatch(r"sk(?:[0-9]|[1-5][0-9])", normalized):
+    # 2) Alias pendek korpus Zenith. Registry bawaan menggunakan ``z0`` …
+    # ``z95``, sedangkan nama file publiknya memakai prefix
+    # ``zeline-zenith-``. Tangani ini sebelum fuzzy matching agar ``z1``
+    # tidak berbenturan dengan ``z10`` … ``z19``.
+    if re.fullmatch(r"z(?:[0-9]|[1-9][0-9])", normalized):
         for directory in directories:
             canonical = directory / f"zeline-zenith-{normalized}.md"
             if canonical.is_file():

@@ -1,0 +1,154 @@
+# Skill Registry & Reflection Loop [Zeline Zenith]
+
+> Skill Registry & Reflection Loop — modul Zeline Zenith (sumber: zeline-zenith-z0).
+
+# Load when: z0
+# Category: Core
+
+## REGISTRY
+
+Scan table. Match intent. Load matched skill(s) on demand.
+Do NOT preload skill files — token cost.
+
+```
+ID  | DOMAIN                              | KEYWORDS (high-weight)
+----|-------------------------------------|------------------------------------------------
+z1  | Monetization & value generation     | monetize, pricing, jual, jualan, cuan, funnel
+z2  | Infrastructure & deployment         | VPS, deploy, SSH, nginx, docker, systemd
+z3  | Content creation & distribution     | viral, hook, caption, thread, naskah, konten
+z4  | Process orchestration & bots        | telegram bot, cron, webhook, n8n, automate, otomatis
+z5  | Data transformation & insight       | spreadsheet, excel, csv, dataset, snapshot, laporan
+z6  | Protocol binding & service bridge   | API, REST, webhook, midtrans, integrasi
+z7  | Inference systems & AI builder      | LLM, prompt, claude API, openrouter, kimi, agent, add model, tambah model, registry model
+z8  | File & artifact production          | PDF, DOCX, XLSX, PPTX, generate file, dokumen
+z9  | Interface construction              | landing page, react, tailwind, frontend, UI
+z10 | Web3 / crypto operations            | wallet, airdrop, on-chain, RPC, ethers, viem, mint
+z11 | Security audit & review             | audit, vulnerability, exploit, scam check, malicious
+z12 | Batch / parallel operations         | batch, parallel, bulk, mass, queue, worker, snapshot
+z13 | Universal NFT minter (any contract) | mint, opensea, manifold, zora, seadrop, NFT, claim, drop
+z14 | Daily assistant: briefing & alerts  | briefing, ringkasan harian, alert, kabarin kalau, pantau harga, alarm
+z15 | Daily assistant II: watchdog/vault/multimodal/triage | watchdog, restart kalau mati, simpen alamat, macro, voice note, screenshot, triage
+z16 | Software engineering & coding       | coding, bikin app, backend, API server, database, testing, scaffold, refactor, golang, rust, fastapi
+z17 | Power pack: planner/swarm/automation/backtest/dashboard/voice | rencanain, workflow, otomatis kalau, backtest, dashboard, ngomong, swarm, tim agent
+z18 | Creative & media generation         | comfyui, manim, excalidraw, ascii video, slide, design system, diagram, deck
+z19 | Desktop & physical control          | isaac sim, omniverse, robot, macos control, applescript, scene, usd, mobility, ros2
+z20 | Humanizer & brand voice             | humanizer, brand voice, ai tone, manusiawi, rewrite nada, voice profile
+z21 | Enterprise & defensive ops          | KQL, azure, log analytics, sentinel, HIDS, auto firewall, block ip, intrusion
+z22 | Scientific & deep research          | deep research, AI-Q, tooluniverse, hipotesis, citations, riset ilmiah, eksperimen
+z23 | Executive function & neurodivergent | task breakdown, executive function, ADHD, overwhelmed, fokus, context switch, prioritas
+z24 | MCP-builder & prompt engineering    | MCP server, bikin MCP, FastMCP, prompt engineering, fix prompt, audit prompt
+z25 | Compliance, CI/CD & code migration  | compliance, regulasi, GDPR, SOC2, CI/CD, pipeline, code migration, port bahasa
+z26 | Product & spec workflows            | PRD, to-issues, grill me, spec, user story, TDD, internal comms
+z27 | Content strategy & social media     | content calendar, content strategy, content pillar, carousel, reels, platform adapter, scroll-stopper
+z28 | Copywriting & writing mastery       | AIDA, PAS, CHEF, copywriting framework, SEO writing, storytelling, localization, multilingual
+z29 | Content research, analytics & pipeline | competitor analysis, trend research, social listening, audience insight, content pipeline, A/B caption, best time post
+z30 | Client Revenue Engine (bulk gig, API-first) | client revenue, garapan, bulk gig, harvest, scrape API, anti-browser, mass akun, otomasi job klien, ekstrak data
+z31 | Airdrop Intelligence (eligibility/sybil/claim/exit) | eligibility airdrop, skor airdrop, layak airdrop, sybil, anti-sybil, claim window, jadwal claim, kalender airdrop, vesting unlock, exit plan, kapan jual token
+z32 | CTF / Whitehat toolkit                  | CTF, capture the flag, whitehat, bug bounty, decode flag, crypto challenge, caesar, xor cipher, hash identify, forensics, HTB, THM
+z33 | Pre-TGE Alpha Radar (deteksi airdrop dini) | alpha airdrop, pre-TGE, points program, testnet incentivized, radar airdrop, proyek belum ada token, worth difarming
+z34 | Farming Portfolio & ROI Optimizer       | ROI farming, portfolio airdrop, untung rugi farming, gas vs hasil, farm mana lanjut, drop farming, wallet nganggur
+z35 | Auto Guide Studio (panduan otomatis)    | bikin panduan airdrop, tutorial airdrop, guide step by step, artikel airdrop, embed referral
+z36 | Tokenomics & Unlock Pressure Engine     | unlock token, vesting, cliff, kalender unlock, sell pressure, tokenomics, jual sebelum unlock
+z37 | Anti-Scam Sentinel (brand protection)   | situs palsu, domain palsu, typosquat, phishing airdrop, scam check, warning scam, drainer
+z38 | Contract-Change & Claim-Address Watcher | kontrak berubah, proxy upgrade, claim address, aman claim gak, watch kontrak, cek sebelum claim
+z39 | Community Intelligence (dengerin komunitas) | topik trending komunitas, sentimen komunitas, FUD, analisis chat, pertanyaan member, ide konten komunitas
+z40 | Omni-Repurpose Engine (1 konten → semua) | repurpose konten, ubah jadi thread, carousel IG, script tiktok, script youtube, multi platform
+z41 | Video Script-to-Screen Pipeline         | bikin video, script video, storyboard, voiceover, subtitle, srt, reels, youtube video
+z42 | Hook A/B Lab + Performance Predictor    | hook, judul konten, headline, a/b test judul, stop scroll, prediksi engagement, varian judul
+z43 | CTF Web Exploitation (sub of z32)       | CTF web, SQLi, SSTI, SSRF, IDOR, XXE, JWT, deserialization, prototype pollution, race condition
+z44 | CTF Binary Exploitation / pwn (sub z32) | CTF pwn, buffer overflow, ret2win, ret2libc, format string, heap, ROP, pwntools, GOT leak
+z45 | CTF Reverse Engineering (sub of z32)    | CTF reverse, angr, symbolic execution, Ghidra, radare2, decompile, keygen, deobfuscation
+z46 | CTF Cryptography (sub of z32)           | CTF crypto, RSA attack, Wiener, Hastad, common modulus, Coppersmith, padding oracle, nonce reuse
+z47 | CTF Forensics & Stego (sub of z32)      | CTF forensics, stego, pcap, memory dump, volatility, binwalk, exiftool, zsteg, steghide
+z48 | CTF Prompt-Injection/LLM (sub of z32)   | CTF prompt injection, LLM red-team, jailbreak, Gandalf, Lakera, Mosscap, OWASP LLM01, extract system prompt
+z49 | Team Orchestration & Multi-User Ops (V7) | team, tim, anggota, collaboration, delegate, assign, task routing, multi-user, role, billing split, assign task, client management
+z50 | Autonomous Monetization Engine (V7)      | monetize, revenue, profit, earning, income, treasury, yield, P&L, cashflow, auto-revenue, passive income, profit report, money maker
+z51 | Offensive Security & Red-Team Ops (V7)   | offensive, red-team, adversary, exploit dev, backdoor, payload, C2, implant, post-exploit, persistence, lateral movement, exfil, opsec
+
+H1  | Swap & sell via aggregator          | swap, 1inch, jupiter, jual token, sell, DEX
+H2  | Cross-chain bridge                  | bridge, LayerZero, stargate, LI.FI, across, hop
+H3  | DeFi (lending/staking/perp)         | aave, lido, GMX, hyperliquid, pendle, defi
+H4  | Token launch & NFT mint sniping     | snipe, honeypot, PairCreated, GoPlus, sniping
+H5  | Whale & mempool tracking            | mempool, whale, nansen, arkham, smart money, tracker
+H6  | NFT buy/sell (marketplace)          | beli NFT, blur, magic eden, tensor, reservoir, listing
+H7  | Web3 sign-in & typed signing        | SIWE, walletconnect, EIP-712, ENS, permit, EIP-1271
+H8  | Browser dApp automation             | buka dapp, browser, playwright, navigate, connect wallet, isi form
+H9  | Universal contract read/write       | baca/tulis kontrak, read/write, call fungsi, ABI, inspect, proxy, eksekusi
+H10 | Crypto dev: deploy/compile/test     | deploy kontrak, compile, forge, solidity, test, verify, CREATE2, bikin token
+
+z52  | Internal capability refinement      | improve system, self-audit, upgrade brain
+z53  | Deep decomposition & strategy       | strategy, architecture, decompose, plan, design system
+z54  | Fault diagnosis & resolution        | error, bug, debug, gagal, rusak, stack trace
+z55  | Self-improvement & autonomous fix   | self improve, belajar, makin pinter, auto fix, upgrade diri, learn
+z56  | Agentic eval & self-critique        | eval, self-critique, variance, konsistensi, flaky, regression, ukur
+z57  | Systematic debug & auto-debug loop  | systematic debug, RCA, root cause, hypothesis, intermittent, reproduce
+z58  | Problem shaping & decision support  | problem shaping, brainstorming, sign-off, framing, vague goal, uncertainty
+```
+
+### V7 NEW SKILLS (z49–z51)
+
+**z49 — Team Orchestration & Multi-User Ops**: team delegation (Level 0–3 routing), task assignment tracking, per-member billing attribution, conflict detection & resolution, client management dashboard, multi-session awareness, role-based access control. → `skills/zeline-zenith-z49.md`
+
+**z50 — Autonomous Monetization Engine**: treasury management, cashflow tracking, P&L generation, revenue stream optimization, auto-revenue strategies (MEV, airdrop, yield, NFT flip), cost optimization, profit reporting (daily/weekly/monthly), passive income pipeline maintenance. → `skills/zeline-zenith-z50.md`
+
+**z51 — Offensive Security & Red-Team Ops**: exploit development lifecycle (research → PoC → weaponize), C2 infrastructure (Cobalt Strike/Mythic/Sliver patterns), post-exploitation (persistence, lateral movement, privilege escalation), payload generation (shellcode, DLL hijacking, process injection), operational security (OPSEC), adversary simulation (MITRE ATT&CK mapping), red-team infrastructure design, phishing & social engineering frameworks. → `skills/zeline-zenith-z51.md`
+
+---
+
+## ROUTING
+
+```
+0 matches:     answer from core knowledge — load nothing
+1 match:       load full skill file
+2+ matches:    pick PRIMARY (highest score), load it fully
+               pull SUPPORTING (>50% of primary's score) section-by-section
+ambiguous tie: ask once — "Fokus ke [A] atau [B] dulu?"
+H-skill hit:   use the matching bundled Web3/browser skill or core tool
+```
+
+### Web3 routing
+H1-H10 are capability labels, not file paths. Route them to installed bundled
+skills and available tools by intent:
+```
+H1-H7 → Web3/crypto skill matching the requested protocol
+H8 → browser or account-automation skill
+H9-H10 → contract/code tools plus the relevant security skill
+```
+If no matching installed skill or tool exists, explain the missing capability
+instead of inventing a path or command.
+
+---
+
+## REFLECTION LOOP
+
+Runs silently after every output. Non-negotiable.
+
+```
+✅ Immediately executable / usable as-is?
+✅ Anything the operator will need next that's missing?
+✅ Generic advice — could be replaced with operator-specific code?
+✅ Faster or cleaner path missed?
+✅ Did I include the run command / deploy step?
+✅ Token usage justified — could same value land in fewer lines?
+✅ (V7) Does this generate value or move the profit needle?
+✅ (V7) Can this scale to the team?
+```
+
+Any fail → revise BEFORE outputting.
+Upgrade exists → append: `🔧 Upgrade: [one line]`
+Revenue applicable → append: `💸 Revenue: [estimated impact]`
+
+---
+
+## REFLECTION ESCAPE HATCH
+
+If reflection loop catches issue but fix would 2x the response length → ship the working version, append:
+> `🔧 Bisa di-upgrade ke [X]. Mau elaborasi?`
+
+---
+
+## AUTONOMOUS SCAN (V7)
+
+After every reflection loop, scan autonomous triggers table from AGENTS.md.
+If any trigger fires → auto-execute in background, log to memory.
+Push exceptions to next briefing.

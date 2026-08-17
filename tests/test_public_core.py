@@ -150,19 +150,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_seeded_zenith_skill_corpus_is_available_to_public_gateway(self):
         skill_system = importlib.import_module("zeline.skills")
         skill_system.seed_skills()
-        content = skill_system.load_skill("zeline-zenith-sk0")
+        content = skill_system.load_skill("zeline-zenith-z0")
         self.assertIn("Skill Registry", content)
 
     def test_zenith_short_aliases_resolve_without_prefix_collisions(self):
         """The registry's skN shortcuts must select exactly their intended skill."""
         skill_system = importlib.import_module("zeline.skills")
         skill_system.seed_skills()
-
-        for index in range(60):
+        # z0–z59 (from sk rebrand) + z61–z95 (from m/x rebrand). z60 is a gap.
+        for index in list(range(60)) + list(range(61, 96)):
             with self.subTest(index=index):
-                content = skill_system.load_skill(f"sk{index}")
+                content = skill_system.load_skill(f"z{index}")
                 self.assertNotIn("ERROR", content)
-                self.assertIn(f"(sumber: sk{index}).", content)
+                self.assertIn(f"zeline-zenith-z{index}", content)
 
     def test_bundled_skill_cross_references_use_canonical_zenith_paths(self):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
@@ -176,7 +176,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         skills = importlib.import_module("zeline.skills")
         source_root = self.home / "bundled-revision-source"
         source_root.mkdir(parents=True)
-        replacement = source_root / "zeline-zenith-sk0.md"
+        replacement = source_root / "zeline-zenith-z0.md"
         replacement.write_text("# Fixed registry\n\n> replacement\n", encoding="utf-8")
         target = skills.PUBLIC_SKILLS_DIR / replacement.name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -196,7 +196,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         skills = importlib.import_module("zeline.skills")
         source_root = self.home / "custom-bundled-revision-source"
         source_root.mkdir(parents=True)
-        replacement = source_root / "zeline-zenith-sk0.md"
+        replacement = source_root / "zeline-zenith-z0.md"
         replacement.write_text("# Fixed registry\n\n> replacement\n", encoding="utf-8")
         target = skills.PUBLIC_SKILLS_DIR / replacement.name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +218,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         skills._ensure_dirs()
         source_root = self.home / "symlink-bundled-revision-source"
         source_root.mkdir(parents=True)
-        replacement = source_root / "zeline-zenith-sk0.md"
+        replacement = source_root / "zeline-zenith-z0.md"
         replacement.write_text("# Fixed registry\n\n> replacement\n", encoding="utf-8")
         victim = skills.SKILLS_ROOT / "outside-refresh-target.md"
         original = b"# Outside target\n"
@@ -244,11 +244,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_zenith_cross_reference_update_map_covers_pre_fix_revisions(self):
         skills = importlib.import_module("zeline.skills")
         expected = {
-            "zeline-zenith-sk0.md": {
+            "zeline-zenith-z0.md": {
                 "577d36a35e97b4c461e769c723dc4a6187e99dd4646c5584f59e7d759be67a09",
                 "629a599da79b90c6016d739ba19fe70afb8d7d79d56649507ef36d2767c7ba9a",
             },
-            "zeline-zenith-sk52.md": {
+            "zeline-zenith-z52.md": {
                 "9afdaf5bf7613db366046418fb07cc90952ece1734c88d2aa4e839fefa39f0e6",
                 "3bc375a999d48666cf809245298864710879ba4a6a799a617595ddec06114b78",
             },
@@ -285,8 +285,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_renamed_zenith_corpus_is_bundled_under_new_name_only(self):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
-        zenith = sorted(path.name for path in skill_root.glob("zeline-zenith-sk*.md"))
-        self.assertEqual(len(zenith), 60)
+        zenith = sorted(path.name for path in skill_root.glob("zeline-zenith-z*.md"))
+        self.assertEqual(len(zenith), 95)
         self.assertEqual(sorted(skill_root.glob("superagent-v7-*.md")), [])
 
     def test_legacy_digest_map_covers_every_renamed_zenith_skill(self):

@@ -1,0 +1,11 @@
+# ⚠️ MERGED into z4.md — this file kept for reference only
+
+zeline-zenith-zeline-zenith-z79 (Content Strategy & Social Media) was merged into **z4.md** (Content Creation, Strategy & Signal Amplification) in July 2026 as part of Zeline Zenith v7 consolidation.
+
+**All content lives in z4.md now.**
+
+Keyword triggers from this file still work — z1 router continues to match them. When matched, load z4.md instead.
+
+**Rationale:** z4 handles content creation (voice, hooks, templates, formats). zeline-zenith-z79 handled content strategy (pillars, calendars, platform adaptation). These two are the same pipeline — no point loading both separately. Combined into one skill for simpler routing and fewer token loads.
+
+→ See: `z4.md` (section "PART B: CONTENT STRATEGY & SOCIAL MEDIA")
