@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z73 — Batch Operations & Parallel Execution
+
+> zeline-zenith-zeline-zenith-z73 — Batch Operations & Parallel Execution — modul Zeline Zenith (sumber: zeline-zenith-z73).
 # Load ONLY when: batch, parallel, mass, bulk, queue, multiple wallets, multiple accounts, many addresses, 100x, scrape, farming
 
 ---
@@ -223,4 +225,4 @@ if (buffer.length) await processBatch(buffer);
 [DONE] ok=287 fail=13 → errors-1748150400.json
 ```
 
-Always report: total, success, fail, error file path. Kakak wants the number, not the story.
+Always report: total, success, fail, error file path. user wants the number, not the story.

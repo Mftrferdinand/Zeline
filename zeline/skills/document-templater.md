@@ -292,7 +292,7 @@ if __name__ == "__main__":
 
     wb = create_invoice(
         invoice_num="INV-2026-001",
-        from_name="the user Ferdinand",
+        from_name="Your Company Name",
         from_addr="Yogyakarta, Indonesia",
         from_email="user@email.com",
         to_name="John Doe",

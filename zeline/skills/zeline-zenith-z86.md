@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z86 — CTF Cryptography
+
+> zeline-zenith-zeline-zenith-z86 — CTF Cryptography — modul Zeline Zenith (sumber: zeline-zenith-z86).
 # Load ONLY when: CTF crypto, RSA attack, Wiener, Hastad, common modulus, Coppersmith, padding oracle, nonce reuse, LCG, Mersenne twister, hash length extension, ECDSA, dispatched by z22 crypto
 # ⚠️ DISPATCHED by zeline-zenith-z22 (CTF/Whitehat) — this file kept for detailed playbooks only
 

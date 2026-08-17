@@ -1,4 +1,6 @@
 # skills/zeline-zenith-z61.md — Skill Registry & Reflection Loop (v4.2)
+
+> skills/zeline-zenith-z61.md — Skill Registry & Reflection Loop (v4.2) — modul Zeline Zenith (sumber: zeline-zenith-z61).
 # Called from AGENTS.md on every session start. Read this first, then route.
 # ⚡ CONSOLIDATED July 2026: 59→48 skills via cluster mergers (see CONSOLIDATION NOTES below)
 

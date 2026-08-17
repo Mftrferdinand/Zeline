@@ -1,5 +1,7 @@
 # zeline-zenith-zeline-zenith-z76 — Daily Assistant II: Watchdog, Vault, Multimodal, Triage (NEW in v4.0)
 
+> zeline-zenith-zeline-zenith-z76 — Daily Assistant II: Watchdog, Vault, Multimodal, Triage (NEW in v4.0) — modul Zeline Zenith (sumber: zeline-zenith-z76).
+
 > **Related:** For daily briefing engine & alert engine (price, gas, wallet, claim-window alerts) → see **z15 (Daily Assistant I)**
 
 ---

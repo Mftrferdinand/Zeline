@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z80 — Copywriting, Writing Mastery & Content Research/Analytics (v4.2 consolidated)
+
+> zeline-zenith-zeline-zenith-z80 — Copywriting, Writing Mastery & Content Research/Analytics (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z80).
 # MERGED: zeline-zenith-zeline-zenith-z80 (copywriting) + zeline-zenith-z21 (content research/analytics/pipeline) — July 2026
 
 ---

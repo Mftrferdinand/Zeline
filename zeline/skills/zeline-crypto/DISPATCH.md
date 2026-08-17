@@ -1,6 +1,6 @@
 # skills/zeline-crypto/DISPATCH.md
 # Bridge between v3 Zeline Zenith router and Zeline Crypto Agent deep references.
-# Load ONLY when sk10 / sk13 router decides a task needs zeline depth.
+# Load ONLY when z10 / z13 router decides a task needs zeline depth.
 
 ---
 
@@ -31,18 +31,18 @@ deploy kontrak, compile, test, verify    | deploy.md         [v4.0]
 
 ---
 
-## How sk10 (Web3 lite) and zeline interact
+## How z10 (Web3 lite) and zeline interact
 
 ```
 v3 router → matches "web3 / crypto / wallet" keywords
-         → loads sk10 (lightweight Web3 ops + patterns)
+         → loads z10 (lightweight Web3 ops + patterns)
          → if task is DEEP (specific protocol, multi-chain, advanced):
               also load zeline-crypto/references/<topic>.md
          → if task is SIMPLE (basic mint, balance check, RPC call):
-              sk10 alone is enough
+              z10 alone is enough
 ```
 
-**sk10 covers (no zeline needed):**
+**z10 covers (no zeline needed):**
 - Basic EVM ops: transfer, balance, ENS resolve
 - RPC fallback pattern
 - Wallet gen (BIP39, single chain)
@@ -61,15 +61,15 @@ v3 router → matches "web3 / crypto / wallet" keywords
 
 ---
 
-## How sk13 (NFT mint) and zeline-crypto/references/nft.md interact
+## How z13 (NFT mint) and zeline-crypto/references/nft.md interact
 
-sk13 = **universal minter** (mint flow, any contract, any chain, auto-gas).
+z13 = **universal minter** (mint flow, any contract, any chain, auto-gas).
 zeline nft.md = **marketplace buy/sell** (OpenSea Seaport fulfill, Blur, Magic Eden Tensor, Reservoir).
 
 Decision tree:
 ```
 User wants to MINT (primary/secondary) at fixed mint price
-   → sk13 only
+   → z13 only
 
 User wants to BUY existing NFT from a listing
    → zeline-crypto/references/nft.md (Seaport fulfill, Reservoir)
@@ -78,7 +78,7 @@ User wants to LIST/SELL their NFT
    → zeline-crypto/references/nft.md (EIP-712 sign + post to marketplace API)
 
 User wants to SNIPE a mint launch the moment it opens
-   → sk13 + zeline-crypto/references/sniping.md (PairCreated listener, safety gate)
+   → z13 + zeline-crypto/references/sniping.md (PairCreated listener, safety gate)
 ```
 
 ---
@@ -102,7 +102,7 @@ These DO NOT conflict. Zeline rails are *technical safeguards* (simulate before 
 | **MEV private send** (swap/snipe, v4.0) | ON for significant value | `prefer="public"` explicit (loses protection) |
 | **Skill integrity verify** (boot, v4.0) | ON | re-`generate` lock after intentional edit |
 
-The "confirm before signing" rail is what lets Kakak's "mint cepat tanpa mikir" mode work: set `auto_confirm=True` at session start → sk13 fires without prompting. First tx still gets one safety summary, but it's information only, no gate.
+The "confirm before signing" rail is what lets user's "mint cepat tanpa mikir" mode work: set `auto_confirm=True` at session start → z13 fires without prompting. First tx still gets one safety summary, but it's information only, no gate.
 
 ---
 
@@ -111,11 +111,11 @@ The "confirm before signing" rail is what lets Kakak's "mint cepat tanpa mikir" 
 For complex crypto task, agent loads in this order:
 ```
 1. AGENTS.md (always-on)
-2. sk0.md (skill registry)
-3. sk10.md (Web3 router/orchestrator)        ← v3 layer
+2. z0.md (skill registry)
+3. z10.md (Web3 router/orchestrator)        ← v3 layer
 4. skills/zeline-crypto/DISPATCH.md                ← this file
 5. skills/zeline-crypto/references/<topic>.md      ← depth as needed
-6. (combo) sk12.md if batch, sk13.md if mint, sk11.md if audit
+6. (combo) z12.md if batch, z13.md if mint, z11.md if audit
 ```
 
 Each step is additive. Skip steps that don't apply.

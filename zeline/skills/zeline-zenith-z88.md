@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z88 — CTF Prompt-Injection / LLM Red-Teaming
+
+> zeline-zenith-zeline-zenith-z88 — CTF Prompt-Injection / LLM Red-Teaming — modul Zeline Zenith (sumber: zeline-zenith-z88).
 # Load ONLY when: prompt injection, LLM red-team, jailbreak challenge, Gandalf, Lakera, Mosscap, OWASP LLM01, AI challenge, extract system prompt, leak secret from LLM, dispatched by z22 AI/LLM
 # ⚠️ DISPATCHED by zeline-zenith-z22 (CTF/Whitehat) — this file kept for detailed playbooks only
 

@@ -64,9 +64,9 @@ Pakai OpenZeppelin buat standar (ERC-20/721/1155, AccessControl, ReentrancyGuard
 
 ## Integrasi
 
-- **Audit dulu sebelum deploy** → sk11 (Solidity red flags: reentrancy, tx.origin, unbounded loop, owner mint/burn tanpa timelock).
+- **Audit dulu sebelum deploy** → z11 (Solidity red flags: reentrancy, tx.origin, unbounded loop, owner mint/burn tanpa timelock).
 - **Setelah deploy** → contract_reader/writer (v4.0) buat interaksi.
-- **Mint NFT collection sendiri** → setelah deploy ERC-721, pakai sk13 buat mint.
+- **Mint NFT collection sendiri** → setelah deploy ERC-721, pakai z13 buat mint.
 
 ## Catatan
 

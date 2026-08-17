@@ -1,4 +1,6 @@
 # zeline-zenith-zeline-zenith-z91 — Fault Diagnosis, Resolution & Systematic Debugging (v4.2 consolidated)
+
+> zeline-zenith-zeline-zenith-z91 — Fault Diagnosis, Resolution & Systematic Debugging (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z91).
 # MERGED: zeline-zenith-zeline-zenith-z91 (fault diagnosis) + zeline-zenith-z34 (systematic debug/auto-debug loop) — July 2026
 # Load ONLY when: error, bug, not working, failed, debug, stack trace, "kenapa", "kok gagal", systematic debug, RCA, root cause, hypothesis, intermittent, reproduce
 
@@ -36,7 +38,7 @@ rate-limit   → 429, quota exceeded
 config       → wrong value (NOT missing — value present but wrong)
 ```
 
-The "config wrong value" class is high-priority: Kakak's history shows Zeline `streaming` config caused duplicate Telegram responses. Always check this class for daemon/agent bugs.
+The "config wrong value" class is high-priority: user's history shows Zeline `streaming` config caused duplicate Telegram responses. Always check this class for daemon/agent bugs.
 
 #### Step 3 — Diagnose
 ```
@@ -51,7 +53,7 @@ If low confidence — ask for one more piece of evidence, don't guess.
 ```bash
 # Exact command(s), no placeholders
 ```
-Show real values, not `<your_token>`. Use Kakak's actual paths if known (`/root/.zeline/...`).
+Show real values, not `<your_token>`. Use user's actual paths if known (`/root/.zeline/...`).
 
 #### Step 5 — Verify
 ```bash
