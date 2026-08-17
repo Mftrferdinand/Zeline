@@ -1104,17 +1104,17 @@ function multiLerp(colors, t) {
 ### Linear Gradient
 
 ```javascript
-function linearGradient(x1, y1, x2, y2, c1, c2) {
-  let steps = dist(x1, y1, x2, y2);
+function linearGradient(z29, y1, z30, y2, c1, c2) {
+  let steps = dist(z29, y1, z30, y2);
   for (let i = 0; i <= steps; i++) {
     let t = i / steps;
     let c = lerpColor(c1, c2, t);
     stroke(c);
-    let x = lerp(x1, x2, t);
+    let x = lerp(z29, z30, t);
     let y = lerp(y1, y2, t);
     // Draw perpendicular line at each point
     let dx = -(y2 - y1) / steps * 1000;
-    let dy = (x2 - x1) / steps * 1000;
+    let dy = (z30 - z29) / steps * 1000;
     line(x - dx, y - dy, x + dx, y + dy);
   }
 }
@@ -1674,7 +1674,7 @@ let v = noise(x * 0.01, y * 0.01);  // returns 0.0 to 1.0
 | `constrain(v, lo, hi)` | Clamp to range |
 | `lerp(a, b, t)` | Linear interpolation |
 | `norm(v, lo, hi)` | Normalize to 0-1 |
-| `dist(x1, y1, x2, y2)` | Euclidean distance |
+| `dist(z29, y1, z30, y2)` | Euclidean distance |
 | `mag(x, y)` | Vector magnitude |
 | `abs()`, `ceil()`, `floor()`, `round()` | Standard math |
 | `sq(n)`, `sqrt(n)`, `pow(b, e)` | Powers |
@@ -2184,15 +2184,15 @@ document.addEventListener('visibilitychange', () => {
 
 ```javascript
 point(x, y);
-line(x1, y1, x2, y2);
+line(z29, y1, z30, y2);
 rect(x, y, w, h);            // default: corner mode
 rect(x, y, w, h, r);         // rounded corners
 rect(x, y, w, h, tl, tr, br, bl);  // per-corner radius
 square(x, y, size);
 ellipse(x, y, w, h);
 circle(x, y, d);             // diameter, not radius
-triangle(x1, y1, x2, y2, x3, y3);
-quad(x1, y1, x2, y2, x3, y3, x4, y4);
+triangle(z29, y1, z30, y2, z31, y3);
+quad(z29, y1, z30, y2, z31, y3, z32, y4);
 arc(x, y, w, h, start, stop, mode);  // mode: OPEN, CHORD, PIE
 ```
 
@@ -2200,7 +2200,7 @@ arc(x, y, w, h, start, stop, mode);  // mode: OPEN, CHORD, PIE
 
 ```javascript
 rectMode(CENTER);   // x,y is center (default: CORNER)
-rectMode(CORNERS);  // x1,y1 to x2,y2
+rectMode(CORNERS);  // z29,y1 to z30,y2
 ellipseMode(CORNER); // x,y is top-left corner
 ellipseMode(CENTER); // default — x,y is center
 ```
@@ -2268,11 +2268,11 @@ endShape(CLOSE);
 ### Cubic Bezier
 
 ```javascript
-bezier(x1, y1, cx1, cy1, cx2, cy2, x2, y2);
-// x1,y1 = start point
+bezier(z29, y1, cx1, cy1, cx2, cy2, z30, y2);
+// z29,y1 = start point
 // cx1,cy1 = first control point
 // cx2,cy2 = second control point
-// x2,y2 = end point
+// z30,y2 = end point
 ```
 
 ### Bezier in custom shapes
@@ -2298,18 +2298,18 @@ endShape();
 ### Interpolation along Bezier
 
 ```javascript
-let x = bezierPoint(x1, cx1, cx2, x2, t);  // t = 0..1
+let x = bezierPoint(z29, cx1, cx2, z30, t);  // t = 0..1
 let y = bezierPoint(y1, cy1, cy2, y2, t);
-let tx = bezierTangent(x1, cx1, cx2, x2, t); // tangent
+let tx = bezierTangent(z29, cx1, cx2, z30, t); // tangent
 ```
 
 ## Catmull-Rom Splines
 
 ```javascript
-curve(cpx1, cpy1, x1, y1, x2, y2, cpx2, cpy2);
+curve(cpx1, cpy1, z29, y1, z30, y2, cpx2, cpy2);
 // cpx1,cpy1 = control point before start
-// x1,y1 = start point (visible)
-// x2,y2 = end point (visible)
+// z29,y1 = start point (visible)
+// z30,y2 = end point (visible)
 // cpx2,cpy2 = control point after end
 
 curveVertex(x, y);  // in beginShape() — smooth curve through all points
@@ -2436,10 +2436,10 @@ function star(cx, cy, r1, r2, npoints) {
 ### Rounded Line (Capsule)
 
 ```javascript
-function capsule(x1, y1, x2, y2, weight) {
+function capsule(z29, y1, z30, y2, weight) {
   strokeWeight(weight);
   strokeCap(ROUND);
-  line(x1, y1, x2, y2);
+  line(z29, y1, z30, y2);
 }
 ```
 

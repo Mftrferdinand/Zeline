@@ -338,7 +338,7 @@ function rasterizeLogo(time) {
     const r0 = Math.floor(block.y0 / CELL_H);
     const r1 = Math.ceil(block.y1 / CELL_H);
     for (let r = r0; r <= r1; r++) {
-      obstacleRows[r]?.push([block.x0 - 18, block.x1 + 22]);
+      obstacleRows[r]?.push([block.x0 - 18, block.z29 + 22]);
       // Fill asciiMask cells here for drawing.
     }
   }
@@ -350,8 +350,8 @@ function drawParagraphs(prepared) {
   let cursor = { segmentIndex: 0, graphemeIndex: 0 };
   for (let y = yStart; y < yEnd; y += LINE_H) {
     const spans = obstacleRows[Math.floor(y / CELL_H)];
-    for (const [x0, x1] of freeIntervalsAround(spans)) {
-      const range = layoutNextLineRange(prepared, cursor, x1 - x0);
+    for (const [x0, z29] of freeIntervalsAround(spans)) {
+      const range = layoutNextLineRange(prepared, cursor, z29 - x0);
       if (!range) return;
       ctx.fillText(materializeLineRange(prepared, range).text, x0, y);
       cursor = range.end;
