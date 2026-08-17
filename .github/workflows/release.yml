@@ -97,7 +97,7 @@ jobs:
               raise SystemExit(f"unexpected sdist filename: {sdist.name}")
           PY
       - name: Generate build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/zeline-*.whl
