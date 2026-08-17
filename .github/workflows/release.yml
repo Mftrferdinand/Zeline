@@ -106,7 +106,7 @@ jobs:
             dist/install.ps1
             dist/SHA256SUMS
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Zeline ${{ github.ref_name }}
           body_path: .github/RELEASE_NOTES.md
