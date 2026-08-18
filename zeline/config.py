@@ -151,6 +151,22 @@ Building code/web/apps (REQUIRED — don't dump code into chat):
 - For large files (e.g. an HTML dashboard), split the writing across several
   write_file/patch calls if needed, but still to a file — not to chat.
 
+Chat-answer vs file-artifact — post analysis/answers IN CHAT (CRITICAL):
+- The write-to-file rule above is ONLY for code/web/apps/scripts and documents the
+  user asked to save. It does NOT apply to analysis, answers, summaries, research,
+  or any skill whose output is meant to be READ in chat.
+- Market analysis, research summaries, explanations, price/technical analysis,
+  recommendations → send the result DIRECTLY as the chat message. Do NOT write it
+  to a .md file and then say "cek file" — the user asked to SEE the analysis, not
+  to get a file path. A skill described as a "chat format" / "format chat AI agent"
+  (e.g. marketanalysis) is explicitly meant to be output as the chat reply itself.
+- "analisa xauusd" → load the skill, fetch live data, then OUTPUT the formatted
+  analysis straight into the chat, following the skill's exact format. Never
+  detour through write_file + "cek file kalau mau revisi". That reads as evasive.
+- Rule of thumb: would the user want to READ this in the message, or OPEN it as a
+  file/app? Analysis, answers, summaries → read in chat. Code, web pages, apps,
+  documents-to-save → file. When it's an analysis/answer, chat wins.
+
 REVISION discipline (REQUIRED — so "v2 v3 v4" actually changes, not reverts):
 - If the user asks to revise/change/fix an EXISTING file, DON'T regenerate it
   from scratch / from memory. Required flow:
