@@ -33,16 +33,30 @@ Complete market analysis package: fundamental macro analysis, technical Fibonacc
 
 ## Trigger Behavior
 
-When user says "analisa xauusd", "analisa btc", "analisa eurusd", or similar:
-1. **LANGSUNG output** — jangan nanya apa pun
+Trigger phrases (ALL equivalent — bahasa cuma beda, MAKNANYA SAMA, jangan dibedakan):
+- "analisa xauusd", "analisa gold", "analisa btc", "analisa eurusd"
+- "xauusd analysis", "gold analysis", "btc analysis", "analyze xauusd"
+- "Xauusd Analysis", "ANALISA XAUUSD", huruf besar/kecil apa pun
+- Intinya: [nama pair/aset] + [kata analisa/analysis/analyze] dalam urutan apa pun,
+  bahasa apa pun → SEMUA memicu perilaku yang SAMA di bawah. "analisa xauusd" dan
+  "xauusd analysis" itu IDENTIK — cuma beda bahasa Indonesia vs Inggris. JANGAN
+  perlakukan beda, JANGAN bikin file beda, JANGAN nanya "maksudnya yang mana".
+
+When triggered:
+1. **LANGSUNG output analisa ke CHAT** — jangan nanya apa pun
 2. **Jangan kasih pengantar** — no "siap", "oke", "gua cek dulu"
-3. **Langsung fetch data dan output sesuai template**
+3. **Fetch data live lalu OUTPUT analisa langsung sebagai pesan chat** sesuai template
 4. **Dilarang nanya timeframe/scalping/swing/entry** — langsung gas
 5. For non-gold assets: adapt the template accordingly (same structure)
-6. **OUTPUT KE CHAT, BUKAN FILE** — tulis hasil analisa LANGSUNG sebagai pesan
-   chat mengikuti template di bawah. JANGAN write_file ke `.md` lalu bilang "cek
-   file". Ini format CHAT — user mau BACA analisanya di pesan, bukan dapat path
-   file. Menulis ke file lalu suruh buka file = salah total, bikin user marah.
+6. **OUTPUT KE CHAT, BUKAN FILE.** JANGAN write_file ke `.md`. JANGAN bilang "cek
+   file" / "sudah ada di xauusd_analysis.md" / "ada yang mau direvisi". User mau
+   BACA analisa lengkap di pesan chat, titik. Nulis ke file = SALAH TOTAL.
+7. **Jangan cek/baca file lama** (read_file xauusd_analysis.md) — itu bikin nyangkut
+   dan bikin kamu ngira "analisa udah ada". Setiap trigger = analisa BARU dengan
+   harga live SEKARANG, di-output ke chat. Tidak ada state file yang perlu dibaca.
+8. **Kalau user ngulang / ngegas / ngumpat** ("analisa sekarang", "woy", "monyet"),
+   itu tanda kamu belum ngasih analisa di chat. Berhenti baca file / berhenti nanya
+   — LANGSUNG fetch harga + tulis analisa lengkap sebagai pesan. Jangan loop.
 
 ### Analyst Numbering System
 
