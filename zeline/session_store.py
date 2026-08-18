@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,7 @@ class SessionPersistence:
         self.path = path or _db_path()
         self._lock = threading.Lock()
         self._ensure_schema()
+        self._ensure_archive_schema()
 
     def _connect(self) -> sqlite3.Connection:
         """Buka koneksi baru; pemanggil WAJIB menutupnya (lihat ``closing``).
@@ -107,6 +110,120 @@ class SessionPersistence:
         with self._lock, closing(self._connect()) as conn, conn:
             cur = conn.execute("DELETE FROM sessions WHERE key = ?", (_key(identity),))
             return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Archive: transkrip percakapan permanen (tidak dihapus /new atau trim).
+    #
+    # ``sessions`` di atas hanya menyimpan window aktif (60 pesan, dihapus saat
+    # /new). Itu bikin bot "amnesia": user bilang "lanjut file tadi" di sesi baru
+    # → tidak ada konteksnya. Archive menyimpan SETIAP user/assistant turn secara
+    # permanen dengan FTS5 full-text search, sehingga tool recall_history bisa
+    # menarik apa yang benar-benar dibahas di masa lalu — bukan menebak file.
+    # ------------------------------------------------------------------
+    def _ensure_archive_schema(self) -> None:
+        with self._lock, closing(self._connect()) as conn, conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS archive ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  key TEXT NOT NULL,"
+                "  role TEXT NOT NULL,"
+                "  content TEXT NOT NULL,"
+                "  title TEXT,"
+                "  ts REAL NOT NULL"
+                ")"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_archive_key ON archive(key, ts)"
+            )
+            # FTS5 virtual table untuk pencarian isi percakapan.
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS archive_fts USING fts5("
+                "  content, key UNINDEXED, role UNINDEXED, ts UNINDEXED,"
+                "  content='archive', content_rowid='id'"
+                ")"
+            )
+            # Trigger sinkronisasi archive → archive_fts.
+            conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS archive_ai AFTER INSERT ON archive BEGIN "
+                "  INSERT INTO archive_fts(rowid, content) VALUES (new.id, new.content); "
+                "END"
+            )
+
+    def append_turn(self, identity: str, role: str, content: str, title: str | None = None) -> None:
+        """Tambah satu pesan (user/assistant) ke archive permanen.
+
+        Best-effort: kegagalan di sini tidak boleh menghentikan percakapan.
+        """
+        text = (content or "").strip()
+        if not text or role not in {"user", "assistant"}:
+            return
+        try:
+            with self._lock, closing(self._connect()) as conn, conn:
+                conn.execute(
+                    "INSERT INTO archive (key, role, content, title, ts) VALUES (?, ?, ?, ?, ?)",
+                    (_key(identity), role, text[:MAX_STORED_CHARS], title, time.time()),
+                )
+        except Exception:
+            pass
+
+    def search_archive(self, identity: str, query: str, limit: int = 8) -> list[dict[str, Any]]:
+        """Cari transkrip percakapan lama (FTS5) untuk identity ini.
+
+        Kembalikan potongan pesan paling relevan + timestamp, terbaru diprioritaskan
+        saat skor seri. Ini yang dipakai tool recall_history.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        # Sanitasi query FTS5: buang karakter yang bikin syntax error, jadikan
+        # OR antar-kata biar recall lebih longgar (mirip session_search).
+        terms = [t for t in re.findall(r"[\w]+", q, flags=re.UNICODE) if len(t) > 1]
+        if not terms:
+            return []
+        match_expr = " OR ".join(terms)
+        try:
+            with self._lock, closing(self._connect()) as conn, conn:
+                rows = conn.execute(
+                    "SELECT a.role, a.content, a.ts, a.title "
+                    "FROM archive_fts f JOIN archive a ON a.id = f.rowid "
+                    "WHERE f.key = ? AND archive_fts MATCH ? "
+                    "ORDER BY bm25(archive_fts), a.ts DESC LIMIT ?",
+                    (_key(identity), match_expr, int(limit)),
+                ).fetchall()
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for role, content, ts, title in rows:
+            out.append({
+                "role": role,
+                "content": content,
+                "when": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"),
+                "title": title or "",
+            })
+        return out
+
+    def recent_archive(self, identity: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Ambil N turn terakhir dari archive (buat 'apa yang tadi dibahas')."""
+        try:
+            with self._lock, closing(self._connect()) as conn, conn:
+                rows = conn.execute(
+                    "SELECT role, content, ts, title FROM archive WHERE key = ? "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (_key(identity), int(limit)),
+                ).fetchall()
+        except Exception:
+            return []
+        out = [
+            {
+                "role": r[0],
+                "content": r[1],
+                "when": datetime.fromtimestamp(r[2]).strftime("%Y-%m-%d %H:%M"),
+                "title": r[3] or "",
+            }
+            for r in rows
+        ]
+        out.reverse()  # kronologis
+        return out
 
     def _trim(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Batasi jumlah & ukuran, tapi jaga integritas tool-call protocol.

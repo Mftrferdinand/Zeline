@@ -1187,6 +1187,17 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset({"workspace", "full"}),
     ),
+    ToolDef(
+        "recall_history",
+        "Search THIS chat's own past conversation transcript (permanent archive across /new resets) for what was actually said/done before. Use this FIRST whenever the user refers to the past — 'lanjutin yang tadi', 'file tadi', 'kemarin kita bahas apa', 'yang barusan', 'history X', 'terusin', or any reference to an earlier decision/task/file — instead of guessing or listing workspace files. Returns the matching past user/assistant messages with timestamps. Leave 'query' empty to get the most recent turns (good for 'what were we just doing').",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Keywords about the earlier topic (e.g. 'xauusd analysis', 'file edit', 'ftmo pricing'). Empty = most recent turns."},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+    ),
 ]
 
 
@@ -1254,7 +1265,39 @@ class ToolExecutor:
             "execute_code": lambda code: _execute_code(code, self.workspace),
             "run_shell": lambda command: _run_shell(command, self.workspace),
             "delegate_task": lambda goal, context="": self._delegate_task(goal, context),
+            "recall_history": lambda query="": self._recall_history(query),
         }
+
+    def _recall_history(self, query: str = "") -> str:
+        """Cari transkrip percakapan lama chat ini (archive permanen).
+
+        Ini yang bikin Zeline tidak amnesia lintas /new: 'lanjut file tadi' →
+        cari di archive, bukan nebak file workspace. Sub-agent (identity ::sub)
+        tidak punya archive sendiri, jadi aman mengembalikan kosong.
+        """
+        from zeline.session_store import SessionPersistence
+        try:
+            store = SessionPersistence()
+        except Exception as exc:
+            return f"ERROR: cannot open history archive: {exc}"
+        q = (query or "").strip()
+        rows = store.search_archive(self.identity, q) if q else store.recent_archive(self.identity)
+        if not rows:
+            if q:
+                return f"No past conversation found matching '{q}'. This chat has no earlier transcript on that topic."
+            return "No earlier conversation archived for this chat yet."
+        header = (
+            f"Past conversation matching '{q}' (most relevant first):"
+            if q else "Most recent earlier turns in this chat (chronological):"
+        )
+        lines = [header, ""]
+        for r in rows:
+            who = "User" if r["role"] == "user" else "You"
+            snippet = r["content"].replace("\n", " ").strip()
+            if len(snippet) > 400:
+                snippet = snippet[:400] + "…"
+            lines.append(f"[{r['when']}] {who}: {snippet}")
+        return "\n".join(lines)
 
     def _delegate_task(self, goal: str, context: str = "") -> str:
         """Jalankan subtask di sub-agent terisolasi; kembalikan ringkasan akhir.
