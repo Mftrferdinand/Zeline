@@ -39,6 +39,10 @@ When user says "analisa xauusd", "analisa btc", "analisa eurusd", or similar:
 3. **Langsung fetch data dan output sesuai template**
 4. **Dilarang nanya timeframe/scalping/swing/entry** — langsung gas
 5. For non-gold assets: adapt the template accordingly (same structure)
+6. **OUTPUT KE CHAT, BUKAN FILE** — tulis hasil analisa LANGSUNG sebagai pesan
+   chat mengikuti template di bawah. JANGAN write_file ke `.md` lalu bilang "cek
+   file". Ini format CHAT — user mau BACA analisanya di pesan, bukan dapat path
+   file. Menulis ke file lalu suruh buka file = salah total, bikin user marah.
 
 ### Analyst Numbering System
 
