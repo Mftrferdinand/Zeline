@@ -116,6 +116,34 @@ class AgentLoopTests(unittest.TestCase):
         root = tools.ToolExecutor("cli:root", profile="full", depth=0)
         self.assertIn("delegate_task", {d.name for d in root._enabled_native_defs()})
 
+    def test_recall_history_survives_reset_and_finds_past_turns(self):
+        """recall_history must read the permanent archive, not the active window.
+
+        This is the anti-amnesia guarantee: after /new (reset) wipes the session
+        window, the transcript archive still answers 'what did we do before'.
+        """
+        store_mod = importlib.import_module("zeline.session_store")
+        store = store_mod.SessionPersistence()
+        ident = "telegram:recall-test"
+        store.append_turn(ident, "user", "xauusd analysis please", "analisa")
+        store.append_turn(ident, "assistant", "Gold 4178, sell area 4200-4210", "analisa")
+        store.append_turn(ident, "user", "edit ftmo.html header color", "edit")
+        store.append_turn(ident, "assistant", "done, ftmo header is now blue", "edit")
+        # Simulate /new — active session is wiped, archive must persist.
+        store.reset(ident)
+
+        hits = store.search_archive(ident, "xauusd analysis")
+        self.assertTrue(hits, "archive lost the xauusd turn after reset")
+        self.assertTrue(any("4178" in h["content"] or "xauusd" in h["content"].lower() for h in hits))
+
+        # recall_history tool wraps this — every safe profile must expose it.
+        tools = importlib.import_module("zeline.tools")
+        ex = tools.ToolExecutor(ident, profile="safe")
+        self.assertIn("recall_history", {d.name for d in ex._enabled_native_defs()})
+        out = ex.run("recall_history", {"query": "ftmo header"})
+        self.assertNotIn("ERROR", out)
+        self.assertIn("ftmo", out.lower())
+
     def test_agent_reports_real_iteration_and_tool_result_events(self):
         first = {
             "choices": [{"message": {

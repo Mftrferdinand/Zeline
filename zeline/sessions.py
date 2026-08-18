@@ -137,6 +137,13 @@ class SessionStore:
                         self._persistence.save(identity, session.agent.export_history(), session.title)
                     except Exception:
                         pass
+                    # Arsip permanen: simpan user + assistant turn ini agar bisa
+                    # di-recall lintas /new (bukan cuma window aktif). Best-effort.
+                    try:
+                        self._persistence.append_turn(identity, "user", text, session.title)
+                        self._persistence.append_turn(identity, "assistant", reply, session.title)
+                    except Exception:
+                        pass
                 return reply
             finally:
                 with self._lock:
