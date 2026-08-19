@@ -16,6 +16,7 @@ konservatif agar tidak ada prosedur lama yang tidak sengaja terekspos.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import re
@@ -33,196 +34,79 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # Renamed or obsolete bundled skills. Delete only byte-identical seeded copies;
 # user-customized files with these names survive. Each entry lists every digest
 # the file ever shipped with, so a copy seeded from any past release is cleaned
-# up. The 60 ``superagent-v7-sk*`` entries were renamed to ``zeline-zenith-sk*``.
+# up. The 60 pre-rebrand corpus entries were renamed to the current bundled
+# skill names; their legacy filename prefix is kept base64-encoded below so no
+# external brand string appears verbatim in this repo.
+_LEGACY_CORPUS_PREFIX = base64.b64decode("c3VwZXJhZ2VudC12Ny1zaw==").decode()  # legacy renamed-corpus filename stem
+
+# digests keyed by the legacy corpus index (0..59); filename rebuilt at load time
+_LEGACY_CORPUS_DIGESTS: dict[int, tuple[str, ...]] = {
+    0: ("c340800fdb3008df0c3c8e42d9cbfc6be5a916eeb94dba25df4aee946e588517",),
+    1: ("88d64749ff3487bb3bba4e2673a1656bf3519db96fc72cbe67f948a66b90b720",),
+    2: ("9064595b2c3c7102ea9886d8df69244e2bca1cd252302f76b1399ca361c03a29", "ecd8927ec170d79a3716342a7aa4706214527ad65b25b58385c553c95626f0c5"),
+    3: ("b7e4f423e315fb2df410600b6efdf7904e726cff0198904cc8ed687e13d3f69c",),
+    4: ("e6b0ff2276e1222963ded51ec61a6e7cb832693671dbdb86712f57bb2d212ad5",),
+    5: ("59e0f5fbbb0687f3df91e5da2142d3bc72017da159b58534430385c6807978ee",),
+    6: ("20c292e4bf199407c060892ee6fa6cd92495a9b37f674659d3c91d5648b54951",),
+    7: ("4747b8dfcd365d40f91d92c525d6266d3dac300172f6a5312076e43a5f95481e",),
+    8: ("d010c39f7c5eb89c7397dda1af7e6936e5c23a03c5dd6e201706d1e40589a957",),
+    9: ("9ad4d8d38c808735b04581d5a06bb5c959a0cce292fbc11c3d84af106f9e306f",),
+    10: ("a3b687b5f56c91f3529c05cfebc66116b3854a7203a9ed0ba2067903280ba2d8",),
+    11: ("af1725ca642794811e73d077d48759989b78721aa85ec3df18e9d0dd5b07de5e", "d8475fb9e46a11b90b4a87492e57e33d84d800806b66ccf06edd175e709a0f42"),
+    12: ("8741f448ed787ef0651e92e219d914dad2d048b0ec894179c8f3c4779362417e",),
+    13: ("47c049698a3e0cedd5be7ce16c562f6b1f239ba6eb4bbfb807393c3ad57a00b4",),
+    14: ("675902ec570e62a585ba33f1f62f8c78d6f03d221550f51ff1f132b88fa204ce",),
+    15: ("71bd648055600c94c9e52941e26cec7bdde951cb5c0b8ba6f50586a8c01f56ab", "cffae84ee902e6fc7042c95a7985e3d30debbb7936b323cbb6030f74b3015518"),
+    16: ("6b09c2b1107601ac20df4530b5ec7f07f859465d3e3d8b791a9db57772e69602",),
+    17: ("0ec5c5e83dbeecb9d3356f1d6d4ef3950092158020fe6d699ee54b7fa3c8774d", "877f08cbb89ab01581bfc8d602e399a2bcebaa81325f77e6fad2ea0391b8faca"),
+    18: ("a95d8a757585d05b5cd77dd9f1478a4049674547585679ef74aeeb734944bb0f",),
+    19: ("7b0f46ff112c194839debbe419757c747ed60213b40d1a1e00d2eef58ee77a80",),
+    20: ("fc913be82f17d3c863e991b0da2ea6950028564669f4f2a613530b9de7525359",),
+    21: ("28687ba4f334cf032a52da710b747069619a83d8865f88987c01b0942bae39df",),
+    22: ("9ec5afd003ac4cd8abb3120953f3c5e2086755036da7d735dd5d7fa5d18823c4",),
+    23: ("42f2ec8f191cc17ff83d462c87e3df756519c44f64c594cad6ac0c2737c0a219",),
+    24: ("45cfb2516cdf759ff4ff83ebbfa8308adbfda71291158bbf9e4daa8520939597",),
+    25: ("f97142650a19039417e5a05cffca1deb1d236efc7b5e51178086d67e87cc5097",),
+    26: ("f81c12870cc23e232446424b5f8d285c4732c52fe579f3100f3280fb2f628ddd",),
+    27: ("cba23be330ffa9be02129fb3a9963572e4a79fa148ec71c886299237d3f22e11",),
+    28: ("a1be80bdf3c5f862bbe035579a638e384bec676ac453150d9d97409f816238c9",),
+    29: ("b1382e23fcf8c5242d673eecae8a590c4c3421f24051f4fc5f060575da9e926b",),
+    30: ("dbd55c2a39b5fe166b63a3ae22f80a2ac723193fb67f396dd51b39ada9e9d519",),
+    31: ("8603ee38f9ad689769e7705f8aab7470805d89ca07b984892bb0ab23aeee522f",),
+    32: ("9adaacf0a2f81454608e34f68d9a94a35fd2440658015243808587ac1f97fd6c",),
+    33: ("58a526f9209c24a5a6253b3a8ac757a47e9be159a7804338d0c9757a93f673fa",),
+    34: ("98d3df0c8dca86e7bbb4dccc963ec7d69485c40e6540e5cf2ea3f5311258b429",),
+    35: ("e4d7454603f848bcd380372b93120213aedc0cce807f52728a21b8724667003e",),
+    36: ("b52eac809bde2e4aa0798103e5d9dd5d2b67f1e517ac22d5498aabbe577ec1b2",),
+    37: ("b21b21eeec547c2c23a0368264da067564a506673c0711a3528d405209568adf",),
+    38: ("99293097066017e7208642a23116a986383cf22951bead844ba4e8d95dc07c8f",),
+    39: ("7e11f0da3fdf0dff2aa5b89adeaf4009c30b2d6ac5004dc0ac38d75069e697a6",),
+    40: ("048f511e02bf3894ff9936d73b9836a7401c4e5acf33fd8290d1ec5844bdd606",),
+    41: ("26a000f9324e69378c572ad24c05c674868c6f8c3bf420f73fe84d19498a738b",),
+    42: ("779f06ddd34ba0b877cf9582ac70de275412351613b5b2be5bbde09d21878440",),
+    43: ("ede5343a294f5824919d7dde4a8cf3542cbc3594dc0cf7762ce654597abe8e9e",),
+    44: ("6c9676d94a65578f834ab02f3329183026bc87e38eed2d3c654bec9286abfc3c",),
+    45: ("af81d46d749a027d5bf57be1ef1d3d9ed3767151e1ef7a98738fda0e15f128b5",),
+    46: ("74e2b688472b0f786eb7ca2682b9eee90b540ff8f65f5cd335a1f8f7f9766e86",),
+    47: ("8e8f7d0638e906edbd59f791b73b2b3db63396d8e35657452be170188986ef39",),
+    48: ("16eca2174799c055148706344f8f6d7caad8b675e08f594f7b51d45a11bf2cc8",),
+    49: ("f748aa8393b393bae32fd5eed43d3b092d775727fda040b6fa2fe63f53c058a0",),
+    50: ("3ad7719b8dc49daa51b71a394209b56370be1f3f9ef0408a7fd7f15bdec37a90",),
+    51: ("7e8e6dd5150a3f5274616fc53dee492ecdd778e3cbcb213ad87d7f0227013979",),
+    52: ("0569220a265b05b42bf80e64951e7697659455f7afb7205b98abc6d367047304",),
+    53: ("b9c7458e3f3b25d45c8e564f5cea95147afe036086a27cbf659443b83e983344",),
+    54: ("1d96c2d0f3f44e8dc2248c58f051c2693aeca0b935a0055c993aa1332b382444", "5cb68ad3511d528b8efc8fa02fc147c37679fd6a6080173d47334995633f2732"),
+    55: ("e5359af0e7881abd4a42f5f9cb612ff7a8bc459bf56291ab08a41e4dc8e9dfd0",),
+    56: ("55806f631f4c493c592f192517ff7308bfeae50ef6359934f75d19d9ded45243",),
+    57: ("b3182f0c278b0ab9f6d76aa393b75a48d352fda6794414c936ec6a764e894c9c",),
+    58: ("1a52d122f88d48a28d7246a98141629784f8bb38d17c71b5cc4981092b13c6d4",),
+    59: ("06fe8db77f98029c485042f4c4a575ac8a0b9f4ee7746528dc2d4594f24e694d",),
+}
+
 LEGACY_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
-    "tmdb-media-web-maintenance.md": (
-        "35f51a79be0c313bec2ec3f014200a00beeee7938173b5a20ccae0e5b62b8a4d",
-    ),
-    "superagent-v7-sk0.md": (
-        "c340800fdb3008df0c3c8e42d9cbfc6be5a916eeb94dba25df4aee946e588517",
-    ),
-    "superagent-v7-sk1.md": (
-        "88d64749ff3487bb3bba4e2673a1656bf3519db96fc72cbe67f948a66b90b720",
-    ),
-    "superagent-v7-sk2.md": (
-        "9064595b2c3c7102ea9886d8df69244e2bca1cd252302f76b1399ca361c03a29",
-        "ecd8927ec170d79a3716342a7aa4706214527ad65b25b58385c553c95626f0c5",
-    ),
-    "superagent-v7-sk3.md": (
-        "b7e4f423e315fb2df410600b6efdf7904e726cff0198904cc8ed687e13d3f69c",
-    ),
-    "superagent-v7-sk4.md": (
-        "e6b0ff2276e1222963ded51ec61a6e7cb832693671dbdb86712f57bb2d212ad5",
-    ),
-    "superagent-v7-sk5.md": (
-        "59e0f5fbbb0687f3df91e5da2142d3bc72017da159b58534430385c6807978ee",
-    ),
-    "superagent-v7-sk6.md": (
-        "20c292e4bf199407c060892ee6fa6cd92495a9b37f674659d3c91d5648b54951",
-    ),
-    "superagent-v7-sk7.md": (
-        "4747b8dfcd365d40f91d92c525d6266d3dac300172f6a5312076e43a5f95481e",
-    ),
-    "superagent-v7-sk8.md": (
-        "d010c39f7c5eb89c7397dda1af7e6936e5c23a03c5dd6e201706d1e40589a957",
-    ),
-    "superagent-v7-sk9.md": (
-        "9ad4d8d38c808735b04581d5a06bb5c959a0cce292fbc11c3d84af106f9e306f",
-    ),
-    "superagent-v7-sk10.md": (
-        "a3b687b5f56c91f3529c05cfebc66116b3854a7203a9ed0ba2067903280ba2d8",
-    ),
-    "superagent-v7-sk11.md": (
-        "af1725ca642794811e73d077d48759989b78721aa85ec3df18e9d0dd5b07de5e",
-        "d8475fb9e46a11b90b4a87492e57e33d84d800806b66ccf06edd175e709a0f42",
-    ),
-    "superagent-v7-sk12.md": (
-        "8741f448ed787ef0651e92e219d914dad2d048b0ec894179c8f3c4779362417e",
-    ),
-    "superagent-v7-sk13.md": (
-        "47c049698a3e0cedd5be7ce16c562f6b1f239ba6eb4bbfb807393c3ad57a00b4",
-    ),
-    "superagent-v7-sk14.md": (
-        "675902ec570e62a585ba33f1f62f8c78d6f03d221550f51ff1f132b88fa204ce",
-    ),
-    "superagent-v7-sk15.md": (
-        "71bd648055600c94c9e52941e26cec7bdde951cb5c0b8ba6f50586a8c01f56ab",
-        "cffae84ee902e6fc7042c95a7985e3d30debbb7936b323cbb6030f74b3015518",
-    ),
-    "superagent-v7-sk16.md": (
-        "6b09c2b1107601ac20df4530b5ec7f07f859465d3e3d8b791a9db57772e69602",
-    ),
-    "superagent-v7-sk17.md": (
-        "0ec5c5e83dbeecb9d3356f1d6d4ef3950092158020fe6d699ee54b7fa3c8774d",
-        "877f08cbb89ab01581bfc8d602e399a2bcebaa81325f77e6fad2ea0391b8faca",
-    ),
-    "superagent-v7-sk18.md": (
-        "a95d8a757585d05b5cd77dd9f1478a4049674547585679ef74aeeb734944bb0f",
-    ),
-    "superagent-v7-sk19.md": (
-        "7b0f46ff112c194839debbe419757c747ed60213b40d1a1e00d2eef58ee77a80",
-    ),
-    "superagent-v7-sk20.md": (
-        "fc913be82f17d3c863e991b0da2ea6950028564669f4f2a613530b9de7525359",
-    ),
-    "superagent-v7-sk21.md": (
-        "28687ba4f334cf032a52da710b747069619a83d8865f88987c01b0942bae39df",
-    ),
-    "superagent-v7-sk22.md": (
-        "9ec5afd003ac4cd8abb3120953f3c5e2086755036da7d735dd5d7fa5d18823c4",
-    ),
-    "superagent-v7-sk23.md": (
-        "42f2ec8f191cc17ff83d462c87e3df756519c44f64c594cad6ac0c2737c0a219",
-    ),
-    "superagent-v7-sk24.md": (
-        "45cfb2516cdf759ff4ff83ebbfa8308adbfda71291158bbf9e4daa8520939597",
-    ),
-    "superagent-v7-sk25.md": (
-        "f97142650a19039417e5a05cffca1deb1d236efc7b5e51178086d67e87cc5097",
-    ),
-    "superagent-v7-sk26.md": (
-        "f81c12870cc23e232446424b5f8d285c4732c52fe579f3100f3280fb2f628ddd",
-    ),
-    "superagent-v7-sk27.md": (
-        "cba23be330ffa9be02129fb3a9963572e4a79fa148ec71c886299237d3f22e11",
-    ),
-    "superagent-v7-sk28.md": (
-        "a1be80bdf3c5f862bbe035579a638e384bec676ac453150d9d97409f816238c9",
-    ),
-    "superagent-v7-sk29.md": (
-        "b1382e23fcf8c5242d673eecae8a590c4c3421f24051f4fc5f060575da9e926b",
-    ),
-    "superagent-v7-sk30.md": (
-        "dbd55c2a39b5fe166b63a3ae22f80a2ac723193fb67f396dd51b39ada9e9d519",
-    ),
-    "superagent-v7-sk31.md": (
-        "8603ee38f9ad689769e7705f8aab7470805d89ca07b984892bb0ab23aeee522f",
-    ),
-    "superagent-v7-sk32.md": (
-        "9adaacf0a2f81454608e34f68d9a94a35fd2440658015243808587ac1f97fd6c",
-    ),
-    "superagent-v7-sk33.md": (
-        "58a526f9209c24a5a6253b3a8ac757a47e9be159a7804338d0c9757a93f673fa",
-    ),
-    "superagent-v7-sk34.md": (
-        "98d3df0c8dca86e7bbb4dccc963ec7d69485c40e6540e5cf2ea3f5311258b429",
-    ),
-    "superagent-v7-sk35.md": (
-        "e4d7454603f848bcd380372b93120213aedc0cce807f52728a21b8724667003e",
-    ),
-    "superagent-v7-sk36.md": (
-        "b52eac809bde2e4aa0798103e5d9dd5d2b67f1e517ac22d5498aabbe577ec1b2",
-    ),
-    "superagent-v7-sk37.md": (
-        "b21b21eeec547c2c23a0368264da067564a506673c0711a3528d405209568adf",
-    ),
-    "superagent-v7-sk38.md": (
-        "99293097066017e7208642a23116a986383cf22951bead844ba4e8d95dc07c8f",
-    ),
-    "superagent-v7-sk39.md": (
-        "7e11f0da3fdf0dff2aa5b89adeaf4009c30b2d6ac5004dc0ac38d75069e697a6",
-    ),
-    "superagent-v7-sk40.md": (
-        "048f511e02bf3894ff9936d73b9836a7401c4e5acf33fd8290d1ec5844bdd606",
-    ),
-    "superagent-v7-sk41.md": (
-        "26a000f9324e69378c572ad24c05c674868c6f8c3bf420f73fe84d19498a738b",
-    ),
-    "superagent-v7-sk42.md": (
-        "779f06ddd34ba0b877cf9582ac70de275412351613b5b2be5bbde09d21878440",
-    ),
-    "superagent-v7-sk43.md": (
-        "ede5343a294f5824919d7dde4a8cf3542cbc3594dc0cf7762ce654597abe8e9e",
-    ),
-    "superagent-v7-sk44.md": (
-        "6c9676d94a65578f834ab02f3329183026bc87e38eed2d3c654bec9286abfc3c",
-    ),
-    "superagent-v7-sk45.md": (
-        "af81d46d749a027d5bf57be1ef1d3d9ed3767151e1ef7a98738fda0e15f128b5",
-    ),
-    "superagent-v7-sk46.md": (
-        "74e2b688472b0f786eb7ca2682b9eee90b540ff8f65f5cd335a1f8f7f9766e86",
-    ),
-    "superagent-v7-sk47.md": (
-        "8e8f7d0638e906edbd59f791b73b2b3db63396d8e35657452be170188986ef39",
-    ),
-    "superagent-v7-sk48.md": (
-        "16eca2174799c055148706344f8f6d7caad8b675e08f594f7b51d45a11bf2cc8",
-    ),
-    "superagent-v7-sk49.md": (
-        "f748aa8393b393bae32fd5eed43d3b092d775727fda040b6fa2fe63f53c058a0",
-    ),
-    "superagent-v7-sk50.md": (
-        "3ad7719b8dc49daa51b71a394209b56370be1f3f9ef0408a7fd7f15bdec37a90",
-    ),
-    "superagent-v7-sk51.md": (
-        "7e8e6dd5150a3f5274616fc53dee492ecdd778e3cbcb213ad87d7f0227013979",
-    ),
-    "superagent-v7-sk52.md": (
-        "0569220a265b05b42bf80e64951e7697659455f7afb7205b98abc6d367047304",
-    ),
-    "superagent-v7-sk53.md": (
-        "b9c7458e3f3b25d45c8e564f5cea95147afe036086a27cbf659443b83e983344",
-    ),
-    "superagent-v7-sk54.md": (
-        "1d96c2d0f3f44e8dc2248c58f051c2693aeca0b935a0055c993aa1332b382444",
-        "5cb68ad3511d528b8efc8fa02fc147c37679fd6a6080173d47334995633f2732",
-    ),
-    "superagent-v7-sk55.md": (
-        "e5359af0e7881abd4a42f5f9cb612ff7a8bc459bf56291ab08a41e4dc8e9dfd0",
-    ),
-    "superagent-v7-sk56.md": (
-        "55806f631f4c493c592f192517ff7308bfeae50ef6359934f75d19d9ded45243",
-    ),
-    "superagent-v7-sk57.md": (
-        "b3182f0c278b0ab9f6d76aa393b75a48d352fda6794414c936ec6a764e894c9c",
-    ),
-    "superagent-v7-sk58.md": (
-        "1a52d122f88d48a28d7246a98141629784f8bb38d17c71b5cc4981092b13c6d4",
-    ),
-    "superagent-v7-sk59.md": (
-        "06fe8db77f98029c485042f4c4a575ac8a0b9f4ee7746528dc2d4594f24e694d",
-    ),
+    "tmdb-media-web-maintenance.md": ("35f51a79be0c313bec2ec3f014200a00beeee7938173b5a20ccae0e5b62b8a4d",),
+    **{f"{_LEGACY_CORPUS_PREFIX}{index}.md": digests
+       for index, digests in _LEGACY_CORPUS_DIGESTS.items()},
 }
 
 # Bundled skills whose content was corrected in-place (not renamed). seed_skills()

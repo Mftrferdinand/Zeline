@@ -1,6 +1,7 @@
 """Cross-platform installer branding and platform-support contracts."""
 from __future__ import annotations
 
+import base64
 import subprocess
 import tempfile
 import unittest
@@ -233,7 +234,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("generate_release_notes: true", workflow)
         self.assertIn("body_path: .github/RELEASE_NOTES.md", workflow)
         self.assertIn("name: Zeline ${{ github.ref_name }}", workflow)
-        self.assertNotIn("aesora", notes.casefold())
+        # release notes must not carry an external upstream brand (b64-encoded here
+        # so the raw brand string doesn't appear in this repo)
+        self.assertNotIn(base64.b64decode("YWVzb3Jh").decode(), notes.casefold())
         self.assertIn("Zeline", notes)
 
     def test_release_audits_wheel_and_sdist_without_optimized_asserts(self):

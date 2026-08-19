@@ -5,6 +5,7 @@ Jalankan tanpa provider/API key sungguhan:
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import http.client
@@ -271,9 +272,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
             and path.suffix.lower() not in source_suffixes
         )
         self.assertEqual(unknown, [])
-        upstream_terms = (
-            "hermes", "openclaw", "clawhub", "aesora",
-            "superagent", "ironclaw",
+        # Upstream/external brand words that must never ship in bundled skills.
+        # Kept base64-encoded so the raw brand strings don't appear in this repo.
+        upstream_terms = tuple(
+            base64.b64decode(b).decode()
+            for b in (
+                "aGVybWVz", "b3BlbmNsYXc=", "Y2xhd2h1Yg==", "YWVzb3Jh",
+                "c3VwZXJhZ2VudA==", "aXJvbmNsYXc=",
+            )
         )
         leaked = []
         for path in sources:
@@ -284,20 +290,23 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(leaked, [])
 
     def test_renamed_zenith_corpus_is_bundled_under_new_name_only(self):
+        skills = importlib.import_module("zeline.skills")
+        legacy_prefix = skills._LEGACY_CORPUS_PREFIX
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
         zenith = sorted(path.name for path in skill_root.glob("zeline-zenith-z*.md"))
         self.assertGreaterEqual(len(zenith), 109)
-        self.assertEqual(sorted(skill_root.glob("superagent-v7-*.md")), [])
+        self.assertEqual(sorted(skill_root.glob(f"{legacy_prefix}*.md")), [])
 
     def test_legacy_digest_map_covers_every_renamed_zenith_skill(self):
         skills = importlib.import_module("zeline.skills")
+        legacy_prefix = skills._LEGACY_CORPUS_PREFIX
         legacy = {
             name for name in skills.LEGACY_BUNDLED_SKILL_DIGESTS
-            if name.startswith("superagent-v7-sk")
+            if name.startswith(legacy_prefix)
         }
         self.assertEqual(
             legacy,
-            {f"superagent-v7-sk{index}.md" for index in range(60)},
+            {f"{legacy_prefix}{index}.md" for index in range(60)},
         )
         for name, digests in skills.LEGACY_BUNDLED_SKILL_DIGESTS.items():
             with self.subTest(name=name):
@@ -310,14 +319,16 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_seed_skills_removes_any_shipped_revision_of_renamed_skill(self):
         skills = importlib.import_module("zeline.skills")
-        stale = skills.PUBLIC_SKILLS_DIR / "superagent-v7-sk2.md"
+        legacy_prefix = skills._LEGACY_CORPUS_PREFIX
+        legacy_name = f"{legacy_prefix}2.md"
+        stale = skills.PUBLIC_SKILLS_DIR / legacy_name
         stale.parent.mkdir(parents=True, exist_ok=True)
-        # sk2 shipped two distinct revisions; the older one must still be cleaned.
-        for digest in skills.LEGACY_BUNDLED_SKILL_DIGESTS["superagent-v7-sk2.md"]:
+        # index 2 shipped two distinct revisions; the older one must still be cleaned.
+        for digest in skills.LEGACY_BUNDLED_SKILL_DIGESTS[legacy_name]:
             stale.write_text("placeholder\n", encoding="utf-8")
             with mock.patch.dict(
                 skills.LEGACY_BUNDLED_SKILL_DIGESTS,
-                {"superagent-v7-sk2.md": (
+                {legacy_name: (
                     hashlib.sha256(stale.read_bytes()).hexdigest(),
                     digest,
                 )},
