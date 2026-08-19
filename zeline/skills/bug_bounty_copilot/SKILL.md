@@ -107,6 +107,19 @@ Per-aset organisasi: `recon/<asset>/` untuk data mentah, `findings/` untuk hasil
 - `threat_modeling` — STRIDE/DREAD di awal engagement
 - `compliance_mapping` — map temuan ke PCI-DSS/ISO 27001/SOC2
 
+## Deep-Dive Reference Files (authorized scope only)
+
+Muat sesuai fase — jangan load semua sekaligus. Semua materi ini **hanya untuk aset yang kamu miliki atau yang eksplisit in-scope** di program berizin. Cek scope dulu; di luar scope = stop.
+
+- `references/recon.md` — metodologi recon: passive → active → prioritization, attack-surface mapping
+- `references/vuln-classes.md` — kelas kerentanan Web/API: deteksi → eksploitasi → fix (IDOR, SSRF, injection, XSS, dll)
+- `references/web3.md` — smart contract / dApp / on-chain: reentrancy, oracle manipulation, access control, PoC Foundry fork
+- `references/verification-and-poc.md` — prinsip PoC + template reproduksi (curl/HTTP & Foundry fork test)
+- `references/reporting.md` — struktur report, CVSS v3.1/v4.0, dedup, triage & follow-up
+- `references/tooling.md` — tool standar publik per fase (recon, interception, exploitation, Web3, infra)
+
+Materi teknis ini untuk **verifikasi finding & penyusunan PoC yang sah** — bukan izin untuk menyerang target tanpa otorisasi. Semua aturan di bagian "Aturan Dasar" di atas tetap berlaku.
+
 ## Referensi Sumber Pengetahuan
 
 OWASP Top 10 & ASVS, CWE, CAPEC, CVSS spec (FIRST), MITRE ATT&CK & D3FEND, NIST (SP 800-115), dokumentasi vendor, dokumentasi resmi program.
