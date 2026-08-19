@@ -29,7 +29,7 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 - **Model-agnostic** — bekerja dengan OpenAI, OpenRouter, vLLM, Ollama, dan API apa pun yang kompatibel dengan OpenAI atau Anthropic; tukar model atau penyedia tanpa membangun ulang
 - **Memori persisten** — memori jangka panjang yang terisolasi per identitas platform
 - **Persistensi sesi** — riwayat percakapan disimpan di SQLite (`~/.zeline/sessions.db`), sehingga tetap ada setelah gateway di-restart
-- **Skills** — prosedur Markdown yang dapat digunakan ulang dan dimuat sesuai kebutuhan
+- **Skills** — prosedur Markdown yang dapat digunakan ulang dan dimuat sesuai kebutuhan; lihat [indeks skill Zenith](../zeline/skills/ZENITH_INDEX.md) untuk katalog lengkap bawaan
 - **Gateway perpesanan** — Telegram (long polling, perintah, lampiran), WhatsApp (pemasangan QR Baileys), dan webhook HTTP lokal yang terautentikasi
 - **Tools bawaan** — pencarian web, pengambilan web, riset mendalam, permintaan HTTP, baca/tulis/edit/cari berkas, eksekusi kode, dan shell
 - **Klien MCP** — hubungkan server MCP eksternal (stdio atau HTTP) dan ekspos tools-nya secara otomatis
