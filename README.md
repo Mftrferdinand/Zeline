@@ -29,7 +29,7 @@ Run it locally for development or deploy it to your own server or cloud, and con
 - **Model-agnostic** — works with OpenAI, OpenRouter, vLLM, Ollama, and any OpenAI- or Anthropic-compatible API; swap model or provider without rebuilding
 - **Persistent memory** — long-term memory isolated per platform identity
 - **Session persistence** — conversation history stored in SQLite (`~/.zeline/sessions.db`), so it survives gateway restarts
-- **Skills** — reusable Markdown procedures loaded on demand
+- **Skills** — reusable Markdown procedures loaded on demand; see the [Zenith skill index](zeline/skills/ZENITH_INDEX.md) for the full bundled catalog
 - **Messaging gateways** — Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook
 - **Built-in tools** — web search, web fetch, deep research, HTTP requests, file read/write/edit/search, image analysis, text-to-image generation, code execution, shell, and sub-agent delegation
 - **Sub-agents** — delegate a focused subtask to an isolated child agent that returns only its final summary, keeping the main context clean (depth-limited; owner profiles only)
@@ -213,7 +213,7 @@ zeline gateway stop            Stop the background gateway process
 zeline gateway status          Show background gateway status
 zeline gateway log             Print gateway logs
 zeline gateway run             Run enabled gateways in the foreground
-zeline skills                  List installed skills
+zeline skills                  List installed skills (catalog: zeline/skills/ZENITH_INDEX.md)
 zeline memory                  Print local CLI memory
 ```
 
