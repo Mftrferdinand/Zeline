@@ -29,7 +29,7 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 - **模型无关** —— 兼容 OpenAI、OpenRouter、vLLM、Ollama，以及任何 OpenAI 或 Anthropic 兼容的 API；无需重建即可切换模型或提供商
 - **持久化记忆** —— 按平台身份隔离的长期记忆
 - **会话持久化** —— 对话历史存储在 SQLite 中（`~/.zeline/sessions.db`），因此可在网关重启后依然保留
-- **技能** —— 按需加载的可复用 Markdown 流程
+- **技能** —— 按需加载的可复用 Markdown 流程；完整的内置技能目录见 [Zenith 技能索引](../zeline/skills/ZENITH_INDEX.md)
 - **消息网关** —— Telegram（长轮询、命令、附件）、WhatsApp（Baileys 二维码配对），以及一个带认证的本地 HTTP webhook
 - **内置工具** —— 网页搜索、网页抓取、深度研究、HTTP 请求、文件读取/写入/编辑/搜索、代码执行和 shell
 - **MCP 客户端** —— 连接外部 MCP 服务器（stdio 或 HTTP）并自动暴露其工具
