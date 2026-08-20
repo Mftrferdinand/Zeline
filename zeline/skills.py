@@ -30,200 +30,205 @@ PRIVATE_SKILLS_DIR = SKILLS_ROOT / "private"
 MIGRATION_MARKER = SKILLS_ROOT / ".scope-migrated-v1"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
-# Renamed or obsolete bundled skills. Delete only byte-identical seeded copies;
-# user-customized files with these names survive. Each entry lists every digest
-# the file ever shipped with, so a copy seeded from any past release is cleaned
-# up. The 60 ``superagent-v7-sk*`` entries were renamed to ``zeline-zenith-sk*``.
+# Named obsolete bundled skills. Delete only byte-identical seeded copies;
+# user-customized files with these names survive.
 LEGACY_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
-    "tmdb-media-web-maintenance.md": (
-        "35f51a79be0c313bec2ec3f014200a00beeee7938173b5a20ccae0e5b62b8a4d",
-    ),
-    "superagent-v7-sk0.md": (
-        "c340800fdb3008df0c3c8e42d9cbfc6be5a916eeb94dba25df4aee946e588517",
-    ),
-    "superagent-v7-sk1.md": (
-        "88d64749ff3487bb3bba4e2673a1656bf3519db96fc72cbe67f948a66b90b720",
-    ),
-    "superagent-v7-sk2.md": (
-        "9064595b2c3c7102ea9886d8df69244e2bca1cd252302f76b1399ca361c03a29",
-        "ecd8927ec170d79a3716342a7aa4706214527ad65b25b58385c553c95626f0c5",
-    ),
-    "superagent-v7-sk3.md": (
-        "b7e4f423e315fb2df410600b6efdf7904e726cff0198904cc8ed687e13d3f69c",
-    ),
-    "superagent-v7-sk4.md": (
-        "e6b0ff2276e1222963ded51ec61a6e7cb832693671dbdb86712f57bb2d212ad5",
-    ),
-    "superagent-v7-sk5.md": (
-        "59e0f5fbbb0687f3df91e5da2142d3bc72017da159b58534430385c6807978ee",
-    ),
-    "superagent-v7-sk6.md": (
-        "20c292e4bf199407c060892ee6fa6cd92495a9b37f674659d3c91d5648b54951",
-    ),
-    "superagent-v7-sk7.md": (
-        "4747b8dfcd365d40f91d92c525d6266d3dac300172f6a5312076e43a5f95481e",
-    ),
-    "superagent-v7-sk8.md": (
-        "d010c39f7c5eb89c7397dda1af7e6936e5c23a03c5dd6e201706d1e40589a957",
-    ),
-    "superagent-v7-sk9.md": (
-        "9ad4d8d38c808735b04581d5a06bb5c959a0cce292fbc11c3d84af106f9e306f",
-    ),
-    "superagent-v7-sk10.md": (
-        "a3b687b5f56c91f3529c05cfebc66116b3854a7203a9ed0ba2067903280ba2d8",
-    ),
-    "superagent-v7-sk11.md": (
-        "af1725ca642794811e73d077d48759989b78721aa85ec3df18e9d0dd5b07de5e",
-        "d8475fb9e46a11b90b4a87492e57e33d84d800806b66ccf06edd175e709a0f42",
-    ),
-    "superagent-v7-sk12.md": (
-        "8741f448ed787ef0651e92e219d914dad2d048b0ec894179c8f3c4779362417e",
-    ),
-    "superagent-v7-sk13.md": (
-        "47c049698a3e0cedd5be7ce16c562f6b1f239ba6eb4bbfb807393c3ad57a00b4",
-    ),
-    "superagent-v7-sk14.md": (
-        "675902ec570e62a585ba33f1f62f8c78d6f03d221550f51ff1f132b88fa204ce",
-    ),
-    "superagent-v7-sk15.md": (
-        "71bd648055600c94c9e52941e26cec7bdde951cb5c0b8ba6f50586a8c01f56ab",
-        "cffae84ee902e6fc7042c95a7985e3d30debbb7936b323cbb6030f74b3015518",
-    ),
-    "superagent-v7-sk16.md": (
-        "6b09c2b1107601ac20df4530b5ec7f07f859465d3e3d8b791a9db57772e69602",
-    ),
-    "superagent-v7-sk17.md": (
-        "0ec5c5e83dbeecb9d3356f1d6d4ef3950092158020fe6d699ee54b7fa3c8774d",
-        "877f08cbb89ab01581bfc8d602e399a2bcebaa81325f77e6fad2ea0391b8faca",
-    ),
-    "superagent-v7-sk18.md": (
-        "a95d8a757585d05b5cd77dd9f1478a4049674547585679ef74aeeb734944bb0f",
-    ),
-    "superagent-v7-sk19.md": (
-        "7b0f46ff112c194839debbe419757c747ed60213b40d1a1e00d2eef58ee77a80",
-    ),
-    "superagent-v7-sk20.md": (
-        "fc913be82f17d3c863e991b0da2ea6950028564669f4f2a613530b9de7525359",
-    ),
-    "superagent-v7-sk21.md": (
-        "28687ba4f334cf032a52da710b747069619a83d8865f88987c01b0942bae39df",
-    ),
-    "superagent-v7-sk22.md": (
-        "9ec5afd003ac4cd8abb3120953f3c5e2086755036da7d735dd5d7fa5d18823c4",
-    ),
-    "superagent-v7-sk23.md": (
-        "42f2ec8f191cc17ff83d462c87e3df756519c44f64c594cad6ac0c2737c0a219",
-    ),
-    "superagent-v7-sk24.md": (
-        "45cfb2516cdf759ff4ff83ebbfa8308adbfda71291158bbf9e4daa8520939597",
-    ),
-    "superagent-v7-sk25.md": (
-        "f97142650a19039417e5a05cffca1deb1d236efc7b5e51178086d67e87cc5097",
-    ),
-    "superagent-v7-sk26.md": (
-        "f81c12870cc23e232446424b5f8d285c4732c52fe579f3100f3280fb2f628ddd",
-    ),
-    "superagent-v7-sk27.md": (
-        "cba23be330ffa9be02129fb3a9963572e4a79fa148ec71c886299237d3f22e11",
-    ),
-    "superagent-v7-sk28.md": (
-        "a1be80bdf3c5f862bbe035579a638e384bec676ac453150d9d97409f816238c9",
-    ),
-    "superagent-v7-sk29.md": (
-        "b1382e23fcf8c5242d673eecae8a590c4c3421f24051f4fc5f060575da9e926b",
-    ),
-    "superagent-v7-sk30.md": (
-        "dbd55c2a39b5fe166b63a3ae22f80a2ac723193fb67f396dd51b39ada9e9d519",
-    ),
-    "superagent-v7-sk31.md": (
-        "8603ee38f9ad689769e7705f8aab7470805d89ca07b984892bb0ab23aeee522f",
-    ),
-    "superagent-v7-sk32.md": (
-        "9adaacf0a2f81454608e34f68d9a94a35fd2440658015243808587ac1f97fd6c",
-    ),
-    "superagent-v7-sk33.md": (
-        "58a526f9209c24a5a6253b3a8ac757a47e9be159a7804338d0c9757a93f673fa",
-    ),
-    "superagent-v7-sk34.md": (
-        "98d3df0c8dca86e7bbb4dccc963ec7d69485c40e6540e5cf2ea3f5311258b429",
-    ),
-    "superagent-v7-sk35.md": (
-        "e4d7454603f848bcd380372b93120213aedc0cce807f52728a21b8724667003e",
-    ),
-    "superagent-v7-sk36.md": (
-        "b52eac809bde2e4aa0798103e5d9dd5d2b67f1e517ac22d5498aabbe577ec1b2",
-    ),
-    "superagent-v7-sk37.md": (
-        "b21b21eeec547c2c23a0368264da067564a506673c0711a3528d405209568adf",
-    ),
-    "superagent-v7-sk38.md": (
-        "99293097066017e7208642a23116a986383cf22951bead844ba4e8d95dc07c8f",
-    ),
-    "superagent-v7-sk39.md": (
-        "7e11f0da3fdf0dff2aa5b89adeaf4009c30b2d6ac5004dc0ac38d75069e697a6",
-    ),
-    "superagent-v7-sk40.md": (
-        "048f511e02bf3894ff9936d73b9836a7401c4e5acf33fd8290d1ec5844bdd606",
-    ),
-    "superagent-v7-sk41.md": (
-        "26a000f9324e69378c572ad24c05c674868c6f8c3bf420f73fe84d19498a738b",
-    ),
-    "superagent-v7-sk42.md": (
-        "779f06ddd34ba0b877cf9582ac70de275412351613b5b2be5bbde09d21878440",
-    ),
-    "superagent-v7-sk43.md": (
-        "ede5343a294f5824919d7dde4a8cf3542cbc3594dc0cf7762ce654597abe8e9e",
-    ),
-    "superagent-v7-sk44.md": (
-        "6c9676d94a65578f834ab02f3329183026bc87e38eed2d3c654bec9286abfc3c",
-    ),
-    "superagent-v7-sk45.md": (
-        "af81d46d749a027d5bf57be1ef1d3d9ed3767151e1ef7a98738fda0e15f128b5",
-    ),
-    "superagent-v7-sk46.md": (
-        "74e2b688472b0f786eb7ca2682b9eee90b540ff8f65f5cd335a1f8f7f9766e86",
-    ),
-    "superagent-v7-sk47.md": (
-        "8e8f7d0638e906edbd59f791b73b2b3db63396d8e35657452be170188986ef39",
-    ),
-    "superagent-v7-sk48.md": (
-        "16eca2174799c055148706344f8f6d7caad8b675e08f594f7b51d45a11bf2cc8",
-    ),
-    "superagent-v7-sk49.md": (
-        "f748aa8393b393bae32fd5eed43d3b092d775727fda040b6fa2fe63f53c058a0",
-    ),
-    "superagent-v7-sk50.md": (
-        "3ad7719b8dc49daa51b71a394209b56370be1f3f9ef0408a7fd7f15bdec37a90",
-    ),
-    "superagent-v7-sk51.md": (
-        "7e8e6dd5150a3f5274616fc53dee492ecdd778e3cbcb213ad87d7f0227013979",
-    ),
-    "superagent-v7-sk52.md": (
-        "0569220a265b05b42bf80e64951e7697659455f7afb7205b98abc6d367047304",
-    ),
-    "superagent-v7-sk53.md": (
-        "b9c7458e3f3b25d45c8e564f5cea95147afe036086a27cbf659443b83e983344",
-    ),
-    "superagent-v7-sk54.md": (
-        "1d96c2d0f3f44e8dc2248c58f051c2693aeca0b935a0055c993aa1332b382444",
-        "5cb68ad3511d528b8efc8fa02fc147c37679fd6a6080173d47334995633f2732",
-    ),
-    "superagent-v7-sk55.md": (
-        "e5359af0e7881abd4a42f5f9cb612ff7a8bc459bf56291ab08a41e4dc8e9dfd0",
-    ),
-    "superagent-v7-sk56.md": (
-        "55806f631f4c493c592f192517ff7308bfeae50ef6359934f75d19d9ded45243",
-    ),
-    "superagent-v7-sk57.md": (
-        "b3182f0c278b0ab9f6d76aa393b75a48d352fda6794414c936ec6a764e894c9c",
-    ),
-    "superagent-v7-sk58.md": (
-        "1a52d122f88d48a28d7246a98141629784f8bb38d17c71b5cc4981092b13c6d4",
-    ),
-    "superagent-v7-sk59.md": (
-        "06fe8db77f98029c485042f4c4a575ac8a0b9f4ee7746528dc2d4594f24e694d",
+    'tmdb-media-web-maintenance.md': (
+        '35f51a79be0c313bec2ec3f014200a00beeee7938173b5a20ccae0e5b62b8a4d',
     ),
 }
+
+# SHA-256 of each exact retired filename maps to every content digest that
+# shipped under it. This preserves safe upgrades without retaining old product
+# branding in source or deleting user-modified copies.
+RETIRED_ZENITH_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
+    '018864414fc7306f86d36e84700d19fc95cf9c177091ae6e453b759ff498e4b8': (
+        'b1382e23fcf8c5242d673eecae8a590c4c3421f24051f4fc5f060575da9e926b',
+    ),
+    '08b84d2bbed4245d3a0ffc1e978d54b8c85e2f839a69c487db68cbb5a2804cbe': (
+        '8603ee38f9ad689769e7705f8aab7470805d89ca07b984892bb0ab23aeee522f',
+    ),
+    '0ceedae8d949c4a93c25717773f6eff2b57471174a5898e90a3deb628b07202a': (
+        'af81d46d749a027d5bf57be1ef1d3d9ed3767151e1ef7a98738fda0e15f128b5',
+    ),
+    '12901b81f7af682a703dc0463efb9224f99e5183ebc57821954b8e794676d592': (
+        'af1725ca642794811e73d077d48759989b78721aa85ec3df18e9d0dd5b07de5e',
+        'd8475fb9e46a11b90b4a87492e57e33d84d800806b66ccf06edd175e709a0f42',
+    ),
+    '13ff6e69e4c14c8a4a9b680741b3fe14a78c9c37e63429a2d88e117534398a03': (
+        '47c049698a3e0cedd5be7ce16c562f6b1f239ba6eb4bbfb807393c3ad57a00b4',
+    ),
+    '141561a544b95cca70c2101b80b8775401c8ac47422a24fc4815387c0c061339': (
+        '048f511e02bf3894ff9936d73b9836a7401c4e5acf33fd8290d1ec5844bdd606',
+    ),
+    '16c5c82e87da7fbf205c63d3d984bbf87200eb1f4cb8addc5df5a62edb1c4a32': (
+        'a3b687b5f56c91f3529c05cfebc66116b3854a7203a9ed0ba2067903280ba2d8',
+    ),
+    '1783cad3994895700292bba72fed6a3913b8502ebf3e900f79b8b278d0c1bff7': (
+        '9064595b2c3c7102ea9886d8df69244e2bca1cd252302f76b1399ca361c03a29',
+        'ecd8927ec170d79a3716342a7aa4706214527ad65b25b58385c553c95626f0c5',
+    ),
+    '19b51357efafbbdf52e11a96d916e2f7457379d6b4d73bd60084d158b1d68b22': (
+        '8741f448ed787ef0651e92e219d914dad2d048b0ec894179c8f3c4779362417e',
+    ),
+    '1dcd4725d08c8fbd1ff65ed344d4e86fabd093ff649969bc39de3eec5c12be0d': (
+        '26a000f9324e69378c572ad24c05c674868c6f8c3bf420f73fe84d19498a738b',
+    ),
+    '22d3f903746ac7e032e732da4c4d77dbd65f7b6a48f8290cf4f82dca5676c207': (
+        'a1be80bdf3c5f862bbe035579a638e384bec676ac453150d9d97409f816238c9',
+    ),
+    '2501bb032b0edf1c6901b1589b5be17709440ca566f5a53da48cde262e0f8a3c': (
+        '4747b8dfcd365d40f91d92c525d6266d3dac300172f6a5312076e43a5f95481e',
+    ),
+    '2947c762170a1f509f16253c4a967c25a2f17117ae9a3c987d0ebd36118cec5a': (
+        '8e8f7d0638e906edbd59f791b73b2b3db63396d8e35657452be170188986ef39',
+    ),
+    '2c8b7fe367a3f12ba500590cc696faf3f97a9fb491beaf5195c21590f97fe321': (
+        'c340800fdb3008df0c3c8e42d9cbfc6be5a916eeb94dba25df4aee946e588517',
+    ),
+    '2dc3a788183a94fc789ee22dd89604a1cbc8fe6dfa09e493b7e3178dda5294aa': (
+        '42f2ec8f191cc17ff83d462c87e3df756519c44f64c594cad6ac0c2737c0a219',
+    ),
+    '34ca6088104f5785209be556a18249e422d1b7381ba438b29416dd3f58c4a5f6': (
+        'dbd55c2a39b5fe166b63a3ae22f80a2ac723193fb67f396dd51b39ada9e9d519',
+    ),
+    '3706384f4f3f848d3e1a5c5ef761edb888e4992dee8b161ff754d7290f9b8bc2': (
+        '6b09c2b1107601ac20df4530b5ec7f07f859465d3e3d8b791a9db57772e69602',
+    ),
+    '3a59b55b7c79e0f1c33f27fb9bd4e5f769a404561a4b0ca4e679a55a4d67625a': (
+        'a95d8a757585d05b5cd77dd9f1478a4049674547585679ef74aeeb734944bb0f',
+    ),
+    '3a74789ffac7c0e490ae15d54405e11fbb849348c6ce513b62425096c68dc78e': (
+        '88d64749ff3487bb3bba4e2673a1656bf3519db96fc72cbe67f948a66b90b720',
+    ),
+    '3b1ed48a066f3b15746ab009de608fb77fd37618f0259919fbd8a7e308692c36': (
+        'b52eac809bde2e4aa0798103e5d9dd5d2b67f1e517ac22d5498aabbe577ec1b2',
+    ),
+    '3dfa5c5706e3e5c6bd09ff7201d20d41132db42c40509fbe89f5b622d74cbfe7': (
+        'e6b0ff2276e1222963ded51ec61a6e7cb832693671dbdb86712f57bb2d212ad5',
+    ),
+    '3f79305eb4696561802461807e7a3cd540249bfc2ef178033607232df3115ce9': (
+        '6c9676d94a65578f834ab02f3329183026bc87e38eed2d3c654bec9286abfc3c',
+    ),
+    '424f5c10453c61800349e680613d06f1f2500cf646a3452a83084d9e8f9d3bb0': (
+        '0569220a265b05b42bf80e64951e7697659455f7afb7205b98abc6d367047304',
+    ),
+    '4d182536a201c270174d4b3d361ddfaa267dbe73dd986e9334baca84b269c384': (
+        '58a526f9209c24a5a6253b3a8ac757a47e9be159a7804338d0c9757a93f673fa',
+    ),
+    '56b8a8fad58859c43eb8ed279da1dbab2ae8708300d514587e34d7caa5c803b8': (
+        '06fe8db77f98029c485042f4c4a575ac8a0b9f4ee7746528dc2d4594f24e694d',
+    ),
+    '5894256becee39a10e3184098df1adfb25a8ebbb5c23466b9e76db6452061936': (
+        '74e2b688472b0f786eb7ca2682b9eee90b540ff8f65f5cd335a1f8f7f9766e86',
+    ),
+    '625211a490d9da9a3be21d5dc04a2d95fc996581d7969ac8177e178411d87cd7': (
+        '9ec5afd003ac4cd8abb3120953f3c5e2086755036da7d735dd5d7fa5d18823c4',
+    ),
+    '6a6b33c5338bc04b7ce125806163754c91aa39dd0915a368e388dbe1103cf3ef': (
+        'f97142650a19039417e5a05cffca1deb1d236efc7b5e51178086d67e87cc5097',
+    ),
+    '7136287ae85c5855033241363b1da9d155d49f8eca941e6a867544a005e07988': (
+        '98d3df0c8dca86e7bbb4dccc963ec7d69485c40e6540e5cf2ea3f5311258b429',
+    ),
+    '77a68e902a2a9ba13d76dd4723e7890071427d7575909111de5b5667c0a3ffd3': (
+        '0ec5c5e83dbeecb9d3356f1d6d4ef3950092158020fe6d699ee54b7fa3c8774d',
+        '877f08cbb89ab01581bfc8d602e399a2bcebaa81325f77e6fad2ea0391b8faca',
+    ),
+    '7cd922075e418ec9301471d9be307506c3a50ca05a325e5a283b90e687c6becb': (
+        'ede5343a294f5824919d7dde4a8cf3542cbc3594dc0cf7762ce654597abe8e9e',
+    ),
+    '7daac381ac7bf6387e1ec8c419973d6559276de6c954e9617aa66de73c710b2e': (
+        '7e11f0da3fdf0dff2aa5b89adeaf4009c30b2d6ac5004dc0ac38d75069e697a6',
+    ),
+    '7f4372a52f6d2722f0cc2cbcc0e9969f6012e86755bb959d647eb9d072ced9d0': (
+        'b7e4f423e315fb2df410600b6efdf7904e726cff0198904cc8ed687e13d3f69c',
+    ),
+    '84f91b72b73a8600fa37d03bebe88d4e5eada403eee6f181a61cf5eec7aa9d9b': (
+        'f81c12870cc23e232446424b5f8d285c4732c52fe579f3100f3280fb2f628ddd',
+    ),
+    '8e1dc451abe0f72d624e923b8ffc5bad21ff0f4c019a2d6cd29a8305abac270f': (
+        '28687ba4f334cf032a52da710b747069619a83d8865f88987c01b0942bae39df',
+    ),
+    '94ff285dfee62a77688cbe5f732632d30fc8023d7388c3b65bd55cf612a6319c': (
+        'b3182f0c278b0ab9f6d76aa393b75a48d352fda6794414c936ec6a764e894c9c',
+    ),
+    '963022ad997acc627c8629bd8c8e8e0ffb70788fd00add8464649ba5e6edd28a': (
+        '9adaacf0a2f81454608e34f68d9a94a35fd2440658015243808587ac1f97fd6c',
+    ),
+    '9d3ef551a62c924055c1734b4ad33d0ba686af295ba01da4d6f4590f30cfe1b1': (
+        '45cfb2516cdf759ff4ff83ebbfa8308adbfda71291158bbf9e4daa8520939597',
+    ),
+    'b132ce52e623a1c01464edc4f7c1f5638fa803af436f72b2158c56377d36a030': (
+        '20c292e4bf199407c060892ee6fa6cd92495a9b37f674659d3c91d5648b54951',
+    ),
+    'b33be176fea8fca5267195a8594c88172f3371354287b3a6ee875a53b923fdca': (
+        'f748aa8393b393bae32fd5eed43d3b092d775727fda040b6fa2fe63f53c058a0',
+    ),
+    'bc330f976e67980dddc52ad77ab58a017355a0d8d45efd7418410d3ba1139d83': (
+        '7b0f46ff112c194839debbe419757c747ed60213b40d1a1e00d2eef58ee77a80',
+    ),
+    'bdb17aa69ce6089c2bdc14dba6c147a919ed07464d4b0ee53b126f52e2ae346d': (
+        '1a52d122f88d48a28d7246a98141629784f8bb38d17c71b5cc4981092b13c6d4',
+    ),
+    'bfde70e32fe563cdf60a4612335e2e594d63e53b06c6600eade6d740a49cd4d2': (
+        '59e0f5fbbb0687f3df91e5da2142d3bc72017da159b58534430385c6807978ee',
+    ),
+    'c2090122eae03a735b711118d417053a72dd802beb04d235f84814a8904fd79e': (
+        '7e8e6dd5150a3f5274616fc53dee492ecdd778e3cbcb213ad87d7f0227013979',
+    ),
+    'c79cbdd38ae5ad1632d0a6b1c94a7ce6147d252f426cade8bbe54bfd352bed3c': (
+        'e5359af0e7881abd4a42f5f9cb612ff7a8bc459bf56291ab08a41e4dc8e9dfd0',
+    ),
+    'c9e5a0ec7b47a3b62ebd99140844ef0f89940fcfe04df61a52e5d31f8bb41c83': (
+        '9ad4d8d38c808735b04581d5a06bb5c959a0cce292fbc11c3d84af106f9e306f',
+    ),
+    'c9f57b42d0b3300bca51c1ee92e76fcf3dc021c6889bcad743d989e6201c59a6': (
+        '675902ec570e62a585ba33f1f62f8c78d6f03d221550f51ff1f132b88fa204ce',
+    ),
+    'cb9d4280428f6b59f22b1a733b233796643de1793a9d85cc25f1721177c843b3': (
+        '99293097066017e7208642a23116a986383cf22951bead844ba4e8d95dc07c8f',
+    ),
+    'cd4ed3671db501d7009a365da722cb32c5a8ccc210b8760f1743d143e43dc8cf': (
+        'fc913be82f17d3c863e991b0da2ea6950028564669f4f2a613530b9de7525359',
+    ),
+    'd40b1efc03e0402552bc839529dbfacc302801d4d9fc18de98df3bf05b6dddc9': (
+        'd010c39f7c5eb89c7397dda1af7e6936e5c23a03c5dd6e201706d1e40589a957',
+    ),
+    'd7e41c193370a5ade03c9e4642f5161590bf2e05f606e3bf7f92880e48106304': (
+        '55806f631f4c493c592f192517ff7308bfeae50ef6359934f75d19d9ded45243',
+    ),
+    'd978a3bc282e2a2dd5e5420a116d15aa90b4a2d7030e6622ef65ef4c0d9d8037': (
+        '71bd648055600c94c9e52941e26cec7bdde951cb5c0b8ba6f50586a8c01f56ab',
+        'cffae84ee902e6fc7042c95a7985e3d30debbb7936b323cbb6030f74b3015518',
+    ),
+    'dae47f413540483c412188f6469cd042170cc1faa464a42a692e729dc6410d35': (
+        'b21b21eeec547c2c23a0368264da067564a506673c0711a3528d405209568adf',
+    ),
+    'df8b716ff1cbab8920560271b3a384606cfd4da1bbe42cdc2988217d9756fdf2': (
+        '1d96c2d0f3f44e8dc2248c58f051c2693aeca0b935a0055c993aa1332b382444',
+        '5cb68ad3511d528b8efc8fa02fc147c37679fd6a6080173d47334995633f2732',
+    ),
+    'e0197bf8046a19d9547f947168594098e0f0eef9465fd3cf0a33bdd977c1a7a3': (
+        '3ad7719b8dc49daa51b71a394209b56370be1f3f9ef0408a7fd7f15bdec37a90',
+    ),
+    'ea3d08d20ef8812a7f9ec0147a5312410089639ff085d5c6ac874c599fe874fd': (
+        'e4d7454603f848bcd380372b93120213aedc0cce807f52728a21b8724667003e',
+    ),
+    'eab88de1fb263da9dd6a3a21e2c9bcc4e56f2749dd09befdf992781c82b8730f': (
+        '779f06ddd34ba0b877cf9582ac70de275412351613b5b2be5bbde09d21878440',
+    ),
+    'ebc4b50f376100cf3387edd738632b10aa6c932bd09d106b0b1a50194ff2614f': (
+        'cba23be330ffa9be02129fb3a9963572e4a79fa148ec71c886299237d3f22e11',
+    ),
+    'f0f28a8a54a49a31a8b0ba08a489050a136d680fa4df7c0976ce5768fbc2839b': (
+        '16eca2174799c055148706344f8f6d7caad8b675e08f594f7b51d45a11bf2cc8',
+    ),
+    'fe3ad8776558b51f03a014951eea17eb80d53fd8e82951c6c1ac634215ab2ead': (
+        'b9c7458e3f3b25d45c8e564f5cea95147afe036086a27cbf659443b83e983344',
+    ),
+}
+
 
 # Bundled skills whose content was corrected in-place (not renamed). seed_skills()
 # never overwrites existing files, so without this map a user on the pre-fix
@@ -289,24 +294,32 @@ def _ensure_dirs() -> None:
 def _remove_unmodified_legacy_bundled_skills() -> None:
     """Remove obsolete seeded copies without deleting user customizations."""
     public_root = PUBLIC_SKILLS_DIR.resolve()
-    for name, expected_digests in LEGACY_BUNDLED_SKILL_DIGESTS.items():
-        # Migration entries are flat bundled Markdown filenames, never paths.
-        if Path(name).name != name or not name.endswith(".md"):
-            continue
-        path = PUBLIC_SKILLS_DIR / name
+
+    def remove_if_untouched(path: Path, expected_digests: tuple[str, ...]) -> None:
         if path.is_symlink():
-            continue
+            return
         try:
             resolved = path.resolve(strict=False)
             # Windows runners may spell one directory as DOS 8.3 vs canonical
             # long path. Compare filesystem identity, not path-string spelling.
             if not resolved.parent.samefile(public_root) or not path.is_file():
-                continue
+                return
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             if digest in expected_digests:
                 path.unlink()
         except OSError:
             pass
+
+    for name, expected_digests in LEGACY_BUNDLED_SKILL_DIGESTS.items():
+        # Migration entries are flat bundled Markdown filenames, never paths.
+        if Path(name).name == name and name.endswith(".md"):
+            remove_if_untouched(PUBLIC_SKILLS_DIR / name, expected_digests)
+
+    for path in PUBLIC_SKILLS_DIR.glob("*.md"):
+        filename_digest = hashlib.sha256(path.name.encode("utf-8")).hexdigest()
+        expected_digests = RETIRED_ZENITH_SKILL_DIGESTS.get(filename_digest)
+        if expected_digests:
+            remove_if_untouched(path, expected_digests)
 
 
 def _refresh_known_bundled_revisions(source: Path) -> int:
