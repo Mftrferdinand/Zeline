@@ -287,45 +287,54 @@ class ZelinePublicCoreTests(unittest.TestCase):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
         zenith = sorted(path.name for path in skill_root.glob("zeline-zenith-z*.md"))
         self.assertGreaterEqual(len(zenith), 109)
-        self.assertEqual(sorted(skill_root.glob("superagent-v7-*.md")), [])
 
-    def test_legacy_digest_map_covers_every_renamed_zenith_skill(self):
+    def test_skills_module_does_not_expose_retired_pack_branding(self):
+        source = (SOURCE_ROOT / "zeline" / "skills.py").read_text(encoding="utf-8").casefold()
+        retired_terms = ("super" + "agent", "iron" + "claw")
+        for term in retired_terms:
+            self.assertNotIn(term, source)
+
+    def test_retired_zenith_digest_map_is_complete_and_well_formed(self):
         skills = importlib.import_module("zeline.skills")
-        legacy = {
-            name for name in skills.LEGACY_BUNDLED_SKILL_DIGESTS
-            if name.startswith("superagent-v7-sk")
-        }
-        self.assertEqual(
-            legacy,
-            {f"superagent-v7-sk{index}.md" for index in range(60)},
-        )
-        for name, digests in skills.LEGACY_BUNDLED_SKILL_DIGESTS.items():
-            with self.subTest(name=name):
-                # Tuple-of-digests, never a bare string: a str would make the
-                # ``digest in expected`` check match on substrings.
-                self.assertIsInstance(digests, tuple)
-                self.assertTrue(digests)
-                for digest in digests:
+        retired = skills.RETIRED_ZENITH_SKILL_DIGESTS
+        self.assertEqual(len(retired), 60)
+        self.assertEqual(len(set(retired)), 60)
+        for filename_digest, content_digests in retired.items():
+            with self.subTest(filename_digest=filename_digest):
+                self.assertRegex(filename_digest, r"^[0-9a-f]{64}$")
+                self.assertIsInstance(content_digests, tuple)
+                self.assertTrue(content_digests)
+                for digest in content_digests:
                     self.assertRegex(digest, r"^[0-9a-f]{64}$")
 
-    def test_seed_skills_removes_any_shipped_revision_of_renamed_skill(self):
+    def test_seed_skills_removes_content_addressed_retired_copy(self):
         skills = importlib.import_module("zeline.skills")
-        stale = skills.PUBLIC_SKILLS_DIR / "superagent-v7-sk2.md"
+        stale = skills.PUBLIC_SKILLS_DIR / "retired-seeded-copy.md"
         stale.parent.mkdir(parents=True, exist_ok=True)
-        # sk2 shipped two distinct revisions; the older one must still be cleaned.
-        for digest in skills.LEGACY_BUNDLED_SKILL_DIGESTS["superagent-v7-sk2.md"]:
-            stale.write_text("placeholder\n", encoding="utf-8")
-            with mock.patch.dict(
-                skills.LEGACY_BUNDLED_SKILL_DIGESTS,
-                {"superagent-v7-sk2.md": (
-                    hashlib.sha256(stale.read_bytes()).hexdigest(),
-                    digest,
-                )},
-                clear=True,
-            ):
-                skills.seed_skills()
-            with self.subTest(digest=digest):
-                self.assertFalse(stale.exists())
+        stale.write_text("untouched seeded content\n", encoding="utf-8")
+        filename_digest = hashlib.sha256(stale.name.encode("utf-8")).hexdigest()
+        content_digest = hashlib.sha256(stale.read_bytes()).hexdigest()
+        with mock.patch.dict(
+            skills.RETIRED_ZENITH_SKILL_DIGESTS,
+            {filename_digest: (content_digest,)},
+            clear=True,
+        ):
+            skills.seed_skills()
+        self.assertFalse(stale.exists())
+
+    def test_seed_skills_preserves_modified_content_addressed_copy(self):
+        skills = importlib.import_module("zeline.skills")
+        custom = skills.PUBLIC_SKILLS_DIR / "retired-customized-copy.md"
+        custom.parent.mkdir(parents=True, exist_ok=True)
+        custom.write_text("user customization\n", encoding="utf-8")
+        filename_digest = hashlib.sha256(custom.name.encode("utf-8")).hexdigest()
+        with mock.patch.dict(
+            skills.RETIRED_ZENITH_SKILL_DIGESTS,
+            {filename_digest: (hashlib.sha256(b"old seeded content").hexdigest(),)},
+            clear=True,
+        ):
+            skills.seed_skills()
+        self.assertEqual(custom.read_text(encoding="utf-8"), "user customization\n")
 
     def test_bundled_skills_do_not_invent_renamed_runtime_contracts(self):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
