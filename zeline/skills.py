@@ -41,7 +41,12 @@ LEGACY_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
 # SHA-256 of each exact retired filename maps to every content digest that
 # shipped under it. This preserves safe upgrades without retaining old product
 # branding in source or deleting user-modified copies.
-RETIRED_ZENITH_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
+RETIRED_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
+    # Removed NBA betting workflow, LF and CRLF package revisions.
+    '57d5f28520c4381518d7026e54afb9d453c4a262a1c6fa22f5653c663d33927c': (
+        '56eef747ca4dd3335fe414b54a611beb107cf8ac607f320fd18377e0c93d1f40',
+        '414d753de16b33eb73d938cbe6b7ecf36420eee635151e388c0dad6a73248bb4',
+    ),
     '018864414fc7306f86d36e84700d19fc95cf9c177091ae6e453b759ff498e4b8': (
         'b1382e23fcf8c5242d673eecae8a590c4c3421f24051f4fc5f060575da9e926b',
     ),
@@ -317,7 +322,7 @@ def _remove_unmodified_legacy_bundled_skills() -> None:
 
     for path in PUBLIC_SKILLS_DIR.glob("*.md"):
         filename_digest = hashlib.sha256(path.name.encode("utf-8")).hexdigest()
-        expected_digests = RETIRED_ZENITH_SKILL_DIGESTS.get(filename_digest)
+        expected_digests = RETIRED_BUNDLED_SKILL_DIGESTS.get(filename_digest)
         if expected_digests:
             remove_if_untouched(path, expected_digests)
 
