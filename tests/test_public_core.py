@@ -294,11 +294,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         for term in retired_terms:
             self.assertNotIn(term, source)
 
-    def test_retired_zenith_digest_map_is_complete_and_well_formed(self):
+    def test_retired_bundled_digest_map_is_complete_and_well_formed(self):
         skills = importlib.import_module("zeline.skills")
-        retired = skills.RETIRED_ZENITH_SKILL_DIGESTS
-        self.assertEqual(len(retired), 60)
-        self.assertEqual(len(set(retired)), 60)
+        retired = skills.RETIRED_BUNDLED_SKILL_DIGESTS
+        self.assertGreaterEqual(len(retired), 60)
+        self.assertEqual(len(set(retired)), len(retired))
         for filename_digest, content_digests in retired.items():
             with self.subTest(filename_digest=filename_digest):
                 self.assertRegex(filename_digest, r"^[0-9a-f]{64}$")
@@ -315,7 +315,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         filename_digest = hashlib.sha256(stale.name.encode("utf-8")).hexdigest()
         content_digest = hashlib.sha256(stale.read_bytes()).hexdigest()
         with mock.patch.dict(
-            skills.RETIRED_ZENITH_SKILL_DIGESTS,
+            skills.RETIRED_BUNDLED_SKILL_DIGESTS,
             {filename_digest: (content_digest,)},
             clear=True,
         ):
@@ -329,7 +329,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         custom.write_text("user customization\n", encoding="utf-8")
         filename_digest = hashlib.sha256(custom.name.encode("utf-8")).hexdigest()
         with mock.patch.dict(
-            skills.RETIRED_ZENITH_SKILL_DIGESTS,
+            skills.RETIRED_BUNDLED_SKILL_DIGESTS,
             {filename_digest: (hashlib.sha256(b"old seeded content").hexdigest(),)},
             clear=True,
         ):
@@ -501,6 +501,21 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn(
             ("public", "tmdb-media-web-maintenance"),
             {(scope, name) for scope, name, _title, _description in entries},
+        )
+
+    def test_nba_betting_skill_is_not_bundled_and_has_upgrade_cleanup(self):
+        skills = importlib.import_module("zeline.skills")
+        name = "nba-betting-analyst.md"
+        source = SOURCE_ROOT / "zeline" / "skills" / name
+        self.assertFalse(source.exists())
+        filename_digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+        expected_revisions = {
+            "56eef747ca4dd3335fe414b54a611beb107cf8ac607f320fd18377e0c93d1f40",
+            "414d753de16b33eb73d938cbe6b7ecf36420eee635151e388c0dad6a73248bb4",
+        }
+        self.assertEqual(
+            set(skills.RETIRED_BUNDLED_SKILL_DIGESTS[filename_digest]),
+            expected_revisions,
         )
 
     def test_seed_skills_removes_only_known_unmodified_narrow_tmdb_skill(self):
