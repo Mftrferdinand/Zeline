@@ -55,19 +55,27 @@ class SecurityHygieneTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_updated_zenith_demo_scripts_execute_without_name_errors(self):
-        for name in ("automation.py", "briefing.py"):
-            completed = subprocess.run(
-                [__import__("sys").executable, str(ZENITH_SCRIPTS / name)],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            self.assertEqual(
-                completed.returncode,
-                0,
-                f"{name} failed:\nstdout={completed.stdout}\nstderr={completed.stderr}",
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            # briefing imports alerts, whose live HTTP client is optional and is
+            # intentionally absent from the minimal CI test environment. A stub
+            # keeps this regression test focused on demo-script execution.
+            Path(tmp, "httpx.py").write_text("", encoding="utf-8")
+            env = os.environ.copy()
+            env["PYTHONPATH"] = tmp + os.pathsep + env.get("PYTHONPATH", "")
+            for name in ("automation.py", "briefing.py"):
+                completed = subprocess.run(
+                    [__import__("sys").executable, str(ZENITH_SCRIPTS / name)],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    completed.returncode,
+                    0,
+                    f"{name} failed:\nstdout={completed.stdout}\nstderr={completed.stderr}",
+                )
 
     def test_runtime_sources_do_not_use_insecure_tempfile_mktemp(self):
         offenders = []
