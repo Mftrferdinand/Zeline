@@ -1,6 +1,6 @@
-# zeline-zenith-zeline-zenith-z74 — Universal NFT Minter
+# zeline-zenith-z74 — Universal NFT Minter
 
-> zeline-zenith-zeline-zenith-z74 — Universal NFT Minter — modul Zeline Zenith (sumber: zeline-zenith-z74).
+> zeline-zenith-z74 — Universal NFT Minter — modul Zeline Zenith (sumber: zeline-zenith-z74).
 # Load ONLY when: mint, NFT, opensea, manifold, zora, seadrop, mint nft, mint contract, claim NFT, mint url
 
 ---

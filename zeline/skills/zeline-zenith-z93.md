@@ -1,6 +1,6 @@
-# zeline-zenith-zeline-zenith-z93 — Agentic Eval & Self-Critique (NEW in v4.1)
+# zeline-zenith-z93 — Agentic Eval & Self-Critique (NEW in v4.1)
 
-> zeline-zenith-zeline-zenith-z93 — Agentic Eval & Self-Critique (NEW in v4.1) — modul Zeline Zenith (sumber: zeline-zenith-z93).
+> zeline-zenith-z93 — Agentic Eval & Self-Critique (NEW in v4.1) — modul Zeline Zenith (sumber: zeline-zenith-z93).
 
 Ngukur diri sebelum operator yang ngukur. Eval terstruktur, self-critique adversarial, dan **variance testing** (jalanin task N kali → lihat konsistensi). Melengkapi zeline-zenith-z29 (audit sistem) & zeline-zenith-z32 (self-improve loop). Tool: `tools/eval.py`. **Read/measure only — gak nyentuh dana, gak edit skill.**
 

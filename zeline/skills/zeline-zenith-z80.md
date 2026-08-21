@@ -1,7 +1,7 @@
-# zeline-zenith-zeline-zenith-z80 — Copywriting, Writing Mastery & Content Research/Analytics (v4.2 consolidated)
+# zeline-zenith-z80 — Copywriting, Writing Mastery & Content Research/Analytics (v4.2 consolidated)
 
-> zeline-zenith-zeline-zenith-z80 — Copywriting, Writing Mastery & Content Research/Analytics (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z80).
-# MERGED: zeline-zenith-zeline-zenith-z80 (copywriting) + zeline-zenith-z21 (content research/analytics/pipeline) — July 2026
+> zeline-zenith-z80 — Copywriting, Writing Mastery & Content Research/Analytics (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z80).
+# MERGED: zeline-zenith-z80 (copywriting) + zeline-zenith-z21 (content research/analytics/pipeline) — July 2026
 
 ---
 
@@ -148,7 +148,7 @@ pieces = repurpose(long_form_text, into=["x_thread","ig_carousel","reels_script"
 ## Combo Chain
 
 ```
-zeline-zenith-z4 (creation+strategy) → zeline-zenith-zeline-zenith-z80 (copy+research) → m20 (humanize) → m18 (visual) → z7/z5/z18 (schedule/publish) + m22 (deep research) + z32/z33 (improve/eval)
+zeline-zenith-z4 (creation+strategy) → zeline-zenith-z80 (copy+research) → m20 (humanize) → m18 (visual) → z7/z5/z18 (schedule/publish) + m22 (deep research) + z32/z33 (improve/eval)
 ```
 
 ## Catatan

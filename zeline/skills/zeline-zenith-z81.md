@@ -2,7 +2,7 @@
 
 > ⚠️ MERGED into z20.md — this file kept for reference only — modul Zeline Zenith (sumber: zeline-zenith-z81).
 
-zeline-zenith-zeline-zenith-z81 (Content Research, Analytics & Pipeline) was merged into **z20.md** (Copywriting, Writing Mastery & Content Research/Analytics) in July 2026 as part of Zeline Zenith v7 consolidation.
+zeline-zenith-z81 (Content Research, Analytics & Pipeline) was merged into **z20.md** (Copywriting, Writing Mastery & Content Research/Analytics) in July 2026 as part of Zeline Zenith v7 consolidation.
 
 **All content lives in z20.md now.**
 

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
+  <a href="https://github.com/Mftrferdinand/Zeline/tree/main/docs"><img src="https://img.shields.io/badge/Docs-Documentation-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Community-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
@@ -17,7 +17,7 @@
 
 # Zeline
 
-Zeline 是由 [Zerolinear](https://zerolinear.com) 开发的开源智能体 AI 框架。它是一个灵活的基础平台，可用于构建能够推理、使用工具、与外部系统交互并执行复杂的多步骤工作流的 AI 智能体。
+Zeline 是由 **Zerolinear** 开发的开源智能体 AI 框架。它是一个灵活的基础平台，可用于构建能够推理、使用工具、与外部系统交互并执行复杂的多步骤工作流的 AI 智能体。
 
 Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕灵活性构建。你可以接入自己偏好的 AI 模型和 OpenAI 兼容端点、配置提供商、集成工具，并对框架进行扩展，以契合你希望智能体的工作方式——模型和提供商可以随时替换，无需重建整个系统，从而使智能体架构保持可移植和可适配。
 
@@ -47,7 +47,7 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 ### Termux、Linux 和 macOS
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.3
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -70,7 +70,7 @@ zeline setup
 
 ```sh
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.3
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -93,7 +93,7 @@ CLI 和 HTTP 集成可在 iSH 中使用，但当 iSH 不在前台时，iOS 可�
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2'
+$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.3'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]

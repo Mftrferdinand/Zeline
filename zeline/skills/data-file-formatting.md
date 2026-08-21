@@ -16,7 +16,7 @@ Use when an account has 3+ links or properties. Clean visual layout:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Account #1
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Email    : hayoyomtfk@rommiui.com
+Email    : user@example.com
 
 Link 1   : https://...
 
@@ -53,7 +53,7 @@ Use `.md` extension for text data files (e.g. `netflix-accounts.md`), not `.txt`
 Always deliver the actual file via MEDIA: path — do NOT just show the content in chat. The user wants the file itself.
 
 ```
-MEDIA:/data/data/com.termux/files/home/filename.md
+MEDIA:/absolute/path/to/filename.md
 ```
 
 ## Edge Cases & Pitfalls

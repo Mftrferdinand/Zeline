@@ -1,6 +1,6 @@
-# zeline-zenith-zeline-zenith-z83 — CTF Web Exploitation
+# zeline-zenith-z83 — CTF Web Exploitation
 
-> zeline-zenith-zeline-zenith-z83 — CTF Web Exploitation — modul Zeline Zenith (sumber: zeline-zenith-z83).
+> zeline-zenith-z83 — CTF Web Exploitation — modul Zeline Zenith (sumber: zeline-zenith-z83).
 # Load ONLY when: CTF web, web challenge, SQLi, SSTI, SSRF, IDOR, XXE, deserialization, JWT, prototype pollution, race condition, web exploit, dispatched by z22 web
 # ⚠️ DISPATCHED by zeline-zenith-z22 (CTF/Whitehat) — this file kept for detailed playbooks only
 
@@ -48,7 +48,7 @@ grep -rniE "system|exec|eval|pickle|yaml.load|render_template_string|jwt|md5|sec
 
 ## SAFETY RAILS
 - Cuma target in-scope. Simpan leak (cookie/token/cred/host internal) ke `findings.json`, **jangan** salahgunakan.
-- Flag wajib lewat `flag_validator.py` (full-match, anti-placeholder). Jangan submit dari zeline-zenith-zeline-zenith-z83 — balik ke z22, HITL submit.
+- Flag wajib lewat `flag_validator.py` (full-match, anti-placeholder). Jangan submit dari zeline-zenith-z83 — balik ke z22, HITL submit.
 - `secret_tripwire` aktif di output.
 
 🔧 Upgrade: wire ke coordinator `solver.py` system prompt biar kategori web auto-dispatch.

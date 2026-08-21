@@ -2,7 +2,7 @@
 
 > ⚠️ MERGED into z29.md — this file kept for reference only — modul Zeline Zenith (sumber: zeline-zenith-z92).
 
-zeline-zenith-zeline-zenith-z92 (Self-Improvement & Autonomous Problem-Solving) was merged into **z29.md** (Self-Audit, System Refinement & Self-Improvement) in July 2026 as part of Zeline Zenith v7 consolidation.
+zeline-zenith-z92 (Self-Improvement & Autonomous Problem-Solving) was merged into **z29.md** (Self-Audit, System Refinement & Self-Improvement) in July 2026 as part of Zeline Zenith v7 consolidation.
 
 **All content lives in z29.md now.**
 

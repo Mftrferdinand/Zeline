@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
+  <a href="https://github.com/Mftrferdinand/Zeline/tree/main/docs"><img src="https://img.shields.io/badge/Docs-Documentation-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Community-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-MIT-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
@@ -17,7 +17,7 @@
 
 # Zeline
 
-Zeline adalah framework AI agentik open-source yang dikembangkan oleh [Zerolinear](https://zerolinear.com). Zeline merupakan fondasi fleksibel untuk membangun agen AI yang dapat bernalar, menggunakan tools, berinteraksi dengan sistem eksternal, dan menjalankan alur kerja kompleks berskala banyak langkah.
+Zeline adalah framework AI agentik open-source yang dikembangkan oleh **Zerolinear**. Zeline merupakan fondasi fleksibel untuk membangun agen AI yang dapat bernalar, menggunakan tools, berinteraksi dengan sistem eksternal, dan menjalankan alur kerja kompleks berskala banyak langkah.
 
 Alih-alih terikat pada satu model, penyedia, atau infrastruktur tertentu, Zeline dibangun dengan mengutamakan fleksibilitas. Hubungkan model AI pilihan Anda dan endpoint yang kompatibel dengan OpenAI, konfigurasikan penyedia, integrasikan tools, dan kembangkan framework agar sesuai dengan cara kerja agen yang Anda inginkan — model dan penyedia dapat ditukar tanpa perlu membangun ulang sistem, sehingga arsitektur agen tetap portabel dan mudah beradaptasi.
 
@@ -47,7 +47,7 @@ dipasang hanya untuk akun pengguna. Tidak perlu root atau Administrator.
 ### Termux, Linux, dan macOS
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.3
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -70,7 +70,7 @@ zeline setup
 
 ```sh
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.3
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -94,7 +94,7 @@ saat iSH tidak berada di foreground.
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.2'
+$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.3'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
