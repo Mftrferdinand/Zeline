@@ -19,6 +19,13 @@ ACCOUNT_SCRIPTS = (
 
 
 class SecurityHygieneTests(unittest.TestCase):
+    def test_codeql_workflow_uses_supported_action_generation(self):
+        workflow = (ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+        self.assertIn("github/codeql-action/init@v4", workflow)
+        self.assertIn("github/codeql-action/analyze@v4", workflow)
+        self.assertNotIn("github/codeql-action/init@v3", workflow)
+        self.assertNotIn("github/codeql-action/analyze@v3", workflow)
+
     def test_tracked_text_has_no_retired_brand_literals(self):
         terms = (
             "her" + "mes", "aes" + "ora", "nous" + " research",
