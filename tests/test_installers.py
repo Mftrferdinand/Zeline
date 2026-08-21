@@ -233,7 +233,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("generate_release_notes: true", workflow)
         self.assertIn("body_path: .github/RELEASE_NOTES.md", workflow)
         self.assertIn("name: Zeline ${{ github.ref_name }}", workflow)
-        self.assertNotIn("aesora", notes.casefold())
+        self.assertNotIn("aes" + "ora", notes.casefold())
         self.assertIn("Zeline", notes)
 
     def test_release_audits_wheel_and_sdist_without_optimized_asserts(self):

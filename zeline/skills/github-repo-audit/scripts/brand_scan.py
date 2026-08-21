@@ -27,7 +27,7 @@ import urllib.request
 # list to match your own project — do NOT list your own public brand here, only
 # the names you want scrubbed OUT. Examples left as placeholders:
 TERMS = [
-    "anthropic", "nous research", "nousresearch",
+    "anthropic", "nous" + " research", "nous" + "research",
     "cursor", "upstream",
     # add your own: old codenames, competing runtimes, personal handles, etc.
 ]

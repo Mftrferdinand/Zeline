@@ -234,12 +234,12 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("setup center", result.lower())
 
     def test_agent_setup_persists_validated_runtime_preferences(self):
-        answers = iter(["Selena", "12", "80", "n", "y"])
+        answers = iter(["Zeline Agent", "12", "80", "n", "y"])
         with mock.patch.object(self.cli, "_ask", side_effect=lambda *args, **kwargs: next(answers)):
             result = self.invoke(["setup", "agent"])
         self.assertIn("agent settings saved", result.lower())
         saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved["name"], "Selena")
+        self.assertEqual(saved["name"], "Zeline Agent")
         self.assertEqual(saved["agent"]["max_tool_rounds"], 12)
         self.assertEqual(saved["agent"]["max_sessions"], 80)
         self.assertFalse(saved["agent"]["stream"])

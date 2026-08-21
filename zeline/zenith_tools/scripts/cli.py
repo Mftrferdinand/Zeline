@@ -429,7 +429,8 @@ def cmd_model(args) -> int:
                 return 0
             print(f"   {len(models)} model(s) registered:")
             for m in models:
-                key_display = m.get("api_key", "")[:8] + "..." if m.get("api_key") else "(none)"
+                api_key = str(m.get("api_key", ""))
+                key_display = "configured" if api_key else "(none)"
                 print(f"   • {m['name']:30s} {m.get('model',''):25s} "
                       f"kind={m.get('kind','?')}  prio={m.get('priority','?')}  "
                       f"key={key_display}")

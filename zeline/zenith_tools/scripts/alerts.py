@@ -174,7 +174,12 @@ def default_price_dexscreener(token_address: str, chain: str = "ethereum") -> Op
 
 if __name__ == "__main__":
     import tempfile
-    ae = AlertEngine(Path(tempfile.mktemp()))
+
+    def secure_temp_path() -> Path:
+        fd, name = tempfile.mkstemp()
+        os.close(fd)
+        return Path(name)
+    ae = AlertEngine(secure_temp_path())
     rid = ae.add_rule("price_below", {"token": "0xWETH", "chain": "ethereum", "threshold": 2000},
                       cooldown_s=3600, label="ETH dip")
     ae.add_rule("gas_below", {"chain": "ethereum", "threshold_gwei": 10}, label="gas murah")

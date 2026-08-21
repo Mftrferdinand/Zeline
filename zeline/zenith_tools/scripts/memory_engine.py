@@ -142,7 +142,12 @@ class MemoryEngine:
 
 if __name__ == "__main__":
     import tempfile
-    me = MemoryEngine(Path(tempfile.mktemp()))
+
+    def secure_temp_path() -> Path:
+        fd, name = tempfile.mkstemp()
+        os.close(fd)
+        return Path(name)
+    me = MemoryEngine(secure_temp_path())
     me.remember("operator gak suka pakai psk2, prefer systemd", "preference", "vps,deploy")
     me.remember("RPC publik ankr sering timeout di Base, pakai llamarpc dulu", "lesson", "rpc,base")
     me.remember("pakai postgres buat project X", "decision", "project-x,db")

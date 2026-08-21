@@ -207,7 +207,7 @@ Why the ordering: `~/.zeline/` would swallow `~/.zeline/skills` if run first, lo
 
 **Environment mentions (Termux) — genericize, don't delete the caveat:** "may timeout from Termux" → "from some networks"; "runnable on bare Termux" → "on a bare terminal". Keep the technical point, drop the environment name.
 
-**Verification (mandatory — local diff is NOT enough):** after committing + pushing, re-fetch every file from the **live master** and scan for zero brand matches. A clean local tree can still leave stale content on the remote if a push failed or a branch mismatched. See `scripts/brand_scan.py`. Hunt terms (case-insensitive): any upstream runtime/lab/tool name that isn't the user's own public brand — e.g. competing agent runtimes, `nous research`, `anthropic`, `cursor`, `upstream`, plus internal codenames and host-specific paths. Expect a literal `0 matches` before reporting the scrub done.
+**Verification (mandatory — local diff is NOT enough):** after committing + pushing, re-fetch every file from the **live master** and scan for zero brand matches. A clean local tree can still leave stale content on the remote if a push failed or a branch mismatched. See `scripts/brand_scan.py`. Hunt terms case-insensitively: retired runtimes, labs, tools, internal codenames, personal handles, and host-specific paths that do not belong to the public brand. Expect a literal `0 matches` before reporting the scrub done.
 
 ### Environment-Specific README Examples
 

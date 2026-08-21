@@ -94,7 +94,12 @@ class Vault:
 
 if __name__ == "__main__":
     import tempfile
-    v = Vault(Path(tempfile.mktemp()))
+
+    def secure_temp_path() -> Path:
+        fd, name = tempfile.mkstemp()
+        os.close(fd)
+        return Path(name)
+    v = Vault(secure_temp_path())
     v.put("wallet kerja", "0x52908400098527886E0F7030069857D2E4169EE7", "address", "main")
     v.put("gm template", "gm fam, wagmi 🚀", "template")
     v.add_macro("morning routine",

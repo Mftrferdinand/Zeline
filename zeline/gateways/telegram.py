@@ -365,7 +365,7 @@ class _LiveStatus:
 
     def _render(self) -> str:
         # Feed aktivitas tool APA ADANYA — TANPA header '⏰ Processing' (dihapus
-        # atas permintaan user; biar bersih seperti Selena/Zeline). Hanya baris
+        # atas permintaan user; biar bersih seperti Zeline). Hanya baris
         # aktivitas (Reading/Searching/dst). Kalau belum ada baris, kosong →
         # _push_locked tidak akan bikin bubble.
         ordered = _ordered_lines(self.lines)[-self.max_lines:]
@@ -1812,7 +1812,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # CATATAN: streaming/live-edit token (edit satu bubble berulang) DIMATIKAN.
     # Di Android bubble yang di-edit terus makin berat/lag makin panjang, dan
     # markdown setengah jadi (##) sempat keliatan mentah. Alur yang diminta
-    # persis Selena/Zeline: kerjain sambil kirim pesan SATU-SATU yang sudah
+    # persis Zeline: kerjain sambil kirim pesan SATU-SATU yang sudah
     # rapi — narasi & jawaban akhir masing-masing jadi bubble utuh sendiri
     # (tidak ada edit-in-place), diselingi feed aktivitas tool.
     def on_tool(_name, _args):

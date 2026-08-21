@@ -167,6 +167,7 @@ class WindowsProcessTests(unittest.TestCase):
         config = importlib.import_module("zeline.config")
         with mock.patch.object(self.service, "IS_WINDOWS", True), \
              mock.patch.object(self.service, "status", return_value=(False, "", None)), \
+             mock.patch.object(self.service, "lock_holder_pid", return_value=0), \
              mock.patch.object(config, "GATEWAYS", {"telegram": {"enabled": True}}), \
              mock.patch.object(self.service, "validate_gateway", return_value=[]), \
              mock.patch.object(self.service, "_process_start_token", return_value="wincreate:1"), \
@@ -201,6 +202,7 @@ class WindowsProcessTests(unittest.TestCase):
         config = importlib.import_module("zeline.config")
         with mock.patch.object(self.service, "IS_WINDOWS", False), \
              mock.patch.object(self.service, "status", return_value=(False, "", None)), \
+             mock.patch.object(self.service, "lock_holder_pid", return_value=0), \
              mock.patch.object(config, "GATEWAYS", {"telegram": {"enabled": True}}), \
              mock.patch.object(self.service, "validate_gateway", return_value=[]), \
              mock.patch.object(self.service, "_process_start_token", return_value="ticks:1"), \

@@ -172,8 +172,13 @@ def _dispatch(cfg: ModelConfig, messages: list[dict], max_tokens: int) -> str:
 
 if __name__ == "__main__":
     import tempfile
+
+    def secure_temp_path() -> Path:
+        fd, name = tempfile.mkstemp()
+        os.close(fd)
+        return Path(name)
     os.environ["ZELINE_MASTER_PW"] = "test-pw"
-    reg = ModelRegistry(db_path=Path(tempfile.mktemp()))
+    reg = ModelRegistry(db_path=secure_temp_path())
     print(reg.add_model("openrouter-llama", "https://openrouter.ai/api/v1",
                         "meta-llama/llama-3.3-70b", api_key="sk-or-secret123", priority=50))
     print(reg.add_model("groq-fast", "https://api.groq.com/openai/v1",
@@ -184,7 +189,7 @@ if __name__ == "__main__":
     print("cascade order:", [c.name for c in reg.cascade()])
     print("decrypt roundtrip ok:", reg.get("openrouter-llama").api_key == "sk-or-secret123")
     # tanpa master pw → nolak simpen key
-    reg2 = ModelRegistry(master_pw=None, db_path=Path(tempfile.mktemp()))
+    reg2 = ModelRegistry(master_pw=None, db_path=secure_temp_path())
     try:
         reg2.add_model("x", "http://localhost:11434/v1", "qwen", api_key="secret")
     except RuntimeError as e:

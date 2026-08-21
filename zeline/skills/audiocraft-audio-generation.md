@@ -544,8 +544,8 @@ for desc in descriptions:
 
 ## References
 
-- **[Advanced Usage](references/advanced-usage.md)** - Training, fine-tuning, deployment
-- **[Troubleshooting](references/troubleshooting.md)** - Common issues and solutions
+- **`Advanced Usage`** - Training, fine-tuning, deployment
+- **`Troubleshooting`** - Common issues and solutions
 
 ## Resources
 

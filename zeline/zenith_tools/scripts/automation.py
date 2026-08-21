@@ -106,7 +106,13 @@ class AutomationEngine:
 
 if __name__ == "__main__":
     import asyncio, tempfile
-    ae = AutomationEngine(Path(tempfile.mktemp()))
+
+    def secure_temp_path() -> Path:
+        fd, name = tempfile.mkstemp()
+        os.close(fd)
+        return Path(name)
+
+    ae = AutomationEngine(secure_temp_path())
     ae.add_rule("gas murah → notify", "price", {"metric": "gas"},
                 actions=[{"action": "notify", "params": {"msg": "gas lagi murah!"}}])
     ae.add_rule("deploy webhook → run", "webhook", {"hook": "ci_pass"},
