@@ -53,7 +53,7 @@ jobs:
               raise SystemExit(f"expected exactly one wheel and one sdist: wheels={wheels}; sdists={sdists}")
           wheel, sdist = wheels[0], sdists[0]
           blocked_markers = (
-              "__pycache__", ".pytest_cache", ".zeline", ".env",
+              "__pycache__", ".pytest_cache", ".zeline",
               "tmdb-media-web-maintenance",
           )
           blocked_suffixes = (".pyc", ".pyo", ".pem", ".key")
@@ -62,6 +62,7 @@ jobs:
               return [
                   name for name in names
                   if any(marker in name for marker in blocked_markers)
+                  or any(part == ".env" for part in Path(name).parts)
                   or name.endswith(blocked_suffixes)
               ]
 
