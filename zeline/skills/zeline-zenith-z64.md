@@ -1,7 +1,7 @@
-# zeline-zenith-zeline-zenith-z64 — Content Creation, Strategy & Signal Amplification (v4.2 consolidated)
+# zeline-zenith-z64 — Content Creation, Strategy & Signal Amplification (v4.2 consolidated)
 
-> zeline-zenith-zeline-zenith-z64 — Content Creation, Strategy & Signal Amplification (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z64).
-# MERGED: zeline-zenith-zeline-zenith-z64 (creation) + zeline-zenith-z19 (strategy/social media) — July 2026
+> zeline-zenith-z64 — Content Creation, Strategy & Signal Amplification (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z64).
+# MERGED: zeline-zenith-z64 (creation) + zeline-zenith-z19 (strategy/social media) — July 2026
 
 ---
 
@@ -277,7 +277,7 @@ Repurposing 1 long-form → multi-format → z21 pipeline.
 ## Combo Chain
 
 ```
-zeline-zenith-zeline-zenith-z64 (creation+strategy) → zeline-zenith-z20 (copy frameworks) → m20 (humanize) → m18 (visual) → zeline-zenith-z21 (research/analytics) → z5/z18 (schedule)
+zeline-zenith-z64 (creation+strategy) → zeline-zenith-z20 (copy frameworks) → m20 (humanize) → m18 (visual) → zeline-zenith-z21 (research/analytics) → z5/z18 (schedule)
 ```
 
 ## Constraints

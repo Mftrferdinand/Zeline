@@ -2,7 +2,7 @@
 
 > ⚠️ MERGED into z4.md — this file kept for reference only — modul Zeline Zenith (sumber: zeline-zenith-z79).
 
-zeline-zenith-zeline-zenith-z79 (Content Strategy & Social Media) was merged into **z4.md** (Content Creation, Strategy & Signal Amplification) in July 2026 as part of Zeline Zenith v7 consolidation.
+zeline-zenith-z79 (Content Strategy & Social Media) was merged into **z4.md** (Content Creation, Strategy & Signal Amplification) in July 2026 as part of Zeline Zenith v7 consolidation.
 
 **All content lives in z4.md now.**
 

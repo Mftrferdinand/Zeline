@@ -1,7 +1,7 @@
-# zeline-zenith-zeline-zenith-z90 — Deep Strategy, Problem Shaping & Decision Support (v4.2 consolidated)
+# zeline-zenith-z90 — Deep Strategy, Problem Shaping & Decision Support (v4.2 consolidated)
 
-> zeline-zenith-zeline-zenith-z90 — Deep Strategy, Problem Shaping & Decision Support (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z90).
-# MERGED: zeline-zenith-zeline-zenith-z90 (deep decomposition/strategy) + zeline-zenith-z35 (problem shaping/decision support) — July 2026
+> zeline-zenith-z90 — Deep Strategy, Problem Shaping & Decision Support (v4.2 consolidated) — modul Zeline Zenith (sumber: zeline-zenith-z90).
+# MERGED: zeline-zenith-z90 (deep decomposition/strategy) + zeline-zenith-z35 (problem shaping/decision support) — July 2026
 # Load ONLY when: complex multi-step, strategy, architecture, "help me think through", tradeoff, "should I", roadmap, problem shaping, brainstorming, sign-off, framing, vague goal, uncertainty
 
 ---

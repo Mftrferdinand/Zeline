@@ -1,6 +1,6 @@
-# zeline-zenith-zeline-zenith-z73 — Batch Operations & Parallel Execution
+# zeline-zenith-z73 — Batch Operations & Parallel Execution
 
-> zeline-zenith-zeline-zenith-z73 — Batch Operations & Parallel Execution — modul Zeline Zenith (sumber: zeline-zenith-z73).
+> zeline-zenith-z73 — Batch Operations & Parallel Execution — modul Zeline Zenith (sumber: zeline-zenith-z73).
 # Load ONLY when: batch, parallel, mass, bulk, queue, multiple wallets, multiple accounts, many addresses, 100x, scrape, farming
 
 ---

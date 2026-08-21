@@ -93,14 +93,14 @@ Semua akun disimpan ke `~/auto_register_accounts.txt` (generic) atau
 
 ```
 ============================================================
-Email    : hannahbailey843@pastryofistanbul.com
-Password : UEYcbrXbmay2mDNv
-Name     : Hannah Bailey
-Phone    : +1 2014596904
-Ref Code : REF8DFA381425022E8B04
-Address  : 222 Pine St, Seattle, WA 98101
-Mail.gw  : hannahbailey843@pastryofistanbul.com / UEYcbrXbmay2mDNv
-Created  : 2026-08-16 19:20:00
+Email    : user@example.com
+Password : CHANGE_ME
+Name     : Example User
+Phone    : +1 XXXXXXXXXX
+Ref Code : EXAMPLE_REF
+Address  : 123 Example Street, Example City, CA 00000
+Mail.gw  : user@example.com / CHANGE_ME
+Created  : YYYY-MM-DD HH:MM:SS
 ```
 
 ## Alur kerja
@@ -115,8 +115,7 @@ Created  : 2026-08-16 19:20:00
 
 - **Retry 3x** per akun jika halaman belum ke-load (`element not interactable`)
 - **WebDriverWait** 15 detik — tunggu form siap, bukan sleep kaku
-- **mail.gw** punya 5 domain: oakon.com, teihu.com, raleigh-construction.com,
-  pastryofistanbul.com, questtechsystems.com
+- **mail.gw** menyediakan domain sementara yang dapat berubah; query endpoint domain saat runtime dan jangan mengandalkan daftar hardcoded.
 - **Phone area code** default 512 (Texas) — lebih sering diterima validasi
 - Jangan daftar terlalu cepat beruntun — delay 3-7 detik random antar akun
 - Script ini hanya untuk situs yang **tidak ada CAPTCHA** — kalau ada Cloudflare/

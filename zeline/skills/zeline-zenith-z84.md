@@ -1,6 +1,6 @@
-# zeline-zenith-zeline-zenith-z84 — CTF Binary Exploitation (pwn)
+# zeline-zenith-z84 — CTF Binary Exploitation (pwn)
 
-> zeline-zenith-zeline-zenith-z84 — CTF Binary Exploitation (pwn) — modul Zeline Zenith (sumber: zeline-zenith-z84).
+> zeline-zenith-z84 — CTF Binary Exploitation (pwn) — modul Zeline Zenith (sumber: zeline-zenith-z84).
 # Load ONLY when: CTF pwn, buffer overflow, ret2win, ret2libc, format string, heap, ROP, pwntools, GOT leak, dispatched by z22 pwn
 # ⚠️ DISPATCHED by zeline-zenith-z22 (CTF/Whitehat) — this file kept for detailed playbooks only
 

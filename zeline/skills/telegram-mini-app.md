@@ -612,7 +612,7 @@ exec python3 bot.py
   // PURCHASE_HISTORY array (global, starts empty)
   const PURCHASE_HISTORY = [];
   // Order object shape:
-  { id: Date.now(), date: 'formatted', name: 'ChatGPT Plus', duration: '1 Bulan Private', warranty: 'Garansi 3 Hari', price: 55000, productId: 3, planIdx: 0, credentials: { email: 'chatgpt1234@kedaicode.shop', password: 'KcAB12XY34' } }
+  { id: Date.now(), date: 'formatted', name: 'ChatGPT Plus', duration: '1 Bulan Private', warranty: 'Garansi 3 Hari', price: 55000, productId: 3, planIdx: 0, credentials: { email: 'chatgpt1234@example.com', password: 'KcAB12XY34' } }
   // confirmPayment checks balance, deducts, creates order, shows success:
   function confirmPayment() {
     var pm = window._currentPayment;
@@ -626,7 +626,7 @@ exec python3 bot.py
   // generateCredentials produces fake email+password for demo:
   function generateCredentials(pm) {
     var name = p.name.toLowerCase().replace(/[^a-z]/g,'').slice(0,8);
-    return { email: name + rand + '@kedaicode.shop', password: 'Kc' + random + digits };
+    return { email: name + rand + '@example.com', password: 'Kc' + random + digits };
   }
   ```
   CSS: `.payment-credit-row` (flex justify-between, border-top), `.payment-credit-val` (15px 700), `.payment-btn-row` (flex gap 10px), `.btn-cancel` (flex 1, glass bg, label-2 color), `.payment-btn-row .btn-primary` (flex 2). `.credential-row` (flex justify-between, border-bottom), `.credential-label` (12px label-2), `.credential-val` (14px label 700, word-break break-all, text-align right).
@@ -721,7 +721,7 @@ exec python3 bot.py
   - Status icon (yellow clock for pending, green check for success, red X for failed)
   - Status text colored: pending=#FF9F0A, success=#30D158, failed=#ff453a
   - Detail card: amount, method, account number, account name, purchase date (jam,tanggal,bulan,tahun), status
-  - If pending: CS contact text ("Konfirmasi ke Customer Service @carecodebot jika transaksi tidak masuk lebih dari 30 menit") + "Hubungi CS" button → `contactCS()` opens `https://t.me/carecodebot`
+  - If pending: CS contact text ("Konfirmasi ke Customer Service @support_example_bot jika transaksi tidak masuk lebih dari 30 menit") + "Hubungi CS" button → `contactCS()` opens `https://t.me/support_example_bot`
   - Back button: "Kembali ke Isi Ulang" → `resetDepositForm()`
 
   **Deposit history (clickable, status-colored):**
@@ -789,7 +789,7 @@ exec python3 bot.py
   **Payment methods data structure (objects, not strings):**
   ```js
   const PAYMENT_METHODS = [
-    { key: 'gopay', label: 'GoPay', number: '083187925822', name: 'Kedai Code', max: 1000000, active: true },
+    { key: 'gopay', label: 'GoPay', number: '+62XXXXXXXXXXX', name: 'Kedai Code', max: 1000000, active: true },
     { key: 'ovo', label: 'OVO', number: '', name: '', max: 1000000, active: false },  // maintenance
     { key: 'dana', label: 'DANA', number: '', name: '', max: 1000000, active: false },
     { key: 'qris', label: 'QRIS', number: '', name: '', max: 5000000, active: false },

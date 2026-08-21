@@ -1,6 +1,6 @@
-# zeline-zenith-zeline-zenith-z67 — Protocol Binding & Service Bridge (v3)
+# zeline-zenith-z67 — Protocol Binding & Service Bridge (v3)
 
-> zeline-zenith-zeline-zenith-z67 — Protocol Binding & Service Bridge (v3) — modul Zeline Zenith (sumber: zeline-zenith-z67).
+> zeline-zenith-z67 — Protocol Binding & Service Bridge (v3) — modul Zeline Zenith (sumber: zeline-zenith-z67).
 
 ---
 

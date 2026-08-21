@@ -1,6 +1,6 @@
-# zeline-zenith-zeline-zenith-z88 — CTF Prompt-Injection / LLM Red-Teaming
+# zeline-zenith-z88 — CTF Prompt-Injection / LLM Red-Teaming
 
-> zeline-zenith-zeline-zenith-z88 — CTF Prompt-Injection / LLM Red-Teaming — modul Zeline Zenith (sumber: zeline-zenith-z88).
+> zeline-zenith-z88 — CTF Prompt-Injection / LLM Red-Teaming — modul Zeline Zenith (sumber: zeline-zenith-z88).
 # Load ONLY when: prompt injection, LLM red-team, jailbreak challenge, Gandalf, Lakera, Mosscap, OWASP LLM01, AI challenge, extract system prompt, leak secret from LLM, dispatched by z22 AI/LLM
 # ⚠️ DISPATCHED by zeline-zenith-z22 (CTF/Whitehat) — this file kept for detailed playbooks only
 
@@ -69,7 +69,7 @@ Tiap bypass = peta ke kontrol yang harus dibangun: input classifier, output secr
 
 ## FULL-AUTO SWARM (zeline-zenith-z88 ke-wire ke coordinator)
 Kategori AI/LLM udah ke-integrasi ke `tools/ctf/coordinator`:
-- `solver._is_llm_category()` deteksi kategori (prompt/llm/ai/gpt/jailbreak/lakera/gandalf). `build_system()` nyuntik addendum zeline-zenith-zeline-zenith-z88 (input vs output guard + technique ladder) ke system prompt solver buat soal AI/LLM doang.
+- `solver._is_llm_category()` deteksi kategori (prompt/llm/ai/gpt/jailbreak/lakera/gandalf). `build_system()` nyuntik addendum zeline-zenith-z88 (input vs output guard + technique ladder) ke system prompt solver buat soal AI/LLM doang.
 - `coordinator.extract_targets()` narik target dari `connection_info` **dan** URL di deskripsi (soal LLM biasa taruh target di deskripsi) → semua di-scope-check (`scope_guard`) sebelum dikasih network. Soal AI/LLM tanpa URL keparse = di-skip (operator wajib taruh target di scope/deskripsi).
 - Soal AI/LLM dapet network (`bridge`) biar agent bisa curl/`requests` ke LLM target; binary tetap `--network none`.
 Hasil: soal kategori AI/LLM ikut ke-solve otomatis di `run.py` swarm, bukan cuma manual `gandalf_solver.py`.

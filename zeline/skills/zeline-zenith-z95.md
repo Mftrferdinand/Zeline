@@ -2,7 +2,7 @@
 
 > ⚠️ MERGED into z30.md — this file kept for reference only — modul Zeline Zenith (sumber: zeline-zenith-z95).
 
-zeline-zenith-zeline-zenith-z95 (Problem Shaping, Brainstorming & Decision Support) was merged into **z30.md** (Deep Strategy, Problem Shaping & Decision Support) in July 2026 as part of Zeline Zenith v7 consolidation.
+zeline-zenith-z95 (Problem Shaping, Brainstorming & Decision Support) was merged into **z30.md** (Deep Strategy, Problem Shaping & Decision Support) in July 2026 as part of Zeline Zenith v7 consolidation.
 
 **All content lives in z30.md now.**
 
