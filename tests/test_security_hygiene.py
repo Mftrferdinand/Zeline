@@ -62,6 +62,7 @@ class SecurityHygieneTests(unittest.TestCase):
             Path(tmp, "httpx.py").write_text("", encoding="utf-8")
             env = os.environ.copy()
             env["PYTHONPATH"] = tmp + os.pathsep + env.get("PYTHONPATH", "")
+            env["PYTHONIOENCODING"] = "utf-8"
             for name in ("automation.py", "briefing.py"):
                 completed = subprocess.run(
                     [__import__("sys").executable, str(ZENITH_SCRIPTS / name)],
@@ -117,8 +118,12 @@ class SecurityHygieneTests(unittest.TestCase):
             target = Path(tmp) / "config.json"
             with mock.patch.object(config, "CONFIG_FILE", target):
                 config.save_config({"provider": {"api_key": "secret"}})
-            mode = stat.S_IMODE(target.stat().st_mode)
-            self.assertEqual(mode, 0o600)
+            if os.name == "posix":
+                mode = stat.S_IMODE(target.stat().st_mode)
+                self.assertEqual(mode, 0o600)
+            else:
+                # Windows uses ACLs and reports synthetic POSIX mode bits.
+                self.assertTrue(target.is_file())
 
 
 if __name__ == "__main__":
