@@ -243,6 +243,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("tarfile.open", workflow)
         for marker in ("__pycache__", ".pytest_cache", ".zeline", ".env", "tmdb-media-web-maintenance"):
             self.assertIn(marker, workflow)
+        self.assertIn('part == ".env"', workflow)
         self.assertIn("raise SystemExit", workflow)
         self.assertNotIn("assert not blocked", workflow)
 
