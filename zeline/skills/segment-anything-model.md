@@ -482,8 +482,8 @@ mask_generator = SamAutomaticMaskGenerator(
 
 ## References
 
-- **[Advanced Usage](references/advanced-usage.md)** - Batching, fine-tuning, integration
-- **[Troubleshooting](references/troubleshooting.md)** - Common issues and solutions
+- **`Advanced Usage`** - Batching, fine-tuning, integration
+- **`Troubleshooting`** - Common issues and solutions
 
 ## Resources
 

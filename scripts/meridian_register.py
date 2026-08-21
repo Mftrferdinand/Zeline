@@ -273,6 +273,7 @@ def register_account(driver, ref_code):
                         f.write(f"Status   : Registration successful\n")
                         f.write(f"Created  : {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                         f.write("\n")
+                    os.chmod(OUTPUT_FILE, 0o600)
 
                     return account
 
@@ -331,7 +332,7 @@ def main():
             if account:
                 results.append(account)
                 print(f"\n  📧 Email    : {account['email']}")
-                print(f"  🔑 Password : {account['password']}")
+                print("  🔐 Credential saved privately in output file")
                 print(f"  👤 Name     : {account['name']}")
                 print(f"  📱 Phone    : {account['phone']}")
                 print(f"  🏠 Address  : {account['street']}, {account['city']}, {account['state']} {account['zip']}")
@@ -357,7 +358,7 @@ def main():
         print("Detail akun:\n")
         for acc in results:
             print(f"  Email : {acc['email']}")
-            print(f"  Pass  : {acc['password']}")
+            print("  Credential: saved privately in output file")
             print(f"  Name  : {acc['name']}")
             print(f"  Phone : {acc['phone']}")
             print(f"  Login : {acc['login_url']}")

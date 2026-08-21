@@ -108,12 +108,12 @@ Inject Telegram API, clock, and sleep. Test admin guards, callbacks, media previ
 
 ## Detailed References
 
-- [`references/broadcast-command-and-polling.md`](references/broadcast-command-and-polling.md) — diagnosing silent commands and implementing the basic admin broadcast/polling seam.
-- [`references/admin-operations-and-broadcasting.md`](references/admin-operations-and-broadcasting.md) — complete admin command set, broadcast state machine, media-specific API behavior, scheduling, alerts, global transaction IDs, revenue baselines, and full regression checklist.
-- [`references/miniapp-transaction-history-i18n.md`](references/miniapp-transaction-history-i18n.md) — render-time history localization, locale-aware dates, warranty units, global transaction IDs, state preservation, and regression checks.
-- [`references/transaction-notification-outbox.md`](references/transaction-notification-outbox.md) — persistent FIFO alerts, ambiguous-send handling, duplicate prevention, single-flight flushing, and restart verification.
-- [`references/usdt-onchain-payment.md`](references/usdt-onchain-payment.md) — USDT on-chain payment (manual verify): QR generation, tx hash validation, admin approve/reject via bot inline keyboard, nominal unique pattern, anti-fraud checks, pitfalls.
-- [`references/MyStore-run-restart.md`](references/MyStore-run-restart.md) — running/restarting/verifying THIS user's MyStore backend on Termux: `start.sh` launcher + envs, readiness markers, getMe/HTTP verification, ghost-process cleanup. Use this instead of `local-dev-servers` for Node bot backends.
+- ``references/broadcast-command-and-polling.md`` — diagnosing silent commands and implementing the basic admin broadcast/polling seam.
+- ``references/admin-operations-and-broadcasting.md`` — complete admin command set, broadcast state machine, media-specific API behavior, scheduling, alerts, global transaction IDs, revenue baselines, and full regression checklist.
+- ``references/miniapp-transaction-history-i18n.md`` — render-time history localization, locale-aware dates, warranty units, global transaction IDs, state preservation, and regression checks.
+- ``references/transaction-notification-outbox.md`` — persistent FIFO alerts, ambiguous-send handling, duplicate prevention, single-flight flushing, and restart verification.
+- ``references/usdt-onchain-payment.md`` — USDT on-chain payment (manual verify): QR generation, tx hash validation, admin approve/reject via bot inline keyboard, nominal unique pattern, anti-fraud checks, pitfalls.
+- ``references/MyStore-run-restart.md`` — running/restarting/verifying THIS user's MyStore backend on Termux: `start.sh` launcher + envs, readiness markers, getMe/HTTP verification, ghost-process cleanup. Use this instead of `local-dev-servers` for Node bot backends.
 
 ## Admin Response Formatting
 
@@ -140,7 +140,7 @@ Formatting rules:
 5. Preserve user-authored broadcast content itself; box only the preview metadata, progress, and delivery report.
 6. Cover exact box characters, username precedence, plan-only labels, multiline values, and status mapping with deterministic tests.
 
-See [`references/admin-operations-and-broadcasting.md`](references/admin-operations-and-broadcasting.md) for implementation patterns and the formatting regression checklist.
+See ``references/admin-operations-and-broadcasting.md`` for implementation patterns and the formatting regression checklist.
 
 ## Mini App History Rules
 

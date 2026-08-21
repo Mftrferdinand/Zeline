@@ -359,7 +359,7 @@ def _defaults() -> dict[str, Any]:
             "max_sessions": DEFAULT_MAX_SESSIONS,
             # Streaming respons (SSE) supaya token mengalir seketika: anti-timeout
             # pada model 'thinking' yang lama menyusun jawaban, dan terasa satset
-            # persis seperti Selena/Zeline. Matikan hanya bila provider tak
+            # persis seperti Zeline. Matikan hanya bila provider tak
             # mendukung SSE.
             "stream": True,
             # Simpan history percakapan ke ~/.zeline/sessions.db supaya restart

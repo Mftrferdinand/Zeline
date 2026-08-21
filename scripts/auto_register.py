@@ -345,6 +345,7 @@ def register_account(driver, signup_url, ref_code, args):
                             f.write(f"Mail.gw  : {email} / {tm['password']}\n")
                         f.write(f"Created  : {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                         f.write("\n")
+                    os.chmod(OUTPUT_FILE, 0o600)
 
                     return account
                 else:
@@ -421,7 +422,7 @@ def main():
             if account:
                 results.append(account)
                 print(f"\n  📧 Email : {account['email']}")
-                print(f"  🔑 Pass  : {account['password']}")
+                print("  🔐 Credential saved privately in output file")
                 print(f"  👤 Name  : {account['name']}")
                 print(f"  📱 Phone : {account['phone']}")
             else:

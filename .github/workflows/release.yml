@@ -13,10 +13,10 @@ jobs:
   build-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Verify tag belongs to merged main history
@@ -97,7 +97,7 @@ jobs:
               raise SystemExit(f"unexpected sdist filename: {sdist.name}")
           PY
       - name: Generate build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/zeline-*.whl
@@ -106,7 +106,7 @@ jobs:
             dist/install.ps1
             dist/SHA256SUMS
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Zeline ${{ github.ref_name }}
           body_path: .github/RELEASE_NOTES.md

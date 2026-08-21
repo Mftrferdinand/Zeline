@@ -272,8 +272,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         )
         self.assertEqual(unknown, [])
         upstream_terms = (
-            "hermes", "openclaw", "clawhub", "aesora",
-            "superagent", "ironclaw",
+            "her" + "mes", "open" + "claw", "claw" + "hub", "aes" + "ora",
+            "super" + "agent", "iron" + "claw",
         )
         leaked = []
         for path in sources:

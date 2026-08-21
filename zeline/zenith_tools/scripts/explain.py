@@ -72,7 +72,12 @@ def summary_dict(limit: int = 200, audit_path: Path = AUDIT_LOG) -> dict:
 
 if __name__ == "__main__":
     import tempfile
-    p = Path(tempfile.mktemp())
+
+    def secure_temp_path() -> Path:
+        fd, name = tempfile.mkstemp()
+        os.close(fd)
+        return Path(name)
+    p = secure_temp_path()
     p.write_text("\n".join(json.dumps(x) for x in [
         {"ts": "2026-06-03 07:00:00", "event": "DAILY_CYCLE", "lessons_learned": []},
         {"ts": "2026-06-03 07:05:00", "event": "AUTOFIX_EXECUTED", "action": "rotate_rpc"},

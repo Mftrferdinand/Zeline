@@ -134,13 +134,19 @@ async def push_briefing(notifier, once_per_day: bool = True, **kwargs) -> Option
 
 if __name__ == "__main__":
     import sys, tempfile
+
+    def secure_temp_path() -> Path:
+        fd, name = tempfile.mkstemp()
+        os.close(fd)
+        return Path(name)
+
     sys.path.insert(0, str(Path(__file__).parent))
     from memory_engine import MemoryEngine
     from alerts import AlertEngine
-    me = MemoryEngine(Path(tempfile.mktemp()))
+    me = MemoryEngine(secure_temp_path())
     me.remember("RPC ankr Base sering timeout → llamarpc", "lesson", "rpc,base", weight=2)
     me.remember("bridge ke Linea belum kelar", "blocker", "bridge,linea")
-    ae = AlertEngine(Path(tempfile.mktemp()))
+    ae = AlertEngine(secure_temp_path())
     ae.add_rule("price_below", {"token": "0xWETH", "threshold": 2000}, label="ETH dip")
     text = build_briefing(
         memory_engine=me, alert_engine=ae,

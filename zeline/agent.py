@@ -493,7 +493,7 @@ class Zeline:
             # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu
             # konfignya lalu benerin") adalah kalimat rencana model. Kirim ke
             # user sebagai bubble tersendiri SEBELUM tool jalan — inilah yang
-            # bikin alurnya kebaca seperti Selena/Zeline (bubble penjelasan →
+            # bikin alurnya kebaca seperti Zeline (bubble penjelasan →
             # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
             narration = str(message.get("content") or "").strip()
             if narration and on_narration:
