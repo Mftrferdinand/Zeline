@@ -530,6 +530,11 @@ WEB_TIMEOUT = 12
 # (connect, read) tuple — connect di-cap ketat agar tidak menggantung saat
 # host lambat/diblokir; read sedikit lebih longgar untuk halaman besar.
 SEARCH_TIMEOUT = (4, 6)
+# Reader-proxy (r.jina.ai) merender SERP Bing/DDG server-side; ini kerap butuh
+# >6s untuk selesai. Read-timeout SEARCH_TIMEOUT yang ketat membuatnya sering
+# ke-timeout dan balik 0 hasil padahal engine hidup (HTTP 200 saat diberi
+# waktu). Beri read-window lebih lega KHUSUS jalur reader-proxy.
+READER_SEARCH_TIMEOUT = (4, 12)
 WEB_MAX_BYTES = 200_000
 WEB_MAX_RESULTS = 5
 DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB cap untuk download_file
@@ -649,12 +654,8 @@ def _search_jina_ddg(query: str) -> list[tuple[str, str]]:
     """DuckDuckGo via reader proxy. Cepat bila tidak kena 403; sering gagal."""
     from urllib.parse import quote, unquote
     try:
-        response = requests.get(
-            _JINA_READER + f"https://duckduckgo.com/html/?q={quote(query)}",
-            headers={"User-Agent": _UA},
-            timeout=SEARCH_TIMEOUT,
-        )
-        if not response.ok or not response.text.strip():
+        response = _reader_get(f"https://duckduckgo.com/html/?q={quote(query)}")
+        if response is None or not response.ok or not response.text.strip():
             return []
         out: list[tuple[str, str]] = []
         # Judul: '## [judul](link)'. URL asli DDG di parameter uddg=.
@@ -685,6 +686,30 @@ def _decode_bing_redirect(url: str) -> str:
         return url
 
 
+def _reader_get(target_url: str):
+    """GET lewat reader proxy dengan satu retry saat timeout/gagal transien.
+
+    Reader proxy (r.jina.ai) merender SERP server-side dan sesekali lambat pada
+    percobaan pertama (cold), lalu sukses pada retry. Satu retry singkat menutup
+    kasus 0-hasil-padahal-engine-hidup tanpa menggantung lama.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                _JINA_READER + target_url,
+                headers={"User-Agent": _UA},
+                timeout=READER_SEARCH_TIMEOUT,
+            )
+            if resp.ok and resp.text.strip():
+                return resp
+        except requests.RequestException as exc:
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
+    return None
+
+
 def _search_bing_jina(query: str) -> list[tuple[str, str]]:
     """SERP umum via Bing yang dirender reader proxy (server-side, tahan blokir).
 
@@ -694,12 +719,8 @@ def _search_bing_jina(query: str) -> list[tuple[str, str]]:
     """
     from urllib.parse import quote
     try:
-        response = requests.get(
-            _JINA_READER + f"https://www.bing.com/search?q={quote(query)}",
-            headers={"User-Agent": _UA},
-            timeout=WEB_TIMEOUT,
-        )
-        if not response.ok or not response.text.strip():
+        response = _reader_get(f"https://www.bing.com/search?q={quote(query)}")
+        if response is None or not response.ok or not response.text.strip():
             return []
         out: list[tuple[str, str]] = []
         seen: set[str] = set()

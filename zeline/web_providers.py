@@ -147,9 +147,48 @@ class BraveProvider(WebSearchProvider):
             return []
 
 
-# Preference order: highest-quality/most-generous free tier first. Filtered by
-# is_available() at call time so only providers the user has a key for run.
+class SearxngProvider(WebSearchProvider):
+    """Self-hosted / public SearXNG metasearch — no API key, no paid quota.
+
+    Unlike the API providers this is gated by a URL, not a secret key: set
+    ``SEARXNG_URL`` to a SearXNG instance (your own self-host or a public one)
+    and every Zeline user pointed at it gets aggregated Google/Bing/etc. SERP
+    quality with no per-user signup and no billable quota. This is the
+    recommended way to give *all* users good search without sharing one API key.
+    """
+
+    name = "searxng"
+    env_key = "SEARXNG_URL"
+
+    def search(self, query: str) -> list[tuple[str, str]]:
+        base = _env(self.env_key).rstrip("/")
+        if not base:
+            return []
+        try:
+            resp = requests.get(
+                base + "/search",
+                params={"q": query, "format": "json"},
+                headers={"User-Agent": _UA, "Accept": "application/json"},
+                timeout=_TIMEOUT,
+            )
+            if not resp.ok:
+                return []
+            out: list[tuple[str, str]] = []
+            for item in (resp.json().get("results") or [])[:_MAX_RESULTS]:
+                title = (item.get("title") or "").strip()
+                url = (item.get("url") or "").strip()
+                if title and url.startswith("http"):
+                    out.append((title, url))
+            return out
+        except (requests.RequestException, ValueError):
+            return []
+
+
+# Preference order: SearXNG first (operator-provided, best "all users" quality),
+# then the key-gated API providers by free-tier generosity. Filtered by
+# is_available() at call time so only providers actually configured run.
 PREMIUM_PROVIDERS: tuple[WebSearchProvider, ...] = (
+    SearxngProvider(),
     TavilyProvider(),
     ExaProvider(),
     BraveProvider(),
