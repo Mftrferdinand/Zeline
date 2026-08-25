@@ -719,7 +719,7 @@ def _run_reflection(sessions: "SessionStore") -> None:
     except Exception:
         summary = None
     if summary:
-        print(f"\n\033[90m📒 Self-improvement:\n{summary}\033[0m")
+        print(f"\n\033[90m📒 Self-improvement: {summary}\033[0m")
 
 
 def cmd_chat(query: str | None = None) -> int:
