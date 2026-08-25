@@ -985,7 +985,7 @@ def _handle_command_update(
         if summary:
             _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=f"📒 Improvement:\n{html.escape(summary[:1500], quote=False)}",
+                text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
                 parse_mode="HTML",
             )
         sessions.reset(identity)
@@ -1915,7 +1915,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             if summary:
                 _api_call(
                     api, "sendMessage", chat_id=chat_id,
-                    text=f"📒 Improvement:\n{html.escape(summary[:1500], quote=False)}",
+                    text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
                     parse_mode="HTML",
                 )
         threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
