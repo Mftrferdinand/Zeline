@@ -1655,10 +1655,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_finalize_line_converts_searching_to_reading(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        # Saat selesai, web Searching & Researching (yang di-collapse) jadi satu
-        # penanda '📖 Reading data/other'; baris file dibiarkan apa adanya.
-        self.assertEqual(telegram._finalize_line("🌐 Searching FundedNext…"), "📖 Reading data/other")
-        self.assertEqual(telegram._finalize_line("🪩 Researching FundedNext prop firm review"), "📖 Reading data/other")
+        # Saat selesai, web Searching & Researching (yang di-collapse) diselesaikan
+        # jadi '📖 Read web · <subjek>' — TETAP menyebut subjek, bukan generik
+        # 'data/other'. Baris file dibiarkan apa adanya.
+        self.assertEqual(telegram._finalize_line("🌐 Searching FundedNext…"), "📖 Read web · FundedNext")
+        self.assertEqual(telegram._finalize_line("🪩 Researching FundedNext prop firm review"), "📖 Read web · FundedNext prop firm review")
         self.assertEqual(telegram._finalize_line("📖 Reading <code>agent.py</code> L1-27"), "📖 Reading <code>agent.py</code> L1-27")
 
     def test_telegram_live_status_collapses_only_search_research(self):
@@ -1812,12 +1813,15 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # TANPA header '✅ Successful' yang sudah dihapus), bukan dihapus.
         self.assertNotIn("deleteMessage", methods)
         self.assertNotIn("✅ Successful", str(api.call_args_list))
-        # Feed final = baris aktivitas yang sudah di-finalize (Searching→Reading).
+        # Feed final = baris aktivitas yang sudah di-finalize (Searching→Read web).
         finalized = [
             c for c in api.call_args_list
-            if len(c.args) > 1 and c.args[1] == "editMessageText" and "Reading data/other" in str(c.kwargs.get("text", ""))
+            if len(c.args) > 1 and c.args[1] == "editMessageText" and "📖 Read web" in str(c.kwargs.get("text", ""))
         ]
         self.assertTrue(finalized)
+        # Subjek yang dicari tetap ikut di baris final (bukan generik 'data/other').
+        self.assertIn("FTMO", str(api.call_args_list))
+        self.assertNotIn("data/other", str(api.call_args_list))
         # Jawaban final terkirim sebagai pesan terpisah.
         finals = [
             c for c in api.call_args_list
