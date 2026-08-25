@@ -135,30 +135,45 @@ except ImportError:
 # ─── Utility: keccak-256 (Ethereum's native hash) ───
 
 def _keccak256(data: bytes) -> bytes:
-    """Keccak-256 hash (Ethereum native, NOT SHA3-256)."""
+    """Keccak-256 hash (Ethereum native, NOT SHA3-256).
+
+    Each optional backend is validated to actually return raw bytes before it is
+    trusted. This matters because a test harness elsewhere may install stub
+    modules (e.g. a fake ``eth_hash``) into ``sys.modules``; without the
+    ``isinstance`` guard such a stub would return a non-bytes placeholder and
+    silently corrupt every address derived from this hash. On any failure or a
+    non-bytes result we fall through to the self-contained pure implementation.
+    """
     try:
         # Try pycryptodome's keccak
         from Cryptodome.Hash import keccak
         h = keccak.new(digest_bits=256)
         h.update(data)
-        return h.digest()
-    except ImportError:
+        digest = h.digest()
+        if isinstance(digest, (bytes, bytearray)):
+            return bytes(digest)
+    except Exception:
         pass
     try:
         # Try eth_hash / eth-utils
         from eth_hash.auto import keccak as eth_keccak
-        return eth_keccak(data)
-    except ImportError:
+        digest = eth_keccak(data)
+        if isinstance(digest, (bytes, bytearray)):
+            return bytes(digest)
+    except Exception:
         pass
     try:
         # pysha3 fallback
         import sha3
         k = sha3.keccak_256()
         k.update(data)
-        return k.digest()
-    except ImportError:
-        # Last resort: pure Python implementation (slower but works)
-        return _pure_keccak256(data)
+        digest = k.digest()
+        if isinstance(digest, (bytes, bytearray)):
+            return bytes(digest)
+    except Exception:
+        pass
+    # Last resort: pure Python implementation (slower but always correct)
+    return _pure_keccak256(data)
 
 
 def _pure_keccak256(data: bytes) -> bytes:
@@ -189,6 +204,9 @@ def _pure_keccak256(data: bytes) -> bytes:
     ]
 
     def rotl64(x, n):
+        n &= 63
+        if n == 0:
+            return x & 0xFFFFFFFFFFFFFFFF
         return ((x << n) | (x >> (64 - n))) & 0xFFFFFFFFFFFFFFFF
 
     # Padding
@@ -484,6 +502,27 @@ def _recover_address_zerodep(message: str, signature: str) -> Optional[str]:
         return None
 
 
+def _is_valid_eth_address(value) -> bool:
+    """A recovered address must be a real 0x-prefixed 20-byte hex string.
+
+    Guards against test harnesses (or degraded environments) that inject stub
+    modules for eth_account/web3/coincurve/ecdsa: those stubs return opaque
+    placeholder objects rather than raising ImportError, so a strategy can
+    "succeed" with garbage. Rejecting anything that is not a well-formed address
+    forces the multi-strategy recovery to fall through to the pure zero-dep
+    implementation, which is always correct.
+    """
+    if not isinstance(value, str):
+        return False
+    if not value.startswith("0x") or len(value) != 42:
+        return False
+    try:
+        int(value[2:], 16)
+    except ValueError:
+        return False
+    return True
+
+
 def _recover_address(message: str, signature: str) -> Optional[str]:
     """
     Multi-strategy address recovery from personal_sign signature.
@@ -493,29 +532,30 @@ def _recover_address(message: str, signature: str) -> Optional[str]:
     # Strategy 1: eth-account (best)
     if ETH_ACCOUNT_AVAILABLE:
         result = _recover_address_eth_account(message, signature)
-        if result:
+        if _is_valid_eth_address(result):
             return result
 
     # Strategy 2: web3.py
     if WEB3_AVAILABLE:
         result = _recover_address_web3(message, signature)
-        if result:
+        if _is_valid_eth_address(result):
             return result
 
     # Strategy 3: coincurve
     if COINCURVE_AVAILABLE:
         result = _recover_address_coincurve(message, signature)
-        if result:
+        if _is_valid_eth_address(result):
             return result
 
     # Strategy 4: ecdsa (pure Python via lib)
     if ECDSA_AVAILABLE:
         result = _recover_address_ecdsa(message, signature)
-        if result:
+        if _is_valid_eth_address(result):
             return result
 
     # Strategy 5: TRUE zero-dep fallback (always available)
-    return _recover_address_zerodep(message, signature)
+    result = _recover_address_zerodep(message, signature)
+    return result if _is_valid_eth_address(result) else None
 
 
 # ─── TeamAuth Class ───
