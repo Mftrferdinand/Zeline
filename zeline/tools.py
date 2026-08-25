@@ -722,13 +722,26 @@ def _search_bing_jina(query: str) -> list[tuple[str, str]]:
 
 def _web_search(query: str) -> str:
     """Cari web dari jaringan Termux (DuckDuckGo langsung mati/SSL-fail).
-    Urutan andal: jina→Bing (SERP umum, paling relevan untuk kueri harian) →
-    jina→DDG → Google News RSS → Wikipedia. Bing lewat reader proxy dirender
-    server-side jadi tahan blokir jaringan mobile/Termux.
+
+    Urutan: provider premium OPSIONAL (Tavily→Exa→Brave, hanya aktif bila API
+    key-nya di-set) → lalu rantai gratis bawaan jina→Bing (SERP umum, paling
+    relevan untuk kueri harian) → jina→DDG → Google News RSS → Wikipedia. Bing
+    lewat reader proxy dirender server-side jadi tahan blokir jaringan
+    mobile/Termux. Tanpa API key, perilaku identik dengan rantai gratis lama.
     Selalu fail-fast; tidak pernah menggantung lama."""
     query = query.strip()
     if not query:
         return "ERROR: empty query."
+    # 1) Premium opsional (key-gated). None bila tak ada key / semua gagal.
+    try:
+        from zeline import web_providers
+
+        premium = web_providers.search_premium(query)
+    except Exception:  # noqa: BLE001 — premium layer must never break free search
+        premium = None
+    if premium:
+        return "\n".join(f"- {title}\n  {url}" for title, url in premium)
+    # 2) Rantai gratis bawaan (selalu tersedia, tanpa key/dependency baru).
     for engine in (_search_bing_jina, _search_jina_ddg, _search_gnews, _search_wikipedia):
         results = engine(query)
         if results:
