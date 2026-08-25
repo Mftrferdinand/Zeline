@@ -178,24 +178,24 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     tampil per pemanggilan supaya user lihat SEMUA yang dikerjakan.
     """
     if name == "load_skill":
-        return f"📚 Reading skill {html.escape(str(arguments.get('name', ''))[:100])}"
+        return f"📚 Reading skill: {html.escape(str(arguments.get('name', ''))[:100])}"
     if name == "run_shell":
         command = str(arguments.get("command", ""))
         return _terminal_progress(command, search=_is_search_command(command))
     if name == "execute_code":
         code = str(arguments.get("code", "")).strip()
         first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
-        return f"🐍 Running code from <code>{first}</code>..."
+        return f"🐍 Running code: <code>{first}</code>…"
     if name == "update_skill":
         skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
-        return f"📝 Updating skill <code>{skill_name}</code>"
+        return f"📝 Updating skill: <code>{skill_name}</code>"
     if name == "save_skill":
         skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
-        return f"💡 Saving skill <code>{skill_name}</code>"
+        return f"💡 Saving skill: <code>{skill_name}</code>"
     if name in {"add_memory", "remove_memory"}:
-        return "🧠 Memory save"
+        return "🧠 Saving to memory…"
     if name == "system_env":
-        return "🧰 System_env"
+        return "🧰 Checking system environment…"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
     if name == "read_file":
         # Zeline read_file membaca seluruh file (tanpa offset/limit); rentang
@@ -203,35 +203,49 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if "offset" in arguments or "limit" in arguments:
             offset = max(1, int(arguments.get("offset", 1) or 1))
             limit = max(1, int(arguments.get("limit", 500) or 500))
-            return f"📖 Reading <code>{path}</code> L{offset}-{offset + limit - 1}"
-        return f"📖 Reading <code>{path}</code>"
+            return f"📖 Reading file <code>{path}</code> L{offset}-{offset + limit - 1}"
+        return f"📖 Reading file <code>{path}</code>"
     if name == "write_file":
-        return f"📝 Writing <code>{path}</code>"
+        return f"📝 Writing file <code>{path}</code>"
     if name == "edit_file":
-        return f"🎬 Editing <code>{path}</code>"
+        return f"🎬 Editing file <code>{path}</code>"
     if name == "patch_file":
-        return f"🎬 Editing <code>{path}</code>"
+        return f"🎬 Editing file <code>{path}</code>"
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
-        return f"🔎 Searching files {query}"
+        return f"🔎 Searching files: {query}" if query else "🔎 Searching files…"
     if name == "update_task":
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
-        task = html.escape(str(arguments.get("task", ""))[:300], quote=False)
-        return f"📋 Updating tasks\n<code>{status}</code> · {task}"
+        task = html.escape(str(arguments.get("task", ""))[:120], quote=False)
+        return f"📋 Updating tasks: {status} · {task}" if task else f"📋 Updating tasks: {status}"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
         subject = html.escape((query.split() or [""])[0][:40], quote=False)
-        return f"🌐 Searching {subject}…" if subject else "🌐 Searching…"
+        return f"🌐 Searching web: {subject}…" if subject else "🌐 Searching web…"
     if name == "web_fetch":
         # Baca sumber web tidak ditampilkan sebagai baris terpisah (biar bersih).
         return ""
     if name == "deep_research":
-        return f"🪩 Researching {html.escape(str(arguments.get('query', ''))[:100], quote=False)}"
+        query = html.escape(str(arguments.get('query', ''))[:100], quote=False)
+        return f"🌐 Researching: {query}…" if query else "🌐 Researching…"
+    if name == "generate_image":
+        prompt = html.escape(str(arguments.get("prompt", ""))[:100], quote=False)
+        return f"🎨 Generating image: {prompt}…" if prompt else "🎨 Generating image…"
     if name == "analyze_media":
-        return "🖼 Looking at image"
-    preview = html.escape(", ".join(f"{key}={str(value)[:80]}" for key, value in arguments.items()), quote=False)
-    return f"🔧 {html.escape(name)}" + (f"\n<code>{preview}</code>" if preview else "")
+        return "🖼 Looking at image…"
+    if name == "http_request":
+        url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
+        return f"🔗 Calling API: {url}" if url else "🔗 Calling API…"
+    if name == "delegate_task":
+        goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
+        return f"🤝 Delegating: {goal}…" if goal else "🤝 Delegating subtask…"
+    # Fallback: satu baris, argumen pertama saja, TANPA newline.
+    first_val = ""
+    if isinstance(arguments, dict) and arguments:
+        first_val = html.escape(str(next(iter(arguments.values())))[:80], quote=False)
+    label = html.escape(name.replace("_", " "), quote=False)
+    return f"🔧 {label}: {first_val}" if first_val else f"🔧 {label}"
 
 
 def _progress_category(line: str) -> str | None:
@@ -242,10 +256,10 @@ def _progress_category(line: str) -> str | None:
     shell, run code TIDAK di-collapse — tiap file & command tampil sendiri supaya
     user lihat SEMUA yang dikerjakan, bukan cuma satu ringkasan.
     """
+    if line.startswith("🌐 Researching"):
+        return "research"
     if line.startswith("🌐"):
         return "search"
-    if line.startswith("🪩"):
-        return "research"
     return None
 
 
@@ -272,7 +286,7 @@ def _finalize_line(line: str) -> str:
     penanda generik 'data/other'. Baris file (📖 Reading <file>) dibiarkan apa
     adanya supaya SEMUA file yang dibaca tetap terlihat.
     """
-    prefixes = ("🌐 Searching", "🪩 Researching")
+    prefixes = ("🌐 Searching", "🌐 Researching")
     for prefix in prefixes:
         if line.startswith(prefix):
             # Ambil subjek setelah ikon+verb, buang elipsis/trailing.
@@ -317,7 +331,7 @@ def _format_agent_error(message: str) -> str:
         return f"🪫 {badge} — {message}"
     if "too long" in low or "maksimum" in low or ("context" in low and "limit" in low) or "terlalu panjang" in low:
         return f"🪫 Limit Text/Context — {message}"
-    return f"❌ Zeline hit a problem — {message}"
+    return f"⚠️ Zeline hit a problem — {message}"
 
 
 def _working_status_text(elapsed_seconds: float, *, iteration: int | None = None, maximum: int | None = None) -> str:
