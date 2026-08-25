@@ -2084,6 +2084,16 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(telegram._format_agent_error("Provider says out of credits").startswith("🪫 Quota/Auth —"))
         self.assertNotIn("401, 403, 429", telegram._format_agent_error("The provider returned HTTP 403 — unauthorized."))
 
+    def test_telegram_timeout_error_reassures_conversation_intact(self):
+        """Timeout harus menenangkan user: riwayat aman + saran /new."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        out = telegram._format_agent_error(
+            "The model 'x' did not respond within 180s (request timed out)."
+        )
+        self.assertTrue(out.startswith("⚠️ Read Timeout —"))
+        self.assertIn("No messages were dropped", out)
+        self.assertIn("/new", out)
+
     def test_telegram_startup_survives_transient_getme_failure(self):
         """Satu ReadTimeout saat startup TIDAK boleh mematikan gateway.
 

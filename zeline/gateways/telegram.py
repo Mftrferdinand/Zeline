@@ -314,7 +314,13 @@ def _format_agent_error(message: str) -> str:
     """
     low = message.lower()
     if "timed out" in low or "did not respond" in low or ("stream" in low and "interrupted" in low):
-        return f"⚠️ Read Timeout — {message}"
+        # Tenangkan user: timeout TIDAK menjatuhkan percakapan —
+        # riwayat tetap utuh, tinggal kirim lagi atau /new untuk sesi baru.
+        return (
+            f"⚠️ Read Timeout — {message}\n\n"
+            "No messages were dropped — the conversation continues unchanged. "
+            "Send again, or use /new to start a fresh session."
+        )
     if (
         "http 401" in low
         or "http 403" in low
