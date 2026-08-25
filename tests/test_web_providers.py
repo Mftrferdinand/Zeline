@@ -58,10 +58,27 @@ class WebProviderRegistryTests(unittest.TestCase):
 
     def test_all_premium_fail_returns_none_for_free_fallback(self):
         with mock.patch.object(self.wp, "_env", return_value="key"), \
+             mock.patch.object(self.wp.SearxngProvider, "search", return_value=[]), \
              mock.patch.object(self.wp.TavilyProvider, "search", return_value=[]), \
              mock.patch.object(self.wp.ExaProvider, "search", return_value=[]), \
              mock.patch.object(self.wp.BraveProvider, "search", return_value=[]):
             self.assertIsNone(self.wp.search_premium("query"))
+
+    def test_searxng_is_first_and_url_gated(self):
+        # SearXNG runs before the API providers, gated by SEARXNG_URL not a key.
+        self.assertEqual(self.wp.PREMIUM_PROVIDERS[0].name, "searxng")
+        self.assertEqual(self.wp.PREMIUM_PROVIDERS[0].env_key, "SEARXNG_URL")
+
+        def fake_env(name):
+            return "https://searx.example" if name == "SEARXNG_URL" else ""
+        with mock.patch.object(self.wp, "_env", side_effect=fake_env), \
+             mock.patch.object(self.wp.SearxngProvider, "search",
+                               return_value=[("S", "https://s.com")]) as sx, \
+             mock.patch.object(self.wp.TavilyProvider, "search") as tav:
+            out = self.wp.search_premium("q")
+        sx.assert_called_once()
+        tav.assert_not_called()
+        self.assertEqual(out, [("S", "https://s.com")])
 
 
 class WebSearchIntegrationTests(unittest.TestCase):
