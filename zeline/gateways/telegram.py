@@ -267,17 +267,17 @@ def _ordered_lines(lines: list[str]) -> list[str]:
 def _finalize_line(line: str) -> str:
     """Ubah baris fase-kerja jadi bentuk 'selesai'.
 
-    Web search & deep research (yang di-collapse jadi satu baris) diringkas jadi
-    satu penanda '📖 Reading data/other'. Baris file (📖 Reading <file>) dibiarkan
-    apa adanya supaya SEMUA file yang dibaca tetap terlihat.
+    Web search & deep research (yang di-collapse jadi satu baris) diselesaikan
+    jadi '📖 Read web · <subjek>' — TETAP menyebut subjek yang dicari, bukan
+    penanda generik 'data/other'. Baris file (📖 Reading <file>) dibiarkan apa
+    adanya supaya SEMUA file yang dibaca tetap terlihat.
     """
-    replacements = (
-        ("🌐 Searching", "📖 Reading data/other"),
-        ("🪩 Researching", "📖 Reading data/other"),
-    )
-    for old, new in replacements:
-        if line.startswith(old):
-            return new
+    prefixes = ("🌐 Searching", "🪩 Researching")
+    for prefix in prefixes:
+        if line.startswith(prefix):
+            # Ambil subjek setelah ikon+verb, buang elipsis/trailing.
+            subject = line[len(prefix):].strip().strip("…").strip()
+            return f"📖 Read web · {subject}" if subject else "📖 Read web"
     return line
 
 
