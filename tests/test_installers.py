@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "0.2.3"
+RELEASE_VERSION = "0.2.4"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 
@@ -72,7 +72,7 @@ class PosixInstallerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Z  E  L  I  N  E", result.stdout)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.3", result.stdout)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.4", result.stdout)
         self.assertIn("╭", result.stdout)
         self.assertIn("╰", result.stdout)
 
@@ -127,7 +127,7 @@ class PosixInstallerTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(version.returncode, 0, version.stderr)
-            self.assertIn("zeline 0.2.3", version.stdout.lower())
+            self.assertIn("zeline 0.2.4", version.stdout.lower())
 
     def test_installer_wrapper_handles_spaces_quotes_and_dollar_in_paths(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -174,7 +174,7 @@ class PosixInstallerTests(unittest.TestCase):
         self.assertIn("newline", result.stderr.lower())
 
     def test_remote_source_is_an_immutable_release_not_main(self):
-        self.assertIn('REF="v0.2.3"', self.text)
+        self.assertIn('REF="v0.2.4"', self.text)
         self.assertNotIn('BRANCH="main"', self.text)
 
     def test_release_downloads_require_hardened_curl(self):
@@ -207,7 +207,7 @@ class PowerShellInstallerBrandTests(unittest.TestCase):
 
     def test_windows_remote_install_uses_versioned_checksum_verified_wheel(self):
         text = (ROOT / "install.ps1").read_text(encoding="utf-8")
-        self.assertIn("v0.2.3", text)
+        self.assertIn("v0.2.4", text)
         self.assertIn("SHA256SUMS", text)
         self.assertIn("Get-FileHash -Algorithm SHA256", text)
         self.assertIn("expected digest is not 64 hexadecimal characters", text)
@@ -246,13 +246,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('part == ".env"', workflow)
         self.assertIn('PACKAGE_VERSION=', workflow)
         self.assertIn('os.environ["PACKAGE_VERSION"]', workflow)
-        self.assertNotIn('expected_version = "0.2.3"', workflow)
+        self.assertNotIn('expected_version = "0.2.4"', workflow)
         self.assertIn("raise SystemExit", workflow)
         self.assertNotIn("assert not blocked", workflow)
 
     def test_release_notes_link_to_immutable_tag(self):
         notes = (ROOT / ".github" / "RELEASE_NOTES.md").read_text(encoding="utf-8")
-        self.assertIn("blob/v0.2.3/docs/installation.md", notes)
+        self.assertIn("blob/v0.2.4/docs/installation.md", notes)
         self.assertNotIn("blob/main/docs/installation.md", notes)
 
 
@@ -278,7 +278,7 @@ class InstallationPageTests(unittest.TestCase):
                 self.assertNotIn("raw.githubusercontent.com/Mftrferdinand/Zeline/main/install", text)
                 self.assertNotIn("| bash", text)
                 self.assertNotIn("| iex", text.lower())
-                self.assertIn("v0.2.3", text)
+                self.assertIn("v0.2.4", text)
                 self.assertIn("SHA256SUMS", text)
                 self.assertNotIn("assert actual == expected", text)
                 self.assertIn("raise SystemExit", text)
