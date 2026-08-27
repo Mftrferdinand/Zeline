@@ -259,9 +259,36 @@ def _setup_telegram(cfg: dict[str, Any]) -> bool:
         print("  Telegram skipped: empty token.")
         gateway["enabled"] = False
         return False
-    allowed_raw = _ask("  Allowlist chat IDs (comma-separated, empty = public)", ",".join(map(str, gateway.get("allowed", []))))
-    allowed = [entry.strip() for entry in allowed_raw.split(",") if entry.strip()]
-    gateway.update({"enabled": True, "token": token, "allowed": allowed, "tool_profile": "safe"})
+    # Owner chat ID = the numeric Telegram account ID that owns this bot (NOT the
+    # @username). Find it by messaging @userinfobot. When the installer connects
+    # their OWN bot on their OWN machine and names themselves as the sole owner,
+    # the bot has one trusted user, so we hand it the FULL toolset out of the box
+    # (native tools + MCP + image analysis) — exactly the experience the operator
+    # already runs locally. This is safe precisely because the allowlist is the
+    # single owner: there is no "other user" to shell out on the runtime.
+    print("  Owner chat ID = your numeric Telegram ID (message @userinfobot to get it).")
+    print("  This becomes the sole allowed user and unlocks the full toolset + MCP.")
+    existing_owner = str(gateway.get("owner_identity", "")).strip()
+    owner_raw = _ask("  Owner chat ID (empty = public bot, safe tools only)", existing_owner)
+    owner = owner_raw.strip()
+    if owner:
+        # Single trusted owner → full profile with the required security fields so
+        # gateways._validate_tool_policy passes without any extra manual command.
+        gateway.update({
+            "enabled": True,
+            "token": token,
+            "allowed": [owner],
+            "owner_identity": owner,
+            "tool_profile": "full",
+            "remote_code_execution_ack": True,
+        })
+        print("  Full toolset enabled for the owner. Add MCP servers with `zeline mcp`.")
+        return True
+    # No owner given → keep the conservative public default (memory + web only).
+    gateway.update({"enabled": True, "token": token, "allowed": [], "tool_profile": "safe"})
+    gateway.pop("owner_identity", None)
+    gateway.pop("remote_code_execution_ack", None)
+    print("  No owner set: bot is public with safe tools only. Re-run setup to enable full tools.")
     return True
 
 

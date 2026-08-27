@@ -251,6 +251,37 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("max tool rounds", result.lower())
         self.assertFalse((self.home / "config.json").exists())
 
+    def test_telegram_setup_with_owner_id_enables_full_toolset_and_mcp(self):
+        # An installer who names their own numeric chat ID as owner should get the
+        # full toolset (native tools + MCP + image analysis) with zero extra
+        # commands. The single-owner allowlist + RCE ack satisfy the gateway
+        # security policy so the elevated profile actually starts.
+        answers = iter(["123:abctoken", "7387183839"])
+        with mock.patch.object(self.cli, "_ask", side_effect=lambda *a, **k: next(answers)):
+            cfg = self.config.config_copy()
+            ok = self.cli._setup_telegram(cfg)
+        self.assertTrue(ok)
+        tg = cfg["gateways"]["telegram"]
+        self.assertEqual(tg["tool_profile"], "full")
+        self.assertEqual(tg["allowed"], ["7387183839"])
+        self.assertEqual(tg["owner_identity"], "7387183839")
+        self.assertIs(tg["remote_code_execution_ack"], True)
+        # The policy validator must accept this config unchanged.
+        from zeline.gateways import validate_gateway
+        self.assertEqual(validate_gateway("telegram", tg), [])
+
+    def test_telegram_setup_without_owner_stays_safe_public(self):
+        answers = iter(["123:abctoken", ""])
+        with mock.patch.object(self.cli, "_ask", side_effect=lambda *a, **k: next(answers)):
+            cfg = self.config.config_copy()
+            ok = self.cli._setup_telegram(cfg)
+        self.assertTrue(ok)
+        tg = cfg["gateways"]["telegram"]
+        self.assertEqual(tg["tool_profile"], "safe")
+        self.assertEqual(tg["allowed"], [])
+        self.assertNotIn("owner_identity", tg)
+        self.assertNotIn("remote_code_execution_ack", tg)
+
     def test_bare_zeline_forces_gateway_setup_before_chat(self):
         with mock.patch.object(self.cli, "cmd_setup", return_value=0) as setup, mock.patch.object(self.cli, "cmd_chat") as chat:
             self.assertEqual(self.cli.main([]), 0)

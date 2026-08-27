@@ -298,6 +298,23 @@ zeline tools enable run_shell
 `full` on a messaging gateway is refused until that gateway has an owner
 allowlist. This prevents a public bot from becoming a remote shell.
 
+### Telegram owner setup
+
+During `zeline setup` the Telegram step asks for an **owner chat ID** — your
+numeric Telegram account ID (message `@userinfobot` to get it; this is not your
+`@username`). What you enter decides the bot's trust level:
+
+- **Owner chat ID given** → the bot has a single trusted user, so it starts with
+  the **full toolset** (native tools + MCP + image analysis) out of the box. The
+  ID becomes the sole allowlist entry, `tool_profile` is set to `full`, and the
+  remote-code-execution acknowledgement is recorded automatically — no extra
+  `zeline tools` command needed.
+- **Left empty** → the bot stays **public with safe tools only** (memory + web).
+  Re-run `zeline setup` and supply an owner chat ID later to unlock full tools.
+
+The full profile is safe here precisely because the allowlist is your single
+owner: there is no other user the runtime would execute tools on behalf of.
+
 ## Update
 
 Run the same installer again. The private environment and `zeline` command are
