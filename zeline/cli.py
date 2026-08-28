@@ -1072,6 +1072,11 @@ def cmd_gateway_run(only: list[str] | None = None) -> int:
         )
         return 1
     try:
+        if gateway_service.is_termux():
+            print(
+                "Termux: `gateway run` stays attached to this foreground terminal. "
+                "For daily use prefer `zeline gateway start --only telegram`."
+            )
         return _run_gateway_loop(only)
     finally:
         lock.release()
@@ -1081,6 +1086,10 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     """Loop gateway foreground. Dipisah agar kunci proses dilepas di satu tempat."""
     _print_banner()
     print("==> Starting gateway…")
+    _wake_active, wake_message = gateway_service.ensure_termux_wake_lock()
+    if wake_message:
+        prefix = "  ✅" if _wake_active else "  ⚠️"
+        print(f"{prefix} {wake_message}", flush=True)
     sessions = SessionStore()
     runtime = run_all(sessions, config.GATEWAYS, names=only)
     if not runtime.threads:

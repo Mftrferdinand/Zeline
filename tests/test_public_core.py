@@ -94,6 +94,22 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("never promise a safeguard bypass", soul)
         self.assertIn("continue with every safe and useful part", soul)
 
+    def test_runtime_soul_is_high_agency_execution_first_without_theatrics(self):
+        """Public Zeline adopts high agency, not a private brand or persona."""
+        soul = " ".join(self.config.SOUL.casefold().split())
+        for required in (
+            "execution-first",
+            "persist through recoverable failures",
+            "keep the operator visibly informed",
+            "stop immediately",
+            "do not resume cancelled work",
+            "recover, adapt, and continue",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, soul)
+        self.assertIn("not blind obedience", soul)
+        self.assertIn("not theatrical", soul)
+
     def test_runtime_fails_clearly_when_packaged_soul_is_missing_or_empty(self):
         soul_path = SOURCE_ROOT / "zeline" / "SOUL.md"
         real_read_text = Path.read_text
