@@ -506,7 +506,7 @@ class ZelineCliTests(unittest.TestCase):
         text = output.getvalue()
         # Boxed identity: title + subtitle inside one frame, no ANSI in plain mode.
         self.assertIn("Z  E  L  I  N  E", text)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.4", text)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.5", text)
         self.assertIn("╭", text)
         self.assertIn("╰", text)
         self.assertNotIn("\x1b[", text)
@@ -528,7 +528,7 @@ class ZelineCliTests(unittest.TestCase):
         self.assertEqual(parser.prog, "zeline")
         result = self.invoke(["status"], expected_status=1)
         self.assertIn("Z  E  L  I  N  E", result)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.4", result)
+        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.5", result)
         self.assertIn("ZEROLINEAR", result)
 
 

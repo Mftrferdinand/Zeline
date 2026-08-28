@@ -1,6 +1,6 @@
 # Zeline installer for Windows PowerShell.
 #
-# Download this v0.2.4 release asset and SHA256SUMS, verify with Get-FileHash,
+# Download this v0.2.5 release asset and SHA256SUMS, verify with Get-FileHash,
 # then run (PowerShell, no admin needed):
 #   .\install.ps1
 #
@@ -31,8 +31,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Version     = '0.2.4'
-$ReleaseRef  = 'v0.2.4'
+$Version     = '0.2.5'
+$ReleaseRef  = 'v0.2.5'
 $ReleaseBase = "https://github.com/Mftrferdinand/Zeline/releases/download/$ReleaseRef"
 $WheelName   = "zeline-$Version-py3-none-any.whl"
 

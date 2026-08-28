@@ -1628,6 +1628,156 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("Patched SKILL.md", updated)
         self.assertIn("new step", executor.run("load_skill", {"name": "demo-skill"}))
 
+    def test_shell_timeout_is_raisable_so_real_installs_do_not_fail_at_60s(self):
+        """pip/npm/apt installs routinely exceed 60s; the agent must be able to wait."""
+        tools = importlib.import_module("zeline.tools")
+        self.assertEqual(self.config.DEFAULT_SHELL_TIMEOUT_SECONDS, 60)
+        self.assertGreaterEqual(self.config.SHELL_MAX_TIMEOUT_SECONDS, 600)
+
+        # Default, invalid, and non-positive values fall back to the default.
+        for supplied in (None, "", "abc", 0, -5):
+            with self.subTest(supplied=supplied):
+                self.assertEqual(tools._clamp_timeout(supplied), self.config.DEFAULT_SHELL_TIMEOUT_SECONDS)
+        # A larger request is honoured, but never beyond the hard ceiling.
+        self.assertEqual(tools._clamp_timeout(600), 600)
+        self.assertEqual(tools._clamp_timeout("300"), 300)
+        self.assertEqual(tools._clamp_timeout(10_000), self.config.SHELL_MAX_TIMEOUT_SECONDS)
+
+        # The declared schema must expose timeout/background so the model can use them.
+        by_name = {d.name: d for d in tools.TOOL_DEFS}
+        shell_props = by_name["run_shell"].parameters["properties"]
+        self.assertIn("timeout", shell_props)
+        self.assertIn("background", shell_props)
+        self.assertIn("timeout", by_name["execute_code"].parameters["properties"])
+        self.assertEqual(by_name["process_control"].profiles, frozenset({"full"}))
+
+        executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
+        captured: dict[str, object] = {}
+        real_run = tools.subprocess.run
+
+        def fake_run(*args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return real_run(*args, **kwargs)
+
+        with mock.patch.object(tools.subprocess, "run", fake_run):
+            out = executor.run("run_shell", {"command": "printf ok", "timeout": 600})
+        self.assertIn("exit=0", out)
+        self.assertIn("ok", out)
+        self.assertEqual(captured["timeout"], 600)
+
+        # A real timeout must tell the agent how to retry, not just say it failed.
+        timed_out = executor.run("run_shell", {"command": "sleep 5", "timeout": 1})
+        self.assertIn("timed out", timed_out)
+        self.assertIn("larger timeout", timed_out)
+        self.assertIn("background=true", timed_out)
+
+    def test_background_process_lifecycle_is_tracked_pollable_and_killable(self):
+        tools = importlib.import_module("zeline.tools")
+        executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
+        tools._BG_JOBS.clear()
+        try:
+            started = executor.run(
+                "run_shell",
+                {"command": "printf 'first\\n'; sleep 30", "background": True},
+            )
+            self.assertIn("started background job=", started)
+            job_id = started.split("job=", 1)[1].split()[0]
+
+            listed = executor.run("process_control", {"action": "list"})
+            self.assertIn(job_id, listed)
+            self.assertIn("running", listed)
+
+            deadline = time.time() + 10
+            polled = ""
+            while time.time() < deadline:
+                polled = executor.run("process_control", {"action": "poll", "job_id": job_id})
+                if "first" in polled:
+                    break
+                time.sleep(0.2)
+            self.assertIn("status=running", polled)
+            self.assertIn("first", polled)
+            # poll is incremental: already-read output is not repeated.
+            self.assertNotIn("first", executor.run("process_control", {"action": "poll", "job_id": job_id}))
+            # log replays the whole file.
+            self.assertIn("first", executor.run("process_control", {"action": "log", "job_id": job_id}))
+
+            killed = executor.run("process_control", {"action": "kill", "job_id": job_id})
+            self.assertIn("killed", killed)
+            self.assertNotIn(job_id, tools._BG_JOBS)
+            self.assertIn("unknown job_id", executor.run("process_control", {"action": "poll", "job_id": job_id}))
+            self.assertIn("action must be one of", executor.run("process_control", {"action": "nope", "job_id": job_id}))
+        finally:
+            for job in list(tools._BG_JOBS.values()):
+                try:
+                    job.process.kill()
+                except Exception:
+                    pass
+            tools._BG_JOBS.clear()
+
+    def test_background_shell_and_process_control_stay_owner_only(self):
+        """A public gateway must never gain a detachable shell."""
+        tools = importlib.import_module("zeline.tools")
+        for profile in ("safe", "workspace"):
+            with self.subTest(profile=profile):
+                names = {d.name for d in tools.TOOL_DEFS if profile in d.profiles}
+                self.assertNotIn("run_shell", names)
+                self.assertNotIn("execute_code", names)
+                self.assertNotIn("process_control", names)
+                executor = tools.ToolExecutor("telegram:public", profile=profile, workspace=str(self.home))
+                denied = executor.run("process_control", {"action": "list"})
+                self.assertIn("not allowed for profile", denied.lower())
+                shell_denied = executor.run("run_shell", {"command": "id", "background": True})
+                self.assertIn("not allowed for profile", shell_denied.lower())
+
+    def test_finished_background_output_survives_until_ttl_and_capacity_is_generous(self):
+        """A finished build's output must stay readable, and the cap must not be stingy."""
+        tools = importlib.import_module("zeline.tools")
+        # Generous enough for real parallel work (64 tracked processes).
+        self.assertEqual(self.config.MAX_BACKGROUND_PROCESSES, 64)
+        self.assertGreaterEqual(self.config.BACKGROUND_FINISHED_TTL_SECONDS, 600)
+
+        executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
+        tools._BG_JOBS.clear()
+        try:
+            started = executor.run("run_shell", {"command": "printf 'done\\n'", "background": True})
+            job_id = started.split("job=", 1)[1].split()[0]
+
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                if tools._BG_JOBS[job_id].process.poll() is not None:
+                    break
+                time.sleep(0.1)
+            self.assertIsNotNone(tools._BG_JOBS[job_id].process.poll())
+
+            # First poll records the exit; the job is NOT dropped immediately, so a
+            # second look can still retrieve the full log of a finished command.
+            first = executor.run("process_control", {"action": "poll", "job_id": job_id})
+            self.assertIn("exited (exit=0)", first)
+            self.assertIn("done", first)
+            self.assertIn(job_id, tools._BG_JOBS)
+            self.assertIn("done", executor.run("process_control", {"action": "log", "job_id": job_id}))
+
+            # Past the TTL it is forgotten instead of leaking forever.
+            tools._BG_JOBS[job_id].finished_at = time.time() - (self.config.BACKGROUND_FINISHED_TTL_SECONDS + 10)
+            executor.run("process_control", {"action": "list"})
+            self.assertNotIn(job_id, tools._BG_JOBS)
+        finally:
+            for job in list(tools._BG_JOBS.values()):
+                try:
+                    job.process.kill()
+                except Exception:
+                    pass
+                job.close_log()
+            tools._BG_JOBS.clear()
+
+    def test_system_prompt_teaches_long_installs_instead_of_timeout_failure(self):
+        prompt = " ".join(self.config.SYSTEM_PROMPT.casefold().split())
+        self.assertIn("installing things is normal authorized work", prompt)
+        self.assertIn("pass a bigger `timeout` (up to 900)", prompt)
+        self.assertIn("never report an install as \"failed\" when the message says it timed out", prompt)
+        self.assertIn("run_shell with background=true", prompt)
+        self.assertIn("process_control (list/poll/log/kill)", prompt)
+
     def test_safe_progress_line_balances_truncated_html_tags(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # Long shell command inside <pre> that gets cut mid-tag must be re-balanced

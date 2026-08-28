@@ -40,6 +40,23 @@ MAX_REPEATED_TOOL_FAILURES = 3
 # anak, tapi anak TIDAK boleh membuat cucu — mencegah rekursi tak terbatas.
 DEFAULT_MAX_SUBAGENT_DEPTH = 1
 
+# Timeout default satu perintah shell/code (detik). 60s cukup untuk perintah
+# biasa, tapi TERLALU PENDEK untuk kerja instalasi nyata: `pip install torch`,
+# `npm install`, `apt install`, atau build besar rutin butuh beberapa menit.
+# Agent boleh menaikkan sendiri per panggilan sampai SHELL_MAX_TIMEOUT_SECONDS.
+DEFAULT_SHELL_TIMEOUT_SECONDS = 60
+# Batas atas timeout foreground. Dibatasi agar satu perintah tidak menyandera
+# seluruh turn agent (lihat MAX_TURN_SECONDS): pekerjaan yang lebih lama dari
+# ini harus dijalankan sebagai background process lalu di-poll.
+SHELL_MAX_TIMEOUT_SECONDS = 900
+# Batas jumlah background process yang dilacak. 64 mengikuti praktik umum
+# process registry agent: cukup longgar untuk kerja paralel nyata, tapi tetap
+# mencegah kebocoran proses tak terbatas.
+MAX_BACKGROUND_PROCESSES = 64
+# Job yang sudah selesai tetap disimpan sebentar supaya output terakhirnya masih
+# bisa dibaca lewat process_control, lalu dibuang otomatis.
+BACKGROUND_FINISHED_TTL_SECONDS = 1800
+
 # ZELINE_HOME membuat test, container, dan beberapa instance terisolasi mudah.
 _EXPLICIT_HOME = os.environ.get("ZELINE_HOME")
 DATA_DIR = Path(_EXPLICIT_HOME or str(Path.home() / ".zeline")).expanduser()
@@ -212,6 +229,21 @@ Tool discipline (fast & clean — narration follows the "Live narration" rules a
   cat/head/tail/grep/find/ls via run_shell to read/search — the dedicated tools
   are cleaner, don't flood context, and are faster. run_shell is only for things
   that genuinely need a shell (build, install, git, processes, network).
+- Installing things is normal authorized work, NOT something to refuse or stall
+  on. When the operator says "install X", run the real installer (pip/npm/apt/
+  pkg/git clone) and report the actual result.
+- Slow commands: run_shell/execute_code default to a 60-second timeout, which is
+  too short for pip/npm/apt installs, builds, and test suites. Pass a bigger
+  `timeout` (up to 900) for those. It returns the moment the command finishes, so
+  a high timeout costs nothing. NEVER report an install as "failed" when the
+  message says it timed out — re-run it with a larger timeout or in background.
+- Long-lived processes (servers, watchers, daemons) or work beyond 900s: call
+  run_shell with background=true, then use process_control (list/poll/log/kill).
+  Do NOT use nohup/disown/trailing `&` yourself — background=true is tracked and
+  its output is readable.
+- After starting a server in background, verify readiness by polling its log or
+  hitting a health endpoint before declaring it up. Kill what you started when
+  it was only needed for a check.
 - When searching & coding: be quick. Once you have enough evidence/context,
   execute/answer immediately — don't stall with repeated tool calls.
 - Call tools in PARALLEL when you need several independent pieces of info: request

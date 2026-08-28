@@ -181,7 +181,20 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return f"📚 Reading skill: {html.escape(str(arguments.get('name', ''))[:100])}"
     if name == "run_shell":
         command = str(arguments.get("command", ""))
-        return _terminal_progress(command, search=_is_search_command(command))
+        line = _terminal_progress(command, search=_is_search_command(command))
+        if arguments.get("background"):
+            return f"🚀 Starting background process {line}" if line else "🚀 Starting background process…"
+        return line
+    if name == "process_control":
+        action = str(arguments.get("action", "")).strip().lower()
+        job = html.escape(str(arguments.get("job_id", ""))[:40], quote=False)
+        labels = {
+            "list": "📋 Listing background processes…",
+            "poll": f"⏱ Checking background process <code>{job}</code>…" if job else "⏱ Checking background process…",
+            "log": f"📜 Reading process log <code>{job}</code>" if job else "📜 Reading process log…",
+            "kill": f"🛑 Stopping background process <code>{job}</code>" if job else "🛑 Stopping background process…",
+        }
+        return labels.get(action, "⚙️ Managing background process…")
     if name == "execute_code":
         code = str(arguments.get("code", "")).strip()
         first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
