@@ -15,12 +15,16 @@ from __future__ import annotations
 import html as _html
 import base64
 import ipaddress
+import itertools
 import json
 import mimetypes
 import os
 import re
+import signal
 import socket
 import subprocess
+import threading
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +37,7 @@ from zeline import config
 from zeline import memory
 from zeline import skills
 from zeline import mcp as mcp_module
+from zeline import _winproc
 
 ToolFunction = Callable[..., str]
 
@@ -145,43 +150,372 @@ def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
         return f"ERROR search file: {exc}"
 
 
-def _run_shell(command: str, workspace: Path) -> str:
-    """Owner-only shell. Gateways do not receive this profile by default."""
+def _clamp_timeout(timeout: Any) -> int:
+    """Normalize an agent-supplied timeout into the allowed foreground range."""
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env={**os.environ},
+        seconds = int(float(timeout))
+    except (TypeError, ValueError):
+        return config.DEFAULT_SHELL_TIMEOUT_SECONDS
+    if seconds <= 0:
+        return config.DEFAULT_SHELL_TIMEOUT_SECONDS
+    return min(seconds, config.SHELL_MAX_TIMEOUT_SECONDS)
+
+
+def _truncate_output(text: str, limit: int = 12_000) -> str:
+    text = (text or "").strip()
+    if not text:
+        return "(no output)"
+    if len(text) > limit:
+        return text[:limit] + "\n... [output truncated]"
+    return text
+
+
+# ---------------------------------------------------------------- background jobs
+
+@dataclass
+class _BackgroundJob:
+    job_id: str
+    command: str
+    process: subprocess.Popen
+    log_path: Path
+    started_at: float
+    log_handle: Any = None
+    read_offset: int = 0
+    finished_at: float | None = None
+
+    def close_log(self) -> None:
+        handle, self.log_handle = self.log_handle, None
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+
+_BG_JOBS: dict[str, _BackgroundJob] = {}
+_BG_COUNTER = itertools.count(1)
+
+# --------------------------------------------------------- foreground tracking
+# Perintah foreground (run_shell/execute_code tanpa background) dulu dijalankan
+# lewat subprocess.run, sehingga TIDAK ada handle proses yang bisa dibunuh saat
+# user menekan /stop: pembatalan baru terasa setelah perintah selesai sendiri
+# (mis. build 10 menit) — itu sebabnya stop terasa "tidak bisa dipaksa" dan
+# gateway harus dimatikan manual. Registry ini menyimpan proses hidup per
+# identity supaya cancel_identity() bisa mematikan seluruh grup prosesnya.
+_FG_PROCS: dict[str, set[subprocess.Popen]] = {}
+_FG_LOCK = threading.Lock()
+
+# POSIX memakai process group (``start_new_session`` + ``killpg``) supaya seluruh
+# keturunan sebuah perintah ikut mati. Windows tidak punya killpg, jadi child
+# dibuat sebagai group leader lewat creationflags dan dibunuh dengan
+# ``taskkill /T /F`` (lihat zeline._winproc).
+IS_WINDOWS = os.name == "nt"
+DETACH_KWARGS: dict[str, Any] = (
+    {"creationflags": _winproc.CREATION_FLAGS} if IS_WINDOWS else {"start_new_session": True}
+)
+
+
+def _fg_track(identity: str, process: subprocess.Popen) -> None:
+    with _FG_LOCK:
+        _FG_PROCS.setdefault(identity or "cli:local", set()).add(process)
+
+
+def _fg_untrack(identity: str, process: subprocess.Popen) -> None:
+    with _FG_LOCK:
+        bucket = _FG_PROCS.get(identity or "cli:local")
+        if bucket is None:
+            return
+        bucket.discard(process)
+        if not bucket:
+            _FG_PROCS.pop(identity or "cli:local", None)
+
+
+def _terminate_group(process: subprocess.Popen) -> None:
+    """Bunuh proses beserta seluruh anaknya, lalu paksa bila masih bertahan."""
+    if IS_WINDOWS:
+        if not _winproc.terminate_tree(process.pid):
+            try:
+                process.kill()
+            except Exception:
+                pass
+        try:
+            process.wait(timeout=5)
+        except Exception:
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except Exception:
+        try:
+            process.terminate()
+        except Exception:
+            return
+    try:
+        process.wait(timeout=3)
+        return
+    except Exception:
+        pass
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
+def cancel_identity(identity: str) -> int:
+    """Bunuh semua perintah foreground milik satu sesi. Return jumlah yang dibunuh.
+
+    Dipanggil dari SessionStore.stop() supaya /stop benar-benar memaksa berhenti:
+    tanpa ini, `pytest`/`npm install`/build yang sedang jalan tetap menahan turn
+    sampai selesai walaupun user sudah membatalkan.
+    """
+    with _FG_LOCK:
+        processes = list(_FG_PROCS.get(identity or "cli:local", ()))
+    killed = 0
+    for process in processes:
+        if process.poll() is None:
+            _terminate_group(process)
+            killed += 1
+    return killed
+
+
+def _run_tracked(
+    command: Any,
+    *,
+    shell: bool,
+    cwd: str,
+    seconds: int,
+    identity: str,
+) -> tuple[int, str, bool]:
+    """Jalankan perintah foreground yang BISA dibunuh oleh /stop.
+
+    Mengembalikan ``(exit_code, output, timed_out)``. Prosesnya dijalankan di
+    session/grup sendiri (``start_new_session``) supaya seluruh keturunannya
+    ikut mati saat dibatalkan.
+    """
+    process = subprocess.Popen(
+        command,
+        shell=shell,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env={**os.environ},
+        **DETACH_KWARGS,
+    )
+    _fg_track(identity, process)
+    try:
+        try:
+            output, _ = process.communicate(timeout=seconds)
+            return int(process.returncode or 0), output or "", False
+        except subprocess.TimeoutExpired:
+            _terminate_group(process)
+            try:
+                output, _ = process.communicate(timeout=5)
+            except Exception:
+                output = ""
+            return -1, output or "", True
+    finally:
+        _fg_untrack(identity, process)
+
+
+def _bg_log_dir() -> Path:
+    path = config.STATE_DIR / "processes"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _bg_reap() -> None:
+    """Close logs of exited jobs and forget them once their TTL has passed.
+
+    Finished jobs are kept for BACKGROUND_FINISHED_TTL_SECONDS so the agent can
+    still read the final output of a build/test that already exited.
+    """
+    now = time.time()
+    for job_id, job in list(_BG_JOBS.items()):
+        if job.process.poll() is None:
+            continue
+        job.close_log()
+        if job.finished_at is None:
+            job.finished_at = now
+            continue
+        if now - job.finished_at > config.BACKGROUND_FINISHED_TTL_SECONDS:
+            _BG_JOBS.pop(job_id, None)
+
+
+def _bg_prune_finished() -> None:
+    """Drop the oldest finished jobs to make room for a new one (LRU pruning)."""
+    finished = sorted(
+        (job for job in _BG_JOBS.values() if job.process.poll() is not None),
+        key=lambda job: job.finished_at or job.started_at,
+    )
+    for job in finished:
+        if len(_BG_JOBS) < config.MAX_BACKGROUND_PROCESSES:
+            return
+        job.close_log()
+        _BG_JOBS.pop(job.job_id, None)
+
+
+def _bg_new_output(job: _BackgroundJob) -> str:
+    """Return log bytes written since the last poll and advance the cursor."""
+    try:
+        with job.log_path.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(job.read_offset)
+            chunk = handle.read()
+            job.read_offset = handle.tell()
+    except OSError as exc:
+        return f"(cannot read log: {exc})"
+    return _truncate_output(chunk)
+
+
+def _bg_status(job: _BackgroundJob) -> str:
+    code = job.process.poll()
+    if code is None:
+        return "running"
+    return f"exited (exit={code})"
+
+
+def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False, identity: str = "cli:local") -> str:
+    """Owner-only shell. Gateways do not receive this profile by default.
+
+    ``timeout`` lets the agent raise the limit for genuinely long work such as
+    ``pip install``/``npm install``/builds instead of failing at a hard 60s.
+    ``background`` starts a long-lived process (server, watcher, big build) and
+    returns a job id immediately; use ``process_control`` to poll/stop it.
+    """
+    command = (command or "").strip()
+    if not command:
+        return "ERROR: command is empty."
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"ERROR: cannot prepare workspace: {exc}"
+
+    if background:
+        _bg_reap()
+        if len(_BG_JOBS) >= config.MAX_BACKGROUND_PROCESSES:
+            _bg_prune_finished()
+        live = sum(1 for job in _BG_JOBS.values() if job.process.poll() is None)
+        if live >= config.MAX_BACKGROUND_PROCESSES:
+            return (
+                f"ERROR: too many live background processes ({live}, limit "
+                f"{config.MAX_BACKGROUND_PROCESSES}). Stop one with "
+                "process_control(action='kill') first."
+            )
+        job_id = f"bg{next(_BG_COUNTER)}"
+        log_path = _bg_log_dir() / f"{job_id}.log"
+        try:
+            handle = log_path.open("w", encoding="utf-8")
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                cwd=str(workspace),
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env={**os.environ},
+                **DETACH_KWARGS,
+            )
+        except Exception as exc:
+            return f"ERROR starting background command: {exc}"
+        _BG_JOBS[job_id] = _BackgroundJob(
+            job_id=job_id,
+            command=command,
+            process=process,
+            log_path=log_path,
+            started_at=time.time(),
+            log_handle=handle,
         )
-        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(no output)"
-        if len(output) > 12_000:
-            output = output[:12_000] + "\n... [output truncated]"
-        return f"exit={result.returncode}\n{output}"
-    except subprocess.TimeoutExpired:
-        return "ERROR: command timed out (>60 seconds)"
+        return (
+            f"started background job={job_id} pid={process.pid}\n"
+            f"log={log_path}\n"
+            f"Poll it with process_control(action='poll', job_id='{job_id}')."
+        )
+
+    seconds = _clamp_timeout(timeout)
+    try:
+        code, output, timed_out = _run_tracked(
+            command, shell=True, cwd=str(workspace), seconds=seconds, identity=identity,
+        )
+        if timed_out:
+            return (
+                f"ERROR: command timed out (>{seconds} seconds). "
+                f"Retry with a larger timeout (max {config.SHELL_MAX_TIMEOUT_SECONDS}) "
+                "or run it with background=true and poll it."
+            )
+        return f"exit={code}\n{_truncate_output(output)}"
     except Exception as exc:
         return f"ERROR running command: {exc}"
 
 
-def _execute_code(code: str, workspace: Path) -> str:
+def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
+    """Inspect or stop background jobs started by run_shell(background=true)."""
+    action = (action or "").strip().lower()
+    if action not in {"list", "poll", "log", "kill"}:
+        return "ERROR: action must be one of list, poll, log, kill."
+    if action == "list":
+        _bg_reap()
+        if not _BG_JOBS:
+            return "(no background jobs)"
+        rows = []
+        for job in _BG_JOBS.values():
+            age = int(time.time() - job.started_at)
+            rows.append(f"{job.job_id} pid={job.process.pid} {_bg_status(job)} age={age}s :: {job.command[:80]}")
+        return "\n".join(rows)
+
+    job = _BG_JOBS.get((job_id or "").strip())
+    if job is None:
+        return f"ERROR: unknown job_id '{job_id}'. Use process_control(action='list')."
+
+    if action == "poll":
+        status = _bg_status(job)
+        chunk = _bg_new_output(job)
+        _bg_reap()
+        return f"job={job.job_id} status={status}\n{chunk}"
+
+    if action == "log":
+        try:
+            text = job.log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return f"ERROR reading log: {exc}"
+        try:
+            tail = int(float(lines)) if lines is not None else 200
+        except (TypeError, ValueError):
+            tail = 200
+        tail = max(1, min(tail, 2000))
+        body = "\n".join(text.splitlines()[-tail:])
+        return f"job={job.job_id} status={_bg_status(job)}\n{_truncate_output(body)}"
+
+    # action == "kill"
+    if job.process.poll() is not None:
+        job.close_log()
+        _BG_JOBS.pop(job.job_id, None)
+        return f"job={job.job_id} already finished (exit={job.process.returncode})."
+    # Satu jalur terminasi lintas-OS (killpg di POSIX, taskkill /T di Windows).
+    _terminate_group(job.process)
+    job.close_log()
+    _BG_JOBS.pop(job.job_id, None)
+    return f"job={job.job_id} killed."
+
+
+def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local") -> str:
     """Run an owner-only Python snippet without shell interpolation."""
     if len(code) > 100_000:
         return "ERROR: code too long (maximum 100,000 characters)."
+    seconds = _clamp_timeout(timeout)
     try:
         workspace.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
+        exit_code, output, timed_out = _run_tracked(
             [os.environ.get("PYTHON", "python"), "-c", code],
-            cwd=str(workspace), capture_output=True, text=True, timeout=60,
-            env={**os.environ},
+            shell=False, cwd=str(workspace), seconds=seconds, identity=identity,
         )
-        output = ((result.stdout or "") + (result.stderr or "")).strip() or "(no output)"
-        return f"exit={result.returncode}\n{output[:12_000]}"
-    except subprocess.TimeoutExpired:
-        return "ERROR: code timed out (>60 seconds)"
+        if timed_out:
+            return (
+                f"ERROR: code timed out (>{seconds} seconds). "
+                f"Retry with a larger timeout (max {config.SHELL_MAX_TIMEOUT_SECONDS})."
+            )
+        return f"exit={exit_code}\n{_truncate_output(output)}"
     except Exception as exc:
         return f"ERROR running code: {exc}"
 
@@ -1194,17 +1528,42 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "execute_code",
-        "Run a Python snippet in the operator workspace and return the real output.",
-        {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+        "Run a Python snippet in the operator workspace and return the real output. Raise 'timeout' for slow work (heavy computation, large downloads) instead of letting it fail at the 60s default.",
+        {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string"},
+                "timeout": {"type": "integer", "description": "Seconds to wait before giving up. Default 60, maximum 900. Returns as soon as the code finishes, so a high value costs nothing."},
+            },
+            "required": ["code"],
+        },
         frozenset({"full"}),
     ),
     ToolDef(
         "run_shell",
-        "Run a shell command in the owner workspace. Only for the authorized local operator.",
+        "Run a shell command in the owner workspace. Only for the authorized local operator. For genuinely slow commands (pip/npm/apt install, builds, tests) pass a larger 'timeout' — do NOT report failure just because the 60s default was hit. For servers/watchers/very long builds pass background=true and poll with process_control.",
         {
             "type": "object",
-            "properties": {"command": {"type": "string", "description": "Shell command"}},
+            "properties": {
+                "command": {"type": "string", "description": "Shell command"},
+                "timeout": {"type": "integer", "description": "Seconds to wait before giving up. Default 60, maximum 900. Returns as soon as the command finishes, so setting 600 for an install costs nothing when it takes 20s."},
+                "background": {"type": "boolean", "description": "Start the command detached and return a job id immediately instead of waiting. Use for servers, watchers, daemons, or builds longer than the foreground maximum."},
+            },
             "required": ["command"],
+        },
+        frozenset({"full"}),
+    ),
+    ToolDef(
+        "process_control",
+        "Inspect or stop background processes started by run_shell(background=true). Actions: 'list' (all jobs + status), 'poll' (status + output written since the last poll), 'log' (tail the full log), 'kill' (terminate the process group).",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "poll", "log", "kill"], "description": "What to do."},
+                "job_id": {"type": "string", "description": "Job id returned by run_shell(background=true). Required for poll/log/kill."},
+                "lines": {"type": "integer", "description": "For action='log': how many trailing lines to return (default 200, max 2000)."},
+            },
+            "required": ["action"],
         },
         frozenset({"full"}),
     ),
@@ -1296,8 +1655,9 @@ class ToolExecutor:
             "update_task": _update_task,
             "save_skill": skills.save_skill,
             "update_skill": skills.update_skill,
-            "execute_code": lambda code: _execute_code(code, self.workspace),
-            "run_shell": lambda command: _run_shell(command, self.workspace),
+            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity),
+            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity),
+            "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
             "delegate_task": lambda goal, context="": self._delegate_task(goal, context),
             "recall_history": lambda query="": self._recall_history(query),
         }

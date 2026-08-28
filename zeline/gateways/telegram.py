@@ -35,6 +35,10 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 MAX_ARCHIVE_ENTRIES = 512
 MAX_ARCHIVE_TEXT_BYTES = 256 * 1024
 REPOSITORY_FILE = config.DATA_DIR / "repository.md"
+# Setelah berapa detik turn tanpa kabar, bubble status "⏳ Working — …" muncul.
+# Cukup lama supaya tanya-jawab ringan tetap bersih tanpa bubble, tapi cukup
+# cepat supaya user tidak merasa didiamkan saat agent kerja panjang.
+_STATUS_AFTER_SECONDS = 20.0
 REPOSITORY_HEADER = "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n"
 _URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 
@@ -181,7 +185,20 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return f"📚 Reading skill: {html.escape(str(arguments.get('name', ''))[:100])}"
     if name == "run_shell":
         command = str(arguments.get("command", ""))
-        return _terminal_progress(command, search=_is_search_command(command))
+        line = _terminal_progress(command, search=_is_search_command(command))
+        if arguments.get("background"):
+            return f"🚀 Starting background process {line}" if line else "🚀 Starting background process…"
+        return line
+    if name == "process_control":
+        action = str(arguments.get("action", "")).strip().lower()
+        job = html.escape(str(arguments.get("job_id", ""))[:40], quote=False)
+        labels = {
+            "list": "📋 Listing background processes…",
+            "poll": f"⏱ Checking background process <code>{job}</code>…" if job else "⏱ Checking background process…",
+            "log": f"📜 Reading process log <code>{job}</code>" if job else "📜 Reading process log…",
+            "kill": f"🛑 Stopping background process <code>{job}</code>" if job else "🛑 Stopping background process…",
+        }
+        return labels.get(action, "⚙️ Managing background process…")
     if name == "execute_code":
         code = str(arguments.get("code", "")).strip()
         first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
@@ -340,14 +357,29 @@ def _format_agent_error(message: str) -> str:
     return f"⚠️ Zeline hit a problem — {message}"
 
 
-def _working_status_text(elapsed_seconds: float, *, iteration: int | None = None, maximum: int | None = None) -> str:
-    """Header status live. Delay dilaporkan sebagai provider lambat (dari elapsed
-    monotonic nyata), bukan klaim bahwa agent sedang sibuk."""
+def _working_status_text(
+    elapsed_seconds: float,
+    *,
+    iteration: int | None = None,
+    maximum: int | None = None,
+    remaining_seconds: float | None = None,
+) -> str:
+    """Header status live: bukti agent MASIH kerja, bukan menggantung diam.
+
+    Format satu baris: waktu jalan + langkah ke berapa + sisa budget turn.
+    Tidak pernah menyalahkan model/provider (mis. 'slow to respond') — user
+    hanya perlu tahu ini masih berjalan dan berapa lama lagi batasnya.
+    """
     minutes = int(elapsed_seconds // 60)
     seconds = int(elapsed_seconds % 60)
     clock = f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
-    slow = " · provider is slow to respond" if elapsed_seconds >= 120 else ""
-    return f"⏳ Working — {clock}{slow}"
+    parts = [f"⏳ Working — {clock}"]
+    if iteration and maximum:
+        parts.append(f"step {iteration}/{maximum}")
+    if remaining_seconds is not None and remaining_seconds > 0:
+        parts.append(f"{int(remaining_seconds)}s left")
+    parts.append("/stop to cancel")
+    return " · ".join(parts)
 
 
 def _provider_wait_text(wait_seconds: float, model: str = "") -> str:
@@ -365,10 +397,14 @@ class _LiveStatus:
     """Satu pesan Telegram yang di-edit berulang (bukan spam pesan baru).
 
     Dua fase:
-      - ``waiting``: menunggu respons LLM → header 'Menunggu model — Ns'.
-      - ``tool``: sedang menjalankan tool → hanya feed aktivitas bersih,
-        tanpa label 'Working' (bagian ini cepat, bukan sumber delay).
-    Aman dipakai dari worker heartbeat dan callback tool (dilindungi lock).
+      - ``waiting``: menunggu respons LLM.
+      - ``tool``: sedang menjalankan tool → feed aktivitas.
+
+    Header ``⏳ Working — …`` hanya muncul setelah turn berjalan lebih lama dari
+    ``_STATUS_AFTER_SECONDS``. Ini yang bikin user tidak pernah "didiemin":
+    pertanyaan ringan tetap bersih tanpa bubble, tapi kerja panjang selalu
+    menunjukkan jam berjalan, langkah ke berapa, sisa budget, dan bahwa /stop
+    bisa dipakai. Aman dipakai dari worker heartbeat dan callback tool.
     """
 
     def __init__(self, api: str, chat_id: int, *, max_lines: int = 14, model: str = ""):
@@ -380,24 +416,48 @@ class _LiveStatus:
         self.lines: list[str] = []
         self.phase = "waiting"
         self.phase_started = time.monotonic()
+        # Awal turn (bukan awal fase) → dipakai untuk jam "Working — Nm Ns".
+        self.turn_started = time.monotonic()
+        self.iteration: int | None = None
+        self.maximum: int | None = None
         self._last_text: str | None = None
         self._lock = threading.Lock()
 
+    def _header(self) -> str:
+        """Baris status hidup; kosong selama turn masih pendek."""
+        elapsed = time.monotonic() - self.turn_started
+        if elapsed < _STATUS_AFTER_SECONDS:
+            return ""
+        budget = float(getattr(config, "MAX_TURN_SECONDS", 0) or 0)
+        remaining = (budget - elapsed) if budget else None
+        return _working_status_text(
+            elapsed,
+            iteration=self.iteration,
+            maximum=self.maximum,
+            remaining_seconds=remaining,
+        )
+
+    def set_iteration(self, current: int | None, maximum: int | None) -> None:
+        with self._lock:
+            self.iteration = current
+            self.maximum = maximum
+
     def _render(self) -> str:
-        # Feed aktivitas tool APA ADANYA — TANPA header '⏰ Processing' (dihapus
-        # atas permintaan user; biar bersih seperti Zeline). Hanya baris
-        # aktivitas (Reading/Searching/dst). Kalau belum ada baris, kosong →
-        # _push_locked tidak akan bikin bubble.
+        # Header status (kalau turn sudah cukup lama) + feed aktivitas tool apa
+        # adanya. Kalau dua-duanya kosong, _push_locked tidak bikin bubble.
         ordered = _ordered_lines(self.lines)[-self.max_lines:]
+        header = self._header()
+        if header and ordered:
+            return header + "\n" + "\n".join(ordered)
+        if header:
+            return header
         return "\n".join(ordered)
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
-        # Bubble progres HANYA dibuat saat ada aktivitas tool nyata (search/coding/
-        # fetch). Selama sekadar menunggu respons LLM, jangan pernah membuat bubble
-        # baru — indikator 'typing…' native Telegram sudah cukup. Ini mencegah
-        # (a) 'Processing' muncul di pertanyaan ringan tanpa tool, dan
-        # (b) bubble muncul lalu hilang ketika finalize tidak menemukan aktivitas.
-        if self.message_id is None and not allow_create:
+        # Bubble progres dibuat saat ada aktivitas tool nyata, ATAU saat turn
+        # sudah berjalan lama tanpa kabar (header status) — supaya user tidak
+        # merasa didiamkan. Pertanyaan ringan yang selesai cepat tetap bersih.
+        if self.message_id is None and not allow_create and not self._header():
             return
         text = self._render()
         # Tanpa header lagi: kalau belum ada baris aktivitas, teksnya kosong →
@@ -991,7 +1051,12 @@ def _handle_command_update(
         status = sessions.status(identity)
         stopped = sessions.stop(identity)
         title = str(status.get("title") or "Active task").strip()
-        reply = f"❄️ {title}" if stopped else "No active task to stop."
+        # Jelas: turn dihentikan PAKSA (proses shell/build ikut dibunuh), tapi
+        # sesi + history tetap ada sehingga user bisa langsung lanjut.
+        reply = (
+            f"❄️ Stopped — {title}\nThe running step was force-killed. Session and history are intact."
+            if stopped else "No active task to stop."
+        )
         _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
         return True
     if command == "/new":
@@ -1851,7 +1916,9 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_iteration(current, maximum):
-        # Awal tiap iterasi = mulai menunggu respons provider.
+        # Awal tiap iterasi = mulai menunggu respons provider. Simpan nomor
+        # langkah supaya header status bisa menunjukkan 'step 4/20'.
+        live.set_iteration(current, maximum)
         live.set_waiting()
 
     def on_narration(sentence: str):

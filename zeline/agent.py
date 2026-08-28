@@ -37,6 +37,14 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 })
 
 
+class _TurnCancelled(Exception):
+    """Sinyal internal: user menekan /stop di tengah turn.
+
+    Bukan error yang perlu ditampilkan — pemanggil menerjemahkannya menjadi
+    balasan "Stopped." biasa.
+    """
+
+
 def _parse_response(text: str) -> dict[str, Any]:
     """Parse normal JSON dan quirk router yang mengirim JSON+trailing SSE."""
     cleaned = text.strip()
@@ -94,6 +102,9 @@ class Zeline:
         # Jejak aktivitas turn terakhir → dipakai untuk memutuskan apakah sesi
         # cukup "berbobot" untuk dijalankan refleksi self-improvement.
         self.last_turn_tool_calls: int = 0
+        # Predikat pembatalan turn aktif (diisi oleh send()); dipakai loop
+        # streaming agar /stop langsung memutus, bukan menunggu provider.
+        self._should_stop: Callable[[], bool] | None = None
 
     def _build_system_prompt(self) -> str:
         return (
@@ -148,6 +159,31 @@ class Zeline:
         # Jangan mulai dari assistant/tool orphan (protocol tool-call).
         start = next((i for i, m in enumerate(restored) if m.get("role") == "user"), 0)
         self.messages = [system, *restored[start:]]
+
+    def _cancelled(self) -> bool:
+        """True bila user menekan /stop di tengah turn ini.
+
+        Dipakai dari dalam loop streaming supaya pembatalan terasa SEKETIKA,
+        bukan menunggu respons provider selesai (bisa 180 detik).
+        """
+        check = getattr(self, "_should_stop", None)
+        try:
+            return bool(check and check())
+        except Exception:
+            return False
+
+    def _drop_incomplete_tail(self) -> None:
+        """Buang ekor pesan yang belum lengkap setelah turn dibatalkan.
+
+        Protocol tool-call mewajibkan setiap ``assistant(tool_calls)`` diikuti
+        SEMUA hasil ``tool``-nya. Kalau /stop datang saat tool masih jalan,
+        pasangan itu tidak lengkap dan panggilan berikutnya akan ditolak
+        provider. Maka ekor tak lengkap dibuang agar sesi tetap bisa dipakai.
+        """
+        while self.messages and self.messages[-1].get("role") == "tool":
+            self.messages.pop()
+        if self.messages and self.messages[-1].get("role") == "assistant" and self.messages[-1].get("tool_calls"):
+            self.messages.pop()
 
     def _call_llm(
         self,
@@ -293,6 +329,9 @@ class Zeline:
         tool_map: dict[int, dict[str, Any]] = {}
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
+                # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
+                if self._cancelled():
+                    raise _TurnCancelled()
                 if not raw_line:
                     continue
                 line = str(raw_line).strip()
@@ -360,6 +399,9 @@ class Zeline:
         blocks: dict[int, dict[str, Any]] = {}
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
+                # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
+                if self._cancelled():
+                    raise _TurnCancelled()
                 if not raw_line:
                     continue
                 line = str(raw_line).strip()
@@ -459,8 +501,41 @@ class Zeline:
             return "Please write a message first."
         if len(text) > 16_000:
             return "Message too long (maximum 16,000 characters)."
+        # Simpan predikat pembatalan supaya loop streaming bisa berhenti di
+        # tengah respons provider (tanpa ini /stop harus menunggu sampai
+        # seluruh respons selesai — sumber keluhan 'susah disuruh stop').
+        self._should_stop = should_stop
         self.messages.append({"role": "user", "content": text})
         self.last_turn_tool_calls = 0
+        try:
+            return self._run_turn(
+                on_tool=on_tool,
+                on_tool_result=on_tool_result,
+                on_iteration=on_iteration,
+                should_stop=should_stop,
+                take_steer=take_steer,
+                on_narration=on_narration,
+                on_stream_delta=on_stream_delta,
+            )
+        except _TurnCancelled:
+            # /stop di tengah jalan: rapikan ekor tool-call yang belum lengkap
+            # supaya pesan berikutnya di sesi ini tidak ditolak provider.
+            self._drop_incomplete_tail()
+            self._trim_history()
+            return "Stopped."
+        finally:
+            self._should_stop = None
+
+    def _run_turn(
+        self,
+        on_tool: Callable[[str, dict[str, Any]], None] | None = None,
+        on_tool_result: Callable[[str, dict[str, Any], str], None] | None = None,
+        on_iteration: Callable[[int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        take_steer: Callable[[], str | None] | None = None,
+        on_narration: Callable[[str], None] | None = None,
+        on_stream_delta: Callable[[str], None] | None = None,
+    ) -> str:
         turn_started = time.monotonic()
         repeated_failures = 0  # tool call berturut yang balik ERROR
 
@@ -535,7 +610,16 @@ class Zeline:
                 with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
                     results = list(pool.map(lambda ca: self.executor.run(ca[1], ca[2]), parsed_calls))
             else:
-                results = [self.executor.run(name, args) for _tc, name, args in parsed_calls]
+                # Serial: cek pembatalan SEBELUM tiap tool, jadi /stop tidak
+                # perlu menunggu seluruh rangkaian tool selesai.
+                results = []
+                for _tc, name, args in parsed_calls:
+                    if should_stop and should_stop():
+                        raise _TurnCancelled()
+                    results.append(self.executor.run(name, args))
+
+            if should_stop and should_stop():
+                raise _TurnCancelled()
 
             steer_text = take_steer() if take_steer else None
             for (tool_call, name, args), result in zip(parsed_calls, results):
