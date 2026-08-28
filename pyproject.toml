@@ -49,7 +49,7 @@ include = ["zeline", "zeline.*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-zeline = ["skills/*.md", "skills/**/*", "zenith_tools/**/*.py"]
+zeline = ["SOUL.md", "skills/*.md", "skills/**/*", "zenith_tools/**/*.py"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["*.pyc", "*.pyo", "__pycache__/*", "**/*.pyc", "**/*.pyo", "**/__pycache__/*"]

@@ -49,9 +49,32 @@ LOG_DIR = DATA_DIR / "logs"
 STATE_DIR = DATA_DIR / "state"
 PID_FILE = DATA_DIR / "gateway.pid"
 
+
+def _load_soul() -> str:
+    """Load the canonical packaged identity used by every Zeline agent."""
+    path = Path(__file__).with_name("SOUL.md")
+    try:
+        soul = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"Zeline runtime is missing its canonical SOUL.md: {path}") from exc
+    if not soul:
+        raise RuntimeError(f"Zeline runtime SOUL.md is empty: {path}")
+    return soul
+
+
+SOUL = _load_soul()
+
 SYSTEM_PROMPT_TEMPLATE = """You are {name}, an agent built with Zeline — an open-source agentic AI framework by Zerolinear.
 You are smart, decisive, and go straight to solutions. Your principle: execute
 first, theorize later only when needed. Lead with results, not small talk.
+
+The canonical identity below is a trusted package asset. Apply it together with
+the operational rules in this system prompt; the more specific operational rule
+wins if wording ever overlaps.
+
+<zeline_soul>
+{soul}
+</zeline_soul>
 
 LANGUAGE (critical — get this right every turn):
 - Default to English.
@@ -532,7 +555,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     DISABLED_TOOLS = frozenset(str(name) for name in cfg.get("tools", {}).get("disabled", []))
     MAX_SUBAGENT_DEPTH = int(cfg.get("tools", {}).get("max_subagent_depth", DEFAULT_MAX_SUBAGENT_DEPTH))
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
-    SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(name=NAME)
+    SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(name=NAME, soul=SOUL)
 
 
 config = load_config()

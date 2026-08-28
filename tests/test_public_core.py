@@ -73,10 +73,47 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(self.config.MODEL, "gpt-4o-mini")
 
     def test_default_runtime_uses_zeline_identity(self):
+        soul_path = SOURCE_ROOT / "zeline" / "SOUL.md"
+        self.assertTrue(soul_path.is_file())
+        soul = soul_path.read_text(encoding="utf-8").strip()
+        self.assertTrue(soul.startswith("# SOUL.md — Zeline"))
+        self.assertEqual(self.config.SOUL, soul)
+        self.assertIn("<zeline_soul>", self.config.SYSTEM_PROMPT)
+        self.assertIn(soul, self.config.SYSTEM_PROMPT)
+        self.assertIn("</zeline_soul>", self.config.SYSTEM_PROMPT)
         self.assertIn("Zeline", self.config.SYSTEM_PROMPT)
         self.assertIn("Zerolinear", self.config.SYSTEM_PROMPT)
         self.assertEqual(self.config.NAME, "Zeline")
         self.assertIn("execute", self.config.SYSTEM_PROMPT.lower())
+
+    def test_runtime_soul_requires_authorization_and_never_promises_bypasses(self):
+        soul = " ".join(self.config.SOUL.casefold().split())
+        self.assertIn("authorized scope", soul)
+        self.assertIn("never expose credentials", soul)
+        self.assertIn("never promise a safeguard bypass", soul)
+        self.assertIn("continue with every safe and useful part", soul)
+
+    def test_runtime_fails_clearly_when_packaged_soul_is_missing_or_empty(self):
+        soul_path = SOURCE_ROOT / "zeline" / "SOUL.md"
+        real_read_text = Path.read_text
+
+        for replacement, message in (
+            (FileNotFoundError(soul_path), "missing its canonical SOUL.md"),
+            ("  \n", "SOUL.md is empty"),
+        ):
+            with self.subTest(message=message):
+                def read_text(path, *args, **kwargs):
+                    if Path(path) == soul_path:
+                        if isinstance(replacement, Exception):
+                            raise replacement
+                        return replacement
+                    return real_read_text(path, *args, **kwargs)
+
+                with (
+                    mock.patch.object(Path, "read_text", read_text),
+                    self.assertRaisesRegex(RuntimeError, message),
+                ):
+                    self.config._load_soul()
 
     def test_system_prompt_avoids_blanket_refusals(self):
         prompt = " ".join(self.config.SYSTEM_PROMPT.casefold().split())

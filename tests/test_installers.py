@@ -15,6 +15,12 @@ RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 
 class ReleaseVersionContractTests(unittest.TestCase):
+    def test_runtime_soul_is_declared_as_package_data(self):
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn('"SOUL.md"', pyproject)
+        self.assertIn("include zeline/SOUL.md", manifest)
+
     def test_public_urls_use_canonical_repo_name(self):
         """Nama repo lama cuma hidup lewat redirect GitHub — jangan diandalkan."""
         pages = [
