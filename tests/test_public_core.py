@@ -13,6 +13,7 @@ import json
 import re
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1003,10 +1004,51 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(any("allowlist" in error.lower() for error in errors))
         self.assertEqual(telegram.validate_config({"token": "123:abc", "tool_profile": "full", "allowed": [111222333]}), [])
 
-    def test_telegram_working_status_matches_zeline_style(self):
+    def test_telegram_working_status_shows_progress_and_stop_hint(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._working_status_text(125), "⏳ Working — 2 min 5 s · provider is slow to respond")
-        self.assertEqual(telegram._working_status_text(8), "⏳ Working — 8 s")
+        # Header status harus membuktikan agent MASIH kerja: jam berjalan,
+        # langkah ke berapa, sisa budget, dan bahwa /stop tersedia.
+        line = telegram._working_status_text(125, iteration=4, maximum=20, remaining_seconds=235)
+        self.assertIn("⏳ Working — 2 min 5 s", line)
+        self.assertIn("step 4/20", line)
+        self.assertIn("235s left", line)
+        self.assertIn("/stop to cancel", line)
+        # Satu baris saja — user membenci status yang turun ke baris baru.
+        self.assertNotIn("\n", line)
+        # Tidak pernah menyalahkan provider/model.
+        self.assertNotIn("slow to respond", line)
+        self.assertIn("⏳ Working — 8 s", telegram._working_status_text(8))
+
+    def test_telegram_status_bubble_appears_when_work_takes_long(self):
+        # Keluhan nyata: "punya gituan ga biar gua ga didiemin terus".
+        # Turn pendek tetap bersih (tanpa bubble), turn panjang WAJIB memunculkan
+        # status berjalan walaupun belum ada satu pun tool yang jalan.
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        with mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 5}}):
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            self.assertEqual(live._render(), "")  # baru mulai → diam itu benar
+            live.turn_started -= telegram._STATUS_AFTER_SECONDS + 5
+            live.set_iteration(3, 20)
+            rendered = live._render()
+        self.assertIn("⏳ Working", rendered)
+        self.assertIn("step 3/20", rendered)
+        self.assertIn("/stop to cancel", rendered)
+
+    def test_telegram_long_wait_creates_status_bubble_from_heartbeat(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        sent = []
+
+        def fake_api(_api, method, **kwargs):
+            sent.append((method, str(kwargs.get("text") or "")))
+            return {"ok": True, "result": {"message_id": 9}}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.turn_started -= telegram._STATUS_AFTER_SECONDS + 1
+            live.tick()  # heartbeat saja, tanpa tool
+        created = [text for method, text in sent if method == "sendMessage"]
+        self.assertTrue(created)
+        self.assertIn("⏳ Working", created[0])
 
     def test_api_call_retries_send_on_transient_network_error(self):
         # sendMessage must retry on ConnectionError so a reply isn't lost when
@@ -1653,13 +1695,15 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
         captured: dict[str, object] = {}
-        real_run = tools.subprocess.run
+        real_popen = tools.subprocess.Popen
 
-        def fake_run(*args, **kwargs):
-            captured["timeout"] = kwargs.get("timeout")
-            return real_run(*args, **kwargs)
+        class TrackedPopen(real_popen):  # type: ignore[misc,valid-type]
+            def communicate(self, *args, **kwargs):
+                # Timeout yang benar-benar diberlakukan pada proses foreground.
+                captured.setdefault("timeout", kwargs.get("timeout"))
+                return super().communicate(*args, **kwargs)
 
-        with mock.patch.object(tools.subprocess, "run", fake_run):
+        with mock.patch.object(tools.subprocess, "Popen", TrackedPopen):
             out = executor.run("run_shell", {"command": "printf ok", "timeout": 600})
         self.assertIn("exit=0", out)
         self.assertIn("ok", out)
@@ -1671,15 +1715,120 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("larger timeout", timed_out)
         self.assertIn("background=true", timed_out)
 
+    def test_stop_force_kills_running_foreground_command(self):
+        """/stop harus MEMAKSA: proses shell yang jalan ikut dibunuh.
+
+        Keluhan nyata: "kadang susah di suruh stop, harus matiin gateway terus".
+        Penyebabnya foreground command dijalankan tanpa handle proses, jadi
+        pembatalan baru terasa setelah perintah selesai sendiri.
+        """
+        tools = importlib.import_module("zeline.tools")
+        executor = tools.ToolExecutor("telegram:stopme", profile="full", workspace=str(self.home))
+        result: dict[str, str] = {}
+        # Perintah sleep panjang yang portabel (cmd.exe tidak punya `sleep`).
+        sleeper = f'"{sys.executable}" -c "import time; time.sleep(120)"'
+
+        def worker():
+            result["out"] = executor.run("run_shell", {"command": sleeper, "timeout": 300})
+
+        thread = threading.Thread(target=worker, daemon=True)
+        started = time.monotonic()
+        thread.start()
+
+        # Tunggu sampai prosesnya benar-benar terdaftar, lalu paksa batal.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not tools._FG_PROCS.get("telegram:stopme"):
+            time.sleep(0.05)
+        self.assertTrue(tools._FG_PROCS.get("telegram:stopme"), "process was never tracked")
+
+        killed = tools.cancel_identity("telegram:stopme")
+        self.assertGreaterEqual(killed, 1)
+
+        thread.join(timeout=30)
+        self.assertFalse(thread.is_alive(), "run_shell did not return after cancel")
+        # Berhenti jauh sebelum sleep 120 selesai = benar-benar dipaksa.
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertIn("exit=", result.get("out", ""))
+        # Registry bersih kembali (tidak ada proses menggantung).
+        self.assertFalse(tools._FG_PROCS.get("telegram:stopme"))
+
+    def test_session_stop_cancels_turn_and_kills_child_process(self):
+        """SessionStore.stop() menyalakan cancel_event DAN membunuh proses anak."""
+        sessions_module = importlib.import_module("zeline.sessions")
+        tools = importlib.import_module("zeline.tools")
+        store = sessions_module.SessionStore(max_sessions=4, persistence=None)
+        session = store.get_or_create("telegram:99", "full", workspace=str(self.home))
+        with store._lock:
+            session.running = True
+
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **tools.DETACH_KWARGS,
+        )
+        tools._fg_track("telegram:99", process)
+        try:
+            self.assertTrue(store.stop("telegram:99"))
+            self.assertTrue(session.cancel_event.is_set())
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and process.poll() is None:
+                time.sleep(0.05)
+            self.assertIsNotNone(process.poll(), "child process survived /stop")
+        finally:
+            if process.poll() is None:
+                process.kill()
+            tools._fg_untrack("telegram:99", process)
+
+    def test_stop_mid_stream_returns_stopped_and_keeps_session_usable(self):
+        """Pembatalan saat token masih mengalir tidak boleh merusak sesi.
+
+        Turn dibatalkan di tengah stream → jawaban "Stopped.", dan ekor
+        assistant(tool_calls) tanpa hasil tool dibuang supaya pesan berikutnya
+        tidak ditolak provider.
+        """
+        agent_module = importlib.import_module("zeline.agent")
+        agent = agent_module.Zeline(identity="telegram:stream", tool_profile="safe", workspace=str(self.home))
+        cancel = threading.Event()
+
+        def fake_call_llm(*_args, **_kwargs):
+            # Meniru loop stream: batal di tengah pembacaan chunk.
+            for _ in range(1000):
+                if agent._cancelled():
+                    raise agent_module._TurnCancelled()
+            return {"role": "assistant", "content": "never reached"}
+
+        with mock.patch.object(agent, "_call_llm", side_effect=fake_call_llm):
+            cancel.set()
+            reply = agent.send("kerjakan sesuatu yang panjang", should_stop=cancel.is_set)
+        self.assertEqual(reply, "Stopped.")
+        # Ekor tak lengkap dibuang: pesan terakhir bukan assistant-with-tool_calls.
+        self.assertFalse(agent.messages[-1].get("tool_calls"))
+        # Sesi masih bisa dipakai lagi setelah stop.
+        self.assertIsNone(agent._should_stop)
+
+    def test_cancelled_turn_drops_orphan_tool_call_tail(self):
+        agent_module = importlib.import_module("zeline.agent")
+        agent = agent_module.Zeline(identity="telegram:tail", tool_profile="safe", workspace=str(self.home))
+        agent.messages.append({"role": "user", "content": "hi"})
+        agent.messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": "1", "function": {"name": "web_search", "arguments": "{}"}}]})
+        agent.messages.append({"role": "tool", "tool_call_id": "1", "content": "partial"})
+        agent._drop_incomplete_tail()
+        self.assertEqual(agent.messages[-1]["role"], "user")
+
     def test_background_process_lifecycle_is_tracked_pollable_and_killable(self):
         tools = importlib.import_module("zeline.tools")
         executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
         tools._BG_JOBS.clear()
+        # Portable "print then stay alive": `cmd.exe` has no `;` separator and no
+        # `sleep`, so a POSIX one-liner exits instantly there and the job is
+        # already finished before the first poll.
+        long_runner = (
+            f'"{sys.executable}" -c '
+            '"import sys,time; sys.stdout.write(chr(102)+chr(105)+chr(114)+chr(115)+chr(116)+chr(10)); '
+            'sys.stdout.flush(); time.sleep(30)"'
+        )
         try:
-            started = executor.run(
-                "run_shell",
-                {"command": "printf 'first\\n'; sleep 30", "background": True},
-            )
+            started = executor.run("run_shell", {"command": long_runner, "background": True})
             self.assertIn("started background job=", started)
             job_id = started.split("job=", 1)[1].split()[0]
 
@@ -1777,6 +1926,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("never report an install as \"failed\" when the message says it timed out", prompt)
         self.assertIn("run_shell with background=true", prompt)
         self.assertIn("process_control (list/poll/log/kill)", prompt)
+
+    def test_system_prompt_teaches_stop_semantics(self):
+        """Model harus tahu /stop = pembatalan sengaja, bukan error untuk diulang."""
+        prompt = " ".join(self.config.SYSTEM_PROMPT.casefold().split())
+        self.assertIn("/stop", prompt)
+        self.assertIn("force-kills whatever command", prompt)
+        self.assertIn("do not resume the cancelled work", prompt)
 
     def test_safe_progress_line_balances_truncated_html_tags(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2393,7 +2549,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(sessions.stopped, "telegram:42")
         self.assertFalse(gateway_stop.is_set())
-        self.assertEqual(api.call_args.kwargs["text"], "❄️ Bangun aplikasi")
+        reply = api.call_args.kwargs["text"]
+        self.assertIn("❄️ Stopped — Bangun aplikasi", reply)
+        self.assertIn("force-killed", reply)
+        self.assertIn("history are intact", reply)
 
     def test_telegram_stop_when_idle_uses_exact_message(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Callable
 
 from zeline import config
+from zeline import tools
 from zeline.agent import Zeline
 from zeline.session_store import SessionPersistence
 
@@ -156,7 +157,14 @@ class SessionStore:
             if session is None or not session.running:
                 return False
             session.cancel_event.set()
-            return True
+        # /stop harus MEMAKSA berhenti, bukan sekadar menandai flag: perintah
+        # foreground yang sedang jalan (pytest/build/install) dibunuh beserta
+        # grup prosesnya, jadi turn tidak lagi tertahan sampai perintah selesai.
+        try:
+            tools.cancel_identity(identity)
+        except Exception:
+            pass
+        return True
 
     def reflect(self, identity: str, min_tool_calls: int = 4) -> str | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
@@ -188,6 +196,12 @@ class SessionStore:
             session = self._sessions.pop(identity, None)
             if session is not None:
                 session.cancel_event.set()
+        # Sama seperti /stop: proses foreground milik sesi ini harus benar-benar
+        # dibunuh, bukan dibiarkan hidup setelah sesinya dibuang.
+        try:
+            tools.cancel_identity(identity)
+        except Exception:
+            pass
         # /new atau /reset harus menghapus history disk juga, bukan cuma RAM.
         cleared_disk = False
         if self._persistence is not None:

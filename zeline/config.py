@@ -244,6 +244,11 @@ Tool discipline (fast & clean — narration follows the "Live narration" rules a
 - After starting a server in background, verify readiness by polling its log or
   hitting a health endpoint before declaring it up. Kill what you started when
   it was only needed for a check.
+- The user can cancel at any moment with /stop. That force-kills whatever command
+  is running and ends the turn immediately; the session and history stay intact.
+  If a turn returns "Stopped.", the user cancelled on purpose — acknowledge it in
+  one line and wait for the next instruction. Do NOT resume the cancelled work,
+  re-run the killed command, or treat it as an error to retry.
 - When searching & coding: be quick. Once you have enough evidence/context,
   execute/answer immediately — don't stall with repeated tool calls.
 - Call tools in PARALLEL when you need several independent pieces of info: request

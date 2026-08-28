@@ -23,6 +23,7 @@ import re
 import signal
 import socket
 import subprocess
+import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from zeline import config
 from zeline import memory
 from zeline import skills
 from zeline import mcp as mcp_module
+from zeline import _winproc
 
 ToolFunction = Callable[..., str]
 
@@ -193,6 +195,131 @@ class _BackgroundJob:
 _BG_JOBS: dict[str, _BackgroundJob] = {}
 _BG_COUNTER = itertools.count(1)
 
+# --------------------------------------------------------- foreground tracking
+# Perintah foreground (run_shell/execute_code tanpa background) dulu dijalankan
+# lewat subprocess.run, sehingga TIDAK ada handle proses yang bisa dibunuh saat
+# user menekan /stop: pembatalan baru terasa setelah perintah selesai sendiri
+# (mis. build 10 menit) — itu sebabnya stop terasa "tidak bisa dipaksa" dan
+# gateway harus dimatikan manual. Registry ini menyimpan proses hidup per
+# identity supaya cancel_identity() bisa mematikan seluruh grup prosesnya.
+_FG_PROCS: dict[str, set[subprocess.Popen]] = {}
+_FG_LOCK = threading.Lock()
+
+# POSIX memakai process group (``start_new_session`` + ``killpg``) supaya seluruh
+# keturunan sebuah perintah ikut mati. Windows tidak punya killpg, jadi child
+# dibuat sebagai group leader lewat creationflags dan dibunuh dengan
+# ``taskkill /T /F`` (lihat zeline._winproc).
+IS_WINDOWS = os.name == "nt"
+DETACH_KWARGS: dict[str, Any] = (
+    {"creationflags": _winproc.CREATION_FLAGS} if IS_WINDOWS else {"start_new_session": True}
+)
+
+
+def _fg_track(identity: str, process: subprocess.Popen) -> None:
+    with _FG_LOCK:
+        _FG_PROCS.setdefault(identity or "cli:local", set()).add(process)
+
+
+def _fg_untrack(identity: str, process: subprocess.Popen) -> None:
+    with _FG_LOCK:
+        bucket = _FG_PROCS.get(identity or "cli:local")
+        if bucket is None:
+            return
+        bucket.discard(process)
+        if not bucket:
+            _FG_PROCS.pop(identity or "cli:local", None)
+
+
+def _terminate_group(process: subprocess.Popen) -> None:
+    """Bunuh proses beserta seluruh anaknya, lalu paksa bila masih bertahan."""
+    if IS_WINDOWS:
+        if not _winproc.terminate_tree(process.pid):
+            try:
+                process.kill()
+            except Exception:
+                pass
+        try:
+            process.wait(timeout=5)
+        except Exception:
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except Exception:
+        try:
+            process.terminate()
+        except Exception:
+            return
+    try:
+        process.wait(timeout=3)
+        return
+    except Exception:
+        pass
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
+def cancel_identity(identity: str) -> int:
+    """Bunuh semua perintah foreground milik satu sesi. Return jumlah yang dibunuh.
+
+    Dipanggil dari SessionStore.stop() supaya /stop benar-benar memaksa berhenti:
+    tanpa ini, `pytest`/`npm install`/build yang sedang jalan tetap menahan turn
+    sampai selesai walaupun user sudah membatalkan.
+    """
+    with _FG_LOCK:
+        processes = list(_FG_PROCS.get(identity or "cli:local", ()))
+    killed = 0
+    for process in processes:
+        if process.poll() is None:
+            _terminate_group(process)
+            killed += 1
+    return killed
+
+
+def _run_tracked(
+    command: Any,
+    *,
+    shell: bool,
+    cwd: str,
+    seconds: int,
+    identity: str,
+) -> tuple[int, str, bool]:
+    """Jalankan perintah foreground yang BISA dibunuh oleh /stop.
+
+    Mengembalikan ``(exit_code, output, timed_out)``. Prosesnya dijalankan di
+    session/grup sendiri (``start_new_session``) supaya seluruh keturunannya
+    ikut mati saat dibatalkan.
+    """
+    process = subprocess.Popen(
+        command,
+        shell=shell,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env={**os.environ},
+        **DETACH_KWARGS,
+    )
+    _fg_track(identity, process)
+    try:
+        try:
+            output, _ = process.communicate(timeout=seconds)
+            return int(process.returncode or 0), output or "", False
+        except subprocess.TimeoutExpired:
+            _terminate_group(process)
+            try:
+                output, _ = process.communicate(timeout=5)
+            except Exception:
+                output = ""
+            return -1, output or "", True
+    finally:
+        _fg_untrack(identity, process)
+
 
 def _bg_log_dir() -> Path:
     path = config.STATE_DIR / "processes"
@@ -249,7 +376,7 @@ def _bg_status(job: _BackgroundJob) -> str:
     return f"exited (exit={code})"
 
 
-def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False) -> str:
+def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False, identity: str = "cli:local") -> str:
     """Owner-only shell. Gateways do not receive this profile by default.
 
     ``timeout`` lets the agent raise the limit for genuinely long work such as
@@ -288,7 +415,7 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
                 stderr=subprocess.STDOUT,
                 text=True,
                 env={**os.environ},
-                start_new_session=True,
+                **DETACH_KWARGS,
             )
         except Exception as exc:
             return f"ERROR starting background command: {exc}"
@@ -308,23 +435,16 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
 
     seconds = _clamp_timeout(timeout)
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=seconds,
-            env={**os.environ},
+        code, output, timed_out = _run_tracked(
+            command, shell=True, cwd=str(workspace), seconds=seconds, identity=identity,
         )
-        output = _truncate_output((result.stdout or "") + (result.stderr or ""))
-        return f"exit={result.returncode}\n{output}"
-    except subprocess.TimeoutExpired:
-        return (
-            f"ERROR: command timed out (>{seconds} seconds). "
-            f"Retry with a larger timeout (max {config.SHELL_MAX_TIMEOUT_SECONDS}) "
-            "or run it with background=true and poll it."
-        )
+        if timed_out:
+            return (
+                f"ERROR: command timed out (>{seconds} seconds). "
+                f"Retry with a larger timeout (max {config.SHELL_MAX_TIMEOUT_SECONDS}) "
+                "or run it with background=true and poll it."
+            )
+        return f"exit={code}\n{_truncate_output(output)}"
     except Exception as exc:
         return f"ERROR running command: {exc}"
 
@@ -372,41 +492,30 @@ def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
         job.close_log()
         _BG_JOBS.pop(job.job_id, None)
         return f"job={job.job_id} already finished (exit={job.process.returncode})."
-    try:
-        os.killpg(os.getpgid(job.process.pid), signal.SIGTERM)
-    except Exception:
-        job.process.terminate()
-    try:
-        job.process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(job.process.pid), signal.SIGKILL)
-        except Exception:
-            job.process.kill()
+    # Satu jalur terminasi lintas-OS (killpg di POSIX, taskkill /T di Windows).
+    _terminate_group(job.process)
     job.close_log()
     _BG_JOBS.pop(job.job_id, None)
     return f"job={job.job_id} killed."
 
 
-def _execute_code(code: str, workspace: Path, timeout: Any = None) -> str:
+def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local") -> str:
     """Run an owner-only Python snippet without shell interpolation."""
     if len(code) > 100_000:
         return "ERROR: code too long (maximum 100,000 characters)."
     seconds = _clamp_timeout(timeout)
     try:
         workspace.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
+        exit_code, output, timed_out = _run_tracked(
             [os.environ.get("PYTHON", "python"), "-c", code],
-            cwd=str(workspace), capture_output=True, text=True, timeout=seconds,
-            env={**os.environ},
+            shell=False, cwd=str(workspace), seconds=seconds, identity=identity,
         )
-        output = _truncate_output((result.stdout or "") + (result.stderr or ""))
-        return f"exit={result.returncode}\n{output}"
-    except subprocess.TimeoutExpired:
-        return (
-            f"ERROR: code timed out (>{seconds} seconds). "
-            f"Retry with a larger timeout (max {config.SHELL_MAX_TIMEOUT_SECONDS})."
-        )
+        if timed_out:
+            return (
+                f"ERROR: code timed out (>{seconds} seconds). "
+                f"Retry with a larger timeout (max {config.SHELL_MAX_TIMEOUT_SECONDS})."
+            )
+        return f"exit={exit_code}\n{_truncate_output(output)}"
     except Exception as exc:
         return f"ERROR running code: {exc}"
 
@@ -1546,8 +1655,8 @@ class ToolExecutor:
             "update_task": _update_task,
             "save_skill": skills.save_skill,
             "update_skill": skills.update_skill,
-            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout),
-            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background),
+            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity),
+            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
             "delegate_task": lambda goal, context="": self._delegate_task(goal, context),
             "recall_history": lambda query="": self._recall_history(query),
