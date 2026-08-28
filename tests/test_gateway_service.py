@@ -40,6 +40,50 @@ class GatewayServiceTests(unittest.TestCase):
             os.environ["ZELINE_HOME"] = self.old_home
         self.temp.cleanup()
 
+    def test_termux_gateway_acquires_wake_lock_best_effort(self):
+        """Android must not suspend every agent in the shared Termux UID."""
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.dict(
+            self.service.os.environ,
+            {"PREFIX": "/data/data/com.termux/files/usr", "TERMUX_VERSION": "0.118"},
+            clear=False,
+        ), mock.patch.object(
+            self.service.shutil, "which", return_value="/data/data/com.termux/files/usr/bin/termux-wake-lock"
+        ), mock.patch.object(
+            self.service.subprocess, "run", return_value=completed
+        ) as run:
+            acquired, message = self.service.ensure_termux_wake_lock()
+        self.assertTrue(acquired)
+        self.assertIn("wake lock active", message.lower())
+        run.assert_called_once_with(
+            ["/data/data/com.termux/files/usr/bin/termux-wake-lock"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+
+    def test_termux_wake_lock_failure_warns_but_never_blocks_gateway(self):
+        with mock.patch.dict(
+            self.service.os.environ,
+            {"PREFIX": "/data/data/com.termux/files/usr", "TERMUX_VERSION": "0.118"},
+            clear=False,
+        ), mock.patch.object(self.service.shutil, "which", return_value=None):
+            acquired, message = self.service.ensure_termux_wake_lock()
+        self.assertFalse(acquired)
+        self.assertIn("may suspend", message.lower())
+        self.assertIn("battery", message.lower())
+
+    def test_non_termux_platform_never_calls_wake_lock_command(self):
+        env = dict(self.service.os.environ)
+        env.pop("TERMUX_VERSION", None)
+        env["PREFIX"] = "/usr"
+        with mock.patch.dict(self.service.os.environ, env, clear=True), \
+             mock.patch.object(self.service.subprocess, "run") as run:
+            acquired, message = self.service.ensure_termux_wake_lock()
+        self.assertFalse(acquired)
+        self.assertEqual(message, "")
+        run.assert_not_called()
+
     @unittest.skipIf(os.name == "nt", "start_new_session is POSIX-only; Windows spawn is covered in test_windows_support")
     def test_start_records_pid_and_invokes_cli_gateway_run(self):
         cfg = self.config.config_copy()
@@ -196,6 +240,16 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertTrue(stopped)
         kill.assert_called_once_with(12345, signal.SIGTERM)
         self.assertIn("stopped", message.lower())
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups do not exist on Windows")
+    def test_stop_never_signals_a_shared_parent_process_group(self):
+        """A foreground run may share a group with its Termux shell/other agents."""
+        with mock.patch.object(self.service.os, "getpgid", return_value=777), \
+             mock.patch.object(self.service.os, "killpg") as killpg, \
+             mock.patch.object(self.service.os, "kill") as kill:
+            self.assertTrue(self.service._signal_process(12345, signal.SIGTERM))
+        killpg.assert_not_called()
+        kill.assert_called_once_with(12345, signal.SIGTERM)
 
     def test_log_tail_is_empty_without_log_file(self):
         self.assertEqual(self.service.tail_log(), "(no gateway log yet)")

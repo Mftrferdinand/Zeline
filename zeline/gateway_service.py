@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -37,6 +38,48 @@ IS_WINDOWS = os.name == "nt"
 _SIGKILL = getattr(signal, "SIGKILL", None) or getattr(signal, "SIGBREAK", signal.SIGTERM)
 
 LOG_FILE = config.LOG_DIR / "gateway.log"
+
+
+def is_termux() -> bool:
+    """True only inside the real Termux Android runtime."""
+    prefix = str(os.environ.get("PREFIX", ""))
+    return prefix.startswith("/data/data/com.termux/") or bool(os.environ.get("TERMUX_VERSION"))
+
+
+def ensure_termux_wake_lock() -> tuple[bool, str]:
+    """Request the app-wide Termux wake lock before gateway polling.
+
+    Android/OEM power management suspends or kills all processes owned by the
+    Termux app together. If Zeline and another agent both run under that UID,
+    losing Termux makes both appear to die at once. ``termux-wake-lock`` asks
+    TermuxService to hold a CPU wake lock. It is best-effort: desktop/server
+    installs never call it, and a missing Termux API must not block startup.
+    """
+    if not is_termux():
+        return False, ""
+    command = shutil.which("termux-wake-lock")
+    if not command:
+        return False, (
+            "Termux wake lock unavailable — Android may suspend Zeline and other "
+            "Termux agents together. Disable battery optimization for Termux."
+        )
+    try:
+        result = subprocess.run(
+            [command], capture_output=True, text=True, timeout=8,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, (
+            f"Termux wake lock failed ({exc.__class__.__name__}) — Android may suspend "
+            "Zeline. Disable battery optimization for Termux."
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "request rejected").strip()[:160]
+        return False, (
+            f"Termux wake lock failed ({detail}) — Android may suspend Zeline. "
+            "Disable battery optimization for Termux."
+        )
+    return True, "Termux wake lock active — Android CPU sleep protection enabled."
+
 
 # Kunci eksklusif proses gateway. PID file saja TIDAK cukup mencegah gateway
 # ganda: hanya `gateway start` (spawn background) yang menulis PID file,
@@ -477,7 +520,11 @@ def _signal_process(pid: int, sig: int) -> bool:
     except (ProcessLookupError, PermissionError, OSError):
         pgid = None
     try:
-        if pgid is not None:
+        # Managed children are spawned with start_new_session=True, therefore
+        # their PGID equals their PID and it is safe to signal the whole tree.
+        # A direct foreground `gateway run` can share its shell's process group;
+        # killpg there could terminate the Termux shell and unrelated agents.
+        if pgid is not None and pgid == pid:
             os.killpg(pgid, sig)
         else:
             os.kill(pid, sig)

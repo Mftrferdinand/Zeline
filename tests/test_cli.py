@@ -488,6 +488,22 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("gateway stop", result.lower())
         run_all.assert_not_called()
 
+    def test_gateway_run_warns_termux_users_to_prefer_managed_start(self):
+        cfg = self.config.config_copy()
+        cfg["provider"]["api_key"] = "test-key"
+        cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})
+        self.config.save_config(cfg)
+        fake_lock = mock.Mock()
+        fake_lock.acquire.return_value = True
+        with mock.patch.object(self.cli.gateway_service, "status", return_value=(False, "not running", None)), \
+             mock.patch.object(self.cli.gateway_service, "is_termux", return_value=True), \
+             mock.patch.object(self.cli.gateway_service, "GatewayLock", return_value=fake_lock), \
+             mock.patch.object(self.cli, "_run_gateway_loop", return_value=0):
+            result = self.invoke(["gateway", "run"])
+        self.assertIn("foreground", result.lower())
+        self.assertIn("zeline gateway start", result.lower())
+        fake_lock.release.assert_called_once()
+
     def test_gateway_list_flags_unmanaged_poller(self):
         # Poller di luar `gateway start` tidak punya PID file, jadi dulu
         # dilaporkan "not running" padahal aktif menjawab — user bingung kenapa
