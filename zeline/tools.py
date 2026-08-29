@@ -38,6 +38,7 @@ from zeline import memory
 from zeline import skills
 from zeline import network_routes
 from zeline import interaction
+from zeline import formatters
 from zeline import mcp as mcp_module
 from zeline import _winproc
 
@@ -92,6 +93,18 @@ def _read_file(path: str, workspace: Path) -> str:
         return f"ERROR read file: {exc}"
 
 
+def _format_note(target: Path) -> str:
+    """Formatter note for a file that was ALREADY written successfully.
+
+    Isolated so a failure inside the formatting layer can never be reported as
+    a failed write — the model would retry an operation that already landed.
+    """
+    try:
+        return formatters.format_file(target)
+    except Exception:  # noqa: BLE001 — the write already succeeded; never undo that
+        return ""
+
+
 def _write_file(path: str, content: str, workspace: Path) -> str:
     try:
         if len(content) > 200_000:
@@ -99,7 +112,10 @@ def _write_file(path: str, content: str, workspace: Path) -> str:
         target = _resolve_workspace_path(path, workspace)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return f"OK, wrote {len(content)} characters to {target}"
+        # Format AFTER the write is durable, and in its OWN try/except: a bug in
+        # the formatting layer must not be reported as a failed write, or the
+        # model retries an operation that already succeeded.
+        return f"OK, wrote {len(content)} characters to {target}{_format_note(target)}"
     except Exception as exc:
         return f"ERROR write file: {exc}"
 
@@ -110,9 +126,20 @@ def _edit_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
         content = target.read_text(encoding="utf-8")
         count = content.count(old_text)
         if count != 1:
-            return f"ERROR edit file: old_text must be unique (found {count})."
+            hint = ""
+            # Format-on-write may have rewritten the file after the model wrote
+            # it (ruff normalizes 'x' to "x", prettier re-indents, gofmt aligns).
+            # An old_text composed from what the model *thinks* it wrote then no
+            # longer matches. Say so, or the model retries the same failing edit.
+            if count == 0 and formatters.enabled() and formatters.candidates_for(target):
+                hint = (
+                    " The file may have been reformatted after it was written, so quoting,"
+                    " indentation, or spacing can differ from what you wrote —"
+                    " read_file it again and copy old_text from the current content."
+                )
+            return f"ERROR edit file: old_text must be unique (found {count}).{hint}"
         target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
-        return f"OK, {target} edited."
+        return f"OK, {target} edited.{_format_note(target)}"
     except Exception as exc:
         return f"ERROR edit file: {exc}"
 

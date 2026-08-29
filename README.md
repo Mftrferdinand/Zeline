@@ -32,6 +32,8 @@ Run it locally for development or deploy it to your own server or cloud, and con
 - **Skills** — reusable Markdown procedures loaded on demand; see the [Zenith skill index](zeline/skills/ZENITH_INDEX.md) for the full bundled catalog
 - **Messaging gateways** — Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook
 - **Built-in tools** — web search, web fetch, deep research, HTTP requests, file read/write/edit/search, image analysis, text-to-image generation, code execution, shell, and sub-agent delegation
+- **Human-in-the-loop** — `ask_user` pauses the run to ask you one question, with tappable options on messaging gateways and a keyboard prompt in the CLI
+- **Format on write** — after the agent writes or edits a file, the project's installed formatter (ruff, gofmt, biome, prettier, rustfmt, shfmt, …) runs on it, so generated code matches your repo style; configurable per extension and never overwrites a failed write
 - **Sub-agents** — delegate a focused subtask to an isolated child agent that returns only its final summary, keeping the main context clean (depth-limited; owner profiles only)
 - **MCP client** — connect external MCP servers (stdio or HTTP) and expose their tools automatically
 - **Scoped tool profiles** — gate access per surface:

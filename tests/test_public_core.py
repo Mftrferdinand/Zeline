@@ -1743,9 +1743,16 @@ class ZelinePublicCoreTests(unittest.TestCase):
         tools = importlib.import_module("zeline.tools")
         executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
         self.assertIn("OK", executor.run("write_file", {"path": "app.py", "content": "name = 'old'\n"}))
-        patched = executor.run("patch_file", {"path": "app.py", "old_text": "'old'", "new_text": "'new'"})
+        # Read back rather than assuming the bytes on disk match what was sent:
+        # format-on-write may normalize quotes/spacing, so old_text must come
+        # from the CURRENT content — exactly what the tool tells the model to do.
+        on_disk = (self.home / "app.py").read_text(encoding="utf-8")
+        old_literal = "'old'" if "'old'" in on_disk else '"old"'
+        new_literal = old_literal.replace("old", "new")
+        patched = executor.run("patch_file", {"path": "app.py", "old_text": old_literal, "new_text": new_literal})
         self.assertIn("patched", patched)
-        self.assertEqual((self.home / "app.py").read_text(encoding="utf-8"), "name = 'new'\n")
+        self.assertIn("new", (self.home / "app.py").read_text(encoding="utf-8"))
+        self.assertNotIn("old", (self.home / "app.py").read_text(encoding="utf-8"))
         task = executor.run("update_task", {"task": "Run tests", "status": "in_progress"})
         self.assertIn("Run tests", task)
         self.assertIn("in_progress", task)
