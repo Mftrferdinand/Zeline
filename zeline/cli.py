@@ -39,6 +39,7 @@ from zeline.agent import ZelineError
 from zeline.gateways import GATEWAYS, gateway_status, run_all
 from zeline import gateway_service
 from zeline import interaction
+from zeline import project_rules
 from zeline.sessions import SessionStore
 
 
@@ -1258,6 +1259,60 @@ def cmd_memory() -> int:
     return 0
 
 
+def cmd_init(directory: str | None = None, *, force: bool = False) -> int:
+    """Create a ZELINE.md so project conventions load automatically.
+
+    Inspects the directory for real build/test tooling instead of emitting a
+    generic template, then writes the file Zeline reads into its system prompt.
+    """
+    root = Path(directory or Path.cwd()).expanduser().resolve(strict=False)
+    if not root.is_dir():
+        print(f"[!] Not a directory: {root}")
+        return 2
+
+    existing = project_rules.find_rules_file(root)
+    if existing is not None and not force:
+        print(f"Project rules already exist: {existing}")
+        print("Zeline loads this file automatically. Use --force to overwrite.")
+        return 0
+
+    target = root / "ZELINE.md"
+    if target.exists() and not force:
+        print(f"[!] {target} exists. Use --force to overwrite.")
+        return 2
+
+    try:
+        target.write_text(project_rules.render_template(root), encoding="utf-8")
+    except OSError as exc:
+        print(f"[!] Could not write {target}: {exc}")
+        return 1
+
+    print(f"Created {target}")
+    print("  Zeline loads it into the system prompt for sessions in this directory.")
+    print("  Fill in the TODO lines so the agent follows your conventions.")
+    return 0
+
+
+def cmd_rules(directory: str | None = None) -> int:
+    """Show which project rules file is active, and what Zeline will read."""
+    root = Path(directory or Path.cwd()).expanduser().resolve(strict=False)
+    if not project_rules.enabled():
+        print("Project rules are disabled (tools.project_rules = false).")
+        return 0
+    path, text = project_rules.read_rules(root)
+    if path is None:
+        names = ", ".join(project_rules.RULE_FILENAMES)
+        print(f"No project rules found at or above {root}")
+        print(f"  Looked for: {names}")
+        print("  Create one with: zeline init")
+        return 0
+    print(f"Active project rules: {path}")
+    print(f"  {len(text)} characters loaded into the system prompt")
+    print()
+    print(text)
+    return 0
+
+
 def _native_tool_names() -> list[str]:
     from zeline.tools import TOOL_DEFS
 
@@ -1423,6 +1478,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor", aliases=["status"], help="check dependencies and configuration")
     subparsers.add_parser("update", aliases=["upgrade"], help="update Zeline in place (keeps ~/.zeline data)")
+    init_parser = subparsers.add_parser("init", help="create ZELINE.md so project conventions load automatically")
+    init_parser.add_argument("directory", nargs="?", help="project directory (default: current)")
+    init_parser.add_argument("--force", action="store_true", help="overwrite an existing ZELINE.md")
+
+    rules_parser = subparsers.add_parser("rules", help="show the active project rules file")
+    rules_parser.add_argument("directory", nargs="?", help="project directory (default: current)")
+
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
     subparsers.add_parser("memory", help="view local CLI memory")
 
@@ -1541,6 +1603,10 @@ def main(argv: list[str] | None = None) -> int:
     if command in {"update", "upgrade"}:
         from zeline import updater
         return updater.update()
+    if command == "init":
+        return cmd_init(getattr(namespace, "directory", None), force=bool(getattr(namespace, "force", False)))
+    if command == "rules":
+        return cmd_rules(getattr(namespace, "directory", None))
     if command == "start":
         return cmd_gateway_start(None)
     if command == "stop":

@@ -17,6 +17,7 @@ import requests
 from zeline import __version__, config
 from zeline import skills
 from zeline.tools import ToolExecutor
+from zeline import project_rules
 
 
 class ZelineError(RuntimeError):
@@ -142,6 +143,10 @@ class Zeline:
             config.SYSTEM_PROMPT
             + self.executor.memory.prompt_block()
             + skills.skills_block(include_private=self.executor.profile == "full")
+            # Project conventions from ZELINE.md/AGENTS.md in the workspace. Read
+            # once here so the system prompt stays byte-stable for the life of the
+            # session (prompt caching); edits apply to the next session.
+            + project_rules.prompt_block(self.executor.workspace)
             + self._system_extra
             + f"\n\nActive runtime (non-secret): model={self.model}; protocol={self.protocol}; profile={self.executor.profile}. "
             + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "

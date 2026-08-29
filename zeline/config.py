@@ -476,6 +476,9 @@ def _defaults() -> dict[str, Any]:
             # Override per-ekstensi: {".py": "ruff format {file}"}. Nilai kosong
             # mematikan format untuk ekstensi itu saja.
             "formatters": {},
+            # Muat ZELINE.md / AGENTS.md dari workspace ke system prompt, supaya
+            # konvensi proyek tidak perlu diulang tiap sesi.
+            "project_rules": True,
         },
         "gateways": {
             "telegram": {
@@ -614,7 +617,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global RESTART_DRAIN_TIMEOUT
-    global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS
+    global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -654,6 +657,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     FORMAT_ON_WRITE = bool(cfg.get("tools", {}).get("format_on_write", True))
     raw_formatters = cfg.get("tools", {}).get("formatters", {})
     FORMATTERS = dict(raw_formatters) if isinstance(raw_formatters, dict) else {}
+    PROJECT_RULES = bool(cfg.get("tools", {}).get("project_rules", True))
     DISABLED_TOOLS = frozenset(str(name) for name in cfg.get("tools", {}).get("disabled", []))
     MAX_SUBAGENT_DEPTH = int(cfg.get("tools", {}).get("max_subagent_depth", DEFAULT_MAX_SUBAGENT_DEPTH))
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
