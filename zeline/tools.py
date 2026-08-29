@@ -37,6 +37,7 @@ from zeline import config
 from zeline import memory
 from zeline import skills
 from zeline import network_routes
+from zeline import interaction
 from zeline import mcp as mcp_module
 from zeline import _winproc
 
@@ -1668,6 +1669,35 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset(SAFE_PROFILES),
     ),
+    ToolDef(
+        "ask_user",
+        (
+            "Ask the operator ONE short question and wait for their answer before continuing. "
+            "Use this when the request is genuinely ambiguous, when several approaches have different "
+            "trade-offs the user should pick between, or before an action that is risky/hard to undo "
+            "(deleting data, overwriting an important file, deploying, spending money). "
+            "Supply 'options' to offer up to 6 tappable choices; omit it for a free-text answer. "
+            "Do NOT use this for things you can decide yourself (naming, formatting, step order) or "
+            "for a request that is already clear — asking when the intent is obvious wastes the user's "
+            "time. Ask once, then act on the answer; never re-ask the same thing."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question itself, one sentence. Do not list the options inside this text; pass them in 'options'.",
+                },
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional: up to 6 distinct choices, each its own array element. Omit for a free-text answer.",
+                },
+            },
+            "required": ["question"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
 ]
 
 
@@ -1738,6 +1768,7 @@ class ToolExecutor:
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
             "delegate_task": lambda goal, context="": self._delegate_task(goal, context),
             "recall_history": lambda query="": self._recall_history(query),
+            "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
         }
 
     def _recall_history(self, query: str = "") -> str:

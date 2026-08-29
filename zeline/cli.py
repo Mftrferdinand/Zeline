@@ -38,6 +38,7 @@ from zeline._termkey import raw_mode, read_key, read_menu_key, read_secret
 from zeline.agent import ZelineError
 from zeline.gateways import GATEWAYS, gateway_status, run_all
 from zeline import gateway_service
+from zeline import interaction
 from zeline.sessions import SessionStore
 
 
@@ -767,6 +768,29 @@ def cmd_chat(query: str | None = None) -> int:
     print(f"  {_label('Model :')} {config.MODEL}")
     print(f"  {_label('Tool profile:')} full (local operator)\n")
     sessions = SessionStore(max_sessions=1)
+
+    # In the CLI the operator is right here at the keyboard, so ask_user can be
+    # answered SYNCHRONOUSLY — no waiting on an event, no timeout. Registering a
+    # renderer that returns a string short-circuits interaction.ask().
+    def _cli_ask(entry: Any) -> str:
+        print()
+        print(f"  {_label('question:')} {entry.question}")
+        if entry.options:
+            for index, option in enumerate(entry.options, start=1):
+                print(f"    {index}) {option}")
+            print("    (type a number, or your own answer)")
+        try:
+            reply = input("  answer › ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return "CANCELLED: the user cancelled this question."
+        if entry.options and reply.isdigit():
+            choice = int(reply)
+            if 1 <= choice <= len(entry.options):
+                return entry.options[choice - 1]
+        return reply or "(empty answer)"
+
+    interaction.register_channel("cli:local", _cli_ask)
 
     def ask(text: str) -> str:
         def on_tool(name: str, arguments: dict[str, Any]) -> None:

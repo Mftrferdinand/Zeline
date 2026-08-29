@@ -18,6 +18,7 @@ from typing import Callable
 from zeline import config
 from zeline import tools
 from zeline.agent import Zeline
+from zeline import interaction
 from zeline.session_store import SessionPersistence
 
 
@@ -167,6 +168,13 @@ class SessionStore:
             if session is None or not session.running:
                 return False
             session.cancel_event.set()
+        # Sebuah tool yang sedang MENUNGGU jawaban ask_user tidak punya proses
+        # untuk dibunuh — ia menunggu event. Tanpa ini /stop tidak melepaskan
+        # tunggu itu dan sesi terlihat menggantung meski sudah dibatalkan.
+        try:
+            interaction.cancel(identity)
+        except Exception:
+            pass
         # /stop harus MEMAKSA berhenti, bukan sekadar menandai flag: perintah
         # foreground yang sedang jalan (pytest/build/install) dibunuh beserta
         # grup prosesnya, jadi turn tidak lagi tertahan sampai perintah selesai.
@@ -206,6 +214,11 @@ class SessionStore:
             session = self._sessions.pop(identity, None)
             if session is not None:
                 session.cancel_event.set()
+        # /new juga harus melepaskan pertanyaan yang menggantung.
+        try:
+            interaction.cancel(identity)
+        except Exception:
+            pass
         # Sama seperti /stop: proses foreground milik sesi ini harus benar-benar
         # dibunuh, bukan dibiarkan hidup setelah sesinya dibuang.
         try:
