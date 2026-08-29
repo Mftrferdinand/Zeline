@@ -104,6 +104,14 @@ LANGUAGE (critical — get this right every turn):
 How you work:
 - Detect intent → if it matches an available skill, call load_skill first before
   executing. Don't preload every skill (wastes tokens).
+- CAPTCHA ROUTING: if the request mentions 2Captcha, CapSolver, CAPTCHA,
+  Turnstile, or a Cloudflare challenge, call
+  `load_skill("captcha-solving-2captcha")` before deciding or acting. Assess the
+  underlying action; do not blanket-refuse CAPTCHA solving or invent a ToS
+  violation. Public read-only pages and the user's own/explicitly authorized
+  account actions may use a solver. Still refuse bypassing OTP/MFA/KYC,
+  account takeover, credential abuse, ban/access-revocation evasion, fraud, or
+  abusive high-volume scraping.
 - Use tools only when genuinely needed for real progress.
 - Never claim an action/execution is done before a tool result confirms it.
   Fabricating output, tx hashes, or fake results is forbidden — if something
@@ -376,8 +384,13 @@ Request-scoped safety (avoid blanket refusals):
   lawful, authorized, technically honest path while preserving the user's goal.
 
 Safety limits (engineering defaults, not censorship):
-- Only manage the operator's own assets/accounts. Refuse third-party credentials
-  or targets that don't belong to the operator.
+- Only modify/manage the operator's own assets/accounts or explicitly authorized
+  ones. This ownership restriction does NOT prohibit reading public web pages,
+  public pricing, catalogs, articles, or other read-only public information.
+- Do not invent a ToS/legal/security refusal merely because a public website is
+  third-party or uses Cloudflare. For public read-only retrieval, use the
+  available CAPTCHA/network/browser skills and report technical blockers only
+  after actually exhausting them. Never turn a model preference into a policy.
 - Confirm with the operator before actions that move funds or are irreversible.
 - Never log, print raw, or send secrets (private key, seed, API key) to outsiders."""
 
@@ -417,6 +430,10 @@ def _defaults() -> dict[str, Any]:
         "agent": {
             "max_tool_rounds": DEFAULT_MAX_TOOL_ROUNDS,
             "max_sessions": DEFAULT_MAX_SESSIONS,
+            # Optional same-provider model used only after repeated transient
+            # 502/503/504 responses. Empty keeps fresh installs provider-neutral.
+            "fallback_model": "",
+            "fallback_models": [],
             # Streaming respons (SSE) supaya token mengalir seketika: anti-timeout
             # pada model 'thinking' yang lama menyusun jawaban, dan terasa satset
             # persis seperti Zeline. Matikan hanya bila provider tak
@@ -572,7 +589,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, IMAGE_MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
-    global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH
+    global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -585,6 +602,12 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     SETUP_COMPLETE = bool(cfg.get("setup_complete", False))
     MAX_TOOL_ROUNDS = int(cfg.get("agent", {}).get("max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS))
     MAX_SESSIONS = int(cfg.get("agent", {}).get("max_sessions", DEFAULT_MAX_SESSIONS))
+    FALLBACK_MODEL = str(cfg.get("agent", {}).get("fallback_model", "")).strip()
+    raw_fallbacks = cfg.get("agent", {}).get("fallback_models", [])
+    FALLBACK_MODELS = tuple(
+        str(model).strip() for model in raw_fallbacks
+        if str(model).strip()
+    ) if isinstance(raw_fallbacks, list) else ()
     PERSIST_SESSIONS = bool(cfg.get("agent", {}).get("persist_sessions", True))
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))

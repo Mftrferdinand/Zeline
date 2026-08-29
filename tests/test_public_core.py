@@ -12,6 +12,7 @@ import importlib
 import json
 import re
 import os
+import stat
 import socket
 import subprocess
 import sys
@@ -177,8 +178,17 @@ class ZelinePublicCoreTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "only manage the operator's own assets/accounts. refuse third-party credentials or "
-            "targets that don't belong to the operator",
+            "only modify/manage the operator's own assets/accounts or explicitly authorized "
+            "ones",
+            prompt,
+        )
+        self.assertIn(
+            "this ownership restriction does not prohibit reading public web pages",
+            prompt,
+        )
+        self.assertIn(
+            "do not invent a tos/legal/security refusal merely because a public website is "
+            "third-party or uses cloudflare",
             prompt,
         )
         self.assertIn(
@@ -728,6 +738,61 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("ERROR", out)
         self.assertIn("Cloudflare", out)
 
+    def test_network_route_is_owner_only_and_masks_credentials(self):
+        tools = importlib.import_module("zeline.tools")
+        routes = importlib.import_module("zeline.network_routes")
+        route_file = self.home / "network-routes.json"
+        with mock.patch.object(routes, "ROUTES_FILE", route_file):
+            full = tools.ToolExecutor("telegram:owner", profile="full", workspace=self.home)
+            safe = tools.ToolExecutor("telegram:guest", profile="safe", workspace=self.home)
+            self.assertIn("network_route", {item["function"]["name"] for item in full.schemas})
+            self.assertNotIn("network_route", {item["function"]["name"] for item in safe.schemas})
+            result = full.run("network_route", {
+                "action": "add", "label": "uk", "proxy_url": "socks5h://alice:secret@proxy.test:1080", "country": "GB",
+            })
+            self.assertIn("OK", result)
+            listed = full.run("network_route", {"action": "list"})
+            self.assertIn("***@proxy.test:1080", listed)
+            self.assertNotIn("alice", listed)
+            self.assertNotIn("secret", listed)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(route_file.stat().st_mode), 0o600)
+
+    def test_owner_web_fetch_uses_route_after_geo_block(self):
+        tools = importlib.import_module("zeline.tools")
+        routes = importlib.import_module("zeline.network_routes")
+
+        class Resp:
+            ok = True
+            text = "Page not found region country geo"
+            url = "https://ftmo.com/block/ID.html"
+            def iter_content(self, n):
+                yield b"Page not found region country geo"
+
+        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+             mock.patch.object(tools, "_fetch_via_wayback", return_value=None), \
+             mock.patch.object(tools, "_fetch_with_network_routes", return_value="[via network route uk] FTMO PRICING") as routed:
+            out = tools._web_fetch("https://ftmo.com/en/pricing/", use_private_routes=True)
+        routed.assert_called()
+        self.assertIn("FTMO PRICING", out)
+
+    def test_routed_fetch_preserves_captcha_escalation_marker(self):
+        tools = importlib.import_module("zeline.tools")
+        routes = importlib.import_module("zeline.network_routes")
+        challenge = '<html><title>Just a moment...</title><script>window._cf_chl_opt={}</script></html>'
+
+        class Resp:
+            ok = True
+            url = "https://ftmo.com/en/pricing/"
+            def iter_content(self, n):
+                yield challenge.encode()
+
+        with mock.patch.object(routes, "enabled_routes", return_value=[{"label": "uk", "country": "GB", "proxy_url": "http://proxy.test:8080"}]), \
+             mock.patch.object(tools.requests, "get", return_value=Resp()):
+            out = tools._fetch_with_network_routes("https://ftmo.com/en/pricing/")
+        self.assertIn("CLOUDFLARE_CHALLENGE", out)
+        self.assertIn("route=uk", out)
+
     def test_http_request_blocks_internal_and_bad_scheme(self):
         executor = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         # http_request harus tersedia bahkan di profile safe (SSRF-protected)
@@ -1026,9 +1091,9 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # langkah ke berapa, sisa budget, dan bahwa /stop tersedia.
         line = telegram._working_status_text(125, iteration=4, maximum=20, remaining_seconds=235)
         self.assertIn("⏳ Working — 2 min 5 s", line)
-        self.assertIn("step 4/20", line)
-        self.assertIn("235s left", line)
-        self.assertIn("/stop to cancel", line)
+        self.assertEqual(line, "⏳ Working — 2 min 5 s · /stop to cancel")
+        self.assertNotIn("step", line)
+        self.assertNotIn("left", line)
         # Satu baris saja — user membenci status yang turun ke baris baru.
         self.assertNotIn("\n", line)
         # Tidak pernah menyalahkan provider/model.
@@ -1047,8 +1112,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
             live.set_iteration(3, 20)
             rendered = live._render()
         self.assertIn("⏳ Working", rendered)
-        self.assertIn("step 3/20", rendered)
+        self.assertNotIn("step", rendered)
+        self.assertNotIn("left", rendered)
         self.assertIn("/stop to cancel", rendered)
+
+    def test_telegram_working_header_waits_full_30_seconds(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        self.assertEqual(telegram._STATUS_AFTER_SECONDS, 30.0)
+        with mock.patch.object(telegram, "_api_call", return_value={"ok": True}):
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.turn_started = time.monotonic() - 29.0
+            self.assertEqual(live._header(), "")
+            live.turn_started = time.monotonic() - 30.1
+            self.assertIn("⏳ Working — 30 s", live._header())
 
     def test_telegram_long_wait_creates_status_bubble_from_heartbeat(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2333,6 +2409,29 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("Select a provider", text)
         self.assertEqual(buttons[0], {"text": "✓ Token Harbor", "callback_data": "provider:0"})
         self.assertEqual(buttons[1], {"text": "NVIDIA NIM", "callback_data": "provider:1"})
+
+    def test_telegram_configured_providers_dedupes_active_label_case_drift(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        saved = {
+            "providers": {
+                "9router": {
+                    "name": "9router",
+                    "base_url": "http://localhost:20128/v1",
+                    "api_key": "secret",
+                    "model": "old-model",
+                }
+            },
+            "provider": {
+                "name": "9Router",
+                "base_url": "http://localhost:20128/v1/",
+                "api_key": "secret",
+                "model": "new-model",
+            },
+        }
+        with mock.patch.object(telegram.config, "stored_config_copy", return_value=saved):
+            providers = telegram._configured_providers()
+        self.assertEqual(len(providers), 1)
+        self.assertEqual(providers[0]["slug"], "9router")
 
     def test_telegram_provider_callback_opens_models_with_back_button(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

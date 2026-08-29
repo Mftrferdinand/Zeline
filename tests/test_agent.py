@@ -82,6 +82,154 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(second_payload["messages"][-1]["tool_call_id"], "call-memory-1")
         self.assertIn("User suka teh", agent.executor.memory.formatted())
 
+    def test_captcha_intent_auto_injects_generic_skill_without_persisting_it(self):
+        final = {"choices": [{"message": {"role": "assistant", "content": "Saya nilai scope lalu eksekusi."}}]}
+        agent = self.agent_module.Zeline(identity="telegram:captcha", tool_profile="safe")
+        generic_skill = "GENERIC CAPTCHA WEB AND API WORKFLOW"
+
+        with mock.patch.object(self.agent_module.skills, "load_skill", return_value=generic_skill) as load, \
+             mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse(final)) as post:
+            reply = agent.send("cek harga FTMO pakai 2captcha jika dibutuhkan")
+
+        self.assertEqual(reply, "Saya nilai scope lalu eksekusi.")
+        load.assert_called_once_with("captcha-solving-2captcha", include_private=False)
+        sent = post.call_args.kwargs["json"]["messages"][-1]["content"]
+        self.assertIn(generic_skill, sent)
+        self.assertIn("trusted_runtime_skill", sent)
+        persisted = agent.messages[-2]["content"]
+        self.assertNotIn(generic_skill, persisted)
+        self.assertEqual(persisted, "cek harga FTMO pakai 2captcha jika dibutuhkan")
+
+    def test_unrelated_intent_does_not_auto_inject_captcha_skill(self):
+        final = {"choices": [{"message": {"role": "assistant", "content": "Halo."}}]}
+        agent = self.agent_module.Zeline(identity="telegram:plain", tool_profile="safe")
+        with mock.patch.object(self.agent_module.skills, "load_skill") as load, \
+             mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse(final)) as post:
+            agent.send("halo biasa")
+        load.assert_not_called()
+        self.assertNotIn("trusted_runtime_skill", post.call_args.kwargs["json"]["messages"][-1]["content"])
+
+    def test_gorouter_checkin_auto_injects_daily_and_captcha_skills(self):
+        final = {"choices": [{"message": {"role": "assistant", "content": "Check-in akan dieksekusi."}}]}
+        agent = self.agent_module.Zeline(identity="telegram:checkin", tool_profile="full")
+
+        def load_skill(name, include_private=False):
+            return f"CONTENT OF {name}"
+
+        with mock.patch.object(self.agent_module.skills, "load_skill", side_effect=load_skill) as load, \
+             mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse(final)) as post:
+            agent.send("tolong check-in dua akun GoRouter sekarang")
+
+        self.assertEqual(
+            load.call_args_list,
+            [
+                mock.call("newapi-daily-checkin", include_private=True),
+                mock.call("captcha-solving-2captcha", include_private=True),
+            ],
+        )
+        sent = post.call_args.kwargs["json"]["messages"][-1]["content"]
+        self.assertIn("CONTENT OF newapi-daily-checkin", sent)
+        self.assertIn("CONTENT OF captcha-solving-2captcha", sent)
+        self.assertNotIn("CONTENT OF", agent.messages[-2]["content"])
+
+    def test_cloudflare_tool_result_auto_escalates_to_solver_skill_next_round(self):
+        first = {
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": "Gue buka URL-nya.",
+                "tool_calls": [{
+                    "id": "call-web-1",
+                    "type": "function",
+                    "function": {"name": "web_fetch", "arguments": '{"url":"https://example.test/pricing"}'},
+                }],
+            }}],
+        }
+        final = {"choices": [{"message": {"role": "assistant", "content": "Solver workflow aktif."}}]}
+        marker = "ERROR [CLOUDFLARE_CHALLENGE url=https://example.test/pricing]: blocked"
+        skill = "GENERIC SOLVER FOR ANY SUPPORTED WEB/API"
+        agent = self.agent_module.Zeline(identity="telegram:cf-auto", tool_profile="safe")
+
+        with mock.patch.object(agent.executor, "run", return_value=marker), \
+             mock.patch.object(self.agent_module.skills, "load_skill", return_value=skill) as load, \
+             mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(first), FakeResponse(final)]) as post:
+            reply = agent.send("buka https://example.test/pricing dan ambil harganya")
+
+        self.assertEqual(reply, "Solver workflow aktif.")
+        load.assert_called_once_with("captcha-solving-2captcha", include_private=False)
+        second_messages = post.call_args_list[1].kwargs["json"]["messages"]
+        user_payload = next(m["content"] for m in reversed(second_messages) if m["role"] == "user")
+        self.assertIn(skill, user_payload)
+        self.assertIn("trusted_runtime_skill", user_payload)
+        self.assertNotIn(skill, json.dumps(agent.messages))
+
+    def test_geo_block_auto_loads_network_route_skill(self):
+        first = {
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": "Gue cek URL.",
+                "tool_calls": [{
+                    "id": "call-geo",
+                    "type": "function",
+                    "function": {"name": "web_fetch", "arguments": '{"url":"https://example.test/pricing"}'},
+                }],
+            }}],
+        }
+        final = {"choices": [{"message": {"role": "assistant", "content": "Gue cek route privat yang tersedia."}}]}
+        agent = self.agent_module.Zeline(identity="telegram:geo", tool_profile="full")
+
+        def load_skill(name, include_private=False):
+            return f"CONTENT OF {name}"
+
+        with mock.patch.object(agent.executor, "run", return_value="location: https://example.test/block/ID.html"), \
+             mock.patch.object(self.agent_module.skills, "load_skill", side_effect=load_skill) as load, \
+             mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(first), FakeResponse(final)]) as post:
+            reply = agent.send("buka harga publik")
+        self.assertIn("route privat", reply)
+        names = [call.args[0] for call in load.call_args_list]
+        self.assertIn("captcha-solving-2captcha", names)
+        self.assertIn("network-route", names)
+        second_user = next(
+            m["content"] for m in reversed(post.call_args_list[1].kwargs["json"]["messages"])
+            if m["role"] == "user"
+        )
+        self.assertIn("CONTENT OF network-route", second_user)
+
+    def test_public_cloudflare_refusal_is_intercepted_and_corrected(self):
+        first = {
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": "Gue cek URL.",
+                "tool_calls": [{
+                    "id": "call-ftmo",
+                    "type": "function",
+                    "function": {"name": "run_shell", "arguments": '{"command":"curl pricing"}'},
+                }],
+            }}],
+        }
+        refusal = {"choices": [{"message": {"role": "assistant", "content": (
+            "FTMO itu situs pihak ketiga. Nggak gue pakai 2captcha karena bypass keamanan dan melanggar ToS; "
+            "itu garis yang nggak gue lewatin."
+        )}}]}
+        corrected = {"choices": [{"message": {"role": "assistant", "content": (
+            "Ini public read-only. Gue lanjut lewat network/browser route dan solver yang sesuai."
+        )}}]}
+        agent = self.agent_module.Zeline(identity="telegram:ftmo-correct", tool_profile="full")
+        with mock.patch.object(agent.executor, "run", return_value="location: https://ftmo.com/block/ID.html"), \
+             mock.patch.object(self.agent_module.skills, "load_skill", return_value="GENERIC SOLVER"), \
+             mock.patch.object(self.agent_module.requests, "post", side_effect=[
+                 FakeResponse(first), FakeResponse(refusal), FakeResponse(corrected),
+             ]) as post:
+            reply = agent.send("cek harga FTMO")
+        self.assertIn("public read-only", reply)
+        self.assertNotIn("garis yang", reply)
+        self.assertEqual(len(post.call_args_list), 3)
+        third_user = next(
+            m["content"] for m in reversed(post.call_args_list[2].kwargs["json"]["messages"])
+            if m["role"] == "user"
+        )
+        self.assertIn("Trusted runtime correction", third_user)
+        self.assertNotIn("garis yang nggak gue lewatin", json.dumps(agent.messages))
+
     def test_delegate_task_spawns_isolated_subagent_and_returns_summary(self):
         # Agen utama memanggil delegate_task → sub-agent jalan di konteks
         # terpisah; hanya ringkasan akhirnya masuk sebagai tool result induk.
@@ -202,6 +350,45 @@ class AgentLoopTests(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("http://provider.test/v1", message)
         self.assertIn("connect", message.lower())
+
+    def test_transient_502_fails_over_to_configured_model_in_same_turn(self):
+        agent = self.agent_module.Zeline(identity="telegram:failover", tool_profile="safe")
+        self.agent_module.config.FALLBACK_MODEL = "fallback-model"
+        final = {"choices": [{"message": {"role": "assistant", "content": "Fallback hidup."}}]}
+        responses = [
+            FakeResponse({"error": "upstream"}, status_code=502),
+            FakeResponse({"error": "upstream"}, status_code=502),
+            FakeResponse(final),
+        ]
+        with mock.patch.object(self.agent_module.time, "sleep"), \
+             mock.patch.object(self.agent_module.requests, "post", side_effect=responses) as post:
+            reply = agent.send("halo")
+        self.assertEqual(reply, "Fallback hidup.")
+        self.assertEqual(len(post.call_args_list), 3)
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["model"], "test-model")
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "test-model")
+        self.assertEqual(post.call_args_list[2].kwargs["json"]["model"], "fallback-model")
+
+    def test_failover_chain_reaches_second_backup_after_repeated_502s(self):
+        agent = self.agent_module.Zeline(identity="telegram:chain", tool_profile="safe")
+        self.agent_module.config.FALLBACK_MODEL = "fallback-one"
+        self.agent_module.config.FALLBACK_MODELS = ("fallback-two",)
+        final = {"choices": [{"message": {"role": "assistant", "content": "Backup dua hidup."}}]}
+        responses = [
+            FakeResponse({"error": "upstream"}, status_code=502),
+            FakeResponse({"error": "upstream"}, status_code=502),
+            FakeResponse({"error": "upstream"}, status_code=502),
+            FakeResponse({"error": "upstream"}, status_code=502),
+            FakeResponse(final),
+        ]
+        with mock.patch.object(self.agent_module.time, "sleep"), \
+             mock.patch.object(self.agent_module.requests, "post", side_effect=responses) as post:
+            reply = agent.send("halo")
+        self.assertEqual(reply, "Backup dua hidup.")
+        self.assertEqual(
+            [call.kwargs["json"]["model"] for call in post.call_args_list],
+            ["test-model", "test-model", "fallback-one", "fallback-one", "fallback-two"],
+        )
 
     def test_http_error_statuses_map_to_actionable_hints(self):
         cases = {

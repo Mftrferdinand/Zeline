@@ -38,7 +38,7 @@ REPOSITORY_FILE = config.DATA_DIR / "repository.md"
 # Setelah berapa detik turn tanpa kabar, bubble status "⏳ Working — …" muncul.
 # Cukup lama supaya tanya-jawab ringan tetap bersih tanpa bubble, tapi cukup
 # cepat supaya user tidak merasa didiamkan saat agent kerja panjang.
-_STATUS_AFTER_SECONDS = 20.0
+_STATUS_AFTER_SECONDS = 30.0
 REPOSITORY_HEADER = "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n"
 _URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 
@@ -373,13 +373,10 @@ def _working_status_text(
     minutes = int(elapsed_seconds // 60)
     seconds = int(elapsed_seconds % 60)
     clock = f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
-    parts = [f"⏳ Working — {clock}"]
-    if iteration and maximum:
-        parts.append(f"step {iteration}/{maximum}")
-    if remaining_seconds is not None and remaining_seconds > 0:
-        parts.append(f"{int(remaining_seconds)}s left")
-    parts.append("/stop to cancel")
-    return " · ".join(parts)
+    # Keep the user-facing heartbeat deliberately minimal. Iteration/remaining
+    # are still tracked internally for turn control, but exposing them makes
+    # every ordinary chat look like a noisy job runner.
+    return f"⏳ Working — {clock} · /stop to cancel"
 
 
 def _provider_wait_text(wait_seconds: float, model: str = "") -> str:
@@ -761,7 +758,18 @@ def _configured_providers() -> list[dict[str, str]]:
             if isinstance(item, dict) and item.get("base_url") and item.get("api_key"):
                 providers.append({"slug": str(slug), **{key: str(value) for key, value in item.items()}})
     active = cfg.get("provider", {})
-    active_slug = next((item["slug"] for item in providers if item.get("base_url") == str(active.get("base_url", "")) and item.get("name") == str(active.get("name", ""))), "")
+    # Provider identity is endpoint + credential, not a cosmetic display name.
+    # Older configs can hold `9router` in the saved entry and `9Router` in the
+    # active copy; comparing names inserts a duplicate `active` picker button.
+    active_slug = next(
+        (
+            item["slug"]
+            for item in providers
+            if item.get("base_url", "").rstrip("/") == str(active.get("base_url", "")).rstrip("/")
+            and item.get("api_key") == str(active.get("api_key", ""))
+        ),
+        "",
+    )
     if not active_slug and isinstance(active, dict):
         name = str(active.get("name", "")).strip() or str(active.get("base_url", "provider")).split("://", 1)[-1].split("/", 1)[0]
         providers.insert(0, {"slug": "active", "name": name, **{key: str(value) for key, value in active.items()}})
