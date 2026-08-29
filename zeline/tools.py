@@ -36,6 +36,7 @@ import requests
 from zeline import config
 from zeline import memory
 from zeline import skills
+from zeline import network_routes
 from zeline import mcp as mcp_module
 from zeline import _winproc
 
@@ -1195,10 +1196,54 @@ def _fetch_via_wayback(url: str) -> str | None:
         return None
 
 
-def _web_fetch(url: str) -> str:
-    """Buka URL publik dan kembalikan teksnya. URL internal diblokir (SSRF).
-    Utamakan reader proxy (cepat & tahan blokir); fallback fetch langsung;
-    kalau kena tantangan Cloudflare, fallback ke snapshot archive.org."""
+def _looks_like_geo_block(response: Any, text: str = "") -> bool:
+    final_url = str(getattr(response, "url", "") or "")
+    if re.search(r"/block/[A-Za-z]{2}\.html(?:$|[?#])", final_url, re.IGNORECASE):
+        return True
+    lowered = (text or "").lower()
+    return "geo-block" in lowered or "not available in your country" in lowered
+
+
+def _fetch_with_network_routes(url: str) -> str | None:
+    """Try owner-configured routes without changing process-wide networking."""
+    for route in network_routes.enabled_routes():
+        label = str(route.get("label", "route"))
+        country = str(route.get("country", "")) or "unknown"
+        try:
+            response = requests.get(
+                url,
+                headers={"User-Agent": _UA},
+                proxies=network_routes.proxies(str(route["proxy_url"])),
+                timeout=WEB_TIMEOUT,
+                allow_redirects=True,
+                stream=True,
+            )
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in response.iter_content(8192):
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > WEB_MAX_BYTES:
+                    break
+            text = _html_to_text(b"".join(chunks))
+            if _looks_like_geo_block(response, text):
+                continue
+            if response.ok and text and not _looks_like_cf_challenge(text):
+                prefix = f"[via network route {label} · country={country}]\n\n"
+                return prefix + text[:12_000] + ("\n... [truncated]" if size > 12_000 else "")
+            if response.ok and _looks_like_cf_challenge(text):
+                return (
+                    f"ERROR [CLOUDFLARE_CHALLENGE route={label} country={country} url={url}]: "
+                    "geo route succeeded but a CAPTCHA challenge remains. Keep this route/session "
+                    "and continue with captcha-solving-2captcha."
+                )
+        except requests.RequestException:
+            continue
+    return None
+
+
+def _web_fetch(url: str, use_private_routes: bool = False) -> str:
+    """Open a public URL, optionally using owner-only per-request routes."""
     url = url.strip()
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -1215,7 +1260,12 @@ def _web_fetch(url: str) -> str:
         )
         if response.ok and response.text.strip() and not _looks_like_cf_challenge(response.text):
             text = response.text
-            return text[:12_000] + ("\n... [truncated]" if len(text) > 12_000 else "")
+            if use_private_routes and _looks_like_geo_block(response, text):
+                routed = _fetch_with_network_routes(url)
+                if routed:
+                    return routed
+            if not _looks_like_geo_block(response, text):
+                return text[:12_000] + ("\n... [truncated]" if len(text) > 12_000 else "")
     except requests.RequestException:
         pass
     # 2) Fallback: fetch langsung.
@@ -1237,19 +1287,31 @@ def _web_fetch(url: str) -> str:
                     break
             body = b"".join(chunks)
             text = _html_to_text(body)
-            # Situs ber-Cloudflare: fetch langsung balik halaman challenge, bukan
-            # isi. Jangan kembalikan sampah itu → coba Wayback dulu.
-            if text and not _looks_like_cf_challenge(text):
+            # Geo redirects need a non-ID route; Cloudflare challenges need the
+            # solver workflow. Neither should be returned as page content.
+            if use_private_routes and _looks_like_geo_block(response, text):
+                routed = _fetch_with_network_routes(url)
+                if routed:
+                    return routed
+            if text and not _looks_like_cf_challenge(text) and not _looks_like_geo_block(response, text):
                 return text[:12_000] + ("\n... [truncated]" if size > 12_000 else "")
     except requests.RequestException:
         pass
-    # 3) Fallback terakhir: snapshot archive.org (bypass Cloudflare, zero-cost).
+    # 3) Owner-only per-request routes. Telegram/provider/localhost stay direct.
+    if use_private_routes:
+        routed = _fetch_with_network_routes(url)
+        if routed:
+            return routed
+    # 4) Fallback terakhir: snapshot archive.org (bypass Cloudflare, zero-cost).
     archived = _fetch_via_wayback(url)
     if archived:
         return archived
     return (
-        "ERROR: halaman tidak bisa dibaca — kemungkinan diblokir Cloudflare dan "
-        "tidak ada snapshot arsip. Coba URL/sumber lain."
+        f"ERROR [CLOUDFLARE_CHALLENGE url={url}]: halaman publik tidak bisa "
+        "dibaca lewat fetch/arsip karena challenge Cloudflare. Runtime harus "
+        "mengaktifkan skill captcha-solving-2captcha dan melanjutkan lewat "
+        "solver bila aksi dasarnya berada dalam scope yang diizinkan. Jika ini "
+        "geo-block dan belum ada route, tambahkan owner proxy lewat network_route."
     )
 
 
@@ -1381,13 +1443,28 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "web_fetch",
-        "Open one public URL (http/https) and return its page text. Internal/private-network URLs are blocked automatically.",
+        "Open one public URL and return its page text. On the owner/full profile, automatically try configured private network routes when direct access is geo-blocked.",
         {
             "type": "object",
             "properties": {"url": {"type": "string", "description": "Full URL, e.g. https://example.com/article"}},
             "required": ["url"],
         },
         frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "network_route",
+        "Owner-only proxy route manager for geo-blocked public websites. List, add, remove, or health-test HTTP/HTTPS/SOCKS5 routes. Credentials are stored privately and never shown back.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "add", "remove", "test"]},
+                "label": {"type": "string", "description": "Short route label"},
+                "proxy_url": {"type": "string", "description": "http(s)://user:pass@host:port or socks5h://user:pass@host:port"},
+                "country": {"type": "string", "description": "Expected 2-letter exit country"},
+            },
+            "required": ["action"],
+        },
+        frozenset({"full"}),
     ),
     ToolDef(
         "deep_research",
@@ -1640,7 +1717,8 @@ class ToolExecutor:
             "list_memory": self.memory.formatted,
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
             "web_search": lambda query: _web_search(query),
-            "web_fetch": lambda url: _web_fetch(url),
+            "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
+            "network_route": network_routes.tool,
             "deep_research": lambda query: _deep_research(query),
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
