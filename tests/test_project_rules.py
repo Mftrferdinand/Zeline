@@ -59,7 +59,11 @@ class DiscoveryTests(RulesBase):
             with self.subTest(name=name):
                 target = self.project / name
                 target.write_text("rule text", encoding="utf-8")
-                self.assertEqual(self.rules.find_rules_file(self.project), target)
+                # Compare RESOLVED paths on both sides: find_rules_file resolves
+                # (correctly), and a temp dir is a symlink on macOS (/var ->
+                # /private/var) and a short name on Windows (RUNNER~1).
+                found = self.rules.find_rules_file(self.project)
+                self.assertEqual(found, target.resolve(strict=False))
                 target.unlink()
 
     def test_zeline_md_wins_over_agents_md(self):
@@ -78,7 +82,7 @@ class DiscoveryTests(RulesBase):
         nested = self.project / "src" / "deep" / "deeper"
         nested.mkdir(parents=True)
         found = self.rules.find_rules_file(nested)
-        self.assertEqual(found, self.project / "AGENTS.md")
+        self.assertEqual(found, (self.project / "AGENTS.md").resolve(strict=False))
 
     def test_a_nearer_file_beats_a_parent_one(self):
         (self.project / "AGENTS.md").write_text("outer", encoding="utf-8")
