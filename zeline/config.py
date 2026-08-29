@@ -468,6 +468,14 @@ def _defaults() -> dict[str, Any]:
             # Kedalaman sub-agent maksimum (delegate_task). 1 = agen utama boleh
             # membuat sub-agent, tapi sub-agent tidak boleh membuat cucu-agent.
             "max_subagent_depth": DEFAULT_MAX_SUBAGENT_DEPTH,
+            # Jalankan formatter proyek sesudah write_file/edit_file, sehingga
+            # kode yang ditulis agent mengikuti gaya repo dan diff-nya bersih.
+            # Hanya formatter yang SUDAH terpasang yang dipakai (via which);
+            # tidak ada unduhan, dan kegagalan format tidak menghapus tulisan.
+            "format_on_write": True,
+            # Override per-ekstensi: {".py": "ruff format {file}"}. Nilai kosong
+            # mematikan format untuk ekstensi itu saja.
+            "formatters": {},
         },
         "gateways": {
             "telegram": {
@@ -606,7 +614,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global RESTART_DRAIN_TIMEOUT
-    global ASK_USER_TIMEOUT
+    global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -643,6 +651,9 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
+    FORMAT_ON_WRITE = bool(cfg.get("tools", {}).get("format_on_write", True))
+    raw_formatters = cfg.get("tools", {}).get("formatters", {})
+    FORMATTERS = dict(raw_formatters) if isinstance(raw_formatters, dict) else {}
     DISABLED_TOOLS = frozenset(str(name) for name in cfg.get("tools", {}).get("disabled", []))
     MAX_SUBAGENT_DEPTH = int(cfg.get("tools", {}).get("max_subagent_depth", DEFAULT_MAX_SUBAGENT_DEPTH))
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})

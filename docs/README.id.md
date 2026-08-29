@@ -32,6 +32,8 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 - **Skills** — prosedur Markdown yang dapat digunakan ulang dan dimuat sesuai kebutuhan; lihat [indeks skill Zenith](../zeline/skills/ZENITH_INDEX.md) untuk katalog lengkap bawaan
 - **Gateway perpesanan** — Telegram (long polling, perintah, lampiran), WhatsApp (pemasangan QR Baileys), dan webhook HTTP lokal yang terautentikasi
 - **Tools bawaan** — pencarian web, pengambilan web, riset mendalam, permintaan HTTP, baca/tulis/edit/cari berkas, eksekusi kode, dan shell
+- **Human-in-the-loop** — `ask_user` menjeda proses untuk bertanya satu hal, dengan pilihan yang bisa ditap di gateway perpesanan dan prompt keyboard di CLI
+- **Format saat menulis** — sesudah agent menulis atau mengedit berkas, formatter proyek yang sudah terpasang (ruff, gofmt, biome, prettier, rustfmt, shfmt, …) dijalankan, sehingga kode hasil agent mengikuti gaya repo; dapat diatur per ekstensi dan tidak pernah menghapus tulisan yang gagal diformat
 - **Klien MCP** — hubungkan server MCP eksternal (stdio atau HTTP) dan ekspos tools-nya secara otomatis
 - **Profil tool bertingkat** — batasi akses per permukaan:
   - `safe` — hanya memori dan skills publik; default untuk gateway perpesanan
