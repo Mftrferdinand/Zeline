@@ -86,15 +86,18 @@ class UpdaterCrossPlatformTests(unittest.TestCase):
         self.updater = importlib.import_module("zeline.updater")
 
     def test_posix_uses_bash_install_sh(self):
+        installer = Path("/tmp/install.sh")
         with mock.patch.object(self.updater, "_is_windows", return_value=False):
             self.assertEqual(self.updater._installer_name(), "install.sh")
-            command = self.updater._installer_command(Path("/tmp/install.sh"), None)
-        self.assertEqual(command, ["bash", "/tmp/install.sh"])
+            command = self.updater._installer_command(installer, None)
+        self.assertEqual(command, ["bash", str(installer)])
 
     def test_posix_source_mode_passes_double_dash_source(self):
+        installer = Path("/repo/install.sh")
+        source = Path("/repo")
         with mock.patch.object(self.updater, "_is_windows", return_value=False):
-            command = self.updater._installer_command(Path("/repo/install.sh"), Path("/repo"))
-        self.assertEqual(command, ["bash", "/repo/install.sh", "--source", "/repo"])
+            command = self.updater._installer_command(installer, source)
+        self.assertEqual(command, ["bash", str(installer), "--source", str(source)])
 
     def test_windows_uses_powershell_install_ps1(self):
         with mock.patch.object(self.updater, "_is_windows", return_value=True), \
