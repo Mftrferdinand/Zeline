@@ -1371,6 +1371,7 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_test.add_argument("name", nargs="?")
 
     subparsers.add_parser("doctor", aliases=["status"], help="check dependencies and configuration")
+    subparsers.add_parser("update", aliases=["upgrade"], help="update Zeline in place (keeps ~/.zeline data)")
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
     subparsers.add_parser("memory", help="view local CLI memory")
 
@@ -1486,6 +1487,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_gateway_list()
     if command in {"doctor", "status"}:
         return cmd_doctor()
+    if command in {"update", "upgrade"}:
+        from zeline import updater
+        return updater.update()
     if command == "start":
         return cmd_gateway_start(None)
     if command == "stop":

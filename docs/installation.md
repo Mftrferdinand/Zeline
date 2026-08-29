@@ -317,9 +317,33 @@ owner: there is no other user the runtime would execute tools on behalf of.
 
 ## Update
 
-Run the same installer again. The private environment and `zeline` command are
+One command, every platform — Termux, Linux, macOS, iSH, and Windows
+PowerShell:
+
+```bash
+zeline update
+```
+
+`zeline upgrade` is an alias. The updater picks the right path automatically:
+
+| Where Zeline runs from | What `zeline update` does |
+|---|---|
+| Release install (POSIX) | Downloads `install.sh` + `SHA256SUMS` from the latest release, verifies the SHA-256, runs it |
+| Release install (Windows) | Downloads `install.ps1` + `SHA256SUMS`, verifies the SHA-256, runs it through PowerShell |
+| Git checkout | Rebuilds and reinstalls your local source with the installer's `--source` / `-Source` mode |
+
+Downloads are HTTPS-only and the installer is refused if its checksum does not
+match the release manifest. The private environment and `zeline` command are
 updated in place; your configuration, sessions, memory, and private skills under
 `~/.zeline` remain untouched.
+
+After updating, reload any running gateway:
+
+```bash
+zeline gateway restart
+```
+
+Running the platform installer again by hand still works and is equivalent.
 
 ## Data and uninstall
 

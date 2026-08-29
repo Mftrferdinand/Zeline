@@ -108,6 +108,20 @@ Lihat [panduan instalasi lengkap](installation.md) untuk paket prasyarat setiap
 OS, instalasi dari checkout, update, perbaikan PATH, keterbatasan iOS, dan
 uninstall.
 
+### Update
+
+Satu perintah untuk semua platform — Termux, Linux, macOS, iSH, dan Windows
+PowerShell:
+
+```bash
+zeline update
+```
+
+Zeline mengunduh installer rilis terbaru, memverifikasi SHA-256-nya sebelum
+dijalankan, lalu memperbarui di tempat. Konfigurasi, sesi, memori, dan skill
+pribadi di `~/.zeline` tidak disentuh. Dari git checkout, sumber lokal kamu yang
+dibangun ulang.
+
 Sesudah itu, periksa tools, integrasi, dan kesehatan instalasi:
 
 ```bash

@@ -106,6 +106,18 @@ zeline setup
 请查看[完整安装指南](installation.md)，了解各系统依赖、从代码检出安装、
 更新、PATH 修复、iOS 限制和卸载方法。
 
+### 更新
+
+所有平台都只需一条命令 —— Termux、Linux、macOS、iSH 和 Windows PowerShell：
+
+```bash
+zeline update
+```
+
+Zeline 会下载最新发布版安装脚本，先校验其 SHA-256 再执行，并原地完成更新。
+`~/.zeline` 下的配置、会话、记忆和私有技能不会被改动。若从 git 检出运行，
+则改为重新构建你的本地源码。
+
 安装后检查工具、集成与运行状态：
 
 ```bash
