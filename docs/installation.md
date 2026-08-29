@@ -345,6 +345,27 @@ zeline gateway restart
 
 Running the platform installer again by hand still works and is equivalent.
 
+### In-flight work is not cut off
+
+`zeline update` and `zeline gateway restart` **drain** before stopping: the
+gateway stops accepting new messages, lets any agent turn already running
+finish, and only then exits. A build, install, or long analysis in progress is
+not killed mid-way, and a message that arrives during the drain is answered
+with a short "finishing current work before restarting" notice instead of being
+dropped.
+
+If a gateway was running, `zeline update` brings it back automatically on the
+updated code — including when the update itself fails, so you are never left
+with a stopped gateway.
+
+Tune or disable the wait with `agent.restart_drain_timeout` (seconds, default
+`30`; `0` restores the old immediate stop). If the drain does not finish in
+time, Zeline escalates to a forced stop **and says so** rather than reporting a
+clean restart.
+
+On Windows there is no `SIGUSR1`, so restart uses the standard managed stop
+path.
+
 ## Data and uninstall
 
 | Item | Default location |

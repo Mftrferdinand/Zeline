@@ -39,6 +39,9 @@ class SessionStore:
         self.max_sessions = max(1, max_sessions or config.MAX_SESSIONS)
         self._sessions: OrderedDict[str, Session] = OrderedDict()
         self._lock = threading.RLock()
+        # Drain gate: saat di-pause, turn BARU ditolak halus sementara turn yang
+        # sedang jalan dibiarkan selesai. Dipakai restart tanpa memotong kerja.
+        self._paused = threading.Event()
         # Persistensi disk: history bertahan lintas restart gateway. Bisa
         # dimatikan lewat agent.persist_sessions=false di config.
         if persistence is not None:
@@ -106,6 +109,13 @@ class SessionStore:
         on_narration: Callable | None = None,
         on_stream_delta: Callable | None = None,
     ) -> str:
+        # Gateway sedang drain untuk restart/update: jangan mulai turn baru,
+        # dan katakan alasannya. Turn yang sudah jalan tetap diselesaikan.
+        if self._paused.is_set():
+            return (
+                "⏸️ Zeline is finishing current work before restarting. "
+                "Send this again in a moment."
+            )
         session = self.get_or_create(identity, tool_profile, workspace, system_extra)
         # Agent memiliki mutable message history; satu session harus serial.
         with session.lock:
@@ -228,6 +238,47 @@ class SessionStore:
     def count(self) -> int:
         with self._lock:
             return len(self._sessions)
+
+    # ---------------------------------------------------------------- draining
+    #
+    # Restart yang jujur harus MENUNGGU kerja yang sedang jalan, bukan
+    # memotongnya. Tanpa ini `gateway restart` mengirim SIGTERM lalu SIGKILL,
+    # jadi build/install/analisis yang sedang berjalan mati di tengah jalan dan
+    # user cuma melihat balasan berhenti tanpa penjelasan.
+
+    def pause(self) -> None:
+        """Tolak turn BARU; turn yang sedang jalan dibiarkan menyelesaikan."""
+        self._paused.set()
+
+    def resume(self) -> None:
+        """Terima turn baru lagi (batalkan pause)."""
+        self._paused.clear()
+
+    @property
+    def paused(self) -> bool:
+        return self._paused.is_set()
+
+    def running_identities(self) -> list[str]:
+        """Identitas sesi yang turn-nya sedang berjalan saat ini."""
+        with self._lock:
+            return [key for key, session in self._sessions.items() if session.running]
+
+    def drain(self, timeout: float = 30.0, poll: float = 0.25) -> tuple[bool, list[str]]:
+        """Pause lalu tunggu setiap turn aktif selesai.
+
+        Mengembalikan ``(selesai_semua, identitas_yang_masih_jalan)``. Pemanggil
+        yang gagal drain sepenuhnya boleh melanjutkan dengan stop paksa, tetapi
+        kini bisa MELAPORKAN bahwa ada kerja yang dipotong alih-alih diam.
+        """
+        self.pause()
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            busy = self.running_identities()
+            if not busy:
+                return True, []
+            if time.monotonic() >= deadline:
+                return False, busy
+            time.sleep(max(0.05, poll))
 
     def task_snapshot(self, identity: str) -> dict[str, object] | None:
         """Ambil judul dan percakapan terbaru untuk arsip task manual."""

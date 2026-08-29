@@ -1012,7 +1012,9 @@ def cmd_gateway_stop() -> int:
 
 
 def cmd_gateway_restart(only: list[str] | None = None) -> int:
-    _stopped, stop_message = gateway_service.stop()
+    # Restart harus MENUNGGU kerja yang sedang jalan, bukan memotongnya:
+    # SIGUSR1 → drain → exit, dengan eskalasi paksa hanya bila drain gagal.
+    _stopped, stop_message = gateway_service.drain_then_stop()
     print(stop_message)
     started, start_message = gateway_service.start(only=only)
     print(start_message)
@@ -1100,8 +1102,31 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         print("\n==> Stopping gateway…", flush=True)
         runtime.stop()
 
+    def drain_and_shutdown(_signal=None, _frame=None):
+        """SIGUSR1: selesaikan turn yang sedang jalan, lalu keluar.
+
+        Ini jalur restart yang SOPAN. `gateway stop` mengirim SIGTERM lalu
+        SIGKILL, jadi build/install/analisis yang sedang berjalan mati di
+        tengah jalan. Dengan drain, turn aktif dibiarkan selesai lebih dulu
+        dan turn baru ditolak dengan pesan yang jelas.
+        """
+        timeout = float(getattr(config, "RESTART_DRAIN_TIMEOUT", 30.0))
+        print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
+        finished, busy = sessions.drain(timeout=timeout)
+        if finished:
+            print("  ✅ All turns finished; no work was cut off.", flush=True)
+        else:
+            print(f"  ⚠️ Still busy after drain timeout: {', '.join(busy)}", flush=True)
+        runtime.stop()
+
     previous_int = signal.signal(signal.SIGINT, shutdown)
     previous_term = signal.signal(signal.SIGTERM, shutdown)
+    # SIGUSR1 = graceful drain-then-exit. POSIX only; Windows has no SIGUSR1,
+    # so there the managed stop path stays the only mechanism.
+    previous_usr1 = None
+    sigusr1 = getattr(signal, "SIGUSR1", None)
+    if sigusr1 is not None:
+        previous_usr1 = signal.signal(sigusr1, drain_and_shutdown)
     # `gateway stop` on Windows sends CTRL_BREAK_EVENT, which arrives as
     # SIGBREAK — without this handler the child ignores the graceful phase and
     # always has to be force-killed with taskkill.
@@ -1117,6 +1142,8 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     finally:
         signal.signal(signal.SIGINT, previous_int)
         signal.signal(signal.SIGTERM, previous_term)
+        if sigusr1 is not None and previous_usr1 is not None:
+            signal.signal(sigusr1, previous_usr1)
         if sigbreak is not None and previous_break is not None:
             signal.signal(sigbreak, previous_break)
         runtime.stop(timeout=1)
