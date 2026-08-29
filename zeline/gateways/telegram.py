@@ -21,6 +21,7 @@ import requests
 
 from zeline import config
 from zeline import skill_publish
+from zeline import interaction
 from zeline.agent import ZelineError
 
 API_TEMPLATE = "https://api.telegram.org/bot{token}"
@@ -1209,6 +1210,58 @@ def _edit_interactive(api: str, chat_id: int, message_id: int, text: str, **extr
         _api_call(api, "sendMessage", chat_id=chat_id, text=text, **extra)
 
 
+# ---------------------------------------------------------------- ask_user
+#
+# A tool can block mid-turn waiting for the operator. We render the question as
+# its own bubble (with an inline keyboard when options were supplied) and route
+# either a button tap or the next plain message back to the waiting tool.
+#
+# callback_data is capped at 64 bytes by Telegram, so the payload is just
+# `ask:<chat_id>:<option_index>` — the question text stays in the process.
+
+def _ask_callback_data(chat_id: int, index: int) -> str:
+    return f"ask:{chat_id}:{index}"
+
+
+def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> None:
+    """Resolve a pending ask_user question from a tapped option button."""
+    parts = data.split(":")
+    if len(parts) != 3:
+        return
+    try:
+        target_chat = int(parts[1])
+        index = int(parts[2])
+    except ValueError:
+        return
+    identity = f"telegram:{target_chat}"
+    chosen = interaction.answer_option(identity, index)
+    if chosen is None:
+        # Already answered, cancelled, or timed out — say so instead of leaving
+        # a dead button that looks like the tap was ignored.
+        _edit_interactive(api, chat_id, message_id, "That question is no longer waiting for an answer.")
+        return
+    _edit_interactive(api, chat_id, message_id, f"✅ {chosen}")
+
+
+def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
+    """Send the question bubble for a pending ask_user entry."""
+    text = f"❓ {entry.question}"
+    if entry.options:
+        rows = [
+            [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index)}]
+            for index, option in enumerate(entry.options)
+        ]
+        _api_call(
+            api, "sendMessage", chat_id=chat_id, text=text,
+            reply_markup={"inline_keyboard": rows},
+        )
+    else:
+        _api_call(
+            api, "sendMessage", chat_id=chat_id,
+            text=f"{text}\n\nReply with your answer.",
+        )
+
+
 def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
     callback_id = str(callback.get("id", ""))
     data = str(callback.get("data", ""))
@@ -1222,6 +1275,9 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
         _api_call(api, "answerCallbackQuery", timeout=10, callback_query_id=callback_id)
     if data == "model:cancel":
         _edit_interactive(api, chat_id, message_id, "Model selection cancelled.")
+        return
+    if data.startswith("ask:"):
+        _handle_ask_callback(api, chat_id, message_id, data)
         return
     if data.startswith("pub:"):
         _handle_publish_callback(api, chat_id, message_id, data)
@@ -1915,6 +1971,23 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         # _safe_progress_line menjaga tag HTML (pre/code) tetap seimbang saat
         # dipangkas — mencegah editMessageText gagal "Can't find end tag pre".
         live.add(_safe_progress_line(_tool_progress_text(_name, _args)))
+        # ask_user memblokir sampai user menjawab, jadi pertanyaannya harus
+        # SUDAH terkirim sebelum tool-nya menunggu. Kirim di sini, tepat setelah
+        # tool call terlihat: kalau menunggu on_tool_result, pertanyaan baru
+        # muncul setelah jawabannya masuk — terlambat dan bikin user bingung.
+        if _name == "ask_user":
+            entry = None
+            # Tool berjalan di thread lain; beri jeda singkat sampai entry
+            # terdaftar, lalu render. Tanpa polling kecil ini kita bisa
+            # membaca state sebelum interaction.ask() mendaftarkannya.
+            for _ in range(20):
+                entry = interaction.pending(identity)
+                if entry is not None:
+                    break
+                time.sleep(0.05)
+            if entry is not None:
+                live.detach()
+                _render_ask_question(api, chat_id, entry)
 
     def on_tool_result(_name, _args, result):
         result_text = _tool_result_text(_name, _args, result)
@@ -2116,6 +2189,12 @@ def _dispatch_update(
                 command_reply = _handle_command(text, sessions, identity, stop_event=stop_event)
                 _api_call(api, "sendMessage", chat_id=chat_id_int, text=command_reply or "Unknown command. Use /start.")
         else:
+            # A tool may be blocked on ask_user. The user's next plain message is
+            # that ANSWER, not a new request — routing it to a fresh turn would
+            # both strand the waiting tool and run the wrong thing. Commands are
+            # deliberately checked first so /stop still escapes a question.
+            if interaction.answer(identity, text):
+                return
             _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif document:
         filename = _document_filename(document)

@@ -28,6 +28,9 @@ DEFAULT_MAX_SESSIONS = 100
 # Detik menunggu turn aktif selesai saat restart/update yang sopan sebelum
 # proses gateway keluar. Nol berarti keluar segera (perilaku lama).
 DEFAULT_RESTART_DRAIN_TIMEOUT = 30
+# Detik menunggu jawaban operator untuk ask_user. Selalu di-clamp di bawah
+# MAX_TURN_SECONDS supaya pertanyaan tidak menggantung melewati turn-nya.
+DEFAULT_ASK_USER_TIMEOUT = 180
 # Batas waktu wall-clock satu turn agent (detik). Setelah lewat, agent berhenti
 # memanggil tool dan memaksa jawaban final — mencegah "Processing" berlarut saat
 # sebuah tool (mis. web_search) gagal/lambat berulang. Dibuat cukup longgar untuk
@@ -141,6 +144,10 @@ When to ASK vs act (important — don't just execute blindly):
   or the action is risky/hard to undo (deleting data, changing important config,
   deploying, overwriting a big file) → ASK FIRST with one short question plus
   clear options; don't guess and run.
+- Use the `ask_user` TOOL for that question — it shows tappable options and
+  waits for the real answer. Writing the question as plain text ends your turn
+  and the user's reply arrives as a brand-new request, so you lose the thread.
+  One question at a time; `ask_user` refuses a second while one is open.
 - For small choices (variable names, formatting, default values, step order)
   → make a reasonable call yourself, mention it briefly, don't ask endlessly.
 - After you ask and the user picks, execute the choice immediately — don't ask again.
@@ -440,6 +447,8 @@ def _defaults() -> dict[str, Any]:
             # Restart/update yang sopan: tunggu turn yang sedang jalan selesai
             # sebelum proses gateway keluar, alih-alih SIGKILL di tengah build.
             "restart_drain_timeout": DEFAULT_RESTART_DRAIN_TIMEOUT,
+            # Detik menunggu jawaban ask_user sebelum agent lanjut dengan asumsi.
+            "ask_user_timeout": DEFAULT_ASK_USER_TIMEOUT,
             # Streaming respons (SSE) supaya token mengalir seketika: anti-timeout
             # pada model 'thinking' yang lama menyusun jawaban, dan terasa satset
             # persis seperti Zeline. Matikan hanya bila provider tak
@@ -597,6 +606,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global RESTART_DRAIN_TIMEOUT
+    global ASK_USER_TIMEOUT
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -623,6 +633,13 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
         )
     except (TypeError, ValueError):
         RESTART_DRAIN_TIMEOUT = float(DEFAULT_RESTART_DRAIN_TIMEOUT)
+    try:
+        ASK_USER_TIMEOUT = max(
+            0.0,
+            float(cfg.get("agent", {}).get("ask_user_timeout", DEFAULT_ASK_USER_TIMEOUT)),
+        )
+    except (TypeError, ValueError):
+        ASK_USER_TIMEOUT = float(DEFAULT_ASK_USER_TIMEOUT)
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
