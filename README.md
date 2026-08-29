@@ -106,6 +106,20 @@ See the complete [installation guide](docs/installation.md) for package
 prerequisites, platform limitations, checkout installs, updates, PATH fixes, and
 uninstall instructions.
 
+### Update
+
+One command on every platform — Termux, Linux, macOS, iSH, and Windows
+PowerShell:
+
+```bash
+zeline update
+```
+
+It fetches the latest release installer, verifies its SHA-256 before running it,
+and updates in place. Your config, sessions, memory, and private skills under
+`~/.zeline` are untouched. From a git checkout it rebuilds your local source
+instead.
+
 Then inspect the available integrations and health:
 
 ```bash
