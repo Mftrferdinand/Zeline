@@ -1,8 +1,9 @@
 """File checkpoints: snapshot before a write, restore when the agent gets it wrong.
 
-OpenCode has `/undo` and `/redo`; Hermes has `hermes checkpoints`. The value is
-a safety net — the agent overwrites the wrong file or mangles a function, and the
-operator wants the previous bytes back without hunting for a backup.
+Other coding agents expose this as `/undo` / `/redo` or a checkpoints command.
+The value is a safety net — the agent overwrites the wrong file or mangles a
+function, and the operator wants the previous bytes back without hunting for a
+backup.
 
 Why full-content copies instead of git:
 
