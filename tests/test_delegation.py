@@ -439,8 +439,10 @@ class ExecutorTests(DelegationBase):
         self.assertNotIn("delegate_task", names)
 
     def test_the_schema_advertises_tasks_roles_and_verify(self):
+        # all_schemas: the shape of the schema is under test, not whether this
+        # round happened to send it (tool_search may withhold the detail).
         schema = next(
-            s for s in self.executor().schemas if s["function"]["name"] == "delegate_task"
+            s for s in self.executor().all_schemas if s["function"]["name"] == "delegate_task"
         )
         properties = schema["function"]["parameters"]["properties"]
         for key in ("goal", "context", "role", "tasks", "verify"):

@@ -272,8 +272,19 @@ class RegistryIntegrationTests(CustomToolBase):
     def test_custom_tools_appear_in_the_agent_schema_list(self):
         self.write("t.py", "def shout(text: str) -> str:\n    return text.upper()\n")
         registry = self._registry("full")
-        names = [item["function"]["name"] for item in registry.schemas]
+        names = [item["function"]["name"] for item in registry.all_schemas]
         self.assertIn("custom_shout", names)
+
+    def test_custom_tools_are_catalogued_when_schemas_are_lazy(self):
+        """Registration must reach the model even when detail is withheld."""
+        self.write("t.py", "def shout(text: str) -> str:\n    return text.upper()\n")
+        registry = self._registry("full")
+        sent = registry.schemas
+        names = [item["function"]["name"] for item in sent]
+        if "custom_shout" in names:
+            return  # nothing was hidden this round; already visible
+        catalog = next(item for item in sent if item["function"]["name"] == "tool_search")
+        self.assertIn("custom_shout", catalog["function"]["description"])
 
     def test_the_agent_can_actually_run_one(self):
         self.write("t.py", "def shout(text: str) -> str:\n    return text.upper()\n")
@@ -284,7 +295,7 @@ class RegistryIntegrationTests(CustomToolBase):
         """Defining write_file in a tool file must not hijack the native one."""
         self.write("t.py", "def write_file(path: str, content: str) -> str:\n    return 'HIJACKED'\n")
         registry = self._registry("full")
-        names = [item["function"]["name"] for item in registry.schemas]
+        names = [item["function"]["name"] for item in registry.all_schemas]
         self.assertIn("custom_write_file", names)
         self.assertEqual(names.count("write_file"), 1)
         result = registry.run("write_file", {"path": "x.txt", "content": "real"})

@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
-from zeline import config
+from zeline import __version__, config
 
 ALLOWED_PROFILES = frozenset({"workspace", "full"})
 
@@ -309,7 +309,7 @@ class LanguageServer:
     def _initialize(self) -> None:
         result = self._request("initialize", {
             "processId": os.getpid(),
-            "clientInfo": {"name": "Zeline", "version": "0.2.5"},
+            "clientInfo": {"name": "Zeline", "version": __version__},
             "rootUri": _uri(self.root),
             "workspaceFolders": [{"uri": _uri(self.root), "name": self.root.name}],
             "capabilities": {

@@ -522,9 +522,10 @@ def _defaults() -> dict[str, Any]:
             # Kirim schema inti saja per request; sisanya diambil model lewat
             # tool_search saat butuh. Nama semua tool tetap terlihat, jadi tidak
             # ada kemampuan yang hilang — hanya detail parameternya yang lazy.
-            # Default OFF: menukar 1 round trip demi token, cuma untung kalau
-            # tool-nya banyak.
-            "tool_search": False,
+            # Default ON, tapi hanya aktif di atas ambang tool_index: yang
+            # ditukar adalah 1 round trip demi token, dan itu cuma untung kalau
+            # tool-nya banyak. Profile kecil (`safe`) tetap kirim semuanya.
+            "tool_search": True,
         },
         "gateways": {
             "telegram": {
@@ -710,7 +711,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     CHECKPOINTS = bool(cfg.get("tools", {}).get("checkpoints", True))
     CUSTOM_TOOLS = bool(cfg.get("tools", {}).get("custom_tools", True))
     PLUGINS = bool(cfg.get("tools", {}).get("plugins", True))
-    TOOL_SEARCH = bool(cfg.get("tools", {}).get("tool_search", False))
+    TOOL_SEARCH = bool(cfg.get("tools", {}).get("tool_search", True))
     BROWSER = bool(cfg.get("tools", {}).get("browser", True))
     BROWSER_BINARY = str(cfg.get("tools", {}).get("browser_binary", "") or "")
     LSP = bool(cfg.get("tools", {}).get("lsp", True))

@@ -345,8 +345,10 @@ class ToolRoutingTests(LspBase):
         self.assertIn("not allowed", self.executor("safe").run("code_intel", {"action": "servers"}))
 
     def test_it_is_advertised_only_to_operator_profiles(self):
-        self.assertIn("code_intel", [s["function"]["name"] for s in self.executor("full").schemas])
-        self.assertNotIn("code_intel", [s["function"]["name"] for s in self.executor("safe").schemas])
+        # all_schemas, not schemas: the profile boundary is what is under test,
+        # and `schemas` may withhold detail behind tool_search.
+        self.assertIn("code_intel", [s["function"]["name"] for s in self.executor("full").all_schemas])
+        self.assertNotIn("code_intel", [s["function"]["name"] for s in self.executor("safe").all_schemas])
 
     def test_disabled_config_is_reported(self):
         saved = self.config.config_copy()
@@ -417,7 +419,7 @@ class ToolRoutingTests(LspBase):
 
     def test_one_tool_covers_every_action(self):
         schema = next(
-            s for s in self.executor().schemas if s["function"]["name"] == "code_intel"
+            s for s in self.executor().all_schemas if s["function"]["name"] == "code_intel"
         )
         self.assertEqual(schema["function"]["parameters"]["required"], ["action"])
 

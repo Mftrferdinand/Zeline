@@ -1,14 +1,14 @@
 """Lazy tool schemas: send a small core, let the model fetch the rest on demand.
 
-Every request carries the JSON schema of every tool. Measured on this codebase
-that is ~1.4k tokens on the ``safe`` profile and ~3.5k on ``full``, re-sent on
-every tool round of every turn -- and #186 (custom tools) and #187 (plugins)
-only make the list grow.
+Every request carries the JSON schema of every tool. Measured on a real install:
+17,089 characters (~4.3k tokens) on a stock ``full`` profile, 25,898 (~6.5k) once
+MCP servers are connected -- re-sent on every tool round of every turn, and #186
+(custom tools) and #187 (plugins) only make the list grow.
 
-The insight this is built on: **names are cheap, schemas are expensive.** The
-full catalogue of 28 tools costs a few hundred characters as a list of names
-with one-line summaries, versus ~14k characters as full schemas. So the model is
-always told what exists; it only pays for the parameter detail it asks for.
+The insight this is built on: **names are cheap, schemas are expensive.** The same
+tools cost 6,793 and 7,715 characters respectively when the non-core ones become a
+list of names with one-line summaries -- 60% and 69% less. So the model is always
+told what exists; it only pays for the parameter detail it asks for.
 
 That removes the usual objection to lazy tool loading. The model is not guessing
 in the dark about hidden capabilities -- it can see every name, and:
@@ -22,9 +22,15 @@ Revelation is **sticky** for the life of the executor: once a schema has been
 shown it stays in the list. A tool that vanished again mid-task would make the
 model's earlier plan silently unexecutable.
 
-Off by default. Turning it on trades one extra round trip for tokens, which only
-pays off on a large tool set, and enabling it silently for existing installs
-would change how every agent behaves without being asked.
+On by default, but engaged only where it pays: both ``MIN_TOOLS_TO_BOTHER`` and
+``MIN_CHARS_SAVED`` must be cleared, measured on the executor's own tool set. The
+``safe`` profile does not clear them, so public gateways keep sending everything.
+``zeline toolsearch off`` restores byte-identical behaviour anywhere.
+
+One consequence worth stating: as tools are revealed, the remaining saving falls,
+and the index can drop back below the character floor and simply send everything.
+That is safe because the visible set only ever grows -- a revealed tool never
+disappears, so no earlier plan becomes unexecutable.
 """
 from __future__ import annotations
 
@@ -54,11 +60,20 @@ CORE_TOOLS = frozenset({
 # Below this many tools the extra round trip costs more than the tokens saved.
 MIN_TOOLS_TO_BOTHER = 12
 
+# ...and below this much saved schema, likewise. The tool count alone is a bad
+# proxy: the `safe` profile has exactly 12 small tools and hiding them saves only
+# ~2.7k characters, while the extra round trip it buys re-sends the *entire*
+# prompt and conversation. So the saving has to be large enough to outweigh one
+# more full turn, not merely positive. 8k characters (~2k tokens) is a deliberate
+# floor: it keeps public gateway profiles eager and lets the big operator
+# profiles (34 and 41 tools here, 16k+ characters hidden) engage.
+MIN_CHARS_SAVED = 8000
+
 _SUMMARY_CHARS = 70
 
 
 def enabled() -> bool:
-    return bool(getattr(config, "TOOL_SEARCH", False))
+    return bool(getattr(config, "TOOL_SEARCH", True))
 
 
 def _summarize(description: str) -> str:
@@ -151,8 +166,28 @@ class LazySchemaIndex:
 
     @property
     def applicable(self) -> bool:
-        """Only worth doing when it is switched on and there is enough to hide."""
-        return enabled() and len(self.all) >= MIN_TOOLS_TO_BOTHER
+        """Only worth doing when it is switched on and there is enough to hide.
+
+        Two floors, both measured on this executor's own tool set: a tool count,
+        and the characters actually saved. The second one is what keeps small
+        profiles honest -- twelve tiny tools clear the count while saving too
+        little to justify the round trip.
+        """
+        if not enabled() or len(self.all) < MIN_TOOLS_TO_BOTHER:
+            return False
+        return self._chars_saved() >= MIN_CHARS_SAVED
+
+    def _chars_saved(self) -> int:
+        """Schema characters removed, net of the catalogue that replaces them."""
+        hidden = [
+            schema for schema in self.all
+            if self._name(schema) not in CORE_TOOLS and self._name(schema) not in self.revealed
+        ]
+        if not hidden:
+            return 0
+        cost = len(json.dumps(hidden, ensure_ascii=False))
+        catalog = len(json.dumps(search_schema(hidden), ensure_ascii=False))
+        return cost - catalog
 
     def _name(self, schema: dict[str, Any]) -> str:
         return str(schema.get("function", {}).get("name", ""))

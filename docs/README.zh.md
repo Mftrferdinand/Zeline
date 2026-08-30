@@ -32,6 +32,12 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 - **技能** —— 按需加载的可复用 Markdown 流程；完整的内置技能目录见 [Zenith 技能索引](../zeline/skills/ZENITH_INDEX.md)
 - **消息网关** —— Telegram（长轮询、命令、附件）、WhatsApp（Baileys 二维码配对），以及一个带认证的本地 HTTP webhook
 - **内置工具** —— 网页搜索、网页抓取、深度研究、HTTP 请求、文件读取/写入/编辑/搜索、代码执行和 shell
+- **惰性工具 schema** —— 每次请求只发送少量核心 schema，其余工具仅以一行摘要列出，模型按需通过 `tool_search` 取回完整参数。在 `full` 配置下，这是每次请求 6,793 个字符而非 17,089（减少 60%），且不隐藏任何能力：工具名称始终可见，列出的工具也可直接调用。只有当节省超过额外一次往返的成本时才会启用，因此公开的 `safe` 配置仍会完整发送；运行 `zeline toolsearch` 可查看你自己工具集的实测数字
+- **真实浏览器控制** —— `browser` 工具通过 Chrome DevTools Protocol 驱动已安装的 Chromium/Chrome（打开、点击、输入、读取、截图），因此可以访问由 JavaScript 渲染或需要登录的页面——这是抓取原始 HTML 做不到的。无需 Playwright 或 Puppeteer 依赖
+- **网关内的定时任务** —— `zeline cron` 在运行中的网关进程内执行按间隔或 cron 表达式调度的任务，复用其配置、提供商密钥和工作区，并把结果投递到拥有该任务的会话
+- **语言服务器智能** —— `code_intel` 向真实的 LSP 服务器查询诊断、定义、引用、悬停信息和符号；服务器只在 PATH 中查找，绝不下载，未安装时回退到项目的 linter
+- **运维扩展点** —— Python 插件钩子可在任何工具调用执行前审计、改写或阻止它，普通 Python 文件也可作为 `custom_*` 工具加载
+- **撤销** —— 写入和编辑前先做快照；`zeline undo` 可列出并恢复它们
 - **人类参与回路** —— `ask_user` 会暂停运行以向你提出一个问题，在消息网关上提供可点击的选项，在 CLI 中提供键盘提示
 - **写入时自动格式化** —— 智能体写入或编辑文件后，会运行项目中已安装的格式化工具（ruff、gofmt、biome、prettier、rustfmt、shfmt 等），使生成的代码符合仓库风格；可按扩展名配置，且绝不会因格式化失败而丢失写入内容
 - **MCP 客户端** —— 连接外部 MCP 服务器（stdio 或 HTTP）并自动暴露其工具
@@ -49,7 +55,7 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 ### Termux、Linux 和 macOS
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -72,7 +78,7 @@ zeline setup
 
 ```sh
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -95,7 +101,7 @@ CLI 和 HTTP 集成可在 iSH 中使用，但当 iSH 不在前台时，iOS 可�
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5'
+$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]

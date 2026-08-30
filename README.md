@@ -32,6 +32,12 @@ Run it locally for development or deploy it to your own server or cloud, and con
 - **Skills** — reusable Markdown procedures loaded on demand; see the [Zenith skill index](zeline/skills/ZENITH_INDEX.md) for the full bundled catalog
 - **Messaging gateways** — Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook
 - **Built-in tools** — web search, web fetch, deep research, HTTP requests, file read/write/edit/search, image analysis, text-to-image generation, code execution, shell, and sub-agent delegation
+- **Lazy tool schemas** — the model is sent a small core of schemas plus a one-line summary of every other tool, and fetches full parameters on demand with `tool_search`. On the `full` profile that is 6,793 characters per request instead of 17,089 (60% less), without hiding any capability: names stay visible and a listed tool can be called directly. It engages only where the saving outweighs the extra round trip, so the public `safe` profile keeps sending everything; run `zeline toolsearch` for the numbers on your own tool set
+- **Real browser control** — the `browser` tool drives an installed Chromium/Chrome over the Chrome DevTools Protocol (open, click, type, read, screenshot), so JavaScript-rendered and logged-in pages are reachable where raw HTML fetching is not. No Playwright or Puppeteer dependency
+- **Scheduled jobs inside the gateway** — `zeline cron` runs interval or cron-expression jobs in the running gateway process, reusing its config, provider key, and workspace, and delivers results to the chat that owns the job
+- **Language-server intelligence** — `code_intel` asks a real LSP server for diagnostics, definitions, references, hover, and symbols; servers are discovered on PATH and never downloaded, falling back to the project linter when none is installed
+- **Operator extension points** — Python plugin hooks can audit, rewrite, or block any tool call before it runs, and plain Python files can be loaded as `custom_*` tools
+- **Undo** — writes and edits are snapshotted first; `zeline undo` lists and restores them
 - **Human-in-the-loop** — `ask_user` pauses the run to ask you one question, with tappable options on messaging gateways and a keyboard prompt in the CLI
 - **Format on write** — after the agent writes or edits a file, the project's installed formatter (ruff, gofmt, biome, prettier, rustfmt, shfmt, …) runs on it, so generated code matches your repo style; configurable per extension and never overwrites a failed write
 - **Sub-agents** — delegate a focused subtask to an isolated child agent that returns only its final summary, keeping the main context clean (depth-limited; owner profiles only)
@@ -50,7 +56,7 @@ install. Neither requires root/Administrator access.
 ### Termux, Linux, and macOS
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -73,7 +79,7 @@ zeline setup
 
 ```sh
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -94,7 +100,7 @@ zeline setup
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5'
+$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]

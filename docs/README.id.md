@@ -32,6 +32,12 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 - **Skills** — prosedur Markdown yang dapat digunakan ulang dan dimuat sesuai kebutuhan; lihat [indeks skill Zenith](../zeline/skills/ZENITH_INDEX.md) untuk katalog lengkap bawaan
 - **Gateway perpesanan** — Telegram (long polling, perintah, lampiran), WhatsApp (pemasangan QR Baileys), dan webhook HTTP lokal yang terautentikasi
 - **Tools bawaan** — pencarian web, pengambilan web, riset mendalam, permintaan HTTP, baca/tulis/edit/cari berkas, eksekusi kode, dan shell
+- **Schema tool yang lazy** — model hanya menerima sedikit schema inti plus ringkasan satu baris untuk setiap tool lain, lalu mengambil parameter lengkapnya lewat `tool_search` saat butuh. Pada profil `full` itu 6.793 karakter per permintaan alih-alih 17.089 (60% lebih sedikit), tanpa menyembunyikan kemampuan apa pun: nama tool tetap terlihat dan tool yang terdaftar bisa dipanggil langsung. Ini hanya aktif bila penghematannya melebihi biaya satu round trip tambahan, jadi profil publik `safe` tetap mengirim semuanya; jalankan `zeline toolsearch` untuk melihat angka pada set tool Anda sendiri
+- **Kontrol browser sungguhan** — tool `browser` mengendalikan Chromium/Chrome terpasang melalui Chrome DevTools Protocol (buka, klik, ketik, baca, screenshot), sehingga halaman yang dirender JavaScript atau berada di balik login bisa dijangkau — hal yang tidak bisa dilakukan pengambilan HTML mentah. Tanpa dependensi Playwright atau Puppeteer
+- **Job terjadwal di dalam gateway** — `zeline cron` menjalankan job berbasis interval atau ekspresi cron di dalam proses gateway yang sedang berjalan, memakai config, kunci provider, dan workspace yang sama, lalu mengirim hasilnya ke chat pemilik job
+- **Kecerdasan language server** — `code_intel` menanyakan diagnostics, definisi, referensi, hover, dan simbol ke server LSP sungguhan; server dicari di PATH dan tidak pernah diunduh, dan jatuh ke linter proyek bila tidak ada yang terpasang
+- **Titik ekstensi operator** — hook plugin Python dapat mengaudit, menulis ulang, atau memblokir panggilan tool apa pun sebelum dijalankan, dan berkas Python biasa bisa dimuat sebagai tool `custom_*`
+- **Undo** — setiap tulis dan edit di-snapshot lebih dulu; `zeline undo` menampilkan dan memulihkannya
 - **Human-in-the-loop** — `ask_user` menjeda proses untuk bertanya satu hal, dengan pilihan yang bisa ditap di gateway perpesanan dan prompt keyboard di CLI
 - **Format saat menulis** — sesudah agent menulis atau mengedit berkas, formatter proyek yang sudah terpasang (ruff, gofmt, biome, prettier, rustfmt, shfmt, …) dijalankan, sehingga kode hasil agent mengikuti gaya repo; dapat diatur per ekstensi dan tidak pernah menghapus tulisan yang gagal diformat
 - **Klien MCP** — hubungkan server MCP eksternal (stdio atau HTTP) dan ekspos tools-nya secara otomatis
@@ -49,7 +55,7 @@ dipasang hanya untuk akun pengguna. Tidak perlu root atau Administrator.
 ### Termux, Linux, dan macOS
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -72,7 +78,7 @@ zeline setup
 
 ```sh
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5
+BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
 curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
 python3 - <<'PY'
 from pathlib import Path
@@ -96,7 +102,7 @@ saat iSH tidak berada di foreground.
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.5'
+$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6'
 Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
