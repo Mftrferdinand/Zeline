@@ -48,6 +48,20 @@ def enabled() -> bool:
     return bool(getattr(config, "CHECKPOINTS", True))
 
 
+def _normalize(path: str | Path) -> Path:
+    """One canonical spelling per file, so lookups match what was stored.
+
+    The tool layer resolves paths before writing while a caller may not, and two
+    platforms make the unresolved and resolved spellings genuinely different
+    strings: Windows hands out 8.3 short names (``C:\\Users\\RUNNER~1\\...``)
+    beside the long form, and macOS symlinks ``/var`` to ``/private/var``.
+    Storing the raw string therefore made one file look like two, and a
+    checkpoint taken by write_file could not be found by path. Resolve on both
+    sides instead.
+    """
+    return Path(path).expanduser().resolve(strict=False)
+
+
 def _root() -> Path:
     return config.DATA_DIR / "checkpoints"
 
@@ -110,7 +124,7 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
     """
     if not enabled():
         return None
-    target = Path(path)
+    target = _normalize(path)
     try:
         if not target.is_file():
             # A brand-new file has no previous content to restore.
@@ -151,7 +165,7 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
 def list_checkpoints(path: str | Path | None = None, limit: int = 50) -> list[dict[str, Any]]:
     entries = _load_index()
     if path is not None:
-        wanted = str(Path(path))
+        wanted = str(_normalize(path))
         entries = [item for item in entries if str(item.get("path")) == wanted]
     entries.sort(key=lambda item: float(item.get("ts", 0)), reverse=True)
     return entries[: max(1, limit)]
@@ -172,8 +186,8 @@ def restore(checkpoint_id: str) -> tuple[bool, str]:
     blob = _root() / str(entry.get("blob", ""))
     if not blob.is_file():
         return False, f"checkpoint {checkpoint_id} has no stored content"
-    target = Path(str(entry.get("path", "")))
-    if not str(target):
+    target = _normalize(str(entry.get("path", "")))
+    if not str(entry.get("path", "")):
         return False, f"checkpoint {checkpoint_id} has no target path"
     # Make the undo undoable before touching anything.
     snapshot(target, reason="pre-restore")
@@ -213,7 +227,7 @@ def diff_preview(checkpoint_id: str, max_lines: int = 40) -> str:
     if entry is None:
         return f"no checkpoint with id {checkpoint_id}"
     blob = _root() / str(entry.get("blob", ""))
-    target = Path(str(entry.get("path", "")))
+    target = _normalize(str(entry.get("path", "")))
     try:
         old = blob.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     except OSError:

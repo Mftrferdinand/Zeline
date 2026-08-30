@@ -194,6 +194,21 @@ class ListingTests(CheckpointBase):
     def test_diff_preview_unknown_id(self):
         self.assertIn("no checkpoint", self.checkpoints.diff_preview("nope"))
 
+    def test_a_file_has_one_identity_regardless_of_how_it_is_spelled(self):
+        """Windows 8.3 short names and macOS /var -> /private/var both bite here.
+
+        The tool layer resolves paths before writing while a caller may not, so
+        storing the raw string made two spellings of one file look like two
+        files -- a checkpoint taken by write_file could not then be found by
+        path. Reproduced portably with an unresolved '..' segment.
+        """
+        target = self.file("a.py", "x\n")
+        indirect = self.work / "sub" / ".." / "a.py"
+        cid = self.checkpoints.snapshot(indirect)
+        self.assertIsNotNone(cid)
+        self.assertEqual(len(self.checkpoints.list_checkpoints(target)), 1)
+        self.assertEqual(len(self.checkpoints.list_checkpoints(indirect)), 1)
+
 
 class ToolIntegrationTests(CheckpointBase):
     def test_write_file_snapshots_the_previous_content(self):
