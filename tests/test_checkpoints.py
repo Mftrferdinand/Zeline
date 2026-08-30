@@ -97,6 +97,7 @@ class SnapshotTests(CheckpointBase):
     def test_store_permissions_are_private(self):
         target = self.file("a.py", "secret\n")
         cid = self.checkpoints.snapshot(target)
+        self.assertIsNotNone(cid)
         if os.name == "posix":
             root = self.config.DATA_DIR / "checkpoints"
             self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
@@ -177,7 +178,11 @@ class ListingTests(CheckpointBase):
         self.checkpoints.snapshot(b)
         entries = self.checkpoints.list_checkpoints(a)
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["path"], str(a))
+        # The stored path is deliberately canonical, not whatever spelling the
+        # caller happened to use, so compare against the canonical form. On
+        # macOS str(a) is /var/... while the resolved path is /private/var/...,
+        # and on Windows it is RUNNER~1 versus runneradmin.
+        self.assertEqual(entries[0]["path"], str(self.checkpoints._normalize(a)))
 
     def test_diff_preview_shows_the_change(self):
         target = self.file("a.py", "before\n")
