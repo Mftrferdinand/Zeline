@@ -504,6 +504,12 @@ def _defaults() -> dict[str, Any]:
             "browser": True,
             # Path binary browser kalau tidak ada di PATH. Kosong = cari sendiri.
             "browser_binary": "",
+            # Tanya language server soal kode: diagnostics, definition, references,
+            # hover, symbols. Server-nya milik operator (dicari di PATH), tidak
+            # pernah diunduh. Hanya profile operator (workspace/full).
+            "lsp": True,
+            # Override per bahasa: {"python": "basedpyright-langserver --stdio"}.
+            "lsp_servers": {},
             # Kirim schema inti saja per request; sisanya diambil model lewat
             # tool_search saat butuh. Nama semua tool tetap terlihat, jadi tidak
             # ada kemampuan yang hilang — hanya detail parameternya yang lazy.
@@ -650,7 +656,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
     global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, PLUGINS, TOOL_SEARCH
-    global BROWSER, BROWSER_BINARY
+    global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -697,6 +703,9 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     TOOL_SEARCH = bool(cfg.get("tools", {}).get("tool_search", False))
     BROWSER = bool(cfg.get("tools", {}).get("browser", True))
     BROWSER_BINARY = str(cfg.get("tools", {}).get("browser_binary", "") or "")
+    LSP = bool(cfg.get("tools", {}).get("lsp", True))
+    raw_lsp = cfg.get("tools", {}).get("lsp_servers", {})
+    LSP_SERVERS = dict(raw_lsp) if isinstance(raw_lsp, dict) else {}
     USAGE_TRACKING = bool(cfg.get("agent", {}).get("usage_tracking", True))
     raw_prices = cfg.get("agent", {}).get("model_prices", {})
     MODEL_PRICES = dict(raw_prices) if isinstance(raw_prices, dict) else {}

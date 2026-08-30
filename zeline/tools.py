@@ -1585,6 +1585,32 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "code_intel",
+        (
+            "Ask a real language server about the code, which grep cannot do: it "
+            "knows a definition from a mention in a comment, follows symbols through "
+            "imports, and type-checks. Actions: diagnostics (errors and warnings in a "
+            "file), definition (where a symbol is defined), references (everywhere it "
+            "is used), hover (type and docstring), symbols (outline of a file), servers "
+            "(which language servers are installed). Positions use 1-based line and "
+            "0-based character, matching what read_file shows."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "diagnostics, definition, references, hover, symbols, or servers",
+                },
+                "path": {"type": "string", "description": "Workspace file to inspect."},
+                "line": {"type": "integer", "description": "1-based line, for definition/references/hover."},
+                "character": {"type": "integer", "description": "0-based column, for definition/references/hover."},
+            },
+            "required": ["action"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "system_env",
         "Show environment info: OS/arch/CPU, installed runtimes & tools (python/node/go/git/docker/ffmpeg), and active local ports. Call before running commands to see which tools are available.",
         {"type": "object", "properties": {}},
@@ -1826,6 +1852,10 @@ class ToolExecutor:
         self._lazy_index: tool_index.LazySchemaIndex | None = None
         # Started on the first browser call, reused after that.
         self._browser_session: Any | None = None
+        # Language servers, started on the first code_intel call. Initialization
+        # is the expensive part (the server indexes the project), so they are
+        # kept for the executor's lifetime.
+        self._lsp: Any | None = None
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
@@ -1840,6 +1870,9 @@ class ToolExecutor:
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
+            "code_intel": lambda action, path="", line=0, character=0: self._code_intel(
+                action, path, line, character
+            ),
             "browser": lambda action, url="", selector="", text="", submit=False, path="", script="": self._browser(
                 action, url, selector, text, submit, path, script
             ),
@@ -1938,6 +1971,68 @@ class ToolExecutor:
             return json.dumps(value, ensure_ascii=False, default=str)[:8000]
         except browser_module.BrowserError as exc:
             return f"ERROR browser: {exc}"
+
+    def _code_intel(self, action: str, path: str = "", line: int = 0, character: int = 0) -> str:
+        """Answer a code question using a language server.
+
+        Validated before any server is started, for the same reason as the
+        browser tool: a malformed call must say what is missing rather than
+        report that no language server is installed.
+        """
+        from zeline import lsp as lsp_module
+
+        if not lsp_module.enabled():
+            return "ERROR: code_intel is disabled (tools.lsp = false)."
+        if self.profile not in lsp_module.ALLOWED_PROFILES:
+            return f"ERROR: code_intel is not allowed for profile '{self.profile}'."
+
+        verb = (action or "").strip().lower()
+        if verb == "servers":
+            found = lsp_module.available()
+            lines = [
+                f"  {language:<12} {Path(argv[0]).name if argv else '(not installed)'}"
+                for language, argv in found.items()
+            ]
+            body = "Language servers on this machine:\n" + "\n".join(lines)
+            if not any(found.values()):
+                body += (
+                    "\n\n  None installed. code_intel needs one, for example "
+                    "`pip install basedpyright` for Python or `pkg install clangd` for C."
+                )
+            return body
+
+        if verb not in {"diagnostics", "definition", "references", "hover", "symbols"}:
+            return (
+                f"ERROR: unknown code_intel action '{action}'. Use diagnostics, "
+                "definition, references, hover, symbols, or servers."
+            )
+        if not str(path).strip():
+            return f"ERROR: code_intel {verb} needs a path."
+        if verb in {"definition", "references", "hover"} and int(line or 0) < 1:
+            return f"ERROR: code_intel {verb} needs a 1-based line number."
+
+        try:
+            target = _resolve_workspace_path(path, self.workspace)
+        except ValueError as exc:
+            return f"ERROR code_intel: {exc}"
+        if not target.is_file():
+            return f"ERROR code_intel: not a file or not found: {target}"
+
+        try:
+            if self._lsp is None:
+                self._lsp = lsp_module.LspRegistry(self.workspace)
+            registry = self._lsp
+            if verb == "diagnostics":
+                return registry.diagnostics(target)
+            if verb == "symbols":
+                return registry.symbols(target)
+            if verb == "definition":
+                return registry.definition(target, int(line), int(character or 0))
+            if verb == "references":
+                return registry.references(target, int(line), int(character or 0))
+            return registry.hover(target, int(line), int(character or 0))
+        except lsp_module.LspError as exc:
+            return f"ERROR code_intel: {exc}"
 
     def _recall_history(self, query: str = "") -> str:
         """Cari transkrip percakapan lama chat ini (archive permanen).
