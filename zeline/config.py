@@ -45,6 +45,7 @@ MAX_REPEATED_TOOL_FAILURES = 3
 # Kedalaman maksimum sub-agent (delegate_task). 1 = agen utama boleh membuat
 # anak, tapi anak TIDAK boleh membuat cucu — mencegah rekursi tak terbatas.
 DEFAULT_MAX_SUBAGENT_DEPTH = 1
+DEFAULT_MAX_PARALLEL_SUBAGENTS = 3
 
 # Timeout default satu perintah shell/code (detik). 60s cukup untuk perintah
 # biasa, tapi TERLALU PENDEK untuk kerja instalasi nyata: `pip install torch`,
@@ -475,6 +476,11 @@ def _defaults() -> dict[str, Any]:
             # Kedalaman sub-agent maksimum (delegate_task). 1 = agen utama boleh
             # membuat sub-agent, tapi sub-agent tidak boleh membuat cucu-agent.
             "max_subagent_depth": DEFAULT_MAX_SUBAGENT_DEPTH,
+            # Berapa sub-agent boleh jalan BERSAMAAN saat delegate_task dikirim
+            # beberapa task. Dibatasi karena tiap worker adalah agent penuh yang
+            # memanggil provider sendiri; fan-out tanpa batas membanjiri API dan
+            # pada key yang rate-limited justru lebih lambat dari berurutan.
+            "max_parallel_subagents": DEFAULT_MAX_PARALLEL_SUBAGENTS,
             # Jalankan formatter proyek sesudah write_file/edit_file, sehingga
             # kode yang ditulis agent mengikuti gaya repo dan diff-nya bersih.
             # Hanya formatter yang SUDAH terpasang yang dipakai (via which);
@@ -653,6 +659,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, IMAGE_MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
+    global MAX_PARALLEL_SUBAGENTS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
     global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, PLUGINS, TOOL_SEARCH
@@ -711,6 +718,12 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     MODEL_PRICES = dict(raw_prices) if isinstance(raw_prices, dict) else {}
     DISABLED_TOOLS = frozenset(str(name) for name in cfg.get("tools", {}).get("disabled", []))
     MAX_SUBAGENT_DEPTH = int(cfg.get("tools", {}).get("max_subagent_depth", DEFAULT_MAX_SUBAGENT_DEPTH))
+    try:
+        MAX_PARALLEL_SUBAGENTS = max(1, int(
+            cfg.get("tools", {}).get("max_parallel_subagents", DEFAULT_MAX_PARALLEL_SUBAGENTS)
+        ))
+    except (TypeError, ValueError):
+        MAX_PARALLEL_SUBAGENTS = DEFAULT_MAX_PARALLEL_SUBAGENTS
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
     SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(name=NAME, soul=SOUL)
 
