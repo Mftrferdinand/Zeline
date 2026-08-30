@@ -1400,6 +1400,70 @@ def cmd_session_list() -> int:
     return 0
 
 
+def cmd_stats(days: int | None = None, *, by_day: bool = False, reset: bool = False) -> int:
+    """Report token usage, and cost only for models the operator priced."""
+    from zeline import usage_stats
+
+    store = usage_stats.UsageStore()
+    if reset:
+        removed = store.clear()
+        print(f"Cleared {removed} usage record(s).")
+        return 0
+
+    if not usage_stats.enabled():
+        print("Usage tracking is disabled (agent.usage_tracking = false).")
+        return 0
+
+    since = usage_stats.since_day_for(days)
+    window = f"last {days} day(s)" if since else "all time"
+    totals = store.totals(since)
+    if not totals["calls"]:
+        print(f"No usage recorded ({window}).")
+        print("  Usage appears after the agent talks to a provider. Note that some")
+        print("  OpenAI-compatible relays omit the usage block entirely.")
+        return 0
+
+    print(f"Token usage — {window}")
+    print(
+        f"  {totals['calls']} call(s) across {totals['models']} model(s): "
+        f"{usage_stats.format_tokens(totals['total_tokens'])} tokens "
+        f"({usage_stats.format_tokens(totals['prompt_tokens'])} in / "
+        f"{usage_stats.format_tokens(totals['completion_tokens'])} out)"
+    )
+    print()
+
+    rows = store.by_day(since) if by_day else store.by_model(since)
+    label = "DAY" if by_day else "MODEL"
+    print(f"  {label:<34} {'CALLS':>6} {'IN':>9} {'OUT':>9} {'TOTAL':>9}  COST")
+    priced_total = 0.0
+    any_priced = False
+    for row in rows:
+        if by_day:
+            cost_text = ""
+        else:
+            cost = usage_stats.cost_for(row["bucket"], row["prompt_tokens"], row["completion_tokens"])
+            if cost is None:
+                cost_text = "—"
+            else:
+                any_priced = True
+                priced_total += cost
+                cost_text = f"{cost:,.4f}"
+        print(
+            f"  {row['bucket'][:34]:<34} {row['calls']:>6} "
+            f"{usage_stats.format_tokens(row['prompt_tokens']):>9} "
+            f"{usage_stats.format_tokens(row['completion_tokens']):>9} "
+            f"{usage_stats.format_tokens(row['total_tokens']):>9}  {cost_text}"
+        )
+    print()
+    if any_priced:
+        print(f"  Priced subtotal: {priced_total:,.4f} (configured currency unit)")
+        print("  Models showing '—' have no price configured, so they are NOT in that subtotal.")
+    elif not by_day:
+        print("  No cost shown: no prices configured. Zeline will not guess prices.")
+        print('  Set them per 1M tokens: agent.model_prices = {"gpt-4o": {"input": 2.5, "output": 10}}')
+    return 0
+
+
 def cmd_rules(directory: str | None = None) -> int:
     """Show which project rules file is active, and what Zeline will read."""
     root = Path(directory or Path.cwd()).expanduser().resolve(strict=False)
@@ -1592,6 +1656,11 @@ def build_parser() -> argparse.ArgumentParser:
     rules_parser = subparsers.add_parser("rules", help="show the active project rules file")
     rules_parser.add_argument("directory", nargs="?", help="project directory (default: current)")
 
+    stats_parser = subparsers.add_parser("stats", help="show token usage (and cost, if prices are configured)")
+    stats_parser.add_argument("--days", type=int, help="only the last N days (default: all time)")
+    stats_parser.add_argument("--by-day", action="store_true", help="group by day instead of by model")
+    stats_parser.add_argument("--reset", action="store_true", help="delete all recorded usage")
+
     session_parser = subparsers.add_parser("session", help="export, import, fork, or list conversation sessions")
     session_sub = session_parser.add_subparsers(dest="session_action")
     session_sub.add_parser("list", help="list stored sessions")
@@ -1729,6 +1798,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init(getattr(namespace, "directory", None), force=bool(getattr(namespace, "force", False)))
     if command == "rules":
         return cmd_rules(getattr(namespace, "directory", None))
+    if command == "stats":
+        return cmd_stats(
+            getattr(namespace, "days", None),
+            by_day=bool(getattr(namespace, "by_day", False)),
+            reset=bool(getattr(namespace, "reset", False)),
+        )
     if command == "session":
         action = getattr(namespace, "session_action", None)
         if action == "list":
