@@ -1738,14 +1738,41 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "delegate_task",
-        "Delegate a focused subtask to a sub-agent that runs in its own isolated context and returns only a concise final summary — keeping this conversation's context clean. Use for self-contained work (research a topic, review/refactor a file, debug an error) where you don't need every intermediate step. The sub-agent knows NOTHING about this chat, so put ALL needed info (paths, constraints, error text, desired output language) in 'context'. It inherits the same tools/workspace under the same profile but cannot delegate further.",
+        (
+            "Delegate work to sub-agent(s) that run in their own isolated context and "
+            "return only concise summaries — keeping this conversation's context clean. "
+            "Pass 'goal' for one task, or 'tasks' (a list) to run several INDEPENDENT "
+            "tasks in PARALLEL, which is much faster than calling this tool repeatedly. "
+            "Give each task a 'role' to shape how it works: coder (reads code first and "
+            "verifies its change runs), researcher (multi-source, attributes claims), "
+            "reviewer (judges work instead of rewriting it), writer (turns material into "
+            "one answer), or worker (default). Set verify=true to add a final checking "
+            "pass that reports what is wrong or unproven — worth it for work you will act "
+            "on. Sub-agents know NOTHING about this chat, so put ALL needed info (paths, "
+            "constraints, error text, desired output language) in 'context'. They inherit "
+            "the same tools/workspace under the same profile but cannot delegate further."
+        ),
         {
             "type": "object",
             "properties": {
-                "goal": {"type": "string", "description": "What the sub-agent should accomplish (specific, self-contained)."},
+                "goal": {"type": "string", "description": "Single task: what the sub-agent should accomplish (specific, self-contained)."},
                 "context": {"type": "string", "description": "All background the sub-agent needs: file paths, error messages, constraints, output language. Optional but recommended."},
+                "role": {"type": "string", "description": "Single task role: worker, coder, researcher, reviewer, or writer."},
+                "tasks": {
+                    "type": "array",
+                    "description": "Several independent tasks to run in parallel. Each item: {goal, context, role}. Use instead of 'goal'.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {"type": "string"},
+                            "context": {"type": "string"},
+                            "role": {"type": "string"},
+                        },
+                        "required": ["goal"],
+                    },
+                },
+                "verify": {"type": "boolean", "description": "Run a verifier sub-agent over the results and report what is wrong or unproven."},
             },
-            "required": ["goal"],
         },
         frozenset({"workspace", "full"}),
     ),
@@ -1888,7 +1915,9 @@ class ToolExecutor:
             "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity),
             "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
-            "delegate_task": lambda goal, context="": self._delegate_task(goal, context),
+            "delegate_task": lambda goal="", context="", role="", tasks=None, verify=False: self._delegate_task(
+                goal, context, role, tasks, verify
+            ),
             "recall_history": lambda query="": self._recall_history(query),
             "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
         }
@@ -2065,43 +2094,87 @@ class ToolExecutor:
             lines.append(f"[{r['when']}] {who}: {snippet}")
         return "\n".join(lines)
 
-    def _delegate_task(self, goal: str, context: str = "") -> str:
-        """Jalankan subtask di sub-agent terisolasi; kembalikan ringkasan akhir.
+    def _spawn_subagent(self, brief: str, system_extra: str, suffix: str) -> str:
+        """Run one sub-agent to completion and return its final summary.
 
-        Sub-agent punya ToolExecutor & sesi Zeline sendiri (history kosong,
-        depth+1) dengan profil/workspace yang sama, tapi TIDAK bisa memanggil
-        delegate_task lagi (dibatasi MAX_SUBAGENT_DEPTH). Hanya jawaban final
-        yang balik ke agen induk — langkah antara tidak mengotori konteks induk.
+        Each sub-agent gets a DISTINCT identity. They share nothing, but each
+        constructs a MemoryStore keyed by identity, so reusing one identity
+        across parallel workers would have them writing the same memory file at
+        the same time.
         """
-        goal = (goal or "").strip()
-        if not goal:
-            return "ERROR: delegate_task needs a non-empty goal."
-        # Import di dalam fungsi untuk menghindari circular import (agent → tools).
-        from zeline.agent import Zeline, ZelineError as _ZErr
+        # Import inside the function to avoid a circular import (agent → tools).
+        from zeline.agent import Zeline
 
-        brief = goal if not context.strip() else f"{goal}\n\n---\nContext you must use (you have no other memory of the parent conversation):\n{context.strip()}"
-        sub_extra = (
-            "\n\nYou are a SUB-AGENT spawned to complete ONE focused task and report back. "
-            "You have no memory of the parent conversation beyond the brief you were given. "
-            "Do the work with your tools, then reply with a concise, self-contained final "
-            "summary of what you found or did (include concrete results, file paths, or key "
-            "findings the caller needs). Do not ask the caller questions — decide and act."
+        sub = Zeline(
+            identity=f"{self.identity}::sub{suffix}",
+            tool_profile=self.profile,
+            workspace=str(self.workspace),
+            system_extra=system_extra,
+            depth=self.depth + 1,
         )
+        return sub.send(brief)
+
+    def _delegate_task(
+        self,
+        goal: str = "",
+        context: str = "",
+        role: str = "",
+        tasks: Any = None,
+        verify: bool = False,
+    ) -> str:
+        """Run one or several sub-agents, optionally with a verifier pass.
+
+        Each sub-agent has its own ToolExecutor and Zeline session (empty
+        history, depth+1) with the same profile/workspace, but cannot call
+        delegate_task again (bounded by MAX_SUBAGENT_DEPTH). Only final answers
+        return to the parent — intermediate steps never pollute its context.
+        """
+        from zeline import delegation
+        from zeline.agent import ZelineError as _ZErr
+
+        if tasks is not None:
+            parsed, error = delegation.parse_tasks(tasks)
+            if error:
+                return f"ERROR: {error}"
+            plan = parsed
+            overall_goal = goal.strip() or "; ".join(item.goal for item in plan)
+        else:
+            if not (goal or "").strip():
+                return "ERROR: delegate_task needs a non-empty goal (or a 'tasks' list)."
+            plan = [delegation.Task(goal=goal.strip(), context=context, role=role or delegation.DEFAULT_ROLE)]
+            overall_goal = goal.strip()
+
+        def spawn(task: delegation.Task, index: int) -> str:
+            try:
+                return self._spawn_subagent(
+                    delegation.build_brief(task),
+                    delegation.system_extra_for(task.clean_role),
+                    "" if len(plan) == 1 else f"{index + 1}",
+                )
+            except _ZErr as exc:
+                raise RuntimeError(str(exc)) from exc
+
+        results = delegation.run_tasks(plan, spawn=spawn)
+
+        if not verify:
+            return delegation.render(results)
+
+        # Verification improves an answer; it must never be able to destroy one.
+        # If it cannot run, the work is returned labelled as unchecked.
+        if not any(item.ok for item in results):
+            return delegation.render(results)
         try:
-            sub = Zeline(
-                identity=f"{self.identity}::sub",
-                tool_profile=self.profile,
-                workspace=str(self.workspace),
-                system_extra=sub_extra,
-                depth=self.depth + 1,
+            verdict = self._spawn_subagent(
+                delegation.verification_material(results, overall_goal),
+                delegation.system_extra_for("reviewer", verifier=True),
+                "-verify",
             )
-            summary = sub.send(brief)
-        except _ZErr as exc:
-            return f"ERROR: sub-agent failed: {exc}"
-        except Exception as exc:  # pragma: no cover - defensive
-            return f"ERROR: sub-agent crashed ({exc.__class__.__name__}): {exc}"
-        summary = (summary or "").strip()
-        return f"[sub-agent result]\n{summary}" if summary else "[sub-agent returned no output]"
+        except Exception:  # noqa: BLE001 — a failed check must not lose the work
+            return delegation.render(results, verified=False)
+        verdict = (verdict or "").strip()
+        if not verdict:
+            return delegation.render(results, verified=False)
+        return delegation.render(results, verification=verdict)
 
     def _enabled_native_defs(self) -> tuple[ToolDef, ...]:
         return self._native_defs
