@@ -52,63 +52,34 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 平台上，Zeline 使用私有 Python 环境；Windows 只为当前用户安装。无需 root
 或管理员权限。
 
-### Termux、Linux 和 macOS
+### Termux、Linux、macOS 和 iSH
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
-export PATH="$HOME/.local/bin:$PATH"
-zeline setup
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 ```
 
-### 通过 iSH 使用 iOS / iPadOS
+然后运行 `zeline setup`。安装脚本会自行下载带版本号的 wheel，并在安装前对照
+`SHA256SUMS` 校验，因此无需手动检查。在 iSH 上请先执行
+`apk add bash curl python3`。
 
-```sh
-apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
-zeline setup
-```
-
-CLI 和 HTTP 集成可在 iSH 中使用，但当 iSH 不在前台时，iOS 可能会暂停消息网关。
+在 iSH 中 CLI 和 HTTP 集成可以使用，但当 iSH 不在前台时，iOS 可能会暂停消息网关。
 
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6'
-Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
-Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
-$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
-if (-not $expected -or $expected -notmatch '^[0-9a-f]{64}$') { throw 'invalid install.ps1 checksum entry' }
-if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
-.\install.ps1
-zeline setup
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.ps1 -OutFile install.ps1; .\install.ps1
+```
+
+然后运行 `zeline setup`。
+
+### 独立验证（可选）
+
+安装脚本对 wheel 的校验来自与脚本自身相同的发布，因此它证明的是完整性而非来源。
+若要验证来源，请用 GitHub CLI 校验该发布的构建来源证明（build provenance）——
+一条独立的签名链：
+
+```bash
+gh attestation verify install.sh --repo Mftrferdinand/Zeline
 ```
 
 请查看[完整安装指南](installation.md)，了解各系统依赖、从代码检出安装、

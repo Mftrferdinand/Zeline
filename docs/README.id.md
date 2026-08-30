@@ -52,64 +52,36 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 Di platform POSIX, Zeline memakai environment Python privat; di Windows paket
 dipasang hanya untuk akun pengguna. Tidak perlu root atau Administrator.
 
-### Termux, Linux, dan macOS
+### Termux, Linux, macOS, dan iSH
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
-export PATH="$HOME/.local/bin:$PATH"
-zeline setup
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 ```
 
-### iOS / iPadOS melalui iSH
+Lalu `zeline setup`. Installer-nya mengunduh wheel bertag dan memverifikasinya
+sendiri terhadap `SHA256SUMS` sebelum memasang, jadi tidak ada yang perlu
+diperiksa manual. Di iSH, jalankan `apk add bash curl python3` lebih dulu.
 
-```sh
-apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
-zeline setup
-```
-
-CLI dan integrasi HTTP bisa dipakai di iSH, tetapi iOS dapat menghentikan gateway
-saat iSH tidak berada di foreground.
+Di iSH, CLI dan integrasi HTTP bisa dipakai, tetapi iOS dapat menghentikan
+gateway saat iSH tidak berada di foreground.
 
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6'
-Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
-Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
-$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
-if (-not $expected -or $expected -notmatch '^[0-9a-f]{64}$') { throw 'invalid install.ps1 checksum entry' }
-if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
-.\install.ps1
-zeline setup
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.ps1 -OutFile install.ps1; .\install.ps1
+```
+
+Lalu `zeline setup`.
+
+### Verifikasi mandiri (opsional)
+
+Pemeriksaan wheel oleh installer berasal dari rilis yang sama dengan installer
+itu sendiri, jadi itu membuktikan integritas, bukan asal-usul. Untuk asal-usul,
+verifikasi atestasi build-provenance rilis dengan GitHub CLI — rantai tanda
+tangan yang independen:
+
+```bash
+gh attestation verify install.sh --repo Mftrferdinand/Zeline
 ```
 
 Lihat [panduan instalasi lengkap](installation.md) untuk paket prasyarat setiap
