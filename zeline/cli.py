@@ -1627,6 +1627,68 @@ def cmd_customtools(action: str = "list", *, name: str | None = None) -> int:
     return 0
 
 
+def cmd_plugins(action: str = "list", *, name: str | None = None) -> int:
+    """Inspect the operator's plugin hooks, or scaffold the first file."""
+    from zeline import plugins as plugin_bus
+
+    if not plugin_bus.enabled():
+        print("Plugins are disabled (tools.plugins = false).")
+        return 0
+
+    directory = plugin_bus.plugins_dir()
+
+    if action == "init":
+        target = plugin_bus.ensure_dir() / (name or "10-policy.py")
+        if target.exists():
+            print(f"{target} already exists — not overwriting it.")
+            return 1
+        target.write_text(plugin_bus.TEMPLATE, encoding="utf-8")
+        print(f"Created {target}")
+        print("  Files run in sorted filename order, so 10- runs before 20-.")
+        print("  Check what loaded with: zeline plugins")
+        return 0
+
+    if action == "path":
+        print(plugin_bus.ensure_dir())
+        return 0
+
+    if not directory.is_dir():
+        print(f"No plugins directory yet: {directory}")
+        print("  Create one with a starter file: zeline plugins init")
+        return 0
+
+    loaded, errors = plugin_bus.discover()
+    if loaded:
+        print(f"{len(loaded)} plugin(s) from {directory}, in run order:")
+        for plugin in loaded:
+            hooks = ", ".join(
+                hook for hook, present in (
+                    (plugin_bus.BEFORE_HOOK, plugin.before is not None),
+                    (plugin_bus.AFTER_HOOK, plugin.after is not None),
+                ) if present
+            )
+            print(f"  {plugin.source.name:<24} {hooks}")
+    else:
+        print(f"No plugins loaded from {directory}")
+        print("  Add a .py file defining on_tool_before / on_tool_after,")
+        print("  or run: zeline plugins init")
+
+    if errors:
+        print()
+        # Reported but never fatal: a broken hook file leaves the agent working.
+        print(f"{len(errors)} file(s) could not be loaded:")
+        for problem in errors:
+            print(f"  {problem}")
+        print("  These are skipped; tool calls still run unhooked by them.")
+
+    print()
+    print("  on_tool_before(name, args)        -> dict to rewrite, deny() to block")
+    print("  on_tool_after(name, args, result) -> str to rewrite the output")
+    print("  Hooks load only for the workspace and full profiles, because they run")
+    print("  arbitrary local Python on the path of every tool call.")
+    return 0
+
+
 def _native_tool_names() -> list[str]:
     from zeline.tools import TOOL_DEFS
 
@@ -1851,6 +1913,13 @@ def build_parser() -> argparse.ArgumentParser:
     tools_custom_init.add_argument("name", nargs="?", help="file name (default: my_tools.py)")
     tools_sub.add_parser("custom-path", help="print the custom tools directory")
 
+    plugins_parser = subparsers.add_parser("plugins", help="inspect tool-call hooks in ~/.zeline/plugins/")
+    plugins_sub = plugins_parser.add_subparsers(dest="plugins_command")
+    plugins_sub.add_parser("list", help="list loaded hooks in run order")
+    plugins_init = plugins_sub.add_parser("init", help="create a starter plugin file")
+    plugins_init.add_argument("name", nargs="?", help="file name (default: 10-policy.py)")
+    plugins_sub.add_parser("path", help="print the plugins directory")
+
     for alias, alias_help in (
         ("start", "alias: start enabled gateways"),
         ("stop", "alias: stop background gateways"),
@@ -2006,6 +2075,11 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_skills()
     if command == "memory":
         return cmd_memory()
+    if command == "plugins":
+        return cmd_plugins(
+            getattr(namespace, "plugins_command", None) or "list",
+            name=getattr(namespace, "name", None),
+        )
     if command == "tools":
         action = namespace.tools_command or "list"
         if action in {"custom", "custom-init", "custom-path"}:
