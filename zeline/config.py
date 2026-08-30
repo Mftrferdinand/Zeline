@@ -490,6 +490,10 @@ def _defaults() -> dict[str, Any]:
             # supaya `zeline undo` bisa mengembalikannya. Snapshot bersifat
             # best-effort: kalau gagal, tulisan tetap jalan.
             "checkpoints": True,
+            # Muat file Python di ~/.zeline/tools/ sebagai tool tambahan.
+            # Hanya untuk profile operator (workspace/full) — isinya kode lokal
+            # arbitrer, jadi gateway publik (safe) tidak pernah melihatnya.
+            "custom_tools": True,
         },
         "gateways": {
             "telegram": {
@@ -629,7 +633,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
-    global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS
+    global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -671,6 +675,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     FORMATTERS = dict(raw_formatters) if isinstance(raw_formatters, dict) else {}
     PROJECT_RULES = bool(cfg.get("tools", {}).get("project_rules", True))
     CHECKPOINTS = bool(cfg.get("tools", {}).get("checkpoints", True))
+    CUSTOM_TOOLS = bool(cfg.get("tools", {}).get("custom_tools", True))
     USAGE_TRACKING = bool(cfg.get("agent", {}).get("usage_tracking", True))
     raw_prices = cfg.get("agent", {}).get("model_prices", {})
     MODEL_PRICES = dict(raw_prices) if isinstance(raw_prices, dict) else {}
