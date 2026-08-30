@@ -112,6 +112,8 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "deleterepository", "description": "Delete a repository entry"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
+        {"command": "version", "description": "Show version and check for updates"},
+        {"command": "update", "description": "Update Zeline to the latest release"},
     ]
 
 
@@ -989,6 +991,72 @@ def _delete_task(query: str) -> str:
     return "deleted"
 
 
+def _version_reply() -> str:
+    """Version card for /version. Read-only, and honest when offline."""
+    from zeline import self_update
+
+    report = self_update.version_report()
+    lines = [
+        "╭───────────────📦",
+        "├ <b>Zeline Version</b>",
+        f"├ Installed : <code>{html.escape(str(report['current']))}</code>",
+    ]
+    if report["error"]:
+        # Say the check failed rather than implying the installed build is current.
+        lines.append("├ Latest : <i>unknown (release check failed)</i>")
+    else:
+        lines.append(f"├ Latest : <code>{html.escape(str(report['latest']))}</code>")
+        lines.append("├ Status : Up to date" if report["up_to_date"] else "├ Status : Update available — /update")
+    if report["checkout"]:
+        lines.append("├ Mode : source checkout")
+    if report["updating"]:
+        lines.append("├ Note : an update is running now")
+    lines.append("╰ Platform : Telegram")
+    return "\n".join(lines)
+
+
+def _start_update_reply(chat_id: int, allowed: list[Any]) -> str:
+    """Kick off a detached self-update and describe what will happen.
+
+    Owner-gated deliberately. An update restarts the gateway and replaces the
+    installed package for *every* user of this bot, so it is not something a
+    guest in an open allowlist may trigger. When ``allowed`` is empty the bot is
+    public, and there is no owner to authorise it at all.
+    """
+    from zeline import self_update
+
+    if not allowed:
+        return (
+            "This bot has no owner allowlist, so /update is disabled. "
+            "Set one with <code>zeline setup</code>, or update from a shell: <code>zeline update</code>"
+        )
+    if str(chat_id) != str(allowed[0]):
+        return "Only the bot owner can run /update."
+
+    report = self_update.version_report()
+    if report["checkout"]:
+        # In a checkout, `zeline update` reinstalls from local source. Doing that
+        # silently from chat would install whatever is in the working tree,
+        # committed or not -- surprising, and not what "update" means here.
+        return (
+            f"Running from a source checkout (<code>{html.escape(report['checkout'])}</code>). "
+            "Update it there so you control exactly what gets installed:\n"
+            "<code>cd " + html.escape(report["checkout"]) + " &amp;&amp; git pull &amp;&amp; zeline update</code>"
+        )
+    if not report["error"] and report["up_to_date"]:
+        return f"Already on the latest release (<code>{html.escape(str(report['current']))}</code>). Nothing to do."
+
+    started, message = self_update.start_background_update(f"telegram:{chat_id}")
+    if not started:
+        return html.escape(message)
+    target = f" → <code>{html.escape(str(report['latest']))}</code>" if report["latest"] else ""
+    return (
+        f"Updating from <code>{html.escape(str(report['current']))}</code>{target}\n"
+        "The gateway will finish in-flight work, stop, install, and restart. "
+        "It will be unreachable for about a minute; progress lands here."
+    )
+
+
 def _handle_command_update(
     api: str,
     text: str,
@@ -998,6 +1066,7 @@ def _handle_command_update(
     *,
     stop_event,
     tool_profile: str,
+    allowed: list[Any] | None = None,
     message_id: int = 0,
 ) -> bool:
     """Handle command yang perlu payload Telegram selain teks biasa."""
@@ -1011,10 +1080,21 @@ def _handle_command_update(
                 "Command to setup :\n"
                 "/model — Switch model\n"
                 "/status — View runtime status\n"
+                "/version — Show version, check for updates\n"
+                "/update — Update to the latest release\n"
                 "/stop — Stop the active turn\n"
                 "/new — Start a new session\n\n"
                 "Send a message to start a task"
             ),
+        )
+        return True
+    if command == "/version":
+        _api_call(api, "sendMessage", chat_id=chat_id, text=_version_reply(), parse_mode="HTML")
+        return True
+    if command == "/update":
+        _api_call(
+            api, "sendMessage", chat_id=chat_id,
+            text=_start_update_reply(chat_id, allowed or []), parse_mode="HTML",
         )
         return True
     if command == "/status":
@@ -1862,7 +1942,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
-        return "/status · /models · /model <id> · /new · /restart · /stop · /logs"
+        return "/status · /models · /model <id> · /version · /update · /new · /restart · /stop · /logs"
     if command == "/status":
         return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":
@@ -2182,7 +2262,7 @@ def _dispatch_update(
         if text.startswith("/"):
             handled = _handle_command_update(
                 api, text, sessions, identity, chat_id_int,
-                stop_event=stop_event, tool_profile=tool_profile,
+                stop_event=stop_event, tool_profile=tool_profile, allowed=allowed,
                 message_id=int(message.get("message_id") or 0),
             )
             if not handled:

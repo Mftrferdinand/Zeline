@@ -102,6 +102,20 @@ dijalankan, lalu memperbarui di tempat. Konfigurasi, sesi, memori, dan skill
 pribadi di `~/.zeline` tidak disentuh. Dari git checkout, sumber lokal kamu yang
 dibangun ulang.
 
+Untuk melihat versi yang terpasang dan apakah ada rilis baru:
+
+```bash
+zeline version
+```
+
+Keduanya juga tersedia dari Telegram, jadi instalasi yang cuma pakai ponsel tidak
+pernah butuh shell: **`/version`** melaporkan build terpasang terhadap rilis
+terbaru, dan **`/update`** menjalankan pembaruannya. `/update` hanya untuk owner
+dan berjalan di proses terpisah — gateway menyelesaikan kerja yang sedang jalan,
+berhenti, memasang, lalu menyalakan dirinya kembali, dengan progres dikirim ke
+chat. Perintah ini menolak jalan dari source checkout, karena memasang working
+tree yang belum di-commit itu bikin kaget.
+
 Sesudah itu, periksa tools, integrasi, dan kesehatan instalasi:
 
 ```bash

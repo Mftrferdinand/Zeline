@@ -1734,6 +1734,32 @@ def cmd_cron(
     return 2
 
 
+def cmd_version() -> int:
+    """Report the installed version and, if reachable, the latest release.
+
+    Exits 0 whether or not an update exists: "an update is available" is not a
+    failure, and scripts should not have to treat it as one. Only a genuine
+    lookup error is worth a non-zero code.
+    """
+    from zeline import self_update
+
+    report = self_update.version_report()
+    print(f"zeline {report['current']}")
+    if report["checkout"]:
+        print(f"  Source checkout : {report['checkout']}")
+    if report["error"]:
+        print(f"  Latest release  : unknown ({report['error']} — offline?)")
+        return 1
+    print(f"  Latest release  : {report['latest']}")
+    if report["up_to_date"]:
+        print("  Up to date.")
+    else:
+        print("  Update available. Run: zeline update")
+    if report["updating"]:
+        print("  An update is currently running.")
+    return 0
+
+
 def cmd_toolsearch(action: str = "status") -> int:
     """Show, or change, whether tool schemas are sent lazily.
 
@@ -2022,6 +2048,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor", aliases=["status"], help="check dependencies and configuration")
     subparsers.add_parser("update", aliases=["upgrade"], help="update Zeline in place (keeps ~/.zeline data)")
+    subparsers.add_parser("version", help="show the installed version and the latest release")
+    # Internal: the detached child spawned by /update on a chat gateway. Not for
+    # humans -- `zeline update` is the interactive path -- but it must be a real
+    # subcommand so the child can be a plain `python -m zeline.cli` invocation
+    # rather than an inline -c script.
+    self_update = subparsers.add_parser("_self-update", help=argparse.SUPPRESS)
+    self_update.add_argument("--notify", default="", help=argparse.SUPPRESS)
     init_parser = subparsers.add_parser("init", help="create ZELINE.md so project conventions load automatically")
     init_parser.add_argument("directory", nargs="?", help="project directory (default: current)")
     init_parser.add_argument("--force", action="store_true", help="overwrite an existing ZELINE.md")
@@ -2209,6 +2242,11 @@ def main(argv: list[str] | None = None) -> int:
     if command in {"update", "upgrade"}:
         from zeline import updater
         return updater.update()
+    if command == "version":
+        return cmd_version()
+    if command == "_self-update":
+        from zeline import self_update
+        return self_update.run_background_update(str(getattr(namespace, "notify", "") or ""))
     if command == "init":
         return cmd_init(getattr(namespace, "directory", None), force=bool(getattr(namespace, "force", False)))
     if command == "rules":

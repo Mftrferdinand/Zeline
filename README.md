@@ -99,6 +99,19 @@ and updates in place. Your config, sessions, memory, and private skills under
 `~/.zeline` are untouched. From a git checkout it rebuilds your local source
 instead.
 
+Check what you are on, and whether a release is waiting:
+
+```bash
+zeline version
+```
+
+Both are also available from Telegram, so a phone-only install never needs a
+shell: **`/version`** reports the installed build against the latest release, and
+**`/update`** performs the update. `/update` is owner-only and runs in a detached
+process — the gateway finishes in-flight work, stops, installs, and relaunches
+itself, with progress posted back to the chat. It refuses to run from a source
+checkout, where installing an uncommitted working tree would be a surprise.
+
 Then inspect the available integrations and health:
 
 ```bash
