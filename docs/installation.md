@@ -275,6 +275,34 @@ Tune or disable the wait with `agent.restart_drain_timeout` (seconds, default
 time, Zeline escalates to a forced stop **and says so** rather than reporting a
 clean restart.
 
+### Version and update from Telegram
+
+A phone-only install never has to reach for a shell:
+
+| Command | What it does |
+|---|---|
+| `/version` | Installed build vs. the latest release, plus whether an update is already running |
+| `/update` | Runs the update and reports the outcome in the chat |
+
+`/version` is read-only and safe for anyone on the allowlist. `/update` is
+**owner-only** — it replaces the installed package and restarts the gateway for
+every user of that bot, so only the first chat ID in the allowlist may run it,
+and a bot with no allowlist has it disabled entirely.
+
+The update cannot run inside the gateway it is updating: `zeline update` drains
+that gateway and, if the drain times out, escalates to a forced stop on its
+process group. So `/update` spawns a **detached** updater in its own session,
+which then drives the update and posts progress directly through the Bot API —
+the gateway is deliberately down for most of it. Expect roughly a minute of
+unreachability. The outcome message reports the version read back from a fresh
+interpreter, so it can never claim success at the old number, and a lock file
+makes two concurrent updates impossible. The full transcript is written to
+`~/.zeline/logs/self-update.log`.
+
+From a git checkout `/update` deliberately refuses and prints the two commands to
+run instead, because installing an uncommitted working tree from a chat message
+is not what "update" should mean.
+
 On Windows there is no `SIGUSR1`, so restart uses the standard managed stop
 path.
 

@@ -1571,9 +1571,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_telegram_registers_zeline_style_command_picker(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         commands = telegram._telegram_commands()
-        self.assertEqual([item["command"] for item in commands], ["start", "model", "status", "repository", "deleterepository", "stop", "new"])
+        self.assertEqual(
+            [item["command"] for item in commands],
+            ["start", "model", "status", "repository", "deleterepository", "stop", "new", "version", "update"],
+        )
         self.assertEqual(commands[0]["description"], "Start Zeline")
-        self.assertIn("active turn", commands[5]["description"].lower())
+        by_name = {item["command"]: item["description"] for item in commands}
+        self.assertIn("active turn", by_name["stop"].lower())
 
     def test_telegram_status_reports_zeline_style_runtime_and_coding_tools(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
