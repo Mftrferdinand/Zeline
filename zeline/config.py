@@ -486,6 +486,10 @@ def _defaults() -> dict[str, Any]:
             # Muat ZELINE.md / AGENTS.md dari workspace ke system prompt, supaya
             # konvensi proyek tidak perlu diulang tiap sesi.
             "project_rules": True,
+            # Simpan salinan isi file SEBELUM write_file/edit_file menimpanya,
+            # supaya `zeline undo` bisa mengembalikannya. Snapshot bersifat
+            # best-effort: kalau gagal, tulisan tetap jalan.
+            "checkpoints": True,
         },
         "gateways": {
             "telegram": {
@@ -625,7 +629,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
-    global USAGE_TRACKING, MODEL_PRICES
+    global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -666,6 +670,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     raw_formatters = cfg.get("tools", {}).get("formatters", {})
     FORMATTERS = dict(raw_formatters) if isinstance(raw_formatters, dict) else {}
     PROJECT_RULES = bool(cfg.get("tools", {}).get("project_rules", True))
+    CHECKPOINTS = bool(cfg.get("tools", {}).get("checkpoints", True))
     USAGE_TRACKING = bool(cfg.get("agent", {}).get("usage_tracking", True))
     raw_prices = cfg.get("agent", {}).get("model_prices", {})
     MODEL_PRICES = dict(raw_prices) if isinstance(raw_prices, dict) else {}

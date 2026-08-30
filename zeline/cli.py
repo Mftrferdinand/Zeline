@@ -827,6 +827,17 @@ def cmd_chat(query: str | None = None) -> int:
             _run_reflection(sessions)
             print("Goodbye!")
             return 0
+        # Handled in the REPL rather than sent to the model: the operator wants
+        # the file back now, not a turn spent asking the agent to do it.
+        lowered = text.lower()
+        if lowered in {"undo", "/undo"}:
+            cmd_undo()
+            print()
+            continue
+        if lowered in {"undo --list", "/undo --list", "undos", "/undos"}:
+            cmd_undo(show_list=True)
+            print()
+            continue
         try:
             answer = ask(text)
             print(f"{_paint(f'{config.NAME} ›', COLOR_DARK_BLUE)} {answer}\n")
@@ -1484,6 +1495,78 @@ def cmd_rules(directory: str | None = None) -> int:
     return 0
 
 
+def _format_checkpoint_age(ts: float) -> str:
+    seconds = max(0, int(time.time() - ts))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def cmd_undo(
+    checkpoint_id: str | None = None,
+    *,
+    show_list: bool = False,
+    file_path: str | None = None,
+    diff: str | None = None,
+    clear: bool = False,
+) -> int:
+    """Restore a file to its content before the agent last wrote to it."""
+    from zeline import checkpoints
+
+    if clear:
+        removed = checkpoints.clear()
+        print(f"Cleared {removed} checkpoint(s).")
+        return 0
+
+    if diff:
+        print(checkpoints.diff_preview(diff))
+        return 0
+
+    if not checkpoints.enabled():
+        print("Checkpoints are disabled (tools.checkpoints = false).")
+        print("  Nothing was recorded, so there is nothing to undo.")
+        return 0
+
+    entries = checkpoints.list_checkpoints(file_path)
+    if show_list:
+        if not entries:
+            scope = f" for {file_path}" if file_path else ""
+            print(f"No checkpoints recorded{scope}.")
+            print("  Checkpoints appear once the agent writes to an existing file.")
+            return 0
+        print(f"{len(entries)} checkpoint(s), newest first:")
+        for entry in entries:
+            print(
+                f"  {entry['id']:<20} {_format_checkpoint_age(float(entry.get('ts', 0))):>9}  "
+                f"{entry.get('reason', ''):<10} {entry.get('path', '')}"
+            )
+        print()
+        print("  Restore one with: zeline undo <id>")
+        print("  Preview it with:  zeline undo --diff <id>")
+        return 0
+
+    if checkpoint_id:
+        ok, message = checkpoints.restore(checkpoint_id)
+        print(message if ok else f"ERROR: {message}")
+        return 0 if ok else 1
+
+    if not entries:
+        scope = f" for {file_path}" if file_path else ""
+        print(f"Nothing to undo: no checkpoints recorded{scope}.")
+        return 0
+
+    # No id given: undo the most recent write, which is what an operator who
+    # just watched the agent break a file actually wants.
+    newest = entries[0]
+    ok, message = checkpoints.restore(str(newest["id"]))
+    print(message if ok else f"ERROR: {message}")
+    return 0 if ok else 1
+
+
 def _native_tool_names() -> list[str]:
     from zeline.tools import TOOL_DEFS
 
@@ -1656,6 +1739,13 @@ def build_parser() -> argparse.ArgumentParser:
     rules_parser = subparsers.add_parser("rules", help="show the active project rules file")
     rules_parser.add_argument("directory", nargs="?", help="project directory (default: current)")
 
+    undo_parser = subparsers.add_parser("undo", help="restore a file to its content before the agent wrote to it")
+    undo_parser.add_argument("checkpoint_id", nargs="?", help="checkpoint to restore (default: the most recent)")
+    undo_parser.add_argument("--list", dest="show_list", action="store_true", help="list checkpoints instead of restoring")
+    undo_parser.add_argument("--file", dest="file_path", help="limit to checkpoints for one file")
+    undo_parser.add_argument("--diff", help="show what a checkpoint would change, without restoring")
+    undo_parser.add_argument("--clear", action="store_true", help="delete all checkpoints")
+
     stats_parser = subparsers.add_parser("stats", help="show token usage (and cost, if prices are configured)")
     stats_parser.add_argument("--days", type=int, help="only the last N days (default: all time)")
     stats_parser.add_argument("--by-day", action="store_true", help="group by day instead of by model")
@@ -1798,6 +1888,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init(getattr(namespace, "directory", None), force=bool(getattr(namespace, "force", False)))
     if command == "rules":
         return cmd_rules(getattr(namespace, "directory", None))
+    if command == "undo":
+        return cmd_undo(
+            getattr(namespace, "checkpoint_id", None),
+            show_list=bool(getattr(namespace, "show_list", False)),
+            file_path=getattr(namespace, "file_path", None),
+            diff=getattr(namespace, "diff", None),
+            clear=bool(getattr(namespace, "clear", False)),
+        )
     if command == "stats":
         return cmd_stats(
             getattr(namespace, "days", None),
