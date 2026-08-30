@@ -19,6 +19,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -399,22 +400,45 @@ class ToolRoutingTests(BrowserBase):
         self.assertIn("disabled", result)
 
     def test_unknown_action_lists_the_valid_ones(self):
-        result = self.executor().run("browser", {"action": "teleport"})
+        with mock.patch.object(self.browser, "find_browser", return_value=None):
+            result = self.executor().run("browser", {"action": "teleport"})
         for verb in ("open", "text", "click", "type", "screenshot", "links", "eval", "close"):
             self.assertIn(verb, result)
 
+    MISSING_ARG_CASES: ClassVar[dict[str, str]] = {
+        "open": "needs a url",
+        "click": "needs a css selector",
+        "type": "needs a css selector",
+        "screenshot": "needs a path",
+        "eval": "needs a script",
+    }
+
     def test_missing_arguments_are_reported_per_action(self):
         executor = self.executor()
-        cases = {
-            "open": "needs a url",
-            "click": "needs a css selector",
-            "type": "needs a css selector",
-            "screenshot": "needs a path",
-            "eval": "needs a script",
-        }
-        for action, expected in cases.items():
+        for action, expected in self.MISSING_ARG_CASES.items():
             with self.subTest(action=action):
                 self.assertIn(expected, executor.run("browser", {"action": action}))
+
+    def test_bad_arguments_are_reported_even_with_no_browser_installed(self):
+        """CI has no Chromium, and a malformed call must still say what is wrong.
+
+        Validating after launching meant every argument mistake was reported as
+        "no browser found", which sends the model off fixing the wrong problem --
+        and on a machine without a browser it hides the real mistake entirely.
+        """
+        executor = self.executor()
+        with mock.patch.object(self.browser, "find_browser", return_value=None):
+            for action, expected in self.MISSING_ARG_CASES.items():
+                with self.subTest(action=action):
+                    self.assertIn(expected, executor.run("browser", {"action": action}))
+            self.assertIn("unknown browser action", executor.run("browser", {"action": "teleport"}))
+            self.assertIn("no browser was open", executor.run("browser", {"action": "close"}))
+
+    def test_a_valid_call_with_no_browser_still_explains_how_to_install_one(self):
+        executor = self.executor()
+        with mock.patch.object(self.browser, "find_browser", return_value=None):
+            result = executor.run("browser", {"action": "open", "url": "https://example.com"})
+        self.assertIn("no Chromium/Chrome binary found", result)
 
     def test_close_without_a_session_is_not_an_error(self):
         self.assertIn("no browser was open", self.executor().run("browser", {"action": "close"}))

@@ -1892,6 +1892,27 @@ class ToolExecutor:
             self._browser_session = None
             return "OK, closed the browser."
 
+        # Validate the request BEFORE launching anything. A malformed call should
+        # say what is missing, not report that no browser is installed -- that
+        # sends the model off fixing the wrong problem, and on a machine without
+        # a browser it would hide the real mistake entirely.
+        required = {
+            "open": (url, "a url"),
+            "click": (selector, "a css selector"),
+            "type": (selector, "a css selector"),
+            "screenshot": (path, "a path"),
+            "eval": (script, "a script"),
+        }
+        if verb not in {"open", "text", "click", "type", "screenshot", "links", "eval"}:
+            return (
+                f"ERROR: unknown browser action '{action}'. Use open, text, click, "
+                "type, screenshot, links, eval, or close."
+            )
+        if verb in required:
+            value, expected = required[verb]
+            if not str(value).strip():
+                return f"ERROR: browser {verb} needs {expected}."
+
         try:
             if self._browser_session is None or not self._browser_session.running:
                 # A session whose browser died is replaced rather than reused, so
@@ -1902,34 +1923,19 @@ class ToolExecutor:
             session = self._browser_session
 
             if verb == "open":
-                if not url.strip():
-                    return "ERROR: browser open needs a url."
                 return session.open(url)
             if verb == "text":
                 return session.text(selector.strip() or "body")
             if verb == "click":
-                if not selector.strip():
-                    return "ERROR: browser click needs a css selector."
                 return session.click(selector.strip())
             if verb == "type":
-                if not selector.strip():
-                    return "ERROR: browser type needs a css selector."
                 return session.type(selector.strip(), text, bool(submit))
             if verb == "screenshot":
-                if not path.strip():
-                    return "ERROR: browser screenshot needs a path."
                 return session.screenshot(path.strip(), self.workspace)
             if verb == "links":
                 return session.links()
-            if verb == "eval":
-                if not script.strip():
-                    return "ERROR: browser eval needs a script."
-                value = session.evaluate(script)
-                return json.dumps(value, ensure_ascii=False, default=str)[:8000]
-            return (
-                f"ERROR: unknown browser action '{action}'. Use open, text, click, "
-                "type, screenshot, links, eval, or close."
-            )
+            value = session.evaluate(script)
+            return json.dumps(value, ensure_ascii=False, default=str)[:8000]
         except browser_module.BrowserError as exc:
             return f"ERROR browser: {exc}"
 
