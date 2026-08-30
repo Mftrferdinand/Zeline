@@ -510,6 +510,9 @@ def _defaults() -> dict[str, Any]:
             "browser": True,
             # Path binary browser kalau tidak ada di PATH. Kosong = cari sendiri.
             "browser_binary": "",
+            # Jalankan scheduled job (~/.zeline/cron/jobs.json) di dalam proses
+            # gateway. Ini yang bikin Zeline bisa kerja tanpa ada yang menyuruh.
+            "cron": True,
             # Tanya language server soal kode: diagnostics, definition, references,
             # hover, symbols. Server-nya milik operator (dicari di PATH), tidak
             # pernah diunduh. Hanya profile operator (workspace/full).
@@ -663,7 +666,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
     global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, PLUGINS, TOOL_SEARCH
-    global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS
+    global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS, CRON
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -711,6 +714,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     BROWSER = bool(cfg.get("tools", {}).get("browser", True))
     BROWSER_BINARY = str(cfg.get("tools", {}).get("browser_binary", "") or "")
     LSP = bool(cfg.get("tools", {}).get("lsp", True))
+    CRON = bool(cfg.get("tools", {}).get("cron", True))
     raw_lsp = cfg.get("tools", {}).get("lsp_servers", {})
     LSP_SERVERS = dict(raw_lsp) if isinstance(raw_lsp, dict) else {}
     USAGE_TRACKING = bool(cfg.get("agent", {}).get("usage_tracking", True))

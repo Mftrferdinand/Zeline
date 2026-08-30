@@ -1134,8 +1134,22 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         print("No gateway passed validation.")
         return 2
 
+    # The scheduler lives inside the gateway because that is already the
+    # long-lived process holding the config, API key and workspace. A system
+    # cron entry would need its own copy of all three.
+    from zeline import scheduler as cron_module
+
+    cron = cron_module.Scheduler(sessions)
+    if cron.start():
+        pending = [job for job in cron_module.list_jobs() if job.enabled]
+        if pending:
+            print(f"  [cron] {len(pending)} scheduled job(s) armed", flush=True)
+    elif cron_module.list_jobs():
+        print("  [cron] disabled by config (tools.cron = false)", flush=True)
+
     def shutdown(_signal=None, _frame=None):
         print("\n==> Stopping gateway…", flush=True)
+        cron.stop()
         runtime.stop()
 
     def drain_and_shutdown(_signal=None, _frame=None):
@@ -1148,6 +1162,9 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         """
         timeout = float(getattr(config, "RESTART_DRAIN_TIMEOUT", 30.0))
         print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
+        # Stop arming new jobs first, or a tick during the drain starts work we
+        # are about to kill.
+        cron.stop()
         finished, busy = sessions.drain(timeout=timeout)
         if finished:
             print("  ✅ All turns finished; no work was cut off.", flush=True)
@@ -1182,6 +1199,7 @@ def _run_gateway_loop(only: list[str] | None) -> int:
             signal.signal(sigusr1, previous_usr1)
         if sigbreak is not None and previous_break is not None:
             signal.signal(sigbreak, previous_break)
+        cron.stop()
         runtime.stop(timeout=1)
     return 0
 
@@ -1627,6 +1645,95 @@ def cmd_customtools(action: str = "list", *, name: str | None = None) -> int:
     return 0
 
 
+def cmd_cron(
+    action: str = "list",
+    *,
+    schedule: str | None = None,
+    prompt: str | None = None,
+    deliver: str | None = None,
+    job_id: str | None = None,
+) -> int:
+    """Manage scheduled jobs."""
+    from zeline import scheduler as cron_module
+
+    if action == "list":
+        jobs = cron_module.list_jobs()
+        if not cron_module.enabled():
+            print("Scheduled jobs are disabled (tools.cron = false).")
+        if not jobs:
+            print("No scheduled jobs.")
+            print("  Add one:  zeline cron add '09:00' 'Summarise yesterday's commits'")
+            print("  Schedules: an interval ('30m', 'every 2h', '1d') or a daily time ('09:00').")
+            return 0
+        print(f"{len(jobs)} scheduled job(s):")
+        for job in jobs:
+            print(f"  {job.describe()}")
+            print(f"      {job.prompt[:100]}")
+            if job.last_status:
+                stamp = f"{cron_module.format_time(job.last_run)} " if job.last_run else ""
+                print(f"      last: {stamp}{job.last_status}")
+        print()
+        print("  Jobs run inside the gateway process, so they only fire while it is up.")
+        print(f"  Output is kept in {cron_module.output_dir()}")
+        return 0
+
+    if action == "add":
+        if not schedule or not prompt:
+            print("Usage: zeline cron add <schedule> <prompt> [--deliver telegram:<chat_id>]")
+            return 2
+        try:
+            job = cron_module.add_job(schedule, prompt, deliver or "local")
+        except cron_module.CronError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(
+            f"Created {job.id} — {job.parsed().describe()}, "
+            f"first run {cron_module.format_time(job.next_run)}"
+        )
+        if job.deliver in ("local", "", "none"):
+            print(f"  Results are saved to {cron_module.output_dir()}")
+            print("  To have them sent to you: --deliver telegram:<chat_id>")
+        else:
+            print(f"  Results will be delivered to {job.deliver}")
+        if not cron_module.enabled():
+            print("  NOTE: tools.cron is false, so nothing will run until it is enabled.")
+        return 0
+
+    if action in {"remove", "pause", "resume", "run", "show"}:
+        if not job_id:
+            print(f"Usage: zeline cron {action} <job_id>")
+            return 2
+        job = cron_module.find_job(job_id)
+        if job is None:
+            print(f"No job with id '{job_id}'. List them with: zeline cron list")
+            return 1
+        if action == "remove":
+            cron_module.remove_job(job_id)
+            print(f"Removed {job_id}.")
+            return 0
+        if action in {"pause", "resume"}:
+            cron_module.set_enabled(job_id, action == "resume")
+            print(f"{'Resumed' if action == 'resume' else 'Paused'} {job_id}.")
+            return 0
+        if action == "run":
+            cron_module.run_now(job_id)
+            print(f"{job_id} will run on the next tick (within ~{int(cron_module.TICK_SECONDS)}s)")
+            print("  The gateway must be running for that to happen.")
+            return 0
+        print(f"Job {job.id}")
+        print(f"  Schedule : {job.schedule}  ({job.parsed().describe()})")
+        print(f"  State    : {'enabled' if job.enabled else 'paused'}")
+        print(f"  Deliver  : {job.deliver}")
+        print(f"  Runs     : {job.runs} ({job.failures} failed)")
+        if job.last_status:
+            print(f"  Last     : {job.last_status}")
+        print(f"  Prompt   : {job.prompt}")
+        return 0
+
+    print(f"Unknown cron action '{action}'. Use list, add, show, run, pause, resume, or remove.")
+    return 2
+
+
 def cmd_toolsearch(action: str = "status") -> int:
     """Show, or change, whether tool schemas are sent lazily.
 
@@ -1966,6 +2073,23 @@ def build_parser() -> argparse.ArgumentParser:
     tools_custom_init.add_argument("name", nargs="?", help="file name (default: my_tools.py)")
     tools_sub.add_parser("custom-path", help="print the custom tools directory")
 
+    cron_parser = subparsers.add_parser("cron", help="schedule jobs the agent runs on its own")
+    cron_sub = cron_parser.add_subparsers(dest="cron_action")
+    cron_sub.add_parser("list", help="list scheduled jobs")
+    cron_add = cron_sub.add_parser("add", help="add a job: <schedule> <prompt>")
+    cron_add.add_argument("schedule", help="interval ('30m', 'every 2h', '1d') or daily time ('09:00')")
+    cron_add.add_argument("prompt", help="what the agent should do")
+    cron_add.add_argument("--deliver", help="where to send results, e.g. telegram:12345 (default: save locally)")
+    for verb, help_text in (
+        ("show", "show one job in detail"),
+        ("run", "run a job on the next tick"),
+        ("pause", "stop a job from firing"),
+        ("resume", "let a job fire again"),
+        ("remove", "delete a job"),
+    ):
+        item = cron_sub.add_parser(verb, help=help_text)
+        item.add_argument("job_id")
+
     toolsearch_parser = subparsers.add_parser(
         "toolsearch", help="show or change lazy tool schema loading (token saving)"
     )
@@ -2135,6 +2259,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_skills()
     if command == "memory":
         return cmd_memory()
+    if command == "cron":
+        return cmd_cron(
+            getattr(namespace, "cron_action", None) or "list",
+            schedule=getattr(namespace, "schedule", None),
+            prompt=getattr(namespace, "prompt", None),
+            deliver=getattr(namespace, "deliver", None),
+            job_id=getattr(namespace, "job_id", None),
+        )
     if command == "toolsearch":
         return cmd_toolsearch(getattr(namespace, "action", None) or "status")
     if command == "plugins":
