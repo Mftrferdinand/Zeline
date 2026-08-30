@@ -40,6 +40,7 @@ from zeline import skills
 from zeline import network_routes
 from zeline import interaction
 from zeline import checkpoints, custom_tools, formatters
+from zeline import plugins as plugin_bus
 from zeline import mcp as mcp_module
 from zeline import _winproc
 
@@ -1783,6 +1784,13 @@ class ToolExecutor:
             registry = custom_tools.CustomToolRegistry(profile)
             if registry.tools or registry.errors:
                 self.custom = registry
+        # Plugin hooks wrap every tool call, so a failure while loading them
+        # must leave the agent fully functional and simply unhooked.
+        self.plugins: plugin_bus.PluginBus | None = None
+        with contextlib.suppress(Exception):
+            bus = plugin_bus.PluginBus(profile)
+            if bus.active:
+                self.plugins = bus
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
@@ -1914,6 +1922,20 @@ class ToolExecutor:
         return native
 
     def run(self, name: str, args: dict[str, Any]) -> str:
+        """Execute a tool, wrapped in the operator's plugin hooks if any.
+
+        The hooks are deliberately outside _dispatch so that every kind of tool
+        -- native, MCP and custom -- passes through the same governance point.
+        """
+        if self.plugins is None:
+            return self._dispatch(name, args)
+        outcome = self.plugins.before(name, args)
+        if outcome.blocked:
+            return plugin_bus.denial_message(name, outcome)
+        result = self._dispatch(name, outcome.args)
+        return self.plugins.after(name, outcome.args, result)
+
+    def _dispatch(self, name: str, args: dict[str, Any]) -> str:
         # Custom tools are checked first, but only ever match the custom_ prefix,
         # so a file can never shadow a native tool.
         if name.startswith(custom_tools.TOOL_PREFIX):
