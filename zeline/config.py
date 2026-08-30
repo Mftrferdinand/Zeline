@@ -498,6 +498,12 @@ def _defaults() -> dict[str, Any]:
             # audit, rewrite argumen, redaksi output, atau tolak lewat deny().
             # Hook yang error dilewati; tool call-nya tetap jalan.
             "plugins": True,
+            # Kirim schema inti saja per request; sisanya diambil model lewat
+            # tool_search saat butuh. Nama semua tool tetap terlihat, jadi tidak
+            # ada kemampuan yang hilang — hanya detail parameternya yang lazy.
+            # Default OFF: menukar 1 round trip demi token, cuma untung kalau
+            # tool-nya banyak.
+            "tool_search": False,
         },
         "gateways": {
             "telegram": {
@@ -637,7 +643,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
-    global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, PLUGINS
+    global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, PLUGINS, TOOL_SEARCH
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -681,6 +687,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     CHECKPOINTS = bool(cfg.get("tools", {}).get("checkpoints", True))
     CUSTOM_TOOLS = bool(cfg.get("tools", {}).get("custom_tools", True))
     PLUGINS = bool(cfg.get("tools", {}).get("plugins", True))
+    TOOL_SEARCH = bool(cfg.get("tools", {}).get("tool_search", False))
     USAGE_TRACKING = bool(cfg.get("agent", {}).get("usage_tracking", True))
     raw_prices = cfg.get("agent", {}).get("model_prices", {})
     MODEL_PRICES = dict(raw_prices) if isinstance(raw_prices, dict) else {}

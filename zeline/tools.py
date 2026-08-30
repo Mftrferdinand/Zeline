@@ -41,6 +41,7 @@ from zeline import network_routes
 from zeline import interaction
 from zeline import checkpoints, custom_tools, formatters
 from zeline import plugins as plugin_bus
+from zeline import tool_index
 from zeline import mcp as mcp_module
 from zeline import _winproc
 
@@ -1791,6 +1792,9 @@ class ToolExecutor:
             bus = plugin_bus.PluginBus(profile)
             if bus.active:
                 self.plugins = bus
+        # Built lazily on first use so constructing an executor stays cheap, and
+        # kept for the executor's lifetime so a revealed tool stays revealed.
+        self._lazy_index: tool_index.LazySchemaIndex | None = None
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
@@ -1908,7 +1912,8 @@ class ToolExecutor:
         }, ensure_ascii=False, indent=2)
 
     @property
-    def schemas(self) -> list[dict[str, Any]]:
+    def all_schemas(self) -> list[dict[str, Any]]:
+        """Every schema this executor could offer, before any lazy filtering."""
         native = [definition.schema() for definition in self._enabled_native_defs()]
         if self.mcp is not None:
             try:
@@ -1920,6 +1925,34 @@ class ToolExecutor:
             with contextlib.suppress(Exception):
                 native.extend(self.custom.schemas())
         return native
+
+    @property
+    def schemas(self) -> list[dict[str, Any]]:
+        """What is actually sent to the provider this round.
+
+        With tool_search off this is every schema. With it on, a core set plus
+        anything already revealed, plus tool_search carrying the catalogue of
+        the rest. The index is rebuilt from all_schemas each time so a newly
+        loaded MCP or custom tool appears, while revelations persist.
+        """
+        index = self._index()
+        if not index.applicable:
+            return index.all
+        return index.visible()
+
+    def _index(self) -> tool_index.LazySchemaIndex:
+        """The lazy index, refreshed from the current tool set.
+
+        Built on demand rather than in __init__ so a tool call can never depend
+        on schemas having been read first, and refreshed every time so a
+        late-loading MCP or custom tool is never missing from the catalogue.
+        """
+        current = self.all_schemas
+        if self._lazy_index is None:
+            self._lazy_index = tool_index.LazySchemaIndex(current)
+        else:
+            self._lazy_index.all = current
+        return self._lazy_index
 
     def run(self, name: str, args: dict[str, Any]) -> str:
         """Execute a tool, wrapped in the operator's plugin hooks if any.
@@ -1936,6 +1969,21 @@ class ToolExecutor:
         return self.plugins.after(name, outcome.args, result)
 
     def _dispatch(self, name: str, args: dict[str, Any]) -> str:
+        # tool_search is a discovery tool, not a capability: it only exists while
+        # schemas are being withheld, and it hands them over.
+        if name == tool_index.TOOL_NAME:
+            index = self._index()
+            if not index.applicable:
+                return (
+                    f"ERROR: '{name}' is not needed — every tool schema is already "
+                    "loaded, so call the tool you want directly."
+                )
+            return index.search(str(args.get("query", "")))
+        # A hidden tool called directly still runs, and stays visible afterwards.
+        # Without this the model could see a name in the catalogue and have no way
+        # to use it without a lookup round trip it does not need.
+        if self._lazy_index is not None and self._lazy_index.knows(name):
+            self._lazy_index.reveal(name)
         # Custom tools are checked first, but only ever match the custom_ prefix,
         # so a file can never shadow a native tool.
         if name.startswith(custom_tools.TOOL_PREFIX):

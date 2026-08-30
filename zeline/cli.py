@@ -1627,6 +1627,59 @@ def cmd_customtools(action: str = "list", *, name: str | None = None) -> int:
     return 0
 
 
+def cmd_toolsearch(action: str = "status") -> int:
+    """Show, or change, whether tool schemas are sent lazily.
+
+    Prints the operator's own measured numbers rather than a claim, because
+    whether this trade is worth making depends entirely on their tool count.
+    """
+    import json as _json
+
+    from zeline import config as cfg
+    from zeline import tool_index
+    from zeline.tools import ToolExecutor
+
+    if action in {"on", "off"}:
+        stored = cfg.stored_config_copy()
+        stored.setdefault("tools", {})["tool_search"] = (action == "on")
+        cfg.save_config(stored)
+        state = "enabled" if action == "on" else "disabled"
+        print(f"Lazy tool schemas {state}.")
+        if action == "on":
+            print("  The model still sees every tool name; only parameter detail")
+            print("  is fetched on demand, so no capability is lost.")
+        return 0
+
+    profile = str(getattr(cfg, "CLI_TOOL_PROFILE", "full"))
+    executor = ToolExecutor(identity="cli:local", profile=profile, workspace=cfg.WORKSPACE)
+    every = executor.all_schemas
+    full_chars = len(_json.dumps(every, ensure_ascii=False))
+
+    print(f"Lazy tool schemas: {'ON' if tool_index.enabled() else 'OFF'}  (profile: {profile})")
+    print(f"  {len(every)} tool(s), {full_chars:,} characters of schema per request")
+    print(f"  Roughly {full_chars // 4:,} tokens, re-sent on every tool round.")
+    print()
+
+    if len(every) < tool_index.MIN_TOOLS_TO_BOTHER:
+        print(f"  Below the {tool_index.MIN_TOOLS_TO_BOTHER}-tool floor, so this would stay inactive")
+        print("  even if switched on: the extra round trip would cost more than it saves.")
+        return 0
+
+    hidden = [s for s in every if s["function"]["name"] not in tool_index.CORE_TOOLS]
+    lazy_chars = len(_json.dumps(
+        [s for s in every if s["function"]["name"] in tool_index.CORE_TOOLS]
+        + [tool_index.search_schema(hidden)],
+        ensure_ascii=False,
+    ))
+    saving = 100 * (full_chars - lazy_chars) // full_chars if full_chars else 0
+    print(f"  Cold start would send {lazy_chars:,} characters instead — about {saving}% less.")
+    print(f"  {len(tool_index.CORE_TOOLS & {s['function']['name'] for s in every})} core tool(s) stay loaded; "
+          f"{len(hidden)} are listed by name and fetched on request.")
+    print()
+    print("  Switch with: zeline toolsearch on | off")
+    return 0
+
+
 def cmd_plugins(action: str = "list", *, name: str | None = None) -> int:
     """Inspect the operator's plugin hooks, or scaffold the first file."""
     from zeline import plugins as plugin_bus
@@ -1913,6 +1966,13 @@ def build_parser() -> argparse.ArgumentParser:
     tools_custom_init.add_argument("name", nargs="?", help="file name (default: my_tools.py)")
     tools_sub.add_parser("custom-path", help="print the custom tools directory")
 
+    toolsearch_parser = subparsers.add_parser(
+        "toolsearch", help="show or change lazy tool schema loading (token saving)"
+    )
+    toolsearch_parser.add_argument(
+        "action", nargs="?", choices=["status", "on", "off"], default="status"
+    )
+
     plugins_parser = subparsers.add_parser("plugins", help="inspect tool-call hooks in ~/.zeline/plugins/")
     plugins_sub = plugins_parser.add_subparsers(dest="plugins_command")
     plugins_sub.add_parser("list", help="list loaded hooks in run order")
@@ -2075,6 +2135,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_skills()
     if command == "memory":
         return cmd_memory()
+    if command == "toolsearch":
+        return cmd_toolsearch(getattr(namespace, "action", None) or "status")
     if command == "plugins":
         return cmd_plugins(
             getattr(namespace, "plugins_command", None) or "list",
