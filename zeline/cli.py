@@ -1293,6 +1293,113 @@ def cmd_init(directory: str | None = None, *, force: bool = False) -> int:
     return 0
 
 
+def _persistence():
+    from zeline.session_store import SessionPersistence
+
+    return SessionPersistence()
+
+
+def cmd_session_export(identity: str, path: str | None = None, *, include_archive: bool = False) -> int:
+    """Write one session's history to a JSON file."""
+    from zeline import session_transfer
+
+    store = _persistence()
+    messages, title = store.load(identity)
+    if not messages:
+        print(f"[!] No stored session for identity: {identity}")
+        print("    List what exists with: zeline session list")
+        return 2
+    archive = store.recent_archive(identity, limit=500) if include_archive else []
+    payload = session_transfer.build_export(identity, messages, title, archive)
+    target = session_transfer.write_export(path or f"zeline-session-{int(time.time())}.json", payload)
+    print(f"Exported {len(messages)} messages to {target}")
+    if archive:
+        print(f"  plus {len(archive)} archived turns")
+    print("  File mode 0600. It contains the full transcript — treat it as sensitive")
+    print("  and check it before sharing if secrets were discussed in this session.")
+    return 0
+
+
+def cmd_session_import(identity: str, path: str, *, replace: bool = False) -> int:
+    """Load a session export into an identity."""
+    from zeline import session_transfer
+
+    payload, error = session_transfer.read_export(path)
+    if payload is None:
+        print(f"[!] Cannot import: {error}")
+        return 2
+    messages, stats = session_transfer.sanitize_messages(payload["messages"])
+    if not messages:
+        print("[!] Nothing importable in that file (no user/assistant/tool messages).")
+        return 2
+
+    store = _persistence()
+    existing, _existing_title = store.load(identity)
+    if existing and not replace:
+        print(f"[!] {identity} already has {len(existing)} stored messages.")
+        print("    Use --replace to overwrite, or import into a fresh identity.")
+        return 2
+
+    title = str(payload.get("title") or "").strip() or None
+    store.save(identity, messages, title)
+    print(f"Imported {len(messages)} messages into {identity}")
+    if stats["system_dropped"]:
+        print(f"  Dropped {stats['system_dropped']} system message(s): the runtime owns the")
+        print("  system prompt, so an imported one is never honoured.")
+    if stats["invalid_dropped"]:
+        print(f"  Dropped {stats['invalid_dropped']} unusable message(s) (bad shape or an")
+        print("  incomplete tool-call turn that the provider would reject).")
+    if stats["truncated"]:
+        print(f"  Ignored {stats['truncated']} message(s) beyond the import limit.")
+    origin = str(payload.get("identity") or "")
+    if origin and origin != identity:
+        print(f"  Source identity was {origin}.")
+    return 0
+
+
+def cmd_session_fork(source: str, target: str) -> int:
+    """Copy a session's history to another identity, leaving the original intact."""
+    from zeline import session_transfer
+
+    if source == target:
+        print("[!] Source and target identity are the same.")
+        return 2
+    store = _persistence()
+    messages, title = store.load(source)
+    if not messages:
+        print(f"[!] No stored session for identity: {source}")
+        return 2
+    existing, _title = store.load(target)
+    if existing:
+        print(f"[!] {target} already has {len(existing)} stored messages; refusing to overwrite.")
+        return 2
+    # Route through the same sanitizer as import: a fork must not be able to
+    # carry a stale system message or a broken tool-call tail either.
+    clean, _stats = session_transfer.sanitize_messages(messages)
+    store.save(target, clean, title)
+    print(f"Forked {len(clean)} messages: {source} -> {target}")
+    print(f"  {source} is unchanged.")
+    return 0
+
+
+def cmd_session_list() -> int:
+    """Show stored sessions. Identities are hashed, so show what we can."""
+    store = _persistence()
+    rows = store.list_sessions()
+    if not rows:
+        print("No stored sessions.")
+        return 0
+    print(f"{len(rows)} stored session(s):")
+    for row in rows:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["updated_at"]))
+        title = row["title"] or "(untitled)"
+        print(f"  {row['key']}  {row['messages']:>4} msg  {when}  {title}")
+    print()
+    print("Identities are stored hashed for privacy, so pass the identity string you")
+    print("used (e.g. telegram:123456 or cli:local) to export/import/fork.")
+    return 0
+
+
 def cmd_rules(directory: str | None = None) -> int:
     """Show which project rules file is active, and what Zeline will read."""
     root = Path(directory or Path.cwd()).expanduser().resolve(strict=False)
@@ -1485,6 +1592,21 @@ def build_parser() -> argparse.ArgumentParser:
     rules_parser = subparsers.add_parser("rules", help="show the active project rules file")
     rules_parser.add_argument("directory", nargs="?", help="project directory (default: current)")
 
+    session_parser = subparsers.add_parser("session", help="export, import, fork, or list conversation sessions")
+    session_sub = session_parser.add_subparsers(dest="session_action")
+    session_sub.add_parser("list", help="list stored sessions")
+    export_cmd = session_sub.add_parser("export", help="write a session's history to JSON")
+    export_cmd.add_argument("identity", help="identity string, e.g. telegram:123456 or cli:local")
+    export_cmd.add_argument("path", nargs="?", help="output file (default: ./zeline-session-<ts>.json)")
+    export_cmd.add_argument("--include-archive", action="store_true", help="also embed archived turns")
+    import_cmd = session_sub.add_parser("import", help="load a session export into an identity")
+    import_cmd.add_argument("identity", help="target identity")
+    import_cmd.add_argument("path", help="session JSON file")
+    import_cmd.add_argument("--replace", action="store_true", help="overwrite an existing session")
+    fork_cmd = session_sub.add_parser("fork", help="copy a session to another identity")
+    fork_cmd.add_argument("source", help="source identity")
+    fork_cmd.add_argument("target", help="new identity")
+
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
     subparsers.add_parser("memory", help="view local CLI memory")
 
@@ -1607,6 +1729,24 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init(getattr(namespace, "directory", None), force=bool(getattr(namespace, "force", False)))
     if command == "rules":
         return cmd_rules(getattr(namespace, "directory", None))
+    if command == "session":
+        action = getattr(namespace, "session_action", None)
+        if action == "list":
+            return cmd_session_list()
+        if action == "export":
+            return cmd_session_export(
+                namespace.identity, getattr(namespace, "path", None),
+                include_archive=bool(getattr(namespace, "include_archive", False)),
+            )
+        if action == "import":
+            return cmd_session_import(
+                namespace.identity, namespace.path,
+                replace=bool(getattr(namespace, "replace", False)),
+            )
+        if action == "fork":
+            return cmd_session_fork(namespace.source, namespace.target)
+        print("Usage: zeline session {list|export|import|fork}")
+        return 2
     if command == "start":
         return cmd_gateway_start(None)
     if command == "stop":
