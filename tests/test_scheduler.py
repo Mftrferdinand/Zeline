@@ -463,16 +463,20 @@ class LoopTests(CronBase):
         """The loop must outlive any single failure inside it."""
         scheduler = self.cron.Scheduler(FakeSessions(), tick_seconds=0.05)
         calls = {"n": 0}
+        third = threading.Event()
 
         def exploding_tick(now=None):
             calls["n"] += 1
+            if calls["n"] >= 3:
+                third.set()
             raise RuntimeError("tick exploded")
 
         scheduler.tick = exploding_tick
         scheduler.start()
-        deadline = time.time() + 2
-        while calls["n"] < 3 and time.time() < deadline:
-            time.sleep(0.05)
+        # Scheduler clamps the tick interval to a 1s floor, so three ticks take
+        # ~2s of wall clock. Wait on the count itself with generous slack: a
+        # fixed 2s deadline made this fail on slow/loaded CI runners.
+        self.assertTrue(third.wait(scheduler.tick_seconds * 4 + 5))
         self.assertTrue(scheduler.alive)
         self.assertGreaterEqual(calls["n"], 3)
         self.assertIn("tick exploded", scheduler.last_error)

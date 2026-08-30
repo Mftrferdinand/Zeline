@@ -460,6 +460,10 @@ class Scheduler:
         # this a slow job would start a second copy of itself on the next tick.
         self._running: set[str] = set()
         self._lock = threading.Lock()
+        # Per-job worker threads. stop() has to wait for these too: joining only
+        # the tick loop leaves a job still writing jobs.json after stop()
+        # returned, which on shutdown means a half-written state file.
+        self._workers: list[threading.Thread] = []
         self.last_error = ""
 
     # -- lifecycle
@@ -474,10 +478,38 @@ class Scheduler:
         return True
 
     def stop(self, timeout: float = 3.0) -> None:
+        """Stop ticking, then wait for jobs already in flight.
+
+        The wait matters: a worker still writing jobs.json when the process exits
+        leaves a half-written state file, and in tests it writes into a temp
+        directory that is being deleted.
+        """
         self._stop.set()
         if self._thread is not None:
+            # Join the tick loop first: once it is done no new workers appear,
+            # so the snapshot below cannot miss one.
             self._thread.join(timeout=timeout)
             self._thread = None
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            with self._lock:
+                workers = [item for item in self._workers if item.is_alive()]
+            if not workers:
+                break
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            for worker in workers:
+                slice_left = deadline - time.time()
+                if slice_left <= 0:
+                    break
+                try:
+                    worker.join(timeout=slice_left)
+                except RuntimeError:
+                    # Registered but not started yet; the retry loop catches it.
+                    time.sleep(0.01)
+        with self._lock:
+            self._workers = [item for item in self._workers if item.is_alive()]
 
     @property
     def alive(self) -> bool:
@@ -510,10 +542,16 @@ class Scheduler:
                     continue
                 self._running.add(job.id)
             started.append(job.id)
-            threading.Thread(
+            worker = threading.Thread(
                 target=self._execute, args=(job, moment), daemon=True,
                 name=f"zeline-cron-{job.id}",
-            ).start()
+            )
+            with self._lock:
+                # Prune finished threads here rather than keeping every thread
+                # object for the process lifetime.
+                self._workers = [item for item in self._workers if item.is_alive()]
+                self._workers.append(worker)
+            worker.start()
         return started
 
     def _execute(self, job: Job, moment: float) -> None:
