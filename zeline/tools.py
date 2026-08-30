@@ -1556,6 +1556,35 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "browser",
+        (
+            "Drive a real headless browser for pages web_fetch cannot handle: "
+            "JavaScript-rendered content, anything behind a login, or reachable only "
+            "by clicking. Actions: open (navigate to url), text (read rendered text, "
+            "optional css selector), click (css selector), type (css selector + text, "
+            "set submit=true to press Enter), screenshot (saves a png to path), links "
+            "(list page links), eval (run JavaScript and return the value), close (free "
+            "the browser). The page stays open between calls, so open once then act."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "open, text, click, type, screenshot, links, eval, or close",
+                },
+                "url": {"type": "string", "description": "For open. http/https URL."},
+                "selector": {"type": "string", "description": "CSS selector for text/click/type."},
+                "text": {"type": "string", "description": "For type: the text to enter."},
+                "submit": {"type": "boolean", "description": "For type: press Enter afterwards."},
+                "path": {"type": "string", "description": "For screenshot: workspace path for the png."},
+                "script": {"type": "string", "description": "For eval: the JavaScript expression."},
+            },
+            "required": ["action"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "system_env",
         "Show environment info: OS/arch/CPU, installed runtimes & tools (python/node/go/git/docker/ffmpeg), and active local ports. Call before running commands to see which tools are available.",
         {"type": "object", "properties": {}},
@@ -1795,6 +1824,8 @@ class ToolExecutor:
         # Built lazily on first use so constructing an executor stays cheap, and
         # kept for the executor's lifetime so a revealed tool stays revealed.
         self._lazy_index: tool_index.LazySchemaIndex | None = None
+        # Started on the first browser call, reused after that.
+        self._browser_session: Any | None = None
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
@@ -1809,6 +1840,9 @@ class ToolExecutor:
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
+            "browser": lambda action, url="", selector="", text="", submit=False, path="", script="": self._browser(
+                action, url, selector, text, submit, path, script
+            ),
             "read_file": lambda path: _read_file(path, self.workspace),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
             "edit_file": lambda path, old_text, new_text: _edit_file(path, old_text, new_text, self.workspace),
@@ -1825,6 +1859,85 @@ class ToolExecutor:
             "recall_history": lambda query="": self._recall_history(query),
             "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
         }
+
+    def _browser(
+        self,
+        action: str,
+        url: str = "",
+        selector: str = "",
+        text: str = "",
+        submit: bool = False,
+        path: str = "",
+        script: str = "",
+    ) -> str:
+        """Drive a headless browser, keeping one session alive across calls.
+
+        The session is reused because a cold start costs seconds and an agent
+        normally makes several calls in a row; it is created on the first call
+        rather than at construction so an executor that never browses never
+        launches a browser.
+        """
+        from zeline import browser as browser_module
+
+        if not browser_module.enabled():
+            return "ERROR: the browser tool is disabled (tools.browser = false)."
+        if self.profile not in browser_module.ALLOWED_PROFILES:
+            return f"ERROR: the browser tool is not allowed for profile '{self.profile}'."
+
+        verb = (action or "").strip().lower()
+        if verb == "close":
+            if self._browser_session is None:
+                return "OK, no browser was open."
+            self._browser_session.stop()
+            self._browser_session = None
+            return "OK, closed the browser."
+
+        # Validate the request BEFORE launching anything. A malformed call should
+        # say what is missing, not report that no browser is installed -- that
+        # sends the model off fixing the wrong problem, and on a machine without
+        # a browser it would hide the real mistake entirely.
+        required = {
+            "open": (url, "a url"),
+            "click": (selector, "a css selector"),
+            "type": (selector, "a css selector"),
+            "screenshot": (path, "a path"),
+            "eval": (script, "a script"),
+        }
+        if verb not in {"open", "text", "click", "type", "screenshot", "links", "eval"}:
+            return (
+                f"ERROR: unknown browser action '{action}'. Use open, text, click, "
+                "type, screenshot, links, eval, or close."
+            )
+        if verb in required:
+            value, expected = required[verb]
+            if not str(value).strip():
+                return f"ERROR: browser {verb} needs {expected}."
+
+        try:
+            if self._browser_session is None or not self._browser_session.running:
+                # A session whose browser died is replaced rather than reused, so
+                # a crashed browser does not poison every later call.
+                if self._browser_session is not None:
+                    self._browser_session.stop()
+                self._browser_session = browser_module.BrowserSession()
+            session = self._browser_session
+
+            if verb == "open":
+                return session.open(url)
+            if verb == "text":
+                return session.text(selector.strip() or "body")
+            if verb == "click":
+                return session.click(selector.strip())
+            if verb == "type":
+                return session.type(selector.strip(), text, bool(submit))
+            if verb == "screenshot":
+                return session.screenshot(path.strip(), self.workspace)
+            if verb == "links":
+                return session.links()
+            value = session.evaluate(script)
+            return json.dumps(value, ensure_ascii=False, default=str)[:8000]
+        except browser_module.BrowserError as exc:
+            return f"ERROR browser: {exc}"
 
     def _recall_history(self, query: str = "") -> str:
         """Cari transkrip percakapan lama chat ini (archive permanen).
