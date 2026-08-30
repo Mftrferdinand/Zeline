@@ -745,8 +745,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         with mock.patch.object(routes, "ROUTES_FILE", route_file):
             full = tools.ToolExecutor("telegram:owner", profile="full", workspace=self.home)
             safe = tools.ToolExecutor("telegram:guest", profile="safe", workspace=self.home)
-            self.assertIn("network_route", {item["function"]["name"] for item in full.schemas})
-            self.assertNotIn("network_route", {item["function"]["name"] for item in safe.schemas})
+            # all_schemas: profile membership is under test here, and `schemas`
+            # may withhold a tool's detail behind the tool_search catalogue.
+            self.assertIn("network_route", {item["function"]["name"] for item in full.all_schemas})
+            self.assertNotIn("network_route", {item["function"]["name"] for item in safe.all_schemas})
             result = full.run("network_route", {
                 "action": "add", "label": "uk", "proxy_url": "socks5h://alice:secret@proxy.test:1080", "country": "GB",
             })
@@ -818,12 +820,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_analyze_media_is_owner_gated_and_validates_input(self):
         # safe profile (gateway publik) TIDAK boleh punya analyze_media.
         safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
-        self.assertNotIn("analyze_media", {item["function"]["name"] for item in safe.schemas})
+        self.assertNotIn("analyze_media", {item["function"]["name"] for item in safe.all_schemas})
         # workspace/full punya tool-nya.
         ws = self.home / "media-ws"
         ws.mkdir(parents=True, exist_ok=True)
         executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=ws)
-        self.assertIn("analyze_media", {item["function"]["name"] for item in executor.schemas})
+        self.assertIn("analyze_media", {item["function"]["name"] for item in executor.all_schemas})
         # URL internal diblokir.
         self.assertIn("blocked", executor.run("analyze_media", {"path_or_url": "http://169.254.169.254/x.png"}))
         # File audio → diarahkan ke transkrip, bukan mengarang isi.
@@ -837,7 +839,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_download_file_is_workspace_gated_and_ssrf_protected(self):
         safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
-        self.assertNotIn("download_file", {item["function"]["name"] for item in safe.schemas})
+        self.assertNotIn("download_file", {item["function"]["name"] for item in safe.all_schemas})
         # workspace profile punya, tapi SSRF + path escape diblokir
         workspace = self.home / "dl-ws"
         workspace.mkdir(parents=True)
@@ -849,12 +851,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_generate_image_is_owner_gated_and_validates_input(self):
         # safe profile (gateway publik) TIDAK boleh punya generate_image.
         safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
-        self.assertNotIn("generate_image", {item["function"]["name"] for item in safe.schemas})
+        self.assertNotIn("generate_image", {item["function"]["name"] for item in safe.all_schemas})
         # workspace/full punya tool-nya.
         ws = self.home / "img-ws"
         ws.mkdir(parents=True, exist_ok=True)
         executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=ws)
-        self.assertIn("generate_image", {item["function"]["name"] for item in executor.schemas})
+        self.assertIn("generate_image", {item["function"]["name"] for item in executor.all_schemas})
         # Tanpa image_model dikonfigurasi → error ramah, bukan crash.
         self.config.IMAGE_MODEL = ""
         self.config.API_KEY = "x"
@@ -912,11 +914,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         try:
             # safe (gateway publik) TIDAK boleh dapat tool MCP (server = perintah lokal)
             safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
-            self.assertFalse(any(n["function"]["name"].startswith("mcp__") for n in safe.schemas))
+            self.assertFalse(any(n["function"]["name"].startswith("mcp__") for n in safe.all_schemas))
             self.assertIn("not allowed", safe.run("mcp__fake__add", {"a": 1, "b": 1}))
             # full (operator) dapat + bisa dispatch
             full = self.tools.ToolExecutor("cli:local", profile="full", workspace=self.home)
-            self.assertTrue(any(n["function"]["name"] == "mcp__fake__add" for n in full.schemas))
+            self.assertTrue(any(n["function"]["name"] == "mcp__fake__add" for n in full.all_schemas))
             self.assertEqual(full.run("mcp__fake__add", {"a": 10, "b": 5}), "sum=15.0")
             if full.mcp:
                 full.mcp.close()
@@ -1668,7 +1670,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_full_profile_exposes_coding_toolchain(self):
         tools = importlib.import_module("zeline.tools")
         executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
-        names = [schema["function"]["name"] for schema in executor.schemas]
+        names = [schema["function"]["name"] for schema in executor.all_schemas]
         for expected in ("read_file", "write_file", "edit_file", "patch_file", "search_files", "update_task", "run_shell"):
             self.assertIn(expected, names)
 

@@ -1768,8 +1768,8 @@ def cmd_toolsearch(action: str = "status") -> int:
     print()
 
     if len(every) < tool_index.MIN_TOOLS_TO_BOTHER:
-        print(f"  Below the {tool_index.MIN_TOOLS_TO_BOTHER}-tool floor, so this would stay inactive")
-        print("  even if switched on: the extra round trip would cost more than it saves.")
+        print(f"  Below the {tool_index.MIN_TOOLS_TO_BOTHER}-tool floor, so this stays inactive")
+        print("  even when switched on: the extra round trip would cost more than it saves.")
         return 0
 
     hidden = [s for s in every if s["function"]["name"] not in tool_index.CORE_TOOLS]
@@ -1778,8 +1778,16 @@ def cmd_toolsearch(action: str = "status") -> int:
         + [tool_index.search_schema(hidden)],
         ensure_ascii=False,
     ))
-    saving = 100 * (full_chars - lazy_chars) // full_chars if full_chars else 0
-    print(f"  Cold start would send {lazy_chars:,} characters instead — about {saving}% less.")
+    saved = full_chars - lazy_chars
+    saving = 100 * saved // full_chars if full_chars else 0
+    if saved < tool_index.MIN_CHARS_SAVED:
+        print(f"  Only {saved:,} characters would be saved, below the "
+              f"{tool_index.MIN_CHARS_SAVED:,}-character floor, so this stays")
+        print("  inactive even when switched on: one extra round trip re-sends the whole")
+        print("  prompt and conversation, which costs more than that.")
+        return 0
+
+    print(f"  Cold start sends {lazy_chars:,} characters instead — about {saving}% less.")
     print(f"  {len(tool_index.CORE_TOOLS & {s['function']['name'] for s in every})} core tool(s) stay loaded; "
           f"{len(hidden)} are listed by name and fetched on request.")
     print()

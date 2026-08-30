@@ -9,8 +9,9 @@ Four invariants:
   catalogue, and calling a hidden tool *directly* works without a lookup first.
 - **Revelation is sticky.** Once shown, a schema stays shown for the life of the
   executor, so an earlier plan cannot become silently unexecutable.
-- **Off by default, and inert when off.** With the flag off the schema list is
-  byte-identical to before the feature existed.
+- **Inert when off.** With the flag off the schema list is byte-identical to
+  before the feature existed, so an operator can opt out and get the old
+  behaviour exactly.
 - **It only engages when it pays.** Below the tool-count floor, nothing is
   hidden, because the extra round trip would cost more than the tokens saved.
 """
@@ -71,17 +72,33 @@ class IndexBase(unittest.TestCase):
         self.config.save_config(saved)
 
     def many(self, count: int = 20) -> list[dict]:
-        """Core tools plus enough extras to clear the floor."""
-        built = [schema(name) for name in sorted(self.index.CORE_TOOLS)]
-        built += [schema(f"extra_{i}", f"Extra tool number {i}.") for i in range(count)]
+        """Core tools plus enough extras to clear both floors.
+
+        The schemas are deliberately realistic in size -- ~600 characters each,
+        the measured average of a real tool on the `full` profile. There is a
+        characters-saved floor as well as a tool-count floor, so twenty one-line
+        stubs would clear the count while saving too little to engage.
+        """
+        filler = "Does a real job, described at about the length a real tool needs. " * 7
+        built = [schema(name, f"Core tool {name}. {filler}") for name in sorted(self.index.CORE_TOOLS)]
+        built += [
+            schema(
+                f"extra_{i}",
+                f"Extra tool number {i}. {filler}",
+                target={"type": "string", "description": "What to act on."},
+            )
+            for i in range(count)
+        ]
         return built
 
 
 class FlagTests(IndexBase):
-    def test_off_by_default(self):
-        self.assertFalse(self.index.enabled())
+    def test_on_by_default(self):
+        """The saving is worth having without being asked for."""
+        self.assertTrue(self.index.enabled())
 
     def test_when_off_every_schema_is_sent_unchanged(self):
+        self.switch(False)
         all_schemas = self.many()
         idx = self.index.LazySchemaIndex(all_schemas)
         self.assertFalse(idx.applicable)
@@ -94,6 +111,28 @@ class FlagTests(IndexBase):
         idx = self.index.LazySchemaIndex(few)
         self.assertFalse(idx.applicable)
         self.assertEqual(idx.visible(), few)
+
+    def test_many_small_tools_do_not_engage_it(self):
+        """The count floor is not enough on its own.
+
+        A profile of small tools can clear MIN_TOOLS_TO_BOTHER while the schemas
+        it would hide are worth less than the extra round trip -- which re-sends
+        the whole prompt and conversation, not just the schemas.
+        """
+        self.switch(True)
+        tiny = [schema(name) for name in sorted(self.index.CORE_TOOLS)]
+        tiny += [schema(f"tiny_{i}") for i in range(12)]
+        idx = self.index.LazySchemaIndex(tiny)
+        self.assertGreaterEqual(len(tiny), self.index.MIN_TOOLS_TO_BOTHER)
+        self.assertLess(idx._chars_saved(), self.index.MIN_CHARS_SAVED)
+        self.assertFalse(idx.applicable)
+        self.assertEqual(idx.visible(), tiny)
+
+    def test_a_large_schema_set_clears_the_character_floor(self):
+        self.switch(True)
+        idx = self.index.LazySchemaIndex(self.many())
+        self.assertGreaterEqual(idx._chars_saved(), self.index.MIN_CHARS_SAVED)
+        self.assertTrue(idx.applicable)
 
     def test_when_on_with_enough_tools_it_engages(self):
         self.switch(True)
@@ -152,6 +191,18 @@ class VisibilityTests(IndexBase):
         for name in [s["function"]["name"] for s in self.idx.all]:
             self.idx.reveal(name)
         self.assertNotIn(self.index.TOOL_NAME, self.names())
+
+    def test_the_visible_set_only_ever_grows(self):
+        """Revelation lowers the remaining saving, which can drop the index below
+        the character floor and send everything. That is fine -- but only because
+        it is a superset. A tool must never disappear between rounds.
+        """
+        seen: set[str] = set(self.names())
+        for name in [s["function"]["name"] for s in self.idx.all]:
+            self.idx.reveal(name)
+            now = set(self.names()) - {self.index.TOOL_NAME}
+            self.assertTrue((seen - {self.index.TOOL_NAME}) <= now, name)
+            seen = now
 
     def test_revealing_is_sticky(self):
         self.assertNotIn("extra_3", self.names())
@@ -216,10 +267,12 @@ class ExecutorTests(IndexBase):
         )
 
     def test_off_means_identical_behaviour_to_before_the_feature(self):
+        self.switch(False)
         executor = self.executor()
         self.assertEqual(executor.schemas, executor.all_schemas)
 
     def test_on_reduces_what_is_sent(self):
+        self.switch(False)
         full = len(json.dumps(self.executor().schemas))
         self.switch(True)
         lazy = len(json.dumps(self.executor().schemas))
@@ -245,6 +298,7 @@ class ExecutorTests(IndexBase):
         self.assertIn("system_env", [s["function"]["name"] for s in executor.schemas])
 
     def test_tool_search_when_disabled_says_so_instead_of_failing_silently(self):
+        self.switch(False)
         executor = self.executor()
         self.assertTrue(executor.schemas)  # also builds the index
         result = executor.run("tool_search", {"query": "anything"})
@@ -262,10 +316,16 @@ class ExecutorTests(IndexBase):
         self.assertIn("No tool matched", result)
         self.assertIn("disabled", executor.run("system_env", {}))
 
-    def test_a_safe_profile_tool_cannot_be_revealed_beyond_its_profile(self):
-        """Hiding is presentation only; the profile boundary still decides."""
+    def test_a_tool_outside_the_profile_cannot_be_revealed_into_it(self):
+        """Hiding is presentation only; the profile boundary still decides.
+
+        Uses `workspace` rather than `safe` so lazy loading is actually engaged
+        (the `safe` profile stays below the characters-saved floor) -- otherwise
+        this would pass for the wrong reason.
+        """
         self.switch(True)
-        executor = self.executor("safe")
+        executor = self.executor("workspace")
+        self.assertTrue(executor._index().applicable)
         result = executor.run("tool_search", {"query": "run_shell"})
         # A loose query may still surface some other tool, which is harmless --
         # what matters is that run_shell itself is neither offered nor callable.

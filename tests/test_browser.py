@@ -512,15 +512,17 @@ class ToolRoutingTests(BrowserBase):
         self.assertIn("it exploded", result)
 
     def test_the_tool_is_advertised_only_to_operator_profiles(self):
-        full = [s["function"]["name"] for s in self.executor("full").schemas]
-        safe = [s["function"]["name"] for s in self.executor("safe").schemas]
+        # all_schemas, not schemas: profile membership is the question here, and
+        # `schemas` may legitimately withhold a tool's detail behind tool_search.
+        full = [s["function"]["name"] for s in self.executor("full").all_schemas]
+        safe = [s["function"]["name"] for s in self.executor("safe").all_schemas]
         self.assertIn("browser", full)
         self.assertNotIn("browser", safe)
 
     def test_one_tool_covers_every_action(self):
         """Separate browser_* tools would each cost schema on every request."""
         schema = next(
-            s for s in self.executor().schemas if s["function"]["name"] == "browser"
+            s for s in self.executor().all_schemas if s["function"]["name"] == "browser"
         )
         self.assertEqual(schema["function"]["parameters"]["required"], ["action"])
 

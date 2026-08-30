@@ -7,6 +7,7 @@ import io
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -14,6 +15,12 @@ from unittest import mock
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
+
+# Read from pyproject rather than importing the package: the banner assertions
+# must fail if the wheel version and the package version ever drift apart, and
+# importing zeline would just compare it against itself.
+with (SOURCE_ROOT / "pyproject.toml").open("rb") as _handle:
+    PACKAGE_VERSION = tomllib.load(_handle)["project"]["version"]
 
 
 def fresh_cli(home: Path):
@@ -522,7 +529,7 @@ class ZelineCliTests(unittest.TestCase):
         text = output.getvalue()
         # Boxed identity: title + subtitle inside one frame, no ANSI in plain mode.
         self.assertIn("Z  E  L  I  N  E", text)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.5", text)
+        self.assertIn(f"AGENTIC AI BY ZEROLINEAR • v{PACKAGE_VERSION}", text)
         self.assertIn("╭", text)
         self.assertIn("╰", text)
         self.assertNotIn("\x1b[", text)
@@ -544,7 +551,7 @@ class ZelineCliTests(unittest.TestCase):
         self.assertEqual(parser.prog, "zeline")
         result = self.invoke(["status"], expected_status=1)
         self.assertIn("Z  E  L  I  N  E", result)
-        self.assertIn("AGENTIC AI BY ZEROLINEAR • v0.2.5", result)
+        self.assertIn(f"AGENTIC AI BY ZEROLINEAR • v{PACKAGE_VERSION}", result)
         self.assertIn("ZEROLINEAR", result)
 
 
