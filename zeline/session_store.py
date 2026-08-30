@@ -111,6 +111,35 @@ class SessionPersistence:
             cur = conn.execute("DELETE FROM sessions WHERE key = ?", (_key(identity),))
             return cur.rowcount > 0
 
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """Inventory of stored sessions for `zeline session list`.
+
+        Identities are hashed, so the raw identity cannot be recovered here --
+        that is deliberate. We report the hash prefix, title, message count and
+        timestamp, which is enough to see what exists without leaking chat IDs.
+        """
+        try:
+            with self._lock, closing(self._connect()) as conn, conn:
+                rows = conn.execute(
+                    "SELECT key, title, messages, updated_at FROM sessions "
+                    "ORDER BY updated_at DESC"
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        out: list[dict[str, Any]] = []
+        for key, title, payload, updated_at in rows:
+            try:
+                count = len(json.loads(payload))
+            except (json.JSONDecodeError, TypeError):
+                count = 0
+            out.append({
+                "key": str(key)[:12],
+                "title": title or "",
+                "messages": count,
+                "updated_at": float(updated_at or 0.0),
+            })
+        return out
+
     # ------------------------------------------------------------------
     # Archive: transkrip percakapan permanen (tidak dihapus /new atau trim).
     #
