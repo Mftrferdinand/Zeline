@@ -449,6 +449,13 @@ def _defaults() -> dict[str, Any]:
             "restart_drain_timeout": DEFAULT_RESTART_DRAIN_TIMEOUT,
             # Detik menunggu jawaban ask_user sebelum agent lanjut dengan asumsi.
             "ask_user_timeout": DEFAULT_ASK_USER_TIMEOUT,
+            # Catat token usage dari provider ke ~/.zeline/usage.db untuk
+            # `zeline stats`. Hanya angka token; tidak ada isi percakapan.
+            "usage_tracking": True,
+            # Harga per 1.000.000 token, diisi operator sendiri:
+            #   {"gpt-4o": {"input": 2.5, "output": 10.0}}
+            # Kosong = laporan hanya menampilkan token, TANPA menebak biaya.
+            "model_prices": {},
             # Streaming respons (SSE) supaya token mengalir seketika: anti-timeout
             # pada model 'thinking' yang lama menyusun jawaban, dan terasa satset
             # persis seperti Zeline. Matikan hanya bila provider tak
@@ -618,6 +625,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
+    global USAGE_TRACKING, MODEL_PRICES
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -658,6 +666,9 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     raw_formatters = cfg.get("tools", {}).get("formatters", {})
     FORMATTERS = dict(raw_formatters) if isinstance(raw_formatters, dict) else {}
     PROJECT_RULES = bool(cfg.get("tools", {}).get("project_rules", True))
+    USAGE_TRACKING = bool(cfg.get("agent", {}).get("usage_tracking", True))
+    raw_prices = cfg.get("agent", {}).get("model_prices", {})
+    MODEL_PRICES = dict(raw_prices) if isinstance(raw_prices, dict) else {}
     DISABLED_TOOLS = frozenset(str(name) for name in cfg.get("tools", {}).get("disabled", []))
     MAX_SUBAGENT_DEPTH = int(cfg.get("tools", {}).get("max_subagent_depth", DEFAULT_MAX_SUBAGENT_DEPTH))
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})

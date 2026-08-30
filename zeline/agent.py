@@ -5,6 +5,7 @@ Jadi Telegram user A tidak pernah berbagi history atau memory dengan user B.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import re
@@ -18,6 +19,7 @@ from zeline import __version__, config
 from zeline import skills
 from zeline.tools import ToolExecutor
 from zeline import project_rules
+from zeline import usage_stats
 
 
 class ZelineError(RuntimeError):
@@ -250,12 +252,18 @@ class Zeline:
                         + "\n</trusted_runtime_skill>"
                     )
                     break
+        streaming = bool(getattr(config, "STREAM_RESPONSES", True))
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": outbound_messages,
             "temperature": 0.7,
-            "stream": bool(getattr(config, "STREAM_RESPONSES", True)),
+            "stream": streaming,
         }
+        if streaming:
+            # Without this a streamed response reports no token usage at all.
+            # Relays that don't understand it ignore the field; those that do
+            # append a final usage-only chunk. Purely additive either way.
+            payload["stream_options"] = {"include_usage": True}
         if use_tools:
             payload["tools"] = self.executor.schemas
             payload["tool_choice"] = "auto"
@@ -366,6 +374,9 @@ class Zeline:
             return self._consume_openai_stream(response, on_stream_delta)
 
         parsed = _parse_response(response.text)
+        # Record token usage before shaping the message: the `usage` block lives
+        # on the envelope, not the message, and is dropped a few lines below.
+        self._record_usage(parsed)
 
         if self.protocol == "anthropic":
             text_parts: list[str] = []
@@ -390,6 +401,26 @@ class Zeline:
             raise ZelineError("Provider returned an invalid message.")
         return message
 
+    def _record_usage(self, payload: Any) -> None:
+        """Log provider token usage. Best-effort: never let stats break a turn."""
+        # A lost statistic must never cost the user their answer, so every
+        # failure here is swallowed deliberately.
+        with contextlib.suppress(Exception):
+            prompt_tokens, completion_tokens = usage_stats.extract_usage(payload, self.protocol)
+            if prompt_tokens or completion_tokens:
+                self._usage_store().record(
+                    self.model, prompt_tokens, completion_tokens, self.identity
+                )
+
+    def _usage_store(self):
+        # Created lazily and cached per agent: opening SQLite for a session that
+        # never talks to a provider would be wasted work.
+        store = getattr(self, "_usage_store_cache", None)
+        if store is None:
+            store = usage_stats.UsageStore()
+            self._usage_store_cache = store
+        return store
+
     def _consume_openai_stream(
         self,
         response: "requests.Response",
@@ -405,6 +436,7 @@ class Zeline:
         content_parts: list[str] = []
         # tool_calls dirakit per index; argumen string di-append bertahap.
         tool_map: dict[int, dict[str, Any]] = {}
+        usage_chunk: dict[str, Any] | None = None
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
@@ -427,6 +459,11 @@ class Zeline:
                     error = chunk["error"]
                     detail = error.get("message") if isinstance(error, dict) else str(error)
                     raise ZelineError(f"Provider rejected the request: {str(detail)[:300]}")
+                # Providers that honour stream_options.include_usage send a final
+                # chunk carrying usage and NO choices — capture it before the
+                # `not choices` guard below skips that chunk entirely.
+                if isinstance(chunk, dict) and chunk.get("usage"):
+                    usage_chunk = chunk
                 choices = chunk.get("choices") if isinstance(chunk, dict) else None
                 if not choices:
                     continue
@@ -456,6 +493,8 @@ class Zeline:
         finally:
             response.close()
 
+        if usage_chunk is not None:
+            self._record_usage(usage_chunk)
         message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
         if tool_map:
             message["tool_calls"] = [tool_map[index] for index in sorted(tool_map)]
@@ -475,6 +514,10 @@ class Zeline:
         text_parts: list[str] = []
         # index blok -> {id, name, json}
         blocks: dict[int, dict[str, Any]] = {}
+        # Anthropic splits usage across two events: message_start carries
+        # input_tokens, message_delta carries the running output_tokens.
+        stream_input_tokens = 0
+        stream_output_tokens = 0
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
@@ -519,6 +562,21 @@ class Zeline:
                                 pass
                     elif dtype == "input_json_delta" and index in blocks:
                         blocks[index]["json"] += str(delta.get("partial_json", ""))
+                elif etype == "message_start":
+                    started = event.get("message") or {}
+                    usage = started.get("usage") if isinstance(started, dict) else None
+                    if isinstance(usage, dict):
+                        try:
+                            stream_input_tokens = max(0, int(usage.get("input_tokens", 0) or 0))
+                        except (TypeError, ValueError):
+                            stream_input_tokens = 0
+                elif etype == "message_delta":
+                    usage = event.get("usage")
+                    if isinstance(usage, dict):
+                        try:
+                            stream_output_tokens = max(0, int(usage.get("output_tokens", 0) or 0))
+                        except (TypeError, ValueError):
+                            pass
                 elif etype == "message_stop":
                     break
         except (requests.exceptions.RequestException,) as exc:
@@ -528,6 +586,13 @@ class Zeline:
         finally:
             response.close()
 
+        if stream_input_tokens or stream_output_tokens:
+            self._record_usage({
+                "usage": {
+                    "input_tokens": stream_input_tokens,
+                    "output_tokens": stream_output_tokens,
+                }
+            })
         message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
         tool_calls: list[dict[str, Any]] = []
         for index in sorted(blocks):
