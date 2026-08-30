@@ -149,6 +149,53 @@ class GatewayServiceTests(unittest.TestCase):
         self.assertFalse(ready)
         self.assertTrue(any("could not be verified" in line for line in lines))
 
+    def test_wait_until_connected_accepts_an_http_gateway_that_is_listening(self):
+        """An HTTP adapter never prints "connected via polling".
+
+        The webhook/app gateways bind a socket and print "listening http://…".
+        Watching only for the poller marker made those sit out the whole timeout
+        and get reported as "still connecting" while they were already serving.
+        """
+        self.config.ensure_data_dirs()
+        cfg = self.config.config_copy()
+        cfg["gateways"]["webhook"].update({"enabled": True, "token": "t" * 20})
+        self.config.save_config(cfg)
+        self.service.LOG_FILE.write_text("", encoding="utf-8")
+        self.config.PID_FILE.write_text(
+            json.dumps({"pid": 4242, "start_ticks": "1", "only": ["webhook"], "log_offset": 0}),
+            encoding="utf-8",
+        )
+        with self.service.LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write("  [webhook] listening http://127.0.0.1:8081 (/health, /message)\n")
+        with mock.patch.object(self.service, "_process_matches_state", return_value=True):
+            ready, lines = self.service.wait_until_connected(timeout=2.0)
+        self.assertTrue(ready, msg=f"expected connected, got {lines}")
+        self.assertEqual(lines, ["webhook: connected"])
+
+    def test_wait_until_connected_matches_a_hyphenated_log_tag(self):
+        """The config key may be snake_case while the log tag is hyphenated.
+
+        zeline_app prints "[zeline-app] listening http://…". Matching the raw
+        config key alone missed it, so a healthy gateway timed out.
+        """
+        self.config.ensure_data_dirs()
+        cfg = self.config.config_copy()
+        cfg.setdefault("gateways", {})["zeline_app"] = {
+            "enabled": True, "token": "z" * 40, "host": "127.0.0.1", "port": 8082,
+        }
+        self.config.save_config(cfg)
+        self.service.LOG_FILE.write_text("", encoding="utf-8")
+        self.config.PID_FILE.write_text(
+            json.dumps({"pid": 4242, "start_ticks": "1", "only": ["zeline_app"], "log_offset": 0}),
+            encoding="utf-8",
+        )
+        with self.service.LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write("  [zeline-app] listening http://127.0.0.1:8082/api/v1 (real agent runtime)\n")
+        with mock.patch.object(self.service, "_process_matches_state", return_value=True):
+            ready, lines = self.service.wait_until_connected(timeout=2.0)
+        self.assertTrue(ready, msg=f"expected connected, got {lines}")
+        self.assertEqual(lines, ["zeline_app: connected"])
+
     def test_start_records_log_offset_for_readiness_watch(self):
         cfg = self.config.config_copy()
         cfg["gateways"]["telegram"].update({"enabled": True, "token": "123:abc"})

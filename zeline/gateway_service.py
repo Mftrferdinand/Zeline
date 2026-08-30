@@ -689,13 +689,30 @@ def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, s
     return False, f"{message} Log: {LOG_FILE}"
 
 
+READY_MARKERS = ("connected via polling", "listening http://")
+
+
+def _log_tags(name: str) -> tuple[str, ...]:
+    """Log tags an adapter may print for gateway ``name``.
+
+    Adapters are free to prefer a hyphen in their human-facing tag
+    (``[zeline-app]``) over the config key (``zeline_app``), so match both or a
+    readiness line is missed and start waits out the whole timeout.
+    """
+    variants = {name, name.replace("_", "-"), name.replace("-", "_")}
+    return tuple(f"[{variant}]" for variant in sorted(variants))
+
+
 def wait_until_connected(timeout: float = 90.0) -> tuple[bool, list[str]]:
-    """Watch the gateway log until each enabled platform reports 'connected',
+    """Watch the gateway log until each enabled platform reports readiness,
     or a fatal error / timeout. Returns (all_ready, status_lines).
 
-    The child process prints '[telegram] @<bot> connected via polling' once it
-    finishes getMe + setMyCommands. We tail the log for those markers so
-    `zeline gateway start` can confirm real readiness instead of just 'spawned'.
+    Readiness looks different per transport: a poller prints
+    '[telegram] @<bot> connected via polling' after getMe + setMyCommands, while
+    an HTTP adapter prints '[webhook] listening http://…' once its socket is
+    bound. Both count, so `zeline gateway start` can confirm real readiness
+    instead of just 'spawned' — and an HTTP-only gateway does not sit out the
+    full timeout and get reported as failed while it is already serving.
 
     Only reads log written by THIS child (from `log_offset` recorded at spawn).
     Reading the whole file made an old fatal line from a previous start get
@@ -730,9 +747,11 @@ def wait_until_connected(timeout: float = 90.0) -> tuple[bool, list[str]]:
             text = ""
         for line in text.splitlines():
             for name in expected:
-                if f"[{name}]" in line and "connected via polling" in line:
+                if not any(tag in line for tag in _log_tags(name)):
+                    continue
+                if any(marker in line for marker in READY_MARKERS):
                     connected[name] = True
-                if f"[{name}]" in line and (("could not be verified" in line) or ("not started" in line)):
+                if ("could not be verified" in line) or ("not started" in line):
                     fatal.append(line.strip())
         # Terhubung menang atas baris fatal: kalau child akhirnya connect,
         # kegagalan verifikasi sebelumnya hanyalah percobaan yang sudah pulih.
