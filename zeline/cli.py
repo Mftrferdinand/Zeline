@@ -1567,6 +1567,66 @@ def cmd_undo(
     return 0 if ok else 1
 
 
+def cmd_customtools(action: str = "list", *, name: str | None = None) -> int:
+    """Inspect the operator's own tool files, or scaffold the first one."""
+    from zeline import custom_tools
+
+    if not custom_tools.enabled():
+        print("Custom tools are disabled (tools.custom_tools = false).")
+        return 0
+
+    directory = custom_tools.tools_dir()
+
+    if action == "init":
+        target = custom_tools.ensure_dir() / (name or "my_tools.py")
+        if target.exists():
+            print(f"{target} already exists — not overwriting it.")
+            return 1
+        target.write_text(custom_tools.TEMPLATE, encoding="utf-8")
+        print(f"Created {target}")
+        print("  Every public function in it becomes a tool named custom_<function>.")
+        print("  Check what loaded with: zeline tools custom")
+        return 0
+
+    if action == "path":
+        print(custom_tools.ensure_dir())
+        return 0
+
+    tools, errors = custom_tools.discover()
+    if not directory.is_dir():
+        print(f"No custom tools directory yet: {directory}")
+        print("  Create one with a starter file: zeline tools custom-init")
+        return 0
+
+    if tools:
+        print(f"{len(tools)} custom tool(s) from {directory}:")
+        for tool in tools:
+            required = tool.parameters.get("required", [])
+            params = ", ".join(
+                f"{key}{'' if key in required else '?'}"
+                for key in tool.parameters.get("properties", {})
+            )
+            print(f"  {tool.name}({params})")
+            print(f"    {tool.description}")
+            print(f"    from {tool.source.name}")
+    else:
+        print(f"No custom tools loaded from {directory}")
+        print("  Add a .py file with public functions, or run: zeline tools custom-init")
+
+    if errors:
+        print()
+        # Reported, never fatal: the other files loaded fine and the agent runs.
+        print(f"{len(errors)} file(s) or function(s) could not be loaded:")
+        for problem in errors:
+            print(f"  {problem}")
+        print("  These are skipped; the tools listed above still work.")
+
+    print()
+    print("  Custom tools load only for the workspace and full profiles, because")
+    print("  they run arbitrary local Python. A public gateway never sees them.")
+    return 0
+
+
 def _native_tool_names() -> list[str]:
     from zeline.tools import TOOL_DEFS
 
@@ -1786,6 +1846,10 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("tool", choices=_native_tool_names())
     tools_workspace = tools_sub.add_parser("workspace", help="set the owner workspace root")
     tools_workspace.add_argument("path")
+    tools_sub.add_parser("custom", help="list the operator's own tool files in ~/.zeline/tools/")
+    tools_custom_init = tools_sub.add_parser("custom-init", help="create a starter custom tool file")
+    tools_custom_init.add_argument("name", nargs="?", help="file name (default: my_tools.py)")
+    tools_sub.add_parser("custom-path", help="print the custom tools directory")
 
     for alias, alias_help in (
         ("start", "alias: start enabled gateways"),
@@ -1944,6 +2008,11 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_memory()
     if command == "tools":
         action = namespace.tools_command or "list"
+        if action in {"custom", "custom-init", "custom-path"}:
+            return cmd_customtools(
+                {"custom": "list", "custom-init": "init", "custom-path": "path"}[action],
+                name=getattr(namespace, "name", None),
+            )
         value = (
             getattr(namespace, "profile", None)
             or getattr(namespace, "tool", None)

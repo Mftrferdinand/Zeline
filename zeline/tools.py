@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html as _html
 import base64
+import contextlib
 import ipaddress
 import itertools
 import json
@@ -38,7 +39,7 @@ from zeline import memory
 from zeline import skills
 from zeline import network_routes
 from zeline import interaction
-from zeline import checkpoints, formatters
+from zeline import checkpoints, custom_tools, formatters
 from zeline import mcp as mcp_module
 from zeline import _winproc
 
@@ -1773,6 +1774,15 @@ class ToolExecutor:
                 self.mcp = mcp_module.MCPRegistry.from_config({"mcp": {"servers": config.MCP_SERVERS}})
             except Exception:
                 self.mcp = None
+        # Operator-supplied Python files in ~/.zeline/tools/. Same reasoning as
+        # MCP stdio: arbitrary local code, so never exposed to a public gateway.
+        # Construction is guarded because a broken tools directory must not stop
+        # the agent from starting with its native tools.
+        self.custom: custom_tools.CustomToolRegistry | None = None
+        with contextlib.suppress(Exception):
+            registry = custom_tools.CustomToolRegistry(profile)
+            if registry.tools or registry.errors:
+                self.custom = registry
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
@@ -1897,9 +1907,19 @@ class ToolExecutor:
                 native.extend(self.mcp.schemas())
             except Exception:
                 pass
+        if self.custom is not None:
+            # A schema failure must not blank the native tool list with it.
+            with contextlib.suppress(Exception):
+                native.extend(self.custom.schemas())
         return native
 
     def run(self, name: str, args: dict[str, Any]) -> str:
+        # Custom tools are checked first, but only ever match the custom_ prefix,
+        # so a file can never shadow a native tool.
+        if name.startswith(custom_tools.TOOL_PREFIX):
+            if self.custom is None or not self.custom.has_tool(name):
+                return f"ERROR: custom tool '{name}' is not registered."
+            return self.custom.call(name, args)
         # Tool MCP di-dispatch ke registry (hanya untuk profile workspace/full).
         if self.mcp is not None and name.startswith(mcp_module.MCP_TOOL_PREFIX):
             if not self.mcp.has_tool(name):
