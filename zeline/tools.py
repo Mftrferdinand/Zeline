@@ -38,7 +38,7 @@ from zeline import memory
 from zeline import skills
 from zeline import network_routes
 from zeline import interaction
-from zeline import formatters
+from zeline import checkpoints, formatters
 from zeline import mcp as mcp_module
 from zeline import _winproc
 
@@ -111,6 +111,9 @@ def _write_file(path: str, content: str, workspace: Path) -> str:
             return "ERROR write file: content too large (maximum 200,000 characters)."
         target = _resolve_workspace_path(path, workspace)
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Snapshot the previous bytes BEFORE they are gone. Best-effort by
+        # design: a failed snapshot must never block the write it protects.
+        checkpoints.snapshot(target, reason="write_file")
         target.write_text(content, encoding="utf-8")
         # Format AFTER the write is durable, and in its OWN try/except: a bug in
         # the formatting layer must not be reported as a failed write, or the
@@ -138,6 +141,9 @@ def _edit_file(path: str, old_text: str, new_text: str, workspace: Path) -> str:
                     " read_file it again and copy old_text from the current content."
                 )
             return f"ERROR edit file: old_text must be unique (found {count}).{hint}"
+        # Snapshot only once the edit is known to be applicable, so a rejected
+        # edit does not fill the store with identical copies.
+        checkpoints.snapshot(target, reason="edit_file")
         target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
         return f"OK, {target} edited.{_format_note(target)}"
     except Exception as exc:
