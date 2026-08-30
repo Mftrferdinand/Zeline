@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
-import tomllib
 import unittest
 import os
 import re
@@ -21,10 +20,16 @@ class ReleaseVersionContractTests(unittest.TestCase):
 
         Without this, RELEASE_VERSION could lag behind pyproject.toml and every
         other assertion in this file would keep passing while checking the wrong
-        version.
+        version. Parsed with a regex rather than tomllib, which only exists from
+        3.11 while this package supports 3.10.
         """
-        with (ROOT / "pyproject.toml").open("rb") as handle:
-            self.assertEqual(tomllib.load(handle)["project"]["version"], RELEASE_VERSION)
+        found = re.search(
+            r'^version = "([^"]+)"',
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(found)
+        self.assertEqual(found.group(1), RELEASE_VERSION)
 
     def test_runtime_soul_is_declared_as_package_data(self):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

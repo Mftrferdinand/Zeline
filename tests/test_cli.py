@@ -6,8 +6,8 @@ import importlib
 import io
 import os
 import sys
+import re
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,9 +18,13 @@ if str(SOURCE_ROOT) not in sys.path:
 
 # Read from pyproject rather than importing the package: the banner assertions
 # must fail if the wheel version and the package version ever drift apart, and
-# importing zeline would just compare it against itself.
-with (SOURCE_ROOT / "pyproject.toml").open("rb") as _handle:
-    PACKAGE_VERSION = tomllib.load(_handle)["project"]["version"]
+# importing zeline would just compare it against itself. Parsed with a regex
+# because tomllib only exists from 3.11 and this package supports 3.10.
+PACKAGE_VERSION = re.search(
+    r'^version = "([^"]+)"',
+    (SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+    re.MULTILINE,
+).group(1)
 
 
 def fresh_cli(home: Path):
