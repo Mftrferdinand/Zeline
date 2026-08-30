@@ -297,16 +297,41 @@ class InstallationPageTests(unittest.TestCase):
         for page in pages:
             text = page.read_text(encoding="utf-8")
             with self.subTest(page=page.name):
+                # Never fetch the installer from a moving branch, and never pipe
+                # a download straight into a shell.
                 self.assertNotIn("raw.githubusercontent.com/Mftrferdinand/Zeline/main/install", text)
                 self.assertNotIn("| bash", text)
                 self.assertNotIn("| iex", text.lower())
-                self.assertIn(RELEASE_TAG, text)
-                self.assertIn("SHA256SUMS", text)
-                self.assertNotIn("assert actual == expected", text)
-                self.assertIn("raise SystemExit", text)
-                if "powershell" in text.casefold():
-                    self.assertIn("-notmatch '^[0-9a-f]{64}$'", text)
-        self.assertIn("SHA256SUMS", (ROOT / "docs" / "installation.md").read_text(encoding="utf-8"))
+                # Always an immutable tag asset, fetched over pinned HTTPS.
+                self.assertIn(f"releases/download/{RELEASE_TAG}/install", text)
+                self.assertIn("--proto '=https' --tlsv1.2", text)
+
+    def test_install_docs_do_not_ask_the_reader_to_verify_by_hand(self):
+        """A pasted checksum block for install.sh proved nothing.
+
+        It compared the installer against a manifest fetched over the same
+        connection from the same release, so whoever could tamper with one could
+        tamper with both -- at a cost of ~15 lines in every install snippet. The
+        installer verifies the wheel itself, and provenance is the check that
+        actually carries an independent signature.
+        """
+        for page in (ROOT / "README.md", ROOT / "docs" / "installation.md",
+                     ROOT / "docs" / "README.id.md", ROOT / "docs" / "README.zh.md"):
+            text = page.read_text(encoding="utf-8")
+            with self.subTest(page=page.name):
+                self.assertNotIn("install.sh checksum mismatch", text)
+                self.assertNotIn("hashlib.sha256", text)
+                self.assertIn("gh attestation verify", text)
+
+    def test_the_installers_still_verify_the_wheel_themselves(self):
+        """Dropping the manual step must not drop the real check."""
+        posix = (ROOT / "install.sh").read_text(encoding="utf-8")
+        windows = (ROOT / "install.ps1").read_text(encoding="utf-8")
+        self.assertIn("SHA256SUMS", posix)
+        self.assertIn("SHA-256 verification failed", posix)
+        self.assertIn("Refusing non-HTTPS download", posix)
+        self.assertIn("SHA256SUMS", windows)
+        self.assertIn("Get-FileHash -Algorithm SHA256", windows)
 
     def test_checkout_docs_require_explicit_source_mode(self):
         page = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")

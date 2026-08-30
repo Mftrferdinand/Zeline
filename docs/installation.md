@@ -24,37 +24,36 @@ installer avoids PEP 668 conflicts on current Linux and macOS releases.
 | Windows PowerShell | Yes | Yes | Built-in HTTP tools; browser MCP supported |
 
 **Requirements:** Python 3.10+. Git is only needed for checkout installs;
-WhatsApp also needs Node.js 18+ and npm. Release installers and packages are
-immutable tag assets. Verify them against `SHA256SUMS` before execution:
+WhatsApp also needs Node.js 18+ and npm.
+
+One line on every POSIX platform — Termux, Linux, macOS, and iSH:
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(x.split()[0] for x in lines if x.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 ```
 
-The verifier above uses Python standard-library SHA-256 on every POSIX OS.
-Windows uses `Get-FileHash -Algorithm SHA256`; the verified installer then verifies the
-versioned wheel again before installing it. The GitHub release also carries
-build-provenance attestations for the wheel, source archive, installers, and
-checksum manifest.
-If GitHub CLI is installed, independently verify that provenance with:
+Then `zeline setup`.
+
+### Why there is no checksum step to copy
+
+Release assets are immutable tag assets, and the installer verifies the versioned
+wheel against `SHA256SUMS` itself — refusing to install on a mismatch, a
+malformed digest, a missing entry, or a non-HTTPS URL. Pasting a hand-written
+SHA-256 check for `install.sh` added nothing: it compared the installer against a
+manifest fetched over the same connection from the same release, so anyone able
+to tamper with one could tamper with both. It cost every reader fifteen lines and
+bought no security.
+
+What *does* add a separate guarantee is build provenance, which is signed by
+GitHub rather than served alongside the file. If you want that assurance, verify
+it with GitHub CLI before running the installer:
 
 ```bash
-gh attestation verify zeline-0.2.6-py3-none-any.whl --repo Mftrferdinand/Zeline
+gh attestation verify install.sh --repo Mftrferdinand/Zeline
 ```
+
+Attestations cover the wheel, source archive, both installers, and the checksum
+manifest.
 
 ## Termux
 
@@ -63,21 +62,7 @@ Install Termux from F-Droid or GitHub (the Play Store build is obsolete), then:
 ```bash
 pkg update -y
 pkg install python curl -y
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(x.split()[0] for x in lines if x.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -95,21 +80,7 @@ Debian / Ubuntu:
 ```bash
 sudo apt update
 sudo apt install python3 python3-venv curl -y
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(x.split()[0] for x in lines if x.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -117,21 +88,7 @@ Fedora:
 
 ```bash
 sudo dnf install python3 curl -y
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(x.split()[0] for x in lines if x.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -139,21 +96,7 @@ Arch Linux:
 
 ```bash
 sudo pacman -S --needed python curl
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(x.split()[0] for x in lines if x.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -166,21 +109,7 @@ Install Apple command-line tools and Homebrew Python if needed:
 ```bash
 xcode-select --install
 brew install python
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(x.split()[0] for x in lines if x.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -196,21 +125,7 @@ Use [iSH](https://ish.app/), an Alpine Linux shell for iOS/iPadOS:
 ```sh
 apk update
 apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(x.split()[0] for x in lines if x.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -225,15 +140,12 @@ Open **PowerShell** or **Windows Terminal**, not Command Prompt. Administrator
 rights are not required:
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6'
-Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
-Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
-$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
-if (-not $expected -or $expected -notmatch '^[0-9a-f]{64}$') { throw 'invalid install.ps1 checksum entry' }
-if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
-.\install.ps1
-zeline setup
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
+
+Then `zeline setup`. `install.ps1` verifies the versioned wheel with
+`Get-FileHash -Algorithm SHA256` against `SHA256SUMS` before installing it, and
+rejects a malformed digest with `-notmatch '^[0-9a-f]{64}$'`.
 
 If `python` opens Microsoft Store, install Python 3.10+ from
 [python.org](https://www.python.org/downloads/windows/) and tick **Add

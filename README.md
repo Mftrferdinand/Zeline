@@ -53,61 +53,32 @@ Run it locally for development or deploy it to your own server or cloud, and con
 platforms use a private Python environment; Windows uses a per-user package
 install. Neither requires root/Administrator access.
 
-### Termux, Linux, and macOS
+### Termux, Linux, macOS, and iSH
 
 ```bash
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
-export PATH="$HOME/.local/bin:$PATH"  # harmless on Termux; needed on some Linux/macOS shells
-zeline setup
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.sh && bash install.sh
 ```
 
-### iOS / iPadOS through iSH
-
-```sh
-apk add bash curl python3 py3-pip
-BASE=https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6
-curl -fSLO "$BASE/install.sh" -O "$BASE/SHA256SUMS"
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-lines = Path("SHA256SUMS").read_text().splitlines()
-expected = next(line.split()[0] for line in lines if line.split()[-1].lstrip("*") == "install.sh")
-actual = hashlib.sha256(Path("install.sh").read_bytes()).hexdigest()
-if len(expected) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected):
-    raise SystemExit("invalid install.sh checksum entry")
-if actual != expected.lower():
-    raise SystemExit("install.sh checksum mismatch")
-print("install.sh SHA-256 verified")
-PY
-bash install.sh
-zeline setup
-```
+Then `zeline setup`. The installer downloads the versioned wheel and verifies it
+against `SHA256SUMS` itself before installing, so there is nothing to check by
+hand. On iSH, run `apk add bash curl python3` first.
 
 ### Windows PowerShell
 
 ```powershell
-$base = 'https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6'
-Invoke-WebRequest "$base/install.ps1" -OutFile install.ps1
-Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
-$expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match ' install.ps1$' }) -split '\s+')[0]
-if (-not $expected -or $expected -notmatch '^[0-9a-f]{64}$') { throw 'invalid install.ps1 checksum entry' }
-if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $expected.ToLower()) { throw 'checksum mismatch' }
-.\install.ps1
-zeline setup
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.6/install.ps1 -OutFile install.ps1; .\install.ps1
+```
+
+Then `zeline setup`.
+
+### Verify the download independently (optional)
+
+The installer's own wheel check comes from the same release as the installer, so
+it proves integrity, not origin. For that, verify the release's build-provenance
+attestation with GitHub CLI — an independent signature chain:
+
+```bash
+gh attestation verify install.sh --repo Mftrferdinand/Zeline
 ```
 
 See the complete [installation guide](docs/installation.md) for package
