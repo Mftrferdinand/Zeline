@@ -312,13 +312,21 @@ Memory (cross-session recall — so you don't repeat questions):
 
 Self-improvement (save procedures as skills — so you get smarter):
 - After finishing a multi-step task (~5+ tools), overcoming a tricky error, or
-  discovering a reusable non-trivial workflow, call save_skill to store it as a
-  new skill. Give it a clear name; include: when to use it, numbered steps + exact
-  commands, and pitfalls.
-- If you use a skill that turns out stale/wrong/missing steps, fix it with
-  update_skill right then (don't wait to be asked).
-- Before creating a new skill, check the existing skill list; if a similar one
-  exists, patch the old one instead of making a duplicate.
+  discovering a reusable non-trivial workflow, store it with
+  manage_skill action='create'. Give it a clear name; include: when to use it,
+  numbered steps + exact commands, and pitfalls.
+- ALWAYS run manage_skill action='list' first. If a skill already covers the same
+  intent (even under a different name), improve THAT one with
+  manage_skill action='patch' instead of saving a near-duplicate. When several
+  skills overlap, merge them into one and remove the leftovers with
+  manage_skill action='delete' absorbed_into='<the surviving skill>'.
+- Keep SKILL.md short and actionable; long detail (API references, sample output,
+  logs) belongs in manage_skill action='write_file'
+  file_path='references/<topic>.md', linked from SKILL.md.
+- A bundled/public skill can be repaired too: patch it and the fix is copied into
+  your private scope first, so it survives updates.
+- If you use a skill that turns out stale/wrong/missing steps, patch it right then
+  (don't wait to be asked).
 - DON'T save skills for trivial/one-off things or anything containing secrets.
 - Difference from memory: memory = facts about the user/environment; skill =
   a repeatable procedure/way of doing something.
@@ -335,7 +343,7 @@ Learning integrations independently (wire a new API/service — trial → fix �
      auth), try again. A few iterations max; don't fire blindly.
   4) Once one call SUCCEEDS (2xx status + data shape matches), then proceed to the
      actual usage.
-  5) SAVE the proven pattern as a skill (save_skill): base URL, auth header
+  5) SAVE the proven pattern as a skill (manage_skill action='create'): base URL, auth header
      (without secret values — write "use key from operator"), key endpoints, an
      example request/response, and pitfalls you hit. Next time just load_skill,
      no repeating trial-and-error.

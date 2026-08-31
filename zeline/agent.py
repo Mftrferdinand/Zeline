@@ -42,6 +42,13 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "deep_research",
 })
 
+# Putaran tool maksimum untuk ``reflect()``. Dulu 3, cukup untuk "simpan satu
+# file". Alur anti-duplikat sekarang butuh lebih: list → patch/create →
+# write_file(references/…) → delete(absorbed_into=…). Dengan 3 putaran refleksi
+# terpotong tepat sebelum penggabungan duplikat dijalankan, yaitu justru langkah
+# yang paling berharga.
+REFLECTION_TOOL_ROUNDS = 5
+
 _CAPTCHA_INTENT_RE = re.compile(
     r"(?:2\s*captcha|capsolver|captcha|turnstile|cloudflare\s+(?:challenge|block|captcha))",
     re.IGNORECASE,
@@ -955,7 +962,7 @@ class Zeline:
 
         Menyuruh model meninjau percakapan yang baru saja terjadi lalu, bila ada
         prosedur reusable / pelajaran nyata, MENYIMPAN atau MEMPERBAIKI skill via
-        tool save_skill/update_skill. Hanya dijalankan untuk sesi yang cukup
+        tool manage_skill. Hanya dijalankan untuk sesi yang cukup
         berbobot (>= ``min_tool_calls`` tool call) supaya obrolan ringan tidak
         memicu skill sampah. Mengembalikan ringkasan tindakan, atau None bila
         tidak ada yang perlu disimpan / sesi terlalu ringan.
@@ -975,10 +982,18 @@ class Zeline:
                     "Tinjau singkat percakapan barusan. "
                     "(A) Apakah ada prosedur reusable, alur kerja non-trivial, atau "
                     "error tricky yang berhasil diatasi dan layak jadi skill? "
-                    "- Kalau YA dan belum ada skill-nya: panggil save_skill (nama jelas, "
-                    "isi: kapan dipakai, langkah bernomor + command persis, pitfalls). "
-                    "- Kalau skill yang dipakai ternyata kurang/salah: panggil update_skill "
-                    "untuk memperbaikinya. "
+                    "Kalau YA, WAJIB mulai dengan manage_skill action='list' untuk "
+                    "melihat skill yang sudah ada — jangan menyimpan nama baru untuk "
+                    "pelajaran yang sudah punya skill. "
+                    "- Sudah ada skill yang seintent (walau namanya beda): pakai "
+                    "manage_skill action='patch' untuk memperkaya skill itu; kalau ada "
+                    "beberapa skill yang tumpang tindih, gabungkan ke satu lalu "
+                    "manage_skill action='delete' dengan absorbed_into='<skill induk>'. "
+                    "- Belum ada: manage_skill action='create' (isi: kapan dipakai, "
+                    "langkah bernomor + command persis, pitfalls). Detail panjang "
+                    "(referensi API, log, contoh output) taruh di file terpisah lewat "
+                    "manage_skill action='write_file' file_path='references/<topik>.md' "
+                    "lalu tunjuk dari SKILL.md — jangan menumpuk semua di satu file. "
                     "(B) Apakah user MENGOREKSI kamu berulang tentang hal yang sama "
                     "(mis. edit/revisi yang katanya 'masih sama/nggak berubah', font/warna/"
                     "layout yang harus lebih presisi, atau kamu menimpa file dgn versi lama)? "
@@ -993,7 +1008,7 @@ class Zeline:
         )
         actions: list[str] = []
         try:
-            for _ in range(3):  # maksimal beberapa langkah tool untuk refleksi
+            for _ in range(REFLECTION_TOOL_ROUNDS):
                 message = self._call_llm()
                 tool_calls = message.get("tool_calls")
                 if not tool_calls or not isinstance(tool_calls, list):
@@ -1011,7 +1026,14 @@ class Zeline:
                     except json.JSONDecodeError:
                         args = {}
                     result = self.executor.run(name, args)
-                    if name in {"save_skill", "update_skill"} and not result.startswith("ERROR"):
+                    # ``list`` hanya orientasi (cek duplikat) — bukan perubahan, jadi
+                    # tidak dilaporkan sebagai hasil self-improvement. Tanpa filter ini
+                    # inventaris skill akan ikut terkirim ke chat sebagai "Improvement".
+                    if (
+                        name == "manage_skill"
+                        and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}
+                        and not result.startswith("ERROR")
+                    ):
                         actions.append(result)
                     self.messages.append(
                         {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}

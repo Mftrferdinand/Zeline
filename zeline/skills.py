@@ -16,9 +16,11 @@ konservatif agar tidak ada prosedur lama yang tidak sengaja terekspos.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -29,6 +31,13 @@ PUBLIC_SKILLS_DIR = SKILLS_ROOT / "public"
 PRIVATE_SKILLS_DIR = SKILLS_ROOT / "private"
 MIGRATION_MARKER = SKILLS_ROOT / ".scope-migrated-v1"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# Skill berbentuk folder: satu entry point + subfolder pendukung yang boleh
+# ditulis agent. Daftar ini juga membatasi ``manage_skill`` supaya tidak ada
+# file liar di dalam direktori data.
+SKILL_ENTRY = "SKILL.md"
+SKILL_SUBDIRS = ("references", "templates", "scripts", "assets")
+MAX_SKILL_CHARS = 100_000
 
 # Named obsolete bundled skills. Delete only byte-identical seeded copies;
 # user-customized files with these names survive.
@@ -564,40 +573,288 @@ def load_skill(name: str, include_private: bool = False) -> str:
     return content
 
 
-def save_skill(name: str, content: str) -> str:
-    """Simpan skill pemilik di private scope. Hanya tool profile full memanggil ini."""
+def _describe(path: Path) -> str:
+    """Sebut artefak yang benar-benar ditulis, relatif ke root skill.
+
+    Pesan sukses lama berbunyi ``Patched SKILL.md`` untuk file flat
+    ``private/<name>.md``; teksnya meniru agent lain sedangkan artefaknya beda,
+    jadi operator tidak bisa memercayai laporan self-improvement.
+    """
+    try:
+        return path.relative_to(SKILLS_ROOT).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _safe_skill_relative(skill_dir: Path, relative: str) -> Path:
+    """Resolusi ``relative`` di dalam folder skill, dengan bukti containment.
+
+    Allowlist karakter saja hanya berargumen "nama ini terlihat wajar"; properti
+    yang sebenarnya dibutuhkan adalah "tidak ada file yang pernah dibuat di luar
+    folder skill". Jadi path digabung, dinormalisasi, lalu containment-nya
+    dibuktikan langsung.
+    """
+    cleaned = str(relative or "").strip().replace("\\", "/").lstrip("/")
+    parts = [segment for segment in cleaned.split("/") if segment not in ("", ".")]
+    if not parts:
+        raise ValueError("file_path kosong")
+    for segment in parts:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", segment):
+            raise ValueError(f"segmen file_path tidak valid: {segment!r}")
+    if len(parts) == 1:
+        if parts[0] != SKILL_ENTRY:
+            raise ValueError(f"file di root skill harus {SKILL_ENTRY}")
+    elif parts[0] not in SKILL_SUBDIRS:
+        raise ValueError("file pendukung harus di " + "/, ".join(SKILL_SUBDIRS) + "/")
+    target = skill_dir.joinpath(*parts)
+    base = skill_dir.resolve(strict=False)
+    resolved = target.resolve(strict=False)
+    if base != resolved and base not in resolved.parents:
+        raise ValueError("file_path keluar dari folder skill")
+    return target
+
+
+def _frontmatter(name: str, content: str, category: str = "") -> str:
+    """Pastikan skill punya frontmatter YAML (name/description/category).
+
+    Skill yang disimpan model sebelumnya hanya markdown bebas, sehingga daftar
+    skill di system prompt sering kehilangan deskripsi. ``_parse`` sudah membaca
+    frontmatter, jadi menuliskannya membuat katalog konsisten.
+    """
+    body = content.strip("\n")
+    if body.startswith("---"):
+        return body + "\n"
+    title, description = _parse(body)
+    lines = ["---", f"name: {name}"]
+    if description:
+        lines.append("description: " + description.replace("\n", " ").strip())
+    if category:
+        lines.append(f"category: {category}")
+    lines.append("---")
+    if not title:
+        lines.append("")
+        lines.append(f"# {name}")
+    return "\n".join(lines) + "\n\n" + body + "\n"
+
+
+def _private_skill_dir(name: str) -> Path:
+    return PRIVATE_SKILLS_DIR / name
+
+
+def _locate_unit(name: str) -> tuple[str, Path] | None:
+    """Cari unit skill persis bernama ``name``: ``(scope, path)``.
+
+    ``path`` adalah folder skill bila berbentuk folder, atau file ``.md`` bila
+    flat. Private diperiksa lebih dulu karena menimpa public dengan nama sama.
+    """
+    for scope, directory in (("private", PRIVATE_SKILLS_DIR), ("public", PUBLIC_SKILLS_DIR)):
+        folder = directory / name
+        if (folder / SKILL_ENTRY).is_file():
+            return scope, folder
+        flat = directory / f"{name}.md"
+        if flat.is_file():
+            return scope, flat
+    return None
+
+
+def _adopt_into_private(name: str) -> tuple[Path, str]:
+    """Siapkan folder skill private yang bisa ditulis; kembalikan (dir, catatan).
+
+    ``seed_skills()`` sengaja tidak menimpa, jadi memperbaiki skill bundled di
+    tempatnya akan hilang / bentrok pada update berikutnya. Karena itu skill
+    public di-copy-on-write ke private (yang berprioritas lebih tinggi di
+    ``_find_skill``) sebelum dipatch, dan skill private flat dipromosikan jadi
+    folder supaya bisa punya ``references/``.
+    """
+    target = _private_skill_dir(name)
+    located = _locate_unit(name)
+    if located is None:
+        target.mkdir(parents=True, exist_ok=True)
+        _chmod_private(target)
+        return target, "created"
+    scope, path = located
+    if scope == "private" and path.is_dir():
+        return path, ""
+    if scope == "private":  # flat private → promosikan jadi folder
+        body = path.read_text(encoding="utf-8", errors="replace")
+        target.mkdir(parents=True, exist_ok=True)
+        _chmod_private(target)
+        entry = target / SKILL_ENTRY
+        entry.write_text(_frontmatter(name, body), encoding="utf-8")
+        _chmod_private(entry, 0o600)
+        path.unlink()
+        return target, "promoted from a flat file"
+    # public → copy-on-write
+    if path.is_dir():
+        _copy_skill_tree(path, target)
+        return target, "copied from the bundled skill"
+    body = path.read_text(encoding="utf-8", errors="replace")
+    target.mkdir(parents=True, exist_ok=True)
+    _chmod_private(target)
+    entry = target / SKILL_ENTRY
+    entry.write_text(_frontmatter(name, body), encoding="utf-8")
+    _chmod_private(entry, 0o600)
+    return target, "copied from the bundled skill"
+
+
+def _create_skill(name: str, content: str, category: str) -> str:
+    if not content.strip():
+        return "ERROR skill: empty content."
+    if len(content) > MAX_SKILL_CHARS:
+        return f"ERROR skill: content too long (maximum {MAX_SKILL_CHARS:,} characters)."
+    if category and not re.fullmatch(r"[a-z0-9][a-z0-9/_-]{0,63}", category):
+        return "ERROR skill: category harus huruf kecil, angka, - _ atau /."
+    skill_dir = _private_skill_dir(name)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_private(skill_dir)
+    entry = skill_dir / SKILL_ENTRY
+    entry.write_text(_frontmatter(name, content, category), encoding="utf-8")
+    _chmod_private(entry, 0o600)
+    # Sebuah file flat dengan nama sama akan muncul sebagai unit kedua di
+    # ``_iter_skill_units`` (satu nama, dua entri katalog), jadi dibuang.
+    legacy = PRIVATE_SKILLS_DIR / f"{name}.md"
+    if legacy.is_file():
+        legacy.unlink()
+    return f"OK, skill '{name}' created at {_describe(entry)}."
+
+
+def _patch_skill(name: str, old_text: str, new_text: str, file_path: str) -> str:
+    if not old_text:
+        return "ERROR patch skill: old_text kosong."
+    skill_dir, note = _adopt_into_private(name)
+    if note == "created":
+        # Tidak ada yang bisa dipatch; jangan tinggalkan folder kosong.
+        with contextlib.suppress(OSError):
+            skill_dir.rmdir()
+        return f"ERROR: skill '{name}' not found."
+    try:
+        target = _safe_skill_relative(skill_dir, file_path or SKILL_ENTRY)
+    except ValueError as exc:
+        return f"ERROR patch skill: {exc}"
+    if not target.is_file():
+        return f"ERROR: {_describe(target)} not found in skill '{name}'."
+    content = target.read_text(encoding="utf-8", errors="replace")
+    count = content.count(old_text)
+    if count != 1:
+        return f"ERROR patch skill: old_text must be unique (found {count})."
+    target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+    _chmod_private(target, 0o600)
+    suffix = f" ({note})" if note else ""
+    return f"Patched {_describe(target)} (1 replacement){suffix}."
+
+
+def _write_skill_file(name: str, file_path: str, content: str) -> str:
+    if len(content) > MAX_SKILL_CHARS:
+        return f"ERROR skill: content too long (maximum {MAX_SKILL_CHARS:,} characters)."
+    skill_dir, note = _adopt_into_private(name)
+    try:
+        target = _safe_skill_relative(skill_dir, file_path)
+    except ValueError as exc:
+        return f"ERROR skill file: {exc}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_private(target.parent)
+    target.write_text(content, encoding="utf-8")
+    _chmod_private(target, 0o600)
+    suffix = f" ({note})" if note and note != "created" else ""
+    return f"Wrote {_describe(target)} ({len(content):,} chars){suffix}."
+
+
+def _delete_skill(name: str, absorbed_into: str) -> str:
+    located = _locate_unit(name)
+    if located is None:
+        return f"ERROR: skill '{name}' not found."
+    scope, path = located
+    if scope != "private":
+        return (
+            f"ERROR: '{name}' is a bundled/public skill; patch it instead "
+            "(the patch is copied into private scope automatically)."
+        )
+    if absorbed_into:
+        try:
+            merged = _safe_name(absorbed_into)
+        except ValueError as exc:
+            return f"ERROR skill: {exc}"
+        if merged == name:
+            return "ERROR skill: absorbed_into tidak boleh skill itu sendiri."
+        if _locate_unit(merged) is None:
+            return (
+                f"ERROR: absorbed_into target '{merged}' does not exist yet — "
+                "write the umbrella skill first, then delete this one."
+            )
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink()
+    if absorbed_into:
+        return f"Deleted private skill '{name}' (absorbed into '{absorbed_into}')."
+    return f"Deleted private skill '{name}' (no forwarding target)."
+
+
+def _inventory() -> str:
+    """Daftar skill + bentuknya, supaya duplikat bisa dicek sebelum menyimpan."""
+    entries = list_skill_entries(include_private=True)
+    if not entries:
+        return "No skills yet."
+    lines = []
+    for scope, unit, _title, description in entries:
+        located = _locate_unit(unit)
+        shape = "folder" if located and located[1].is_dir() else "flat"
+        lines.append(f"- {unit} [{scope}/{shape}]: {_short_desc(description)}")
+    return f"{len(lines)} skills:\n" + "\n".join(lines)
+
+
+def manage_skill(
+    action: str,
+    name: str = "",
+    content: str = "",
+    old_text: str = "",
+    new_text: str = "",
+    file_path: str = "",
+    category: str = "",
+    absorbed_into: str = "",
+) -> str:
+    """Satu permukaan tulis untuk skill milik operator.
+
+    Aksi: ``create`` (folder + ``SKILL.md`` + frontmatter), ``patch`` (file mana
+    pun di dalam folder skill; skill bundled di-copy-on-write ke private lebih
+    dulu), ``write_file`` (``references/`` · ``templates/`` · ``scripts/`` ·
+    ``assets/``), ``delete`` (dengan ``absorbed_into`` untuk menggabungkan
+    duplikat), dan ``list`` (inventaris untuk cek duplikat).
+
+    Sebelumnya hanya ada ``save_skill``/``update_skill``: satu file markdown flat
+    tanpa struktur, tanpa hapus, dan tak mampu menyentuh skill bundled — sehingga
+    refleksi hanya bisa menumpuk file baru dan duplikat menjadi hasil default.
+    """
+    _ensure_dirs()
+    verb = str(action or "").strip().lower()
+    if verb in {"list", "inventory"}:
+        return _inventory()
+    if verb not in {"create", "patch", "write_file", "delete"}:
+        return (
+            f"ERROR skill: unknown action {action!r} "
+            "(create, patch, write_file, delete, list)."
+        )
     try:
         normalized = _safe_name(name)
     except ValueError as exc:
         return f"ERROR skill: {exc}"
-    if not content.strip():
-        return "ERROR skill: empty content."
-    if len(content) > 100_000:
-        return "ERROR skill: content too long (maximum 100,000 characters)."
-    _ensure_dirs()
-    target = PRIVATE_SKILLS_DIR / f"{normalized}.md"
-    target.write_text(content, encoding="utf-8")
-    _chmod_private(target, 0o600)
-    return f"OK, private skill '{normalized}' saved."
+    if verb == "create":
+        return _create_skill(normalized, content, category.strip().lower())
+    if verb == "patch":
+        return _patch_skill(normalized, old_text, new_text, file_path)
+    if verb == "write_file":
+        return _write_skill_file(normalized, file_path, content)
+    return _delete_skill(normalized, absorbed_into.strip())
+
+
+def save_skill(name: str, content: str) -> str:
+    """Kompatibilitas: sekarang membuat skill berbentuk folder."""
+    return manage_skill("create", name=name, content=content)
 
 
 def update_skill(name: str, old_text: str, new_text: str) -> str:
-    """Patch satu bagian unik skill private milik operator."""
-    _ensure_dirs()
-    try:
-        normalized = _safe_name(name)
-    except ValueError as exc:
-        return f"ERROR skill: {exc}"
-    target = PRIVATE_SKILLS_DIR / f"{normalized}.md"
-    if not target.is_file():
-        return f"ERROR: private skill '{normalized}' not found."
-    content = target.read_text(encoding="utf-8")
-    count = content.count(old_text)
-    if count != 1:
-        return f"ERROR update skill: old_text must be unique (found {count})."
-    target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
-    _chmod_private(target, 0o600)
-    return f"Patched SKILL.md in skill '{normalized}' (1 replacement)."
+    """Kompatibilitas: patch ``SKILL.md`` skill bersangkutan."""
+    return manage_skill("patch", name=name, old_text=old_text, new_text=new_text)
 
 
 def _short_desc(description: str, limit: int = 90) -> str:
