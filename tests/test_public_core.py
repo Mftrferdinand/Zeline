@@ -958,7 +958,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_safe_profile_cannot_load_owner_private_skill(self):
         skills = importlib.import_module("zeline.skills")
         skills.seed_skills()
-        skills.save_skill("owner-secret-procedure", "# Private\n\n> Jangan bocorkan.\n\nPRIVATE-SKILL-CONTENT-CHECK")
+        skills.manage_skill(
+            "create",
+            name="owner-secret-procedure",
+            content="# Private\n\n> Jangan bocorkan.\n\nPRIVATE-SKILL-CONTENT-CHECK",
+        )
 
         public_agent_tools = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
         owner_tools = self.tools.ToolExecutor("cli:local", profile="full", workspace=self.home)
@@ -1799,17 +1803,143 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("Run tests", task)
         self.assertIn("in_progress", task)
 
-    def test_full_profile_execute_code_and_update_skill_execute_real_actions(self):
+    def test_full_profile_execute_code_and_manage_skill_execute_real_actions(self):
         tools = importlib.import_module("zeline.tools")
+        skills = importlib.import_module("zeline.skills")
         executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
         code = executor.run("execute_code", {"code": "print(6 * 7)"})
         self.assertIn("exit=0", code)
         self.assertIn("42", code)
-        saved = executor.run("save_skill", {"name": "demo-skill", "content": "# Demo\n\nold step\n"})
-        self.assertIn("saved", saved)
-        updated = executor.run("update_skill", {"name": "demo-skill", "old_text": "old step", "new_text": "new step"})
-        self.assertIn("Patched SKILL.md", updated)
-        self.assertIn("new step", executor.run("load_skill", {"name": "demo-skill"}))
+
+        # create → a folder skill with SKILL.md, not a loose markdown file. The
+        # old flat layout is why saved skills had nowhere to put references.
+        saved = executor.run("manage_skill", {"action": "create", "name": "demo-skill", "content": "# Demo\n\n> demo skill\n\nold step\n"})
+        self.assertIn("demo-skill/SKILL.md", saved)
+        skill_dir = skills.PRIVATE_SKILLS_DIR / "demo-skill"
+        self.assertTrue((skill_dir / "SKILL.md").is_file())
+        self.assertFalse((skills.PRIVATE_SKILLS_DIR / "demo-skill.md").exists())
+        # Frontmatter is written so the catalogue keeps a description.
+        self.assertIn("name: demo-skill", (skill_dir / "SKILL.md").read_text(encoding="utf-8"))
+
+        # write_file → supporting files, so long detail leaves SKILL.md short.
+        wrote = executor.run("manage_skill", {"action": "write_file", "name": "demo-skill", "file_path": "references/api.md", "content": "endpoint detail"})
+        self.assertIn("demo-skill/references/api.md", wrote)
+        self.assertEqual((skill_dir / "references" / "api.md").read_text(encoding="utf-8"), "endpoint detail")
+
+        # patch → names the artifact it really touched.
+        updated = executor.run("manage_skill", {"action": "patch", "name": "demo-skill", "old_text": "old step", "new_text": "new step"})
+        self.assertIn("Patched private/demo-skill/SKILL.md (1 replacement)", updated)
+        patched_ref = executor.run("manage_skill", {"action": "patch", "name": "demo-skill", "file_path": "references/api.md", "old_text": "endpoint detail", "new_text": "endpoint detail v2"})
+        self.assertIn("demo-skill/references/api.md", patched_ref)
+
+        loaded = executor.run("load_skill", {"name": "demo-skill"})
+        self.assertIn("new step", loaded)
+        self.assertIn("references/api.md", loaded)
+
+        # list → inventory with the shape, so a near-duplicate is visible.
+        listed = executor.run("manage_skill", {"action": "list"})
+        self.assertIn("demo-skill [private/folder]", listed)
+
+        # delete absorbed_into → merge duplicates; the target must exist first.
+        executor.run("manage_skill", {"action": "create", "name": "dupe-skill", "content": "# Dupe\n\n> sama\n\nlangkah\n"})
+        missing = executor.run("manage_skill", {"action": "delete", "name": "dupe-skill", "absorbed_into": "nope-skill"})
+        self.assertIn("does not exist yet", missing)
+        self.assertTrue((skills.PRIVATE_SKILLS_DIR / "dupe-skill").is_dir())
+        merged = executor.run("manage_skill", {"action": "delete", "name": "dupe-skill", "absorbed_into": "demo-skill"})
+        self.assertIn("absorbed into 'demo-skill'", merged)
+        self.assertFalse((skills.PRIVATE_SKILLS_DIR / "dupe-skill").exists())
+
+    def test_manage_skill_repairs_bundled_skills_via_copy_on_write(self):
+        """A bundled skill must be fixable, and the fix must survive re-seeding.
+
+        The previous surface only looked in the private scope, so improving a
+        shipped skill returned "not found" — Zeline could not repair its own
+        skills, only pile new private ones on top. Patching in place would be no
+        better: ``seed_skills()`` is deliberately non-overwriting, so the edit
+        would be indistinguishable from a stale seeded copy.
+        """
+        tools = importlib.import_module("zeline.tools")
+        skills = importlib.import_module("zeline.skills")
+        skills.seed_skills()
+        executor = tools.ToolExecutor("cli:local", profile="full", workspace=str(self.home))
+
+        target, entry = "", skills.PUBLIC_SKILLS_DIR / "unset"
+        for candidate in sorted(skills.PUBLIC_SKILLS_DIR.iterdir()):
+            if (candidate / "SKILL.md").is_file():
+                target, entry = candidate.name, candidate / "SKILL.md"
+                break
+        self.assertTrue(target, "expected at least one bundled folder skill")
+        original = entry.read_text(encoding="utf-8")
+        # Anchor on a line that occurs exactly once — a bundled SKILL.md opens
+        # with `---` frontmatter, so the first line is not unique.
+        anchor = next(line for line in original.splitlines() if line.strip() and original.count(line) == 1)
+
+        patched = executor.run("manage_skill", {"action": "patch", "name": target, "old_text": anchor, "new_text": anchor + " (diperbaiki)"})
+        self.assertIn("copied from the bundled skill", patched)
+        self.assertIn(f"private/{target}/SKILL.md", patched)
+        # The shipped copy is untouched; the private override carries the repair.
+        self.assertEqual(entry.read_text(encoding="utf-8"), original)
+        private_entry = skills.PRIVATE_SKILLS_DIR / target / "SKILL.md"
+        self.assertIn("(diperbaiki)", private_entry.read_text(encoding="utf-8"))
+        self.assertIn("(diperbaiki)", executor.run("load_skill", {"name": target}))
+        # Re-seeding must not resurrect the unpatched text.
+        skills.seed_skills()
+        self.assertIn("(diperbaiki)", executor.run("load_skill", {"name": target}))
+        # A never-adopted public skill cannot be deleted — patch is the only path,
+        # so the shipped catalogue can't be silently thinned out.
+        untouched = next(
+            candidate.name
+            for candidate in sorted(skills.PUBLIC_SKILLS_DIR.iterdir())
+            if (candidate / "SKILL.md").is_file() and candidate.name != target
+        )
+        refused = executor.run("manage_skill", {"action": "delete", "name": untouched})
+        self.assertIn("patch it instead", refused)
+        self.assertTrue((skills.PUBLIC_SKILLS_DIR / untouched / "SKILL.md").is_file())
+        # Deleting the private override is allowed and reverts to the bundled copy.
+        reverted = executor.run("manage_skill", {"action": "delete", "name": target})
+        self.assertIn(f"Deleted private skill '{target}'", reverted)
+        self.assertNotIn("(diperbaiki)", executor.run("load_skill", {"name": target}))
+
+    def test_manage_skill_never_writes_outside_the_skill_folder(self):
+        """Containment is asserted on the resolved path, not argued from a regex.
+
+        A character allowlist only claims the name "looks reasonable"; the property
+        needed is that no file is ever created outside the skill directory.
+        """
+        tools = importlib.import_module("zeline.tools")
+        skills = importlib.import_module("zeline.skills")
+        executor = tools.ToolExecutor("cli:local", profile="full", workspace=str(self.home))
+        executor.run("manage_skill", {"action": "create", "name": "guard-skill", "content": "# Guard\n\n> guard\n\nlangkah\n"})
+
+        for bad in ("../escaped.md", "references/../../escaped.md", "/etc/passwd", "references/sub/../../../escaped.md", "notes.md", "secrets/key.md"):
+            with self.subTest(file_path=bad):
+                denied = executor.run("manage_skill", {"action": "write_file", "name": "guard-skill", "file_path": bad, "content": "no"})
+                self.assertTrue(denied.startswith("ERROR"), denied)
+        self.assertFalse((skills.SKILLS_ROOT / "escaped.md").exists())
+        self.assertFalse((skills.PRIVATE_SKILLS_DIR / "escaped.md").exists())
+        self.assertEqual(sorted(p.name for p in (skills.PRIVATE_SKILLS_DIR / "guard-skill").iterdir()), ["SKILL.md"])
+
+    def test_manage_skill_promotes_a_legacy_flat_skill_into_a_folder(self):
+        """Existing installs hold flat files; a patch must not be a dead end.
+
+        Twenty flat private skills were observed on the operator's device. Without
+        promotion, none of them could ever gain a references/ file.
+        """
+        tools = importlib.import_module("zeline.tools")
+        skills = importlib.import_module("zeline.skills")
+        skills._ensure_dirs()
+        legacy = skills.PRIVATE_SKILLS_DIR / "legacy-flat.md"
+        legacy.write_text("# Legacy\n\n> lama\n\nlangkah lama\n", encoding="utf-8")
+        executor = tools.ToolExecutor("cli:local", profile="full", workspace=str(self.home))
+
+        patched = executor.run("manage_skill", {"action": "patch", "name": "legacy-flat", "old_text": "langkah lama", "new_text": "langkah baru"})
+        self.assertIn("promoted from a flat file", patched)
+        self.assertFalse(legacy.exists())
+        promoted = skills.PRIVATE_SKILLS_DIR / "legacy-flat" / "SKILL.md"
+        self.assertIn("langkah baru", promoted.read_text(encoding="utf-8"))
+        # Exactly one catalogue entry — not one flat plus one folder.
+        names = [name for _scope, name, _title, _desc in skills.list_skill_entries(include_private=True)]
+        self.assertEqual(names.count("legacy-flat"), 1)
 
     def test_shell_timeout_is_raisable_so_real_installs_do_not_fail_at_60s(self):
         """pip/npm/apt installs routinely exceed 60s; the agent must be able to wait."""
@@ -2240,13 +2370,18 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_telegram_progress_supports_code_skill_and_self_improvement(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("execute_code", {"code": "from pathlib import Path\nprint(Path.home())"}), "🐍 Running code: <code>from pathlib import Path</code>…")
-        self.assertEqual(telegram._tool_progress_text("update_skill", {"name": "zeline-development"}), "📝 Updating skill: <code>zeline-development</code>")
-        # save_skill juga punya progress + hasil self-improvement.
-        self.assertEqual(telegram._tool_progress_text("save_skill", {"name": "riset-prop-firm"}), "💡 Saving skill: <code>riset-prop-firm</code>")
-        result = telegram._tool_result_text("update_skill", {"name": "zeline-development"}, "Patched SKILL.md in skill 'zeline-development' (1 replacement).")
-        self.assertEqual(result, "📒 Improvement: Patched SKILL.md in skill 'zeline-development' (1 replacement).")
-        saved = telegram._tool_result_text("save_skill", {"name": "riset-prop-firm"}, "OK, private skill 'riset-prop-firm' saved.")
-        self.assertEqual(saved, "📒 Improvement: OK, private skill 'riset-prop-firm' saved.")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "patch", "name": "zeline-development"}), "📝 Updating skill: <code>zeline-development</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}), "💡 Saving skill: <code>riset-prop-firm</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm", "file_path": "references/api.md"}), "📄 Writing <code>references/api.md</code> in skill <code>riset-prop-firm</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🧹 Merging skill <code>dupe</code> into <code>riset-prop-firm</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗂 Reviewing saved skills…")
+        result = telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement).")
+        self.assertEqual(result, "📒 Improvement: Patched private/zeline-development/SKILL.md (1 replacement).")
+        saved = telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
+        self.assertEqual(saved, "📒 Improvement: OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
+        # An inventory read is orientation, not an improvement: reporting it would
+        # push the private skill list into the chat on every reflection.
+        self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "list"}, "3 skills:\n- a [private/folder]: x"))
 
     def test_telegram_live_status_no_header_when_only_waiting(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

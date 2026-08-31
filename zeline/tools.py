@@ -1711,22 +1711,22 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"full"}),
     ),
     ToolDef(
-        "save_skill",
-        "Save a new skill owned by the Zeline operator. Only use when the local user asks for a reusable procedure.",
+        "manage_skill",
+        "Author and maintain the operator's skills (procedural memory). action='create' writes a folder skill with SKILL.md; 'write_file' adds references/, templates/, scripts/ or assets/ files; 'patch' edits SKILL.md or any supporting file (a bundled skill is copied into private scope first, so the repair survives updates); 'delete' removes a private skill, passing absorbed_into=<other skill> when its content was merged there; 'list' shows every skill and its shape so you can patch a near-duplicate instead of saving a new one.",
         {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Skill name"},
-                "content": {"type": "string", "description": "Skill markdown (# title, > description, steps)"},
+                "action": {"type": "string", "enum": ["create", "patch", "write_file", "delete", "list"]},
+                "name": {"type": "string", "description": "Skill name (lowercase, hyphens). Not needed for 'list'."},
+                "content": {"type": "string", "description": "For 'create': skill markdown ('# Title', '> when to use', numbered steps, pitfalls). For 'write_file': the file body."},
+                "old_text": {"type": "string", "description": "For 'patch': unique text to replace."},
+                "new_text": {"type": "string", "description": "For 'patch': replacement text."},
+                "file_path": {"type": "string", "description": "For 'write_file' (required) and 'patch' (optional, defaults to SKILL.md): path inside the skill, e.g. references/api.md."},
+                "category": {"type": "string", "description": "Optional grouping for 'create', e.g. 'devops'."},
+                "absorbed_into": {"type": "string", "description": "For 'delete': the skill that now carries this content, or empty when simply pruning."},
             },
-            "required": ["name", "content"],
+            "required": ["action"],
         },
-        frozenset({"full"}),
-    ),
-    ToolDef(
-        "update_skill",
-        "Patch one unique section of the operator's private skill.",
-        {"type": "object", "properties": {"name": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["name", "old_text", "new_text"]},
         frozenset({"full"}),
     ),
     ToolDef(
@@ -1944,8 +1944,9 @@ class ToolExecutor:
             "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
             "update_task": _update_task,
-            "save_skill": skills.save_skill,
-            "update_skill": skills.update_skill,
+            "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
+                action, name, content, old_text, new_text, file_path, category, absorbed_into
+            ),
             "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity),
             "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),

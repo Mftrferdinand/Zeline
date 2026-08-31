@@ -541,7 +541,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual([m["tool_call_id"] for m in tool_msgs], ["call-a", "call-b"])
 
     def test_reflect_saves_skill_on_substantial_session_and_is_noop_when_light(self):
-        # Sesi berbobot (>=5 tool call) → reflect boleh memanggil save_skill.
+        # Sesi berbobot (>=5 tool call) → reflect boleh memanggil manage_skill.
         agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
         agent.last_turn_tool_calls = 6
         reflect_first = {
@@ -549,7 +549,7 @@ class AgentLoopTests(unittest.TestCase):
                 "role": "assistant", "content": "",
                 "tool_calls": [{
                     "id": "call-skill", "type": "function",
-                    "function": {"name": "save_skill", "arguments": '{"name":"demo-flow","content":"# Demo\\n> demo\\nlangkah"}'},
+                    "function": {"name": "manage_skill", "arguments": '{"action":"create","name":"demo-flow","content":"# Demo\\n> demo\\nlangkah"}'},
                 }],
             }}],
         }
@@ -574,6 +574,45 @@ class AgentLoopTests(unittest.TestCase):
         with mock.patch.object(self.agent_module.requests, "post") as post:
             self.assertIsNone(safe.reflect(min_tool_calls=5))
         post.assert_not_called()
+
+    def test_reflect_reports_only_real_changes_and_can_finish_a_merge(self):
+        """An inventory read is orientation, not an improvement.
+
+        The anti-duplicate flow spends its first round on ``action='list'``. If
+        that round were reported, every reflection would push a skill listing into
+        the chat as "Improvement"; and if the loop still stopped after three
+        rounds, the merge (``delete absorbed_into=…``) — the step that actually
+        removes a duplicate — would be cut off before it ran.
+        """
+        self.assertGreaterEqual(self.agent_module.REFLECTION_TOOL_ROUNDS, 4)
+        agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
+        agent.last_turn_tool_calls = 9
+
+        def round_with(call_id: str, arguments: str) -> dict:
+            return {"choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": call_id, "type": "function",
+                                "function": {"name": "manage_skill", "arguments": arguments}}],
+            }}]}
+
+        rounds = [
+            round_with("c1", '{"action":"list"}'),
+            round_with("c2", '{"action":"create","name":"umbrella-flow","content":"# Umbrella\\n> gabungan\\nlangkah"}'),
+            round_with("c3", '{"action":"write_file","name":"umbrella-flow","file_path":"references/detail.md","content":"detail panjang"}'),
+            round_with("c4", '{"action":"create","name":"dupe-flow","content":"# Dupe\\n> lama\\nlangkah"}'),
+            round_with("c5", '{"action":"delete","name":"dupe-flow","absorbed_into":"umbrella-flow"}'),
+        ]
+        responses = [FakeResponse(payload) for payload in rounds]
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=responses):
+            summary = agent.reflect(min_tool_calls=5)
+
+        self.assertIsNotNone(summary)
+        # The listing must not be surfaced as an improvement…
+        self.assertNotIn("skills:", summary)
+        # …while every real write is, including the merge in the final round.
+        self.assertIn("umbrella-flow/SKILL.md", summary)
+        self.assertIn("umbrella-flow/references/detail.md", summary)
+        self.assertIn("absorbed into 'umbrella-flow'", summary)
 
     def test_web_search_uses_bing_serp_and_includes_urls(self):
         # web_search must try the Bing SERP engine first and return title+URL

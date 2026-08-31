@@ -47,8 +47,7 @@ _ARTIFACT_TOOLS = {
     "patch_file": "path",
     "download_file": "path",
     "generate_image": "path",
-    "save_skill": "name",
-    "update_skill": "name",
+    "manage_skill": "name",
 }
 
 

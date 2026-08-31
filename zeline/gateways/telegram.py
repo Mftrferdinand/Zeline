@@ -206,12 +206,23 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         code = str(arguments.get("code", "")).strip()
         first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
         return f"🐍 Running code: <code>{first}</code>…"
-    if name == "update_skill":
+    if name == "manage_skill":
         skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
-        return f"📝 Updating skill: <code>{skill_name}</code>"
-    if name == "save_skill":
-        skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
-        return f"💡 Saving skill: <code>{skill_name}</code>"
+        action = str(arguments.get("action", "")).strip().lower()
+        file_path = html.escape(str(arguments.get("file_path", ""))[:120], quote=False)
+        if action in {"list", "inventory"}:
+            return "🗂 Reviewing saved skills…"
+        if action == "create":
+            return f"💡 Saving skill: <code>{skill_name}</code>"
+        if action == "write_file":
+            return f"📄 Writing <code>{file_path or 'file'}</code> in skill <code>{skill_name}</code>"
+        if action == "delete":
+            merged = html.escape(str(arguments.get("absorbed_into", ""))[:100], quote=False)
+            if merged:
+                return f"🧹 Merging skill <code>{skill_name}</code> into <code>{merged}</code>"
+            return f"🗑 Removing skill: <code>{skill_name}</code>"
+        target = f" <code>{file_path}</code>" if file_path else ""
+        return f"📝 Updating skill: <code>{skill_name}</code>{target}"
     if name in {"add_memory", "remove_memory"}:
         return "🧠 Saving to memory…"
     if name == "system_env":
@@ -317,7 +328,12 @@ def _finalize_line(line: str) -> str:
 
 def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
     """Render hanya hasil nyata yang bernilai sebagai progress terpisah."""
-    if name in {"update_skill", "save_skill"} and not result.startswith("ERROR"):
+    if name == "manage_skill" and not result.startswith("ERROR"):
+        # ``list`` cuma orientasi internal (cek duplikat sebelum menyimpan);
+        # mengirim inventaris skill ke chat sebagai "Improvement" itu bising dan
+        # membocorkan nama skill private tanpa alasan.
+        if str(arguments.get("action", "")).strip().lower() in {"list", "inventory"}:
+            return None
         return f"📒 Improvement: {html.escape(result[:1000], quote=False)}"
     return None
 
