@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "0.2.6"
+RELEASE_VERSION = "0.2.7"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 
