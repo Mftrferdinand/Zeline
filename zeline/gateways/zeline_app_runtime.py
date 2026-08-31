@@ -63,6 +63,26 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+#: Nama file per-session hanya boleh berisi karakter ini.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def safe_session_id(session_id: str) -> str:
+    """Kembalikan ``session_id`` bila aman dipakai sebagai nama file.
+
+    Session id datang dari path URL, jadi ia data yang dikendalikan pemanggil.
+    Router memang sudah mencocokkan ``[\\w-]+``, tapi menaruh satu-satunya
+    penjagaan di layer HTTP berarti setiap pemanggil baru (CLI, migrasi, test,
+    gateway lain) mewarisi lubang yang sama. Penjagaan diletakkan di layer
+    penyimpanan supaya ``..``/``/``/absolute path tidak pernah bisa menjadi
+    nama file, siapa pun pemanggilnya.
+    """
+    value = str(session_id or "")
+    if not _SAFE_ID.match(value):
+        raise ValueError("invalid session id")
+    return value
+
+
 def _ensure_dirs() -> None:
     for directory in (_app_dir(), _history_dir(), _messages_dir()):
         directory.mkdir(parents=True, exist_ok=True)
@@ -310,11 +330,16 @@ def delete_provider(provider_id: str) -> bool:
 
 # ------------------------------------------------------------ agent instances
 def _history_path(session_id: str) -> Path:
-    return _history_dir() / f"{session_id}.json"
+    return _history_dir() / f"{safe_session_id(session_id)}.json"
+
+
+def _messages_path(session_id: str) -> Path:
+    return _messages_dir() / f"{safe_session_id(session_id)}.json"
 
 
 def get_agent_runtime(session_id: str, agent: dict[str, Any], tool_profile: str) -> Zeline:
     """Instance agent per session (history terjaga antar pesan)."""
+    session_id = safe_session_id(session_id)
     with _LOCK:
         instance = _AGENTS.get(session_id)
     if instance is None:
@@ -356,7 +381,14 @@ def drop_session_runtime(session_id: str) -> None:
         _AGENTS.pop(session_id, None)
         _CANCEL.pop(session_id, None)
         _ACTIVE.pop(session_id, None)
-    for path in (_history_path(session_id), _messages_dir() / f"{session_id}.json"):
+        _STEER.pop(session_id, None)
+    try:
+        paths = (_history_path(session_id), _messages_path(session_id))
+    except ValueError:
+        # Id yang tak pernah bisa jadi nama file juga tak punya file untuk
+        # dihapus. Registry di atas sudah dibersihkan, jadi delete tetap sukses.
+        return
+    for path in paths:
         try:
             path.unlink()
         except OSError:
@@ -365,14 +397,21 @@ def drop_session_runtime(session_id: str) -> None:
 
 # ------------------------------------------------------------------ messages
 def load_messages(session_id: str) -> list[dict[str, Any]]:
-    data = _read_json(_messages_dir() / f"{session_id}.json", [])
+    # Reads tolerate a rejected id: "no such session" and "id that can never
+    # name a file" look the same to a client, and a lookup should answer 404,
+    # not 500. Writes still raise — storing under an unsafe name is a bug.
+    try:
+        path = _messages_path(session_id)
+    except ValueError:
+        return []
+    data = _read_json(path, [])
     return data if isinstance(data, list) else []
 
 
 def append_message(session_id: str, message: dict[str, Any]) -> dict[str, Any]:
     messages = load_messages(session_id)
     messages.append(message)
-    _write_json(_messages_dir() / f"{session_id}.json", messages)
+    _write_json(_messages_path(session_id), messages)
     return message
 
 
@@ -381,7 +420,7 @@ def update_last_message(session_id: str, patch: dict[str, Any]) -> None:
     if not messages:
         return
     messages[-1].update(patch)
-    _write_json(_messages_dir() / f"{session_id}.json", messages)
+    _write_json(_messages_path(session_id), messages)
 
 
 def new_message(session_id: str, agent_id: str, role: str, content: str,

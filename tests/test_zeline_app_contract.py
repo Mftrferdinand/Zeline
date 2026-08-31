@@ -181,6 +181,48 @@ class StreamingOverrideTests(IsolatedAppData):
             self.assertTrue(Zeline(identity="cli:test")._streaming_enabled())
 
 
+class SessionIdPathGuardTests(IsolatedAppData):
+    """Session ids name files on disk, so they are validated in the storage layer.
+
+    The HTTP router already matches `[\\w-]+`, but a guard that lives only in the
+    router is inherited-broken by every new caller (CLI, migration, another
+    gateway). CodeQL flagged the same thing as py/path-injection: the taint
+    reaches `open()`.
+    """
+
+    def test_traversal_and_separators_are_rejected(self):
+        for bad in ("../etc/passwd", "a/b", "/abs", "..", "", "x" * 129, "sess id", "sess\x00"):
+            with self.subTest(session_id=bad):
+                with self.assertRaises(ValueError):
+                    runtime.safe_session_id(bad)
+
+    def test_normal_ids_pass_through_unchanged(self):
+        for good in ("sess_ab4d2f1d", "SESS-123", "a", "x" * 128):
+            with self.subTest(session_id=good):
+                self.assertEqual(runtime.safe_session_id(good), good)
+
+    def test_writes_land_inside_the_data_dir(self):
+        runtime.append_message(
+            "sess_guard", runtime.new_message("sess_guard", "agent_guard", "assistant", "hi"))
+        written = Path(self.data_dir) / "messages" / "sess_guard.json"
+        self.assertTrue(written.exists())
+
+    def test_a_rejected_id_cannot_write_anywhere(self):
+        with self.assertRaises(ValueError):
+            runtime.append_message(
+                "../escaped", runtime.new_message("../escaped", "a", "assistant", "hi"))
+        self.assertFalse((Path(self.data_dir).parent / "escaped.json").exists())
+
+    def test_reading_a_rejected_id_is_empty_not_an_error(self):
+        """A lookup with a hostile id is a 404 case, not a 500 case."""
+        self.assertEqual(runtime.load_messages("../etc/passwd"), [])
+
+    def test_dropping_a_rejected_id_still_clears_the_registry(self):
+        runtime.stream_start("../escaped", "stream_x")
+        runtime.drop_session_runtime("../escaped")
+        self.assertFalse(runtime.is_cancelled("../escaped"))
+
+
 class HistoryTests(IsolatedAppData):
     def test_saved_message_ids_are_deduplicated_against_real_history(self):
         sid = "sess_saved_contract"

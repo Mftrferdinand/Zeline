@@ -7,16 +7,19 @@ Yang dibuktikan:
   3. POST /sessions/{id}/messages?stream=true → delta nyata dari provider
   4. tool.started/tool.output/tool.completed muncul saat agent benar-benar
      menjalankan tool (prompt memaksa run_shell)
-  5. jawaban BERBEDA untuk prompt identik dua kali (mock scripted akan sama)
-  6. cancel menghentikan generation yang sedang jalan
-  7. history tersimpan dan bisa dibaca ulang
+  5. model MENGOLAH nonce acak (membalik string yang belum pernah ada) —
+     mock scripted bisa mengulang teks, tapi tidak bisa membalik input baru
+  6. cancel menghentikan generation yang sedang jalan, dan cancel kedua
+     idempoten
+  7. history + tool_events tersimpan dan bisa dibaca ulang, tanpa secret
 
-Pakai: python3 verify_zeline_app_real.py [BASE] [TOKEN]
+Pakai: python3 verify_zeline_app_real.py [BASE] [TOKEN] [MODEL]
 """
 from __future__ import annotations
 
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -133,8 +136,12 @@ def main() -> int:
     status, payload = call("/providers", token=token)
     providers = payload.get("data", {}).get("providers", [])
     leaked = [p for p in providers if "api_key" in p]
+    # Report the SHAPE of the hint, never the hint itself. Printing a masked
+    # value into a log is still printing a credential-derived string, and this
+    # script's whole point is that credentials do not travel.
+    hint = str(providers[0].get("api_key_hint", "")) if providers else ""
     check("provider key tidak pernah bocor", not leaked and bool(providers),
-          f"{len(providers)} provider, hint={providers[0].get('api_key_hint') if providers else '-'}")
+          f"{len(providers)} provider, hint masked={'yes' if '••' in hint else 'no'}")
 
     agent_id = str(verify_agent.get("id") or "")
     if not agent_id:
@@ -171,19 +178,31 @@ def main() -> int:
     check("assistant.completed terkirim", completed is not None,
           f"{time.time() - started:.1f}s, {len(''.join(d.get('content','') for d in deltas))} char")
 
-    # 3. jawaban tidak scripted: prompt identik → teks berbeda
-    prompt_same = "Sebutkan satu angka acak antara 1000-9999, hanya angkanya."
-    answers = []
+    # 3. Bukan mock scripted: model harus MENGOLAH input yang tidak bisa
+    #    diketahui sebelumnya. Versi lama meminta "angka acak" lalu menuntut dua
+    #    jawaban berbeda — itu menguji sampling provider, bukan gateway, dan
+    #    gagal secara sah ketika model memilih angka favorit yang sama dua kali
+    #    (teramati: 4728 vs 4728). Sekarang setiap sesi mendapat nonce acak dan
+    #    harus mengembalikannya dalam bentuk terbalik: mock bisa mengulang teks,
+    #    tapi tidak bisa membalik string yang belum pernah dilihatnya.
+    answers: list[tuple[str, str]] = []
     for _ in range(2):
+        nonce = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(8))
         _s, p = call("/sessions", "POST", {"agent_id": agent_id, "title": "verify vary"},
                      token=token)
         sid = p.get("data", {}).get("id", "")
-        events = stream(sid, prompt_same, token)
-        answers.append("".join(e.get("content", "") for e in events
-                               if e.get("type") == "assistant.delta").strip())
-    check("prompt identik → jawaban tidak identik (bukan template)",
-          answers[0] != answers[1] and all(answers),
-          f"[{answers[0][:40]}] vs [{answers[1][:40]}]")
+        events = stream(sid, f"Balik urutan karakter string ini dan jawab HANYA hasilnya, "
+                             f"tanpa penjelasan: {nonce}", token)
+        text = "".join(e.get("content", "") for e in events
+                       if e.get("type") == "assistant.delta").strip()
+        answers.append((nonce, text))
+    reversed_ok = [nonce[::-1] in text.upper() for nonce, text in answers]
+    check("model mengolah input unik (bukan mock scripted)",
+          all(reversed_ok),
+          " | ".join(f"{nonce}→{text[:20]}" for nonce, text in answers))
+    check("dua sesi menghasilkan jawaban berbeda",
+          answers[0][1] != answers[1][1] and all(text for _, text in answers),
+          f"[{answers[0][1][:30]}] vs [{answers[1][1][:30]}]")
 
     # 4. cancel di tengah generation
     _s, p = call("/sessions", "POST", {"agent_id": agent_id, "title": "verify cancel"},
