@@ -546,6 +546,24 @@ def _defaults() -> dict[str, Any]:
                 "token": "",
                 "tool_profile": "safe",
             },
+            # Adapter yang terdaftar di gateways.GATEWAYS WAJIB punya default di
+            # sini. `zeline gateway enable <name>` memakai defaults ini sebagai
+            # template; tanpa entry, perintah itu melempar ValueError padahal
+            # help-nya sendiri menawarkan nama tersebut sebagai pilihan.
+            "discord": {
+                "enabled": False,
+                "token": "",
+                "allowed": [],
+                "tool_profile": "safe",
+            },
+            "zeline_app": {
+                "enabled": False,
+                "token": "",
+                "host": "127.0.0.1",
+                "port": 8082,
+                "tool_profile": "safe",
+                "linked_agents": [],
+            },
         },
         # MCP server eksternal. Tiap entry: {transport, command|url, headers, env, enabled}.
         # Hanya operator yang boleh menambah (server stdio menjalankan perintah lokal).

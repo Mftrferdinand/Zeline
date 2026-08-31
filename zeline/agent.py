@@ -141,6 +141,25 @@ class Zeline:
         # added only to the provider payload, never persisted into transcript.
         self._turn_skill_context: str = ""
         self._turn_cloudflare_detected = False
+        # Override streaming per-instance. None = ikuti config global
+        # (``agent.stream``). Front-end yang protokolnya MEMBUTUHKAN token
+        # mengalir — gateway SSE Zeline App — menyetel True agar preferensi CLI
+        # global tidak mematikan fitur yang dijanjikan ke client-nya.
+        self.stream_responses: bool | None = None
+
+    def _streaming_enabled(self) -> bool:
+        """Streaming aktif untuk turn ini?
+
+        Global ``agent.stream`` adalah preferensi CLI; sebagian pengguna
+        mematikannya. Tapi ``stream_responses=True`` di satu instance adalah
+        kebutuhan protokol, bukan preferensi: tanpa delta, SSE hanya bisa
+        mengirim satu blok teks di akhir, dan pembatalan harus menunggu request
+        HTTP yang memblokir selesai (sampai 180s) karena tidak ada loop baca
+        yang bisa diputus. Jadi override per-instance menang.
+        """
+        if self.stream_responses is not None:
+            return bool(self.stream_responses)
+        return bool(getattr(config, "STREAM_RESPONSES", True))
 
     def _build_system_prompt(self) -> str:
         return (
@@ -258,7 +277,7 @@ class Zeline:
                         + "\n</trusted_runtime_skill>"
                     )
                     break
-        streaming = bool(getattr(config, "STREAM_RESPONSES", True))
+        streaming = self._streaming_enabled()
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": outbound_messages,
@@ -306,7 +325,7 @@ class Zeline:
                 "system": str(self.messages[0].get("content", "")),
                 "messages": messages,
                 "max_tokens": 4096,
-                "stream": bool(getattr(config, "STREAM_RESPONSES", True)),
+                "stream": streaming,
             }
             if use_tools:
                 payload["tools"] = [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in self.executor.schemas]
