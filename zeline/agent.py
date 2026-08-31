@@ -16,6 +16,7 @@ from typing import Any, Callable
 import requests
 
 from zeline import __version__, config
+from zeline import compaction
 from zeline import skills
 from zeline.tools import ToolExecutor
 from zeline import project_rules
@@ -613,11 +614,16 @@ class Zeline:
         Tool-call protocol mengharuskan ``assistant(tool_calls)`` diikuti semua
         ``tool`` result terkait. Maka kita hanya memotong pada awal user turn,
         bukan sekadar `messages[-N:]`.
+
+        Turn yang dibuang tidak hilang: teksnya diarsipkan ke disk dan diganti
+        satu digest ekstraktif di depan history, supaya agent tidak lupa file
+        yang baru ia tulis atau keputusan yang sudah diambil user.
         """
         system = self.messages[0]
         tail = self.messages[1:]
         maximum_messages = 60
         maximum_chars = 30_000
+        dropped: list[dict[str, Any]] = []
         while tail and (
             len(tail) > maximum_messages
             or sum(len(str(message.get("content", ""))) for message in tail) > maximum_chars
@@ -630,7 +636,17 @@ class Zeline:
             )
             if next_user is None:
                 break
+            dropped.extend(tail[:next_user])
             tail = tail[next_user:]
+        if dropped:
+            try:
+                summary = compaction.compact(dropped, self.identity)
+            except Exception:
+                summary = None
+            if summary is not None:
+                # An existing digest at the front is superseded by the new one,
+                # which already covers it (the old digest is inside `dropped`).
+                tail = [summary, *tail]
         self.messages = [system, *tail]
 
     def send(

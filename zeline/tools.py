@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 import requests
 
 from zeline import config
+from zeline import compaction
 from zeline import memory
 from zeline import offload
 from zeline import skills
@@ -92,7 +93,9 @@ def _read_file(path: str, workspace: Path, offset: int = 1, limit: int = 0) -> s
     """
     try:
         requested = Path(path).expanduser()
-        if requested.is_absolute() and offload.is_offload_path(requested):
+        if requested.is_absolute() and (
+            offload.is_offload_path(requested) or compaction.is_archive_path(requested)
+        ):
             target = requested.resolve(strict=False)
         else:
             target = _resolve_workspace_path(path, workspace)
