@@ -83,6 +83,24 @@ def safe_session_id(session_id: str) -> str:
     return value
 
 
+def _session_file(directory: Path, session_id: str) -> Path:
+    """Path file JSON untuk satu session, dijamin berada di dalam ``directory``.
+
+    Dua lapis, bukan satu: allowlist karakter di ``safe_session_id`` menolak id
+    yang jelas hostile, lalu path hasilnya dinormalisasi dan diperiksa masih
+    berada di bawah root. Lapis kedua tidak redundan — ia yang membuktikan
+    containment tanpa bergantung pada kelengkapan regex, dan itu properti yang
+    sebenarnya kita mau (tidak ada file di luar direktori data), bukan "id-nya
+    kelihatan wajar".
+    """
+    name = safe_session_id(session_id) + ".json"
+    root = os.path.normpath(str(directory))
+    candidate = os.path.normpath(os.path.join(root, name))
+    if not candidate.startswith(root + os.sep):
+        raise ValueError("invalid session id")
+    return Path(candidate)
+
+
 def _ensure_dirs() -> None:
     for directory in (_app_dir(), _history_dir(), _messages_dir()):
         directory.mkdir(parents=True, exist_ok=True)
@@ -330,11 +348,11 @@ def delete_provider(provider_id: str) -> bool:
 
 # ------------------------------------------------------------ agent instances
 def _history_path(session_id: str) -> Path:
-    return _history_dir() / f"{safe_session_id(session_id)}.json"
+    return _session_file(_history_dir(), session_id)
 
 
 def _messages_path(session_id: str) -> Path:
-    return _messages_dir() / f"{safe_session_id(session_id)}.json"
+    return _session_file(_messages_dir(), session_id)
 
 
 def get_agent_runtime(session_id: str, agent: dict[str, Any], tool_profile: str) -> Zeline:

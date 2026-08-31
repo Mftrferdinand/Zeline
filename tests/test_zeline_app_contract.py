@@ -222,6 +222,15 @@ class SessionIdPathGuardTests(IsolatedAppData):
         runtime.drop_session_runtime("../escaped")
         self.assertFalse(runtime.is_cancelled("../escaped"))
 
+    def test_resolved_paths_stay_under_the_data_dir(self):
+        """Containment is asserted on the resolved path, not inferred from the regex."""
+        root = Path(self.data_dir).resolve()
+        for sid in ("sess_ab4d2f1d", "SESS-123", "a"):
+            with self.subTest(session_id=sid):
+                for path in (runtime._history_path(sid), runtime._messages_path(sid)):
+                    self.assertTrue(str(path.resolve()).startswith(str(root) + os.sep),
+                                    f"{path} escaped {root}")
+
 
 class HistoryTests(IsolatedAppData):
     def test_saved_message_ids_are_deduplicated_against_real_history(self):
