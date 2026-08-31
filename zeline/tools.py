@@ -36,6 +36,7 @@ import requests
 
 from zeline import config
 from zeline import memory
+from zeline import offload
 from zeline import skills
 from zeline import network_routes
 from zeline import interaction
@@ -83,14 +84,35 @@ def _resolve_workspace_path(raw_path: str, workspace: Path) -> Path:
     return resolved
 
 
-def _read_file(path: str, workspace: Path) -> str:
+def _read_file(path: str, workspace: Path, offset: int = 1, limit: int = 0) -> str:
+    """Read a text file, optionally a line window.
+
+    Offloaded tool payloads live outside the workspace by design, so they are
+    resolved separately instead of widening the workspace sandbox.
+    """
     try:
-        target = _resolve_workspace_path(path, workspace)
+        requested = Path(path).expanduser()
+        if requested.is_absolute() and offload.is_offload_path(requested):
+            target = requested.resolve(strict=False)
+        else:
+            target = _resolve_workspace_path(path, workspace)
         if not target.is_file():
             return f"ERROR read file: not a file or not found: {target}"
         content = target.read_text(encoding="utf-8", errors="replace")
+        if offset > 1 or limit > 0:
+            lines = content.splitlines()
+            start = max(offset, 1) - 1
+            if start >= len(lines):
+                return f"ERROR read file: offset {offset} is past the last line ({len(lines)})."
+            end = start + limit if limit > 0 else len(lines)
+            window = lines[start:end]
+            shown = "\n".join(window)
+            remaining = len(lines) - (start + len(window))
+            note = f"[lines {start + 1}-{start + len(window)} of {len(lines)}"
+            note += f"; {remaining} remaining, continue with offset={start + len(window) + 1}]" if remaining else "]"
+            return f"{note}\n{shown}"
         if len(content) > 20_000:
-            content = content[:20_000] + "\n... [truncated, file too long]"
+            return offload.maybe_offload(content, 20_000)
         return content
     except Exception as exc:
         return f"ERROR read file: {exc}"
@@ -203,9 +225,7 @@ def _truncate_output(text: str, limit: int = 12_000) -> str:
     text = (text or "").strip()
     if not text:
         return "(no output)"
-    if len(text) > limit:
-        return text[:limit] + "\n... [output truncated]"
-    return text
+    return offload.maybe_offload(text, limit)
 
 
 # ---------------------------------------------------------------- background jobs
@@ -1228,7 +1248,7 @@ def _fetch_via_wayback(url: str) -> str | None:
         if not text or _looks_like_cf_challenge(text):
             return None
         note = f"[via arsip web {timestamp[:8]} — situs asli diblokir Cloudflare]\n\n"
-        return note + text[:12_000] + ("\n... [truncated]" if len(text) > 12_000 else "")
+        return note + offload.maybe_offload(text, 12_000)
     except requests.RequestException:
         return None
 
@@ -1267,7 +1287,7 @@ def _fetch_with_network_routes(url: str) -> str | None:
                 continue
             if response.ok and text and not _looks_like_cf_challenge(text):
                 prefix = f"[via network route {label} · country={country}]\n\n"
-                return prefix + text[:12_000] + ("\n... [truncated]" if size > 12_000 else "")
+                return prefix + offload.maybe_offload(text, 12_000)
             if response.ok and _looks_like_cf_challenge(text):
                 return (
                     f"ERROR [CLOUDFLARE_CHALLENGE route={label} country={country} url={url}]: "
@@ -1302,7 +1322,7 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
                 if routed:
                     return routed
             if not _looks_like_geo_block(response, text):
-                return text[:12_000] + ("\n... [truncated]" if len(text) > 12_000 else "")
+                return offload.maybe_offload(text, 12_000)
     except requests.RequestException:
         pass
     # 2) Fallback: fetch langsung.
@@ -1331,7 +1351,7 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
                 if routed:
                     return routed
             if text and not _looks_like_cf_challenge(text) and not _looks_like_geo_block(response, text):
-                return text[:12_000] + ("\n... [truncated]" if size > 12_000 else "")
+                return offload.maybe_offload(text, 12_000)
     except requests.RequestException:
         pass
     # 3) Owner-only per-request routes. Telegram/provider/localhost stay direct.
@@ -1618,10 +1638,21 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "read_file",
-        "Read a text file inside the allowed workspace.",
+        "Read a text file inside the allowed workspace. Use offset/limit to page "
+        "through a large file or an offloaded tool result instead of re-running work.",
         {
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "Relative path in the workspace"}},
+            "properties": {
+                "path": {"type": "string", "description": "Relative path in the workspace"},
+                "offset": {
+                    "type": "integer",
+                    "description": "1-based first line to read (default 1)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum lines to read; 0 or omitted reads to the end",
+                },
+            },
             "required": ["path"],
         },
         frozenset({"workspace", "full"}),
@@ -1903,7 +1934,7 @@ class ToolExecutor:
             "browser": lambda action, url="", selector="", text="", submit=False, path="", script="": self._browser(
                 action, url, selector, text, submit, path, script
             ),
-            "read_file": lambda path: _read_file(path, self.workspace),
+            "read_file": lambda path, offset=1, limit=0: _read_file(path, self.workspace, offset, limit),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
             "edit_file": lambda path, old_text, new_text: _edit_file(path, old_text, new_text, self.workspace),
             "patch_file": lambda path, old_text, new_text: _patch_file(path, old_text, new_text, self.workspace),
