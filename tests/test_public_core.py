@@ -1947,14 +1947,26 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # Sesi masih bisa dipakai lagi setelah stop.
         self.assertIsNone(agent._should_stop)
 
-    def test_cancelled_turn_drops_orphan_tool_call_tail(self):
+    def test_dangling_tool_call_is_repaired_and_completed_work_survives(self):
         agent_module = importlib.import_module("zeline.agent")
         agent = agent_module.Zeline(identity="telegram:tail", tool_profile="safe", workspace=str(self.home))
         agent.messages.append({"role": "user", "content": "hi"})
-        agent.messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": "1", "function": {"name": "web_search", "arguments": "{}"}}]})
-        agent.messages.append({"role": "tool", "tool_call_id": "1", "content": "partial"})
+        agent.messages.append({"role": "assistant", "content": "cek dua hal", "tool_calls": [
+            {"id": "1", "function": {"name": "web_search", "arguments": "{}"}},
+            {"id": "2", "function": {"name": "read_file", "arguments": "{}"}},
+        ]})
+        # Call 1 finished before /stop landed; call 2 never produced a result.
+        agent.messages.append({"role": "tool", "tool_call_id": "1", "content": "hasil nyata"})
         agent._drop_incomplete_tail()
-        self.assertEqual(agent.messages[-1]["role"], "user")
+        # Provider contract: every requested call id now has a tool result.
+        answered = {m.get("tool_call_id") for m in agent.messages if m.get("role") == "tool"}
+        self.assertEqual(answered, {"1", "2"})
+        # The finished call keeps its real output; nothing is amputated.
+        self.assertIn("hasil nyata", [m.get("content") for m in agent.messages])
+        self.assertTrue(any(m.get("content") == "cek dua hal" for m in agent.messages))
+        # The interrupted call is labelled, not fabricated.
+        placeholder = next(m for m in agent.messages if m.get("tool_call_id") == "2")
+        self.assertIn("did not complete", placeholder["content"])
 
     def test_background_process_lifecycle_is_tracked_pollable_and_killable(self):
         tools = importlib.import_module("zeline.tools")

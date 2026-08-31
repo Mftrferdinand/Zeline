@@ -20,6 +20,7 @@ from zeline import compaction
 from zeline import skills
 from zeline.tools import ToolExecutor
 from zeline import project_rules
+from zeline import tool_protocol
 from zeline import usage_stats
 
 
@@ -214,17 +215,21 @@ class Zeline:
             return False
 
     def _drop_incomplete_tail(self) -> None:
-        """Buang ekor pesan yang belum lengkap setelah turn dibatalkan.
+        """Perbaiki tool-call yang menggantung, jangan buang pekerjaannya.
 
         Protocol tool-call mewajibkan setiap ``assistant(tool_calls)`` diikuti
-        SEMUA hasil ``tool``-nya. Kalau /stop datang saat tool masih jalan,
-        pasangan itu tidak lengkap dan panggilan berikutnya akan ditolak
-        provider. Maka ekor tak lengkap dibuang agar sesi tetap bisa dipakai.
+        SEMUA hasil ``tool``-nya; kalau tidak, provider menolak turn berikutnya.
+        Dulu ekor tak lengkap itu dibuang — sesi bisa dipakai lagi, tapi hasil
+        tool yang SUDAH selesai dan rencana yang ditulis model ikut hilang, jadi
+        turn berikutnya mengulang perintah yang sama.
+
+        Sekarang setiap call id yang tak terjawab diberi hasil placeholder yang
+        menyatakan panggilan itu tidak selesai. History jadi valid tanpa
+        kehilangan konteks, dan model bisa memutuskan sendiri perlu mengulang
+        atau tidak. Nama method dipertahankan karena sudah dipakai pemanggil
+        lain (dan dipin oleh test).
         """
-        while self.messages and self.messages[-1].get("role") == "tool":
-            self.messages.pop()
-        if self.messages and self.messages[-1].get("role") == "assistant" and self.messages[-1].get("tool_calls"):
-            self.messages.pop()
+        self.messages = tool_protocol.repair(self.messages)
 
     def _call_llm(
         self,
