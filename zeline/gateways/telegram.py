@@ -38,10 +38,15 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 MAX_ARCHIVE_ENTRIES = 512
 MAX_ARCHIVE_TEXT_BYTES = 256 * 1024
 REPOSITORY_FILE = config.DATA_DIR / "repository.md"
-# Setelah berapa detik turn tanpa kabar, bubble status "⏳ Working — …" muncul.
-# Cukup lama supaya tanya-jawab ringan tetap bersih tanpa bubble, tapi cukup
-# cepat supaya user tidak merasa didiamkan saat agent kerja panjang.
+# Setelah berapa detik bubble status muncul. DUA ambang, karena "sedang kerja"
+# dan "sedang menunggu model" adalah keadaan yang berbeda:
+#   _STATUS_AFTER_SECONDS  → header 🧑🏻‍💻 Working, HANYA setelah ada tool jalan.
+#   _THINKING_AFTER_SECONDS→ header 💭 Thinking, untuk turn tanpa tool sama sekali
+#                            (sapaan/tanya ringan) yang kebetulan lambat.
+# Dulu hanya ada satu ambang berbasis waktu, jadi "hallo" yang kena provider
+# lambat ikut dilabeli "Working" padahal nol pekerjaan dilakukan.
 _STATUS_AFTER_SECONDS = 30.0
+_THINKING_AFTER_SECONDS = 60.0
 REPOSITORY_HEADER = "## Repository Archive\n\n| # | Repository | Link |\n|---|------------|------|\n"
 _URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 
@@ -395,18 +400,31 @@ def _format_agent_error(message: str) -> str:
     return f"⚠️ Zeline hit a problem — {message}"
 
 
+#: Emoji header status kerja. Diminta user: 🧑🏻‍💻, bukan ⏳ — jam pasir dipakai
+#: untuk menunggu, dan menunggu bukan hal yang sama dengan mengerjakan.
+WORKING_ICON = "🧑🏻‍💻"
+
+#: Header untuk turn yang cuma menunggu model (belum satu pun tool jalan).
+THINKING_ICON = "💭"
+
+
 def _working_status_text(
     elapsed_seconds: float,
     *,
     iteration: int | None = None,
     maximum: int | None = None,
     remaining_seconds: float | None = None,
+    working: bool = True,
 ) -> str:
     """Header status live: bukti agent MASIH kerja, bukan menggantung diam.
 
-    Format satu baris: waktu jalan + langkah ke berapa + sisa budget turn.
-    Tidak pernah menyalahkan model/provider (mis. 'slow to respond') — user
-    hanya perlu tahu ini masih berjalan dan berapa lama lagi batasnya.
+    Format satu baris: waktu jalan + bahwa /stop tersedia. Tidak pernah
+    menyalahkan model/provider (mis. 'slow to respond') — user hanya perlu tahu
+    ini masih berjalan.
+
+    ``working=False`` dipakai saat NOL tool sudah jalan: labelnya "Thinking",
+    bukan "Working". Menyebut sapaan yang lambat sebagai "Working" itu salah —
+    tidak ada pekerjaan yang dilakukan, yang lama adalah provider.
     """
     minutes = int(elapsed_seconds // 60)
     seconds = int(elapsed_seconds % 60)
@@ -414,7 +432,9 @@ def _working_status_text(
     # Keep the user-facing heartbeat deliberately minimal. Iteration/remaining
     # are still tracked internally for turn control, but exposing them makes
     # every ordinary chat look like a noisy job runner.
-    return f"⏳ Working — {clock} · /stop to cancel"
+    if working:
+        return f"{WORKING_ICON} Working — {clock} · /stop to cancel"
+    return f"{THINKING_ICON} Thinking — {clock} · /stop to cancel"
 
 
 def _provider_wait_text(wait_seconds: float, model: str = "") -> str:
@@ -459,9 +479,17 @@ class _LiveStatus:
         self._lock = threading.Lock()
 
     def _header(self) -> str:
-        """Baris status hidup; kosong selama turn masih pendek."""
+        """Baris status hidup; kosong selama turn masih pendek.
+
+        Ambangnya tergantung apakah ada pekerjaan NYATA. Tanpa satu pun tool
+        jalan (sapaan/tanya ringan), yang terjadi hanyalah menunggu provider:
+        itu diberi ambang lebih longgar dan label "Thinking". Begitu tool
+        pertama jalan, statusnya jadi "Working" dengan ambang normal.
+        """
         elapsed = time.monotonic() - self.turn_started
-        if elapsed < _STATUS_AFTER_SECONDS:
+        working = bool(self.lines)
+        threshold = _STATUS_AFTER_SECONDS if working else _THINKING_AFTER_SECONDS
+        if elapsed < threshold:
             return ""
         budget = float(getattr(config, "MAX_TURN_SECONDS", 0) or 0)
         remaining = (budget - elapsed) if budget else None
@@ -470,6 +498,7 @@ class _LiveStatus:
             iteration=self.iteration,
             maximum=self.maximum,
             remaining_seconds=remaining,
+            working=working,
         )
 
     def set_iteration(self, current: int | None, maximum: int | None) -> None:
