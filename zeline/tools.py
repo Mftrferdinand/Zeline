@@ -41,7 +41,7 @@ from zeline import offload
 from zeline import skills
 from zeline import network_routes
 from zeline import interaction
-from zeline import checkpoints, custom_tools, formatters
+from zeline import checkpoints, custom_tools, formatters, openapi_tools
 from zeline import plugins as plugin_bus
 from zeline import tool_index
 from zeline import mcp as mcp_module
@@ -1928,6 +1928,14 @@ class ToolExecutor:
             registry = custom_tools.CustomToolRegistry(profile)
             if registry.tools or registry.errors:
                 self.custom = registry
+        # Operator-owned OpenAPI specs describe remote HTTP operations. Keep them
+        # on operator profiles because their authentication comes from local
+        # configuration, and isolate loader failures exactly like custom Python.
+        self.openapi: openapi_tools.OpenApiRegistry | None = None
+        with contextlib.suppress(Exception):
+            registry = openapi_tools.OpenApiRegistry(profile)
+            if registry.tools or registry.errors:
+                self.openapi = registry
         # Plugin hooks wrap every tool call, so a failure while loading them
         # must leave the agent fully functional and simply unhooked.
         self.plugins: plugin_bus.PluginBus | None = None
@@ -2285,6 +2293,9 @@ class ToolExecutor:
             # A schema failure must not blank the native tool list with it.
             with contextlib.suppress(Exception):
                 native.extend(self.custom.schemas())
+        if self.openapi is not None:
+            with contextlib.suppress(Exception):
+                native.extend(self.openapi.schemas())
         return native
 
     @property
@@ -2351,6 +2362,10 @@ class ToolExecutor:
             if self.custom is None or not self.custom.has_tool(name):
                 return f"ERROR: custom tool '{name}' is not registered."
             return self.custom.call(name, args)
+        if name.startswith(openapi_tools.TOOL_PREFIX):
+            if self.openapi is None or not self.openapi.has_tool(name):
+                return f"ERROR: OpenAPI tool '{name}' is not registered."
+            return self.openapi.call(name, args)
         # Tool MCP di-dispatch ke registry (hanya untuk profile workspace/full).
         if self.mcp is not None and name.startswith(mcp_module.MCP_TOOL_PREFIX):
             if not self.mcp.has_tool(name):

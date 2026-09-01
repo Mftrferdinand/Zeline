@@ -36,7 +36,7 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 - **Kontrol browser sungguhan** — tool `browser` mengendalikan Chromium/Chrome terpasang melalui Chrome DevTools Protocol (buka, klik, ketik, baca, screenshot), sehingga halaman yang dirender JavaScript atau berada di balik login bisa dijangkau — hal yang tidak bisa dilakukan pengambilan HTML mentah. Tanpa dependensi Playwright atau Puppeteer
 - **Job terjadwal di dalam gateway** — `zeline cron` menjalankan job berbasis interval atau ekspresi cron di dalam proses gateway yang sedang berjalan, memakai config, kunci provider, dan workspace yang sama, lalu mengirim hasilnya ke chat pemilik job
 - **Kecerdasan language server** — `code_intel` menanyakan diagnostics, definisi, referensi, hover, dan simbol ke server LSP sungguhan; server dicari di PATH dan tidak pernah diunduh, dan jatuh ke linter proyek bila tidak ada yang terpasang
-- **Titik ekstensi operator** — hook plugin Python dapat mengaudit, menulis ulang, atau memblokir panggilan tool apa pun sebelum dijalankan, dan berkas Python biasa bisa dimuat sebagai tool `custom_*`
+- **Titik ekstensi operator** — hook plugin Python dapat mengaudit, menulis ulang, atau memblokir panggilan tool apa pun sebelum dijalankan, berkas Python biasa bisa dimuat sebagai tool `custom_*`, dan dokumen OpenAPI 3 lokal otomatis menjadi tool `api_*` tanpa wrapper manual
 - **Undo** — setiap tulis dan edit di-snapshot lebih dulu; `zeline undo` menampilkan dan memulihkannya
 - **Human-in-the-loop** — `ask_user` menjeda proses untuk bertanya satu hal, dengan pilihan yang bisa ditap di gateway perpesanan dan prompt keyboard di CLI
 - **Format saat menulis** — sesudah agent menulis atau mengedit berkas, formatter proyek yang sudah terpasang (ruff, gofmt, biome, prettier, rustfmt, shfmt, …) dijalankan, sehingga kode hasil agent mengikuti gaya repo; dapat diatur per ekstensi dan tidak pernah menghapus tulisan yang gagal diformat
@@ -210,6 +210,8 @@ zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions
 zeline tools workspace <path>  Set the owner workspace root
+zeline tools openapi-add FILE  Install a local OpenAPI 3 YAML/JSON document
+zeline tools openapi           List parsed API operations and credential variable names
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
 zeline config show             Print configuration with masked secrets
@@ -245,6 +247,7 @@ API key dan token gateway tidak pernah disertakan.
 ## Keamanan
 
 - Jaga agar `~/.zeline/`, `.env`, kunci penyedia, dan token bot tidak masuk ke Git.
+- Kredensial OpenAPI hanya dibaca dari `~/.zeline/.env` (`ZELINE_OPENAPI_<FILE>_<SCHEME>`), tidak pernah dikirim dalam schema model, dan hanya aktif pada profil `workspace`/`full`.
 - Pengguna gateway menerima profil `safe` secara default.
 - Webhook memerlukan token rahasia dan terikat ke loopback secara default.
 - Memori diberi namespace berdasarkan identitas platform, misalnya `telegram:123` atau `webhook:alice`.
