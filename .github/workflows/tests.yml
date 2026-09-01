@@ -6,6 +6,23 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    # Correctness-only gate (see [tool.ruff.lint] in pyproject.toml). It must
+    # stay fast and green so a real failure means a real bug, not style drift.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: python -m pip install "ruff>=0.16"
+      - name: Lint for correctness errors
+        run: ruff check zeline tests
+      - name: Report style debt without failing the build
+        if: always()
+        run: ruff check zeline tests --select ALL --statistics || true
+
   test:
     runs-on: ubuntu-latest
     strategy:

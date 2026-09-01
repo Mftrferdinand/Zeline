@@ -34,7 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1.2"]
+dev = ["build>=1.2", "ruff>=0.16"]
 
 [project.scripts]
 zeline = "zeline.cli:main"
@@ -56,6 +56,19 @@ zeline = ["SOUL.md", "skills/*.md", "skills/**/*", "zenith_tools/**/*.py"]
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["build", "dist", "zeline/skills"]
+
+[tool.ruff.lint]
+# The gate starts at correctness rules only: undefined names, broken f-strings,
+# unreachable/invalid syntax, mistaken comparisons. These are bugs, not taste,
+# so CI can block on them without a mass reformat of a working codebase.
+# Style and typing-modernization rules are tracked separately -- see
+# CONTRIBUTING.md -- and get promoted into `select` as they are cleared.
+select = ["E9", "F63", "F7", "F82"]
 
 [tool.unittest]
 start-directory = "tests"
