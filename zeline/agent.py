@@ -80,8 +80,14 @@ class _TurnCancelled(Exception):
     """Sinyal internal: user menekan /stop di tengah turn.
 
     Bukan error yang perlu ditampilkan — pemanggil menerjemahkannya menjadi
-    balasan "Stopped." biasa.
+    balasan ``CANCELLED_REPLY`` biasa.
     """
+
+
+#: Balasan sentinel untuk turn yang dibatalkan user. Gateway MEMBANDINGKAN
+#: string ini untuk menekan pesan kedua setelah konfirmasi /stop-nya sendiri,
+#: jadi ia harus satu sumber, bukan literal yang diulang di tiap gateway.
+CANCELLED_REPLY = "Stopped."
 
 
 def _parse_response(text: str) -> dict[str, Any]:
@@ -742,7 +748,7 @@ class Zeline:
             # supaya pesan berikutnya di sesi ini tidak ditolak provider.
             self._drop_incomplete_tail()
             self._trim_history()
-            return "Stopped."
+            return CANCELLED_REPLY
         finally:
             self._should_stop = None
             self._turn_skill_context = ""
@@ -762,7 +768,7 @@ class Zeline:
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
-                return "Stopped."
+                return CANCELLED_REPLY
             # Batas waktu wall-clock per turn: kalau sudah lewat, jangan lanjut
             # loop tool (mis. web_search yang gagal berulang) — paksa jawaban
             # final dari data yang ada. Ini mencegah "Processing" 10 menit.
@@ -774,7 +780,7 @@ class Zeline:
                 on_iteration(iteration, config.MAX_TOOL_ROUNDS)
             message = self._call_llm(on_stream_delta=on_stream_delta)
             if should_stop and should_stop():
-                return "Stopped."
+                return CANCELLED_REPLY
             tool_calls = message.get("tool_calls")
             if not tool_calls:
                 content = str(message.get("content") or "").strip()
@@ -930,7 +936,7 @@ class Zeline:
         merangkum bukti yang sudah ada menjadi jawaban.
         """
         if should_stop and should_stop():
-            return "Stopped."
+            return CANCELLED_REPLY
         self.messages.append(
             {
                 "role": "user",

@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from zeline.agent import Zeline, ZelineError
+from zeline.agent import CANCELLED_REPLY, Zeline, ZelineError
 from zeline import config
 
 # Direktori data mengikuti app_data (menghormati ZELINE_APP_DATA_DIR) supaya
@@ -568,7 +568,7 @@ def run_generation(
         error = f"{exc.__class__.__name__}: {str(exc)[:200]}"
 
     streamed = "".join(full)
-    cancelled = is_cancelled(session_id) or (isinstance(final, str) and final == "Stopped.")
+    cancelled = is_cancelled(session_id) or (isinstance(final, str) and final == CANCELLED_REPLY)
 
     # Provider non-streaming: tidak ada delta sama sekali → kirim final sebagai teks.
     if not error and not cancelled and final and not streamed:
