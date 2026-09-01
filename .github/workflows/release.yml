@@ -119,3 +119,41 @@ jobs:
             dist/install.sh
             dist/install.ps1
             dist/SHA256SUMS
+      - name: Upload distributions for the PyPI job
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypi-dist
+          path: |
+            dist/zeline-*.whl
+            dist/zeline-*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-pypi:
+    # Runs only after the artifacts above passed checksum + metadata
+    # verification, and publishes those same files -- never a rebuild, so the
+    # bytes on PyPI match the bytes attested in the GitHub release.
+    needs: build-release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/zeline
+    permissions:
+      # Trusted Publishing (OIDC). No API token is stored in this repository.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist
+      - name: Only the wheel and sdist may be uploaded
+        run: |
+          ls -l dist
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+          test -n "$(find dist -maxdepth 1 -name 'zeline-*-py3-none-any.whl')"
+          test -n "$(find dist -maxdepth 1 -name 'zeline-*.tar.gz')"
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+          print-hash: true
