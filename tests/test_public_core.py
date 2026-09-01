@@ -1343,12 +1343,23 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # membuat bubble progres baru (tidak ada sendMessage) selama menunggu.
         telegram = importlib.import_module("zeline.gateways.telegram")
         done = threading.Event()
-        with mock.patch.object(telegram, "_api_call") as api:
+        # TUNGGU tick pertama, jangan sleep dengan durasi tetap. Versi lama
+        # sleep 0.05s lalu langsung set(done); di runner yang sibuk (macOS CI)
+        # thread heartbeat bisa belum terjadwal sama sekali sehingga daftar
+        # panggilan kosong dan test gagal tanpa ada bug produk.
+        ticked = threading.Event()
+
+        def record(_api, method, **_kwargs):
+            if method == "sendChatAction":
+                ticked.set()
+            return {"result": {"message_id": 7}}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=record) as api:
             live = telegram._LiveStatus("bot-api", 42, model="m")
             worker = telegram._start_working_heartbeat("bot-api", 42, done, interval=0.01, status=live)
-            time.sleep(0.05)
+            self.assertTrue(ticked.wait(10), "heartbeat tidak pernah me-refresh 'typing'")
             done.set()
-            worker.join(timeout=1)
+            worker.join(timeout=5)
         methods = [c.args[1] for c in api.call_args_list if len(c.args) > 1]
         self.assertIn("sendChatAction", methods)  # typing terus di-refresh
         self.assertNotIn("sendMessage", methods)  # tapi tidak bikin bubble 'Processing'
