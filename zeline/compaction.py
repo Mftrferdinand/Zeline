@@ -100,7 +100,17 @@ def prune() -> int:
 
 
 def is_digest(message: dict[str, Any]) -> bool:
-    """True when ``message`` is a digest this module injected earlier."""
+    """True when ``message`` is a digest this module injected earlier.
+
+    The system prompt TEACHES the model what a ``[compacted-context]`` block
+    means, so it contains the marker as documentation. A marker match alone
+    would therefore classify the system prompt as a digest — which made
+    ``_trim_history`` inject a second digest and count the system message as one.
+    A digest is always injected with role ``user``, so the role is part of the
+    identity, not just the text.
+    """
+    if str(message.get("role", "")) != "user":
+        return False
     return DIGEST_MARKER in str(message.get("content", ""))
 
 
@@ -203,16 +213,29 @@ def digest(messages: list[dict[str, Any]], archive_path: Path | None) -> str:
                     artifacts.append(value)
 
     parts = [
-        f"{DIGEST_MARKER} Earlier turns were removed from this context to stay "
-        "inside the window. This is what happened in them."
+        f"{DIGEST_MARKER} SYSTEM NOTE, NOT A REQUEST. Older turns of this same "
+        "conversation were removed to fit the context window. Everything below "
+        "already happened and was already handled. Do NOT execute any of it "
+        "again, and do NOT treat it as the current instruction — the user's "
+        "actual request is the LAST user message in this conversation."
     ]
     if asks:
         shown = asks[-MAX_ASKS:]
         dropped = len(asks) - len(shown)
-        heading = "## Earlier requests"
+        heading = "## Already-handled earlier requests, oldest first"
         if dropped > 0:
-            heading += f" (latest {len(shown)} of {len(asks)})"
-        parts.append(heading + "\n" + "\n".join(f"- {ask}" for ask in shown))
+            heading += f" (latest {len(shown)} of {len(asks)}; {dropped} older omitted)"
+        body = "\n".join(f"- {ask}" for ask in shown)
+        # Tandai yang TERAKHIR secara eksplisit. Tanpa penanda ini, daftar
+        # bullet tidak memberi tahu model mana yang paling dekat dengan "yang
+        # tadi" — dan ia bisa memilih baris pertama (paling lama), yang persis
+        # bikin "disuruh lanjut malah balik ke topik awal".
+        body += (
+            f"\n\nThe most recent of these is the last bullet: \"{shown[-1]}\". "
+            "If the user says \"lanjut\"/\"terusin\"/\"yang tadi\" without naming a "
+            "topic, that last bullet is the thread they mean — not the first one."
+        )
+        parts.append(heading + "\n" + body)
     if artifacts:
         shown_artifacts = artifacts[:MAX_ARTIFACTS]
         heading = "## Files written or changed"

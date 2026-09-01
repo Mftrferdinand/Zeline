@@ -22,6 +22,7 @@ import requests
 from zeline import config
 from zeline import skill_publish
 from zeline import interaction
+from zeline.agent import CANCELLED_REPLY as _CANCELLED_SENTINEL
 from zeline.agent import ZelineError
 
 API_TEMPLATE = "https://api.telegram.org/bot{token}"
@@ -1073,6 +1074,45 @@ def _start_update_reply(chat_id: int, allowed: list[Any]) -> str:
     )
 
 
+#: Jendela di mana /stop berikutnya untuk identity yang sama dianggap dobel-tap
+#: dan tidak dibalas lagi. Cukup panjang untuk menutupi jeda polling + retry
+#: Telegram, cukup pendek supaya /stop iseng jam berikutnya tetap dijawab.
+_STOP_ECHO_SECONDS = 90.0
+
+_recent_stops: dict[str, float] = {}
+_recent_stops_lock = threading.Lock()
+
+
+def _note_stop(identity: str) -> None:
+    """Catat bahwa /stop untuk identity ini BARU SAJA dikonfirmasi."""
+    with _recent_stops_lock:
+        now = time.monotonic()
+        _recent_stops[identity] = now
+        # Buang entri kedaluwarsa supaya dict tidak tumbuh di bot ramai.
+        for key, when in list(_recent_stops.items()):
+            if now - when > _STOP_ECHO_SECONDS:
+                _recent_stops.pop(key, None)
+
+
+def _stopped_recently(identity: str) -> bool:
+    with _recent_stops_lock:
+        when = _recent_stops.get(identity)
+    return when is not None and (time.monotonic() - when) <= _STOP_ECHO_SECONDS
+
+
+def _consume_stop(identity: str) -> bool:
+    """True bila turn ini yang dibatalkan oleh /stop — dan tandai sudah dipakai.
+
+    Dipakai worker turn untuk tahu bahwa pembatalan SUDAH dilaporkan oleh
+    handler /stop, sehingga ia tidak mengirim "Stopped." sebagai pesan kedua.
+    """
+    with _recent_stops_lock:
+        when = _recent_stops.get(identity)
+        if when is None or (time.monotonic() - when) > _STOP_ECHO_SECONDS:
+            return False
+        return True
+
+
 def _handle_command_update(
     api: str,
     text: str,
@@ -1156,12 +1196,24 @@ def _handle_command_update(
         status = sessions.status(identity)
         stopped = sessions.stop(identity)
         title = str(status.get("title") or "Active task").strip()
-        # Jelas: turn dihentikan PAKSA (proses shell/build ikut dibunuh), tapi
-        # sesi + history tetap ada sehingga user bisa langsung lanjut.
-        reply = (
-            f"❄️ Stopped — {title}\nThe running step was force-killed. Session and history are intact."
-            if stopped else "No active task to stop."
-        )
+        if stopped:
+            _note_stop(identity)
+            # SATU pesan saja. Turn yang dibatalkan TIDAK ikut mengirim
+            # "Stopped." (lihat _send_agent_reply) dan refleksi dilewati, jadi
+            # inilah satu-satunya balasan untuk /stop.
+            reply = (
+                f"❄️ Stopped — {title}\n"
+                "The running step was force-killed. Session and history are intact."
+            )
+        elif _stopped_recently(identity):
+            # /stop kedua (dobel-tap, atau update yang sama dikirim ulang
+            # Telegram) tiba setelah turn benar-benar berhenti. Membalas
+            # "No active task to stop." di sini yang bikin satu pembatalan
+            # terlihat seperti tiga pesan dan bunyinya seolah /stop gagal.
+            # Diam adalah jawaban yang benar: pembatalan sudah dikonfirmasi.
+            return True
+        else:
+            reply = "No active task to stop."
         _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
         return True
     if command == "/new":
@@ -2143,6 +2195,14 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             live.finalize()
         else:
             live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
+    # /stop sudah mengirim SATU konfirmasi sendiri ("❄️ Stopped — <judul>").
+    # Agent mengembalikan sentinel "Stopped." untuk turn yang sama, jadi
+    # mengirimnya berarti dua pesan untuk satu pembatalan — dan refleksi di
+    # bawah bisa menambah pesan ketiga. Turn yang dibatalkan berhenti di sini:
+    # tidak ada balasan, tidak ada refleksi, tidak ada bubble sisa.
+    if isinstance(reply, str) and reply.strip() == _CANCELLED_SENTINEL and _consume_stop(identity):
+        live.clear()
+        return
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
     # Bubble PERTAMA di-reply ke pesan user (reply_to_message_id) supaya jelas

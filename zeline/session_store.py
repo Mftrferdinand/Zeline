@@ -32,6 +32,15 @@ from zeline import config
 MAX_STORED_MESSAGES = 60
 MAX_STORED_CHARS = 200_000
 
+#: Berapa kali ``limit`` kandidat yang ditarik sebelum peringkat difusikan.
+#: Fusi hanya bisa mengangkat hasil yang ADA di pool, jadi pool sebesar limit
+#: membuat fusi tidak berpengaruh sama sekali.
+RANK_POOL_FACTOR = 5
+
+#: Judul yang tidak menandai topik apa pun, jadi tidak bisa dipakai sebagai
+#: pembatas thread di ``last_thread``.
+_UNTITLED = {"", "new session", "active task"}
+
 
 def _db_path() -> Path:
     return config.DATA_DIR / "sessions.db"
@@ -198,8 +207,19 @@ class SessionPersistence:
     def search_archive(self, identity: str, query: str, limit: int = 8) -> list[dict[str, Any]]:
         """Cari transkrip percakapan lama (FTS5) untuk identity ini.
 
-        Kembalikan potongan pesan paling relevan + timestamp, terbaru diprioritaskan
-        saat skor seri. Ini yang dipakai tool recall_history.
+        Peringkat = FUSI relevansi + kebaruan, bukan bm25 murni. Alasannya
+        terukur: dengan ``ORDER BY bm25(), ts DESC``, kebaruan cuma tie-break dan
+        praktis tidak pernah dipakai karena skor bm25 hampir selalu berbeda.
+        Topik LAMA yang panjang dan sering menyebut kata umum ("lanjut") menang
+        atas topik TERBARU — probe di device ini: query 'lanjut' mengembalikan
+        8/8 turn topik lama dan 0 turn topik terbaru. Itu persis keluhan
+        "disuruh lanjut malah balik ke sesi pertama".
+
+        Fusi peringkat (Borda): ambil kandidat lebih banyak dari ``limit``, beri
+        peringkat menurut bm25 dan menurut ``ts`` menurun, lalu urutkan menurut
+        jumlah kedua peringkat (seri → yang terbaru menang). Efeknya: kecocokan
+        kata kunci yang benar-benar kuat masih bisa menang dari masa lalu, tapi
+        kecocokan yang setara selalu dimenangkan percakapan terakhir.
         """
         q = (query or "").strip()
         if not q:
@@ -210,25 +230,80 @@ class SessionPersistence:
         if not terms:
             return []
         match_expr = " OR ".join(terms)
+        want = max(1, int(limit))
+        pool = max(want * RANK_POOL_FACTOR, want)
         try:
             with self._lock, closing(self._connect()) as conn, conn:
                 rows = conn.execute(
-                    "SELECT a.role, a.content, a.ts, a.title "
+                    "SELECT a.role, a.content, a.ts, a.title, bm25(archive_fts) AS score "
                     "FROM archive_fts f JOIN archive a ON a.id = f.rowid "
                     "WHERE f.key = ? AND archive_fts MATCH ? "
-                    "ORDER BY bm25(archive_fts), a.ts DESC LIMIT ?",
-                    (_key(identity), match_expr, int(limit)),
+                    "ORDER BY score LIMIT ?",
+                    (_key(identity), match_expr, int(pool)),
                 ).fetchall()
         except Exception:
             return []
-        out: list[dict[str, Any]] = []
-        for role, content, ts, title in rows:
-            out.append({
-                "role": role,
-                "content": content,
-                "when": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"),
-                "title": title or "",
-            })
+        if not rows:
+            return []
+        # rows sudah terurut menurut relevansi → posisinya ADALAH peringkat
+        # relevansi. Kita pakai indeks posisi (bukan identitas objek baris:
+        # dua baris dengan nilai identik bisa saling menimpa di dict).
+        relevance_rank = list(range(len(rows)))
+        recency_order = sorted(relevance_rank, key=lambda i: float(rows[i][2] or 0.0), reverse=True)
+        recency_rank = [0] * len(rows)
+        for rank, index in enumerate(recency_order):
+            recency_rank[index] = rank
+        fused = sorted(
+            relevance_rank,
+            key=lambda i: (relevance_rank[i] + recency_rank[i], -float(rows[i][2] or 0.0)),
+        )[:want]
+        return [self._archive_row(rows[i][0], rows[i][1], rows[i][2], rows[i][3]) for i in fused]
+
+    @staticmethod
+    def _archive_row(role: Any, content: Any, ts: Any, title: Any) -> dict[str, Any]:
+        return {
+            "role": role,
+            "content": content,
+            "when": datetime.fromtimestamp(float(ts or 0.0)).strftime("%Y-%m-%d %H:%M"),
+            "title": title or "",
+        }
+
+    def last_thread(self, identity: str, limit: int = 12) -> list[dict[str, Any]]:
+        """Turn terakhir yang masih SATU topik dengan pesan paling baru.
+
+        Ini anchor deterministik untuk "lanjut / lanjutin / terusin". Pencarian
+        kata kunci tidak bisa menjawab itu — "lanjut" bukan topik, ia rujukan ke
+        *yang terakhir dikerjakan*. Kita ambil ``title`` dari turn terbaru lalu
+        mundur selama title-nya masih sama, jadi hasilnya satu percakapan utuh
+        dan tidak tercampur topik sebelumnya.
+
+        Judul kosong/``New Session`` tidak bisa dipakai sebagai pembatas topik,
+        jadi untuk kasus itu kita jatuh ke N turn terakhir secara kronologis.
+        """
+        want = max(1, int(limit))
+        try:
+            with self._lock, closing(self._connect()) as conn, conn:
+                rows = conn.execute(
+                    "SELECT role, content, ts, title FROM archive WHERE key = ? "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (_key(identity), want * 4),
+                ).fetchall()
+        except Exception:
+            return []
+        if not rows:
+            return []
+        head_title = (rows[0][3] or "").strip()
+        if head_title and head_title.lower() not in _UNTITLED:
+            same: list[Any] = []
+            for row in rows:
+                if (row[3] or "").strip() != head_title:
+                    break
+                same.append(row)
+            rows = same[:want]
+        else:
+            rows = rows[:want]
+        out = [self._archive_row(r[0], r[1], r[2], r[3]) for r in rows]
+        out.reverse()  # kronologis
         return out
 
     def recent_archive(self, identity: str, limit: int = 10) -> list[dict[str, Any]]:

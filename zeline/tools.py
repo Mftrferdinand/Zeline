@@ -71,6 +71,34 @@ class ToolDef:
 SAFE_PROFILES = {"safe", "workspace", "full"}
 
 
+#: Kata yang HANYA berarti "teruskan pekerjaan terakhir" dan bukan topik.
+#: Query yang seluruhnya tersusun dari kata-kata ini tidak boleh dicari sebagai
+#: kata kunci — lihat ``ToolExecutor._recall_history``.
+_CONTINUATION_WORDS = {
+    "lanjut", "lanjutin", "lanjutkan", "lanjutan", "terusin", "teruskan", "terus",
+    "gas", "gaskan", "next", "continue", "resume", "go", "proceed", "on",
+    "yang", "yg", "tadi", "barusan", "kemarin", "sebelumnya", "itu", "aja", "dong",
+    "oy", "woy", "p", "semua", "sisanya", "sisa", "kerjain", "kerjakan", "lagi",
+    "backlog", "pending", "belum", "selesai", "please", "pls", "the", "rest",
+    "what", "were", "we", "doing", "last", "again",
+}
+
+
+def _is_continuation_query(query: str) -> bool:
+    """True bila query cuma bilang "lanjut" tanpa menyebut topik apa pun.
+
+    Ambil kata-katanya; jika SEMUA kata ada di ``_CONTINUATION_WORDS``, query
+    ini tidak membawa informasi topik sama sekali. Mencarinya sebagai kata kunci
+    mengembalikan percakapan terlama yang paling sering menyebut "lanjut" —
+    bukan yang terakhir dikerjakan. Sebaliknya "lanjut invoice" MEMBAWA topik
+    ("invoice"), jadi tetap dicari sebagai kata kunci.
+    """
+    words = [w for w in re.findall(r"[\w]+", (query or "").lower(), flags=re.UNICODE)]
+    if not words:
+        return True
+    return all(word in _CONTINUATION_WORDS for word in words)
+
+
 def _resolve_workspace_path(raw_path: str, workspace: Path) -> Path:
     """Resolve a relative/absolute user path and keep it inside workspace."""
     requested = Path(raw_path).expanduser()
@@ -2104,6 +2132,13 @@ class ToolExecutor:
         Ini yang bikin Zeline tidak amnesia lintas /new: 'lanjut file tadi' →
         cari di archive, bukan nebak file workspace. Sub-agent (identity ::sub)
         tidak punya archive sendiri, jadi aman mengembalikan kosong.
+
+        Query kontinuasi murni ("lanjut", "lanjutin", "terusin", "yang tadi")
+        TIDAK dicari sebagai kata kunci. Itu bukan topik — itu rujukan ke
+        pekerjaan TERAKHIR. Dicari sebagai kata kunci, ia justru mengembalikan
+        topik terlama yang paling sering menyebut kata "lanjut", yang persis
+        bikin bot balik ke sesi pertama. Untuk query seperti itu kita pakai
+        anchor deterministik ``last_thread`` (thread terbaru, satu topik).
         """
         from zeline.session_store import SessionPersistence
         try:
@@ -2111,15 +2146,26 @@ class ToolExecutor:
         except Exception as exc:
             return f"ERROR: cannot open history archive: {exc}"
         q = (query or "").strip()
-        rows = store.search_archive(self.identity, q) if q else store.recent_archive(self.identity)
+        continuation = not q or _is_continuation_query(q)
+        if continuation:
+            rows = store.last_thread(self.identity)
+            if not rows:
+                rows = store.recent_archive(self.identity)
+            header = (
+                "MOST RECENT thread in this chat, in order (this is what "
+                "'lanjut/terusin/yang tadi' refers to — continue THIS, not an "
+                "older topic):"
+            )
+        else:
+            rows = store.search_archive(self.identity, q)
+            header = f"Past conversation matching '{q}' (most relevant and most recent first):"
         if not rows:
-            if q:
-                return f"No past conversation found matching '{q}'. This chat has no earlier transcript on that topic."
-            return "No earlier conversation archived for this chat yet."
-        header = (
-            f"Past conversation matching '{q}' (most relevant first):"
-            if q else "Most recent earlier turns in this chat (chronological):"
-        )
+            # Untuk query kontinuasi kita TIDAK mencari topik apa pun, jadi
+            # "tidak ada yang cocok dengan 'lanjut'" akan menyesatkan: yang
+            # benar adalah chat ini belum punya transkrip sama sekali.
+            if continuation:
+                return "No earlier conversation archived for this chat yet."
+            return f"No past conversation found matching '{q}'. This chat has no earlier transcript on that topic."
         lines = [header, ""]
         for r in rows:
             who = "User" if r["role"] == "user" else "You"
