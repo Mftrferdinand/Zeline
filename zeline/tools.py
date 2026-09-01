@@ -792,15 +792,15 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
     except requests.RequestException as exc:
         return f"ERROR: network error contacting the vision provider ({exc.__class__.__name__}). Try again."
     if not response.ok:
-        hint = ""
-        if response.status_code in (401, 403):
-            hint = " — the API key is invalid or unauthorized."
-        elif response.status_code == 404:
+        # Arti kode diambil dari tabel bersama (agent.PROVIDER_STATUS_HINTS) —
+        # 403 = kuota habis, bukan kunci invalid. Yang khas-vision hanya 404
+        # dan status tak terduga (biasanya model tanpa input gambar).
+        from zeline.agent import PROVIDER_STATUS_HINTS
+
+        if response.status_code == 404:
             hint = f" — the model '{config.MODEL}' was not found or does not accept image input; switch to a vision-capable model with /model."
-        elif response.status_code == 429:
-            hint = " — rate limited or out of credits on the provider."
-        elif response.status_code >= 500:
-            hint = " — the provider is having a server-side problem; try again shortly."
+        elif response.status_code in PROVIDER_STATUS_HINTS:
+            hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
         else:
             hint = " — the active model may not support image input; switch to a vision-capable model."
         return f"ERROR: vision provider HTTP {response.status_code}{hint}"
@@ -864,15 +864,14 @@ def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1
     except requests.RequestException as exc:
         return f"ERROR: network error contacting the image provider ({exc.__class__.__name__}). Try again."
     if not response.ok:
-        hint = ""
-        if response.status_code in (401, 403):
-            hint = " — the API key is invalid or unauthorized."
-        elif response.status_code == 404:
+        from zeline.agent import PROVIDER_STATUS_HINTS
+
+        if response.status_code == 404:
             hint = f" — the model '{image_model}' or the images endpoint was not found on this provider."
-        elif response.status_code == 429:
-            hint = " — rate limited or out of credits on the provider."
-        elif response.status_code >= 500:
-            hint = " — the provider is having a server-side problem; try again shortly."
+        elif response.status_code in PROVIDER_STATUS_HINTS:
+            hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
+        else:
+            hint = ""
         return f"ERROR: image provider HTTP {response.status_code}{hint}"
     try:
         item = response.json()["data"][0]

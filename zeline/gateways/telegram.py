@@ -23,6 +23,7 @@ from zeline import config
 from zeline import skill_publish
 from zeline import interaction
 from zeline.agent import CANCELLED_REPLY as _CANCELLED_SENTINEL
+from zeline.agent import PROVIDER_STATUS_PREFIX
 from zeline.agent import ZelineError
 
 API_TEMPLATE = "https://api.telegram.org/bot{token}"
@@ -339,17 +340,45 @@ def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str 
     return None
 
 
+#: Ikon per kelas status provider. Diambil dari ARTI status menurut router
+#: (lihat ``agent.PROVIDER_STATUS_HINTS``), bukan dari rentang angka:
+#:   🪫 = batas habis (kunci/izin/kuota/saldo/rate)  → 401, 402, 403, 429
+#:   ⏱️ = provider sedang tidak tersedia             → 503
+#:   ⏰ = gateway bermasalah / timeout                → 502, 504
+#:   ⚠️ = sisanya (bad request, model salah, 500)
+_STATUS_BADGE_ICONS: dict[int, str] = {
+    401: "🪫", 402: "🪫", 403: "🪫", 429: "🪫",
+    503: "⏱️",
+    502: "⏰", 504: "⏰",
+}
+
+
 def _format_agent_error(message: str) -> str:
     """Beri ikon yang tepat untuk pesan error agent (English).
 
-    🪫 dipakai HANYA untuk yang artinya 'limit' (kuota/credit/panjang habis):
-    - Auth/kuota provider (HTTP 401/403/429) → 🪫 401, 403, 429
-    - Batas panjang teks/konteks            → 🪫 Limit Text/Context
-    Selain itu:
-    - Timeout / stream interrupted → ⚠️ Read Timeout
-    - Sisanya (bukan limit)        → ❌ Zeline hit a problem
+    Untuk error berstatus HTTP, ikon DAN teksnya berasal dari satu sumber
+    (``agent.PROVIDER_STATUS_HINTS``) supaya badge tidak pernah bertentangan
+    dengan isi pesan. Dulu 403 memakai teks "API key invalid — jalankan zeline
+    setup"; padahal di router 403 = ``permission_error/insufficient_quota``
+    (kuota habis, ada cooldown), dan kunci yang benar-benar salah memberi 401.
+    Awalan "The provider returned HTTP 403 — " dipotong karena kodenya sudah
+    tampil di badge; tanpa ini user membaca "403" dua kali dalam satu baris.
     """
     low = message.lower()
+    # Status HTTP diperiksa DULU. Pesan 504 mengandung kata "timed out", jadi
+    # kalau cabang timeout jalan lebih dulu, gateway-timeout dari provider
+    # salah dilabeli "Read Timeout" milik klien — dua penyebab berbeda dengan
+    # tindakan berbeda. Read timeout Zeline sendiri tidak pernah membawa kode
+    # HTTP, jadi urutan ini aman.
+    status_match = re.search(r"http\s*(\d{3})", low)
+    if status_match:
+        status = int(status_match.group(1))
+        icon = _STATUS_BADGE_ICONS.get(status, "⚠️")
+        detail = message
+        prefix = f"{PROVIDER_STATUS_PREFIX}{status} — "
+        if detail.startswith(prefix):
+            detail = detail[len(prefix):]
+        return f"{icon} {status} — {detail}"
     if "timed out" in low or "did not respond" in low or ("stream" in low and "interrupted" in low):
         # Tenangkan user: timeout TIDAK menjatuhkan percakapan —
         # riwayat tetap utuh, tinggal kirim lagi atau /new untuk sesi baru.
@@ -358,20 +387,9 @@ def _format_agent_error(message: str) -> str:
             "No messages were dropped — the conversation continues unchanged. "
             "Send again, or use /new to start a fresh session."
         )
-    if (
-        "http 401" in low
-        or "http 403" in low
-        or "http 429" in low
-        or "unauthorized" in low
-        or "rate limited" in low
-        or "out of credits" in low
-    ):
-        # Tampilkan hanya kode HTTP yang benar-benar terjadi (mis. 403), bukan
-        # daftar statis semua kode auth/kuota. Kalau tak ada kode di pesan
-        # (mis. "rate limited"), pakai label kuota generik.
-        code_match = re.search(r"http\s*(401|403|429)", low)
-        badge = code_match.group(1) if code_match else "Quota/Auth"
-        return f"🪫 {badge} — {message}"
+    if "unauthorized" in low or "rate limited" in low or "out of credits" in low or "quota" in low:
+        # Tanpa kode HTTP di pesan (mis. "rate limited"), pakai label generik.
+        return f"🪫 Quota/Auth — {message}"
     if "too long" in low or "maksimum" in low or ("context" in low and "limit" in low) or "terlalu panjang" in low:
         return f"🪫 Limit Text/Context — {message}"
     return f"⚠️ Zeline hit a problem — {message}"

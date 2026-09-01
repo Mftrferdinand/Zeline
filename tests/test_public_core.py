@@ -2744,10 +2744,54 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_telegram_error_badge_shows_only_the_actual_status_code(self):
         """Badge error harus menyebut kode yang benar-benar terjadi, bukan daftar."""
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertTrue(telegram._format_agent_error("The provider returned HTTP 403 — unauthorized.").startswith("🪫 403 —"))
-        self.assertTrue(telegram._format_agent_error("The provider returned HTTP 429 — rate limited.").startswith("🪫 429 —"))
+        agent = importlib.import_module("zeline.agent")
+        self.assertTrue(telegram._format_agent_error(agent.provider_status_message(403)).startswith("🪫 403 —"))
+        self.assertTrue(telegram._format_agent_error(agent.provider_status_message(429)).startswith("🪫 429 —"))
         self.assertTrue(telegram._format_agent_error("Provider says out of credits").startswith("🪫 Quota/Auth —"))
-        self.assertNotIn("401, 403, 429", telegram._format_agent_error("The provider returned HTTP 403 — unauthorized."))
+        self.assertNotIn("401, 403, 429", telegram._format_agent_error(agent.provider_status_message(403)))
+
+    def test_telegram_status_badges_match_what_each_code_actually_means(self):
+        """Ikon + teks per kode diambil dari tabel status router, bukan tebakan.
+
+        403 di router = ``permission_error/insufficient_quota`` (kuota habis,
+        ada cooldown), BUKAN kunci invalid — kunci invalid memberi 401. Dulu
+        keduanya memakai teks "API key is invalid — update it with zeline
+        setup", yang menyuruh user mengganti kredensial yang sehat.
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        agent = importlib.import_module("zeline.agent")
+        expected = {
+            401: ("🪫 401 —", "api key is invalid"),
+            402: ("🪫 402 —", "payment required"),
+            403: ("🪫 403 —", "insufficient provider quota"),
+            429: ("🪫 429 —", "rate limited"),
+            502: ("⏰ 502 —", "bad gateway"),
+            503: ("⏱️ 503 —", "temporarily unavailable"),
+            504: ("⏰ 504 —", "timed out behind the gateway"),
+        }
+        for status, (badge, phrase) in expected.items():
+            rendered = telegram._format_agent_error(agent.provider_status_message(status))
+            with self.subTest(status=status):
+                self.assertTrue(rendered.startswith(badge), rendered)
+                self.assertIn(phrase, rendered.lower())
+                # Kode hanya boleh muncul sekali: awalan "The provider returned
+                # HTTP 403 — " dipotong karena badge sudah menampilkannya.
+                self.assertEqual(rendered.count(str(status)), 1, rendered)
+
+    def test_telegram_403_does_not_tell_the_user_to_replace_the_api_key(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        agent = importlib.import_module("zeline.agent")
+        rendered = telegram._format_agent_error(agent.provider_status_message(403)).lower()
+        self.assertNotIn("api key", rendered)
+        self.assertNotIn("zeline setup", rendered)
+
+    def test_telegram_gateway_timeout_is_not_labelled_a_client_read_timeout(self):
+        """504 provider ≠ read-timeout klien; penyebab & tindakannya berbeda."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        agent = importlib.import_module("zeline.agent")
+        rendered = telegram._format_agent_error(agent.provider_status_message(504))
+        self.assertNotIn("Read Timeout", rendered)
+        self.assertTrue(rendered.startswith("⏰ 504 —"), rendered)
 
     def test_telegram_timeout_error_reassures_conversation_intact(self):
         """Timeout harus menenangkan user: riwayat aman + saran /new."""
