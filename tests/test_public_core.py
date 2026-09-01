@@ -1091,6 +1091,56 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(any("allowlist" in error.lower() for error in errors))
         self.assertEqual(telegram.validate_config({"token": "123:abc", "tool_profile": "full", "allowed": [111222333]}), [])
 
+    def test_status_line_sits_below_the_feed_with_a_blank_line(self):
+        """Diminta user: feed dulu, status di PALING BAWAH, dipisah paragraf kosong.
+
+        Status yang mengambang di atas feed mendorong baris aktivitas terbaru —
+        yang justru paling informatif — ke bawah, dan jam yang berubah tiap
+        detik menarik mata ke tempat yang salah.
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        with mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 1}}):
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.lines.append("🔎 Searching files: config")
+            live.turn_started = time.monotonic() - 137
+            live.phase = "tool"
+            live.phase_started = time.monotonic()
+            rendered = live._render()
+        self.assertEqual(
+            rendered,
+            "🔎 Searching files: config\n\n"
+            f"{telegram.WORKING_ICON} Working — 2 min 17 s · /stop to cancel",
+        )
+        # Urutan eksplisit: aktivitas di atas, status di bawah.
+        self.assertLess(rendered.index("Searching files"), rendered.index("Working —"))
+
+    def test_status_line_names_the_provider_when_the_wait_drags(self):
+        """Menunggu upstream lama harus KELIHATAN sebagai masalah provider.
+
+        Tanpa ini, turn yang macet menunggu provider terlihat identik dengan turn
+        yang sedang sibuk bekerja, dan user tidak bisa membedakan "Zeline lambat"
+        dari "provider lambat".
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        with mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 1}}):
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.lines.append("🔎 Searching files: config")
+            live.turn_started = time.monotonic() - 137
+            live.phase = "waiting"
+            live.phase_started = time.monotonic() - (telegram._PROVIDER_WAIT_NOTE_SECONDS + 5)
+            slow = live._render()
+            # Menunggu sebentar itu normal → jangan diumumkan.
+            live.phase_started = time.monotonic() - 5
+            normal = live._render()
+            # Tool sedang jalan → lambatnya bukan urusan provider.
+            live.phase = "tool"
+            live.phase_started = time.monotonic() - 120
+            during_tool = live._render()
+        self.assertTrue(slow.endswith(telegram.PROVIDER_WAIT_NOTE), slow)
+        self.assertIn("waiting for provider response - streaming", slow)
+        self.assertNotIn(telegram.PROVIDER_WAIT_NOTE, normal)
+        self.assertNotIn(telegram.PROVIDER_WAIT_NOTE, during_tool)
+
     def test_telegram_working_status_shows_progress_and_stop_hint(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # Header status harus membuktikan agent MASIH kerja: jam berjalan + /stop.

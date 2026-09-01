@@ -407,6 +407,15 @@ WORKING_ICON = "🧑🏻‍💻"
 #: Header untuk turn yang cuma menunggu model (belum satu pun tool jalan).
 THINKING_ICON = "💭"
 
+#: Berapa lama satu fase "menunggu provider" harus berjalan sebelum status
+#: menyebutkannya. Di bawah ini, menunggu itu normal dan tidak perlu diumumkan;
+#: di atasnya, user berhak tahu bahwa yang lambat adalah provider — bukan Zeline
+#: yang menggantung.
+_PROVIDER_WAIT_NOTE_SECONDS = 20.0
+
+#: Ekor yang ditambahkan ke baris status saat provider yang bikin lambat.
+PROVIDER_WAIT_NOTE = ", waiting for provider response - streaming"
+
 
 def _working_status_text(
     elapsed_seconds: float,
@@ -415,16 +424,21 @@ def _working_status_text(
     maximum: int | None = None,
     remaining_seconds: float | None = None,
     working: bool = True,
+    provider_wait_seconds: float | None = None,
 ) -> str:
     """Header status live: bukti agent MASIH kerja, bukan menggantung diam.
 
-    Format satu baris: waktu jalan + bahwa /stop tersedia. Tidak pernah
-    menyalahkan model/provider (mis. 'slow to respond') — user hanya perlu tahu
-    ini masih berjalan.
+    Format satu baris: waktu jalan + bahwa /stop tersedia.
 
     ``working=False`` dipakai saat NOL tool sudah jalan: labelnya "Thinking",
     bukan "Working". Menyebut sapaan yang lambat sebagai "Working" itu salah —
     tidak ada pekerjaan yang dilakukan, yang lama adalah provider.
+
+    ``provider_wait_seconds`` = lama fase menunggu provider yang sedang berjalan.
+    Kalau melewati ``_PROVIDER_WAIT_NOTE_SECONDS``, baris statusnya menyebutkan
+    itu. Tanpa ini, turn yang macet menunggu upstream terlihat identik dengan
+    turn yang sedang sibuk bekerja, dan user tidak bisa membedakan "Zeline
+    lambat" dari "provider lambat".
     """
     minutes = int(elapsed_seconds // 60)
     seconds = int(elapsed_seconds % 60)
@@ -432,9 +446,11 @@ def _working_status_text(
     # Keep the user-facing heartbeat deliberately minimal. Iteration/remaining
     # are still tracked internally for turn control, but exposing them makes
     # every ordinary chat look like a noisy job runner.
-    if working:
-        return f"{WORKING_ICON} Working — {clock} · /stop to cancel"
-    return f"{THINKING_ICON} Thinking — {clock} · /stop to cancel"
+    icon, label = (WORKING_ICON, "Working") if working else (THINKING_ICON, "Thinking")
+    line = f"{icon} {label} — {clock} · /stop to cancel"
+    if provider_wait_seconds is not None and provider_wait_seconds >= _PROVIDER_WAIT_NOTE_SECONDS:
+        line += PROVIDER_WAIT_NOTE
+    return line
 
 
 def _provider_wait_text(wait_seconds: float, model: str = "") -> str:
@@ -493,12 +509,18 @@ class _LiveStatus:
             return ""
         budget = float(getattr(config, "MAX_TURN_SECONDS", 0) or 0)
         remaining = (budget - elapsed) if budget else None
+        # Hanya fase ``waiting`` yang berarti "menunggu provider". Saat tool
+        # sedang jalan, lambatnya bukan urusan provider, jadi jangan disebut.
+        provider_wait = (
+            time.monotonic() - self.phase_started if self.phase == "waiting" else None
+        )
         return _working_status_text(
             elapsed,
             iteration=self.iteration,
             maximum=self.maximum,
             remaining_seconds=remaining,
             working=working,
+            provider_wait_seconds=provider_wait,
         )
 
     def set_iteration(self, current: int | None, maximum: int | None) -> None:
@@ -507,12 +529,14 @@ class _LiveStatus:
             self.maximum = maximum
 
     def _render(self) -> str:
-        # Header status (kalau turn sudah cukup lama) + feed aktivitas tool apa
-        # adanya. Kalau dua-duanya kosong, _push_locked tidak bikin bubble.
+        # Feed aktivitas tool DULU, baris status di PALING BAWAH, dipisah satu
+        # baris kosong. Diminta user: status yang mengambang di atas feed bikin
+        # baris terbaru (yang justru paling penting) terdorong ke bawah, dan
+        # jam yang berubah tiap detik menarik mata ke tempat yang salah.
         ordered = _ordered_lines(self.lines)[-self.max_lines:]
         header = self._header()
         if header and ordered:
-            return header + "\n" + "\n".join(ordered)
+            return "\n".join(ordered) + "\n\n" + header
         if header:
             return header
         return "\n".join(ordered)
