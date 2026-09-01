@@ -34,6 +34,24 @@ curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/r
 
 Then `zeline setup`.
 
+### From PyPI
+
+Zeline is also published to PyPI, so if you already have Python tooling you can
+skip the installer entirely:
+
+```bash
+uv tool install zeline
+```
+
+`uv tool install` is preferred over `pip install zeline` because it puts Zeline in
+its own isolated environment with the `zeline` command on your PATH, which is what
+the installer script arranges by hand. Use `pip install zeline` only inside an
+environment you manage yourself.
+
+The installer remains the recommended route for a fresh machine: it provisions
+Python, creates the private environment, and verifies the release wheel against
+`SHA256SUMS` without assuming you already have `uv` or `pip`.
+
 ### Why there is no checksum step to copy
 
 Release assets are immutable tag assets, and the installer verifies the versioned

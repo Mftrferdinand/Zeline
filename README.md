@@ -54,7 +54,20 @@ Run it locally for development or deploy it to your own server or cloud, and con
 platforms use a private Python environment; Windows uses a per-user package
 install. Neither requires root/Administrator access.
 
+### From PyPI
+
+If you already have Python tooling, this is the shortest path on every platform:
+
+```bash
+uv tool install zeline
+```
+
+Or with pip, into an environment you manage: `pip install zeline`. Then `zeline setup`.
+
 ### Termux, Linux, macOS, and iSH
+
+The installer route needs no existing Python tooling — it provisions a private
+environment for you:
 
 ```bash
 curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
