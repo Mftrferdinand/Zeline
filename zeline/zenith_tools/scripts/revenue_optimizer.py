@@ -806,7 +806,7 @@ class RevenueOptimizer:
         self,
         plan: ExecutionPlan,
         bridge_config: Optional[dict] = None,
-    ) -> BridgeResult:
+    ) -> Any:  # adapter.BridgeResult when installed, else a synthetic stand-in
         """Route a ranked opportunity through the Zeline Native Bridge for
         real on-chain execution.
 
