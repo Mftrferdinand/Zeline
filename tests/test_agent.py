@@ -391,11 +391,17 @@ class AgentLoopTests(unittest.TestCase):
         )
 
     def test_http_error_statuses_map_to_actionable_hints(self):
+        # Arti tiap kode diambil dari tabel status router, bukan tebakan:
+        # 403 = kuota/izin habis (BUKAN kunci salah — itu 401), 503 = provider
+        # sedang tidak tersedia, 502 = bad gateway.
         cases = {
             401: "invalid or unauthorized",
+            402: "payment required",
+            403: "insufficient provider quota",
             404: "not found",
             429: "rate limited",
-            503: "server-side problem",
+            502: "bad gateway",
+            503: "temporarily unavailable",
         }
         for status, expected in cases.items():
             agent = self.agent_module.Zeline(identity=f"telegram:http{status}", tool_profile="safe")
@@ -405,6 +411,21 @@ class AgentLoopTests(unittest.TestCase):
             message = str(ctx.exception)
             self.assertIn(f"HTTP {status}", message)
             self.assertIn(expected, message.lower())
+
+    def test_403_is_not_reported_as_an_invalid_api_key(self):
+        """403 dengan kunci yang sehat tidak boleh menyuruh user ganti kunci.
+
+        Router mengembalikan 403 sebagai ``permission_error/insufficient_quota``
+        (kuota habis, ada cooldown). Kunci yang benar-benar salah memberi 401.
+        Menyamakan keduanya membuat user mengganti kredensial yang tidak rusak.
+        """
+        agent = self.agent_module.Zeline(identity="telegram:http403msg", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse({"error": "x"}, status_code=403)):
+            with self.assertRaises(self.agent_module.ZelineError) as ctx:
+                agent.send("halo")
+        message = str(ctx.exception).lower()
+        self.assertNotIn("api key", message)
+        self.assertNotIn("zeline setup", message)
 
     def test_reload_provider_keeps_conversation_history(self):
         # Ganti model (/model switch) HARUS mempertahankan ingatan percakapan:

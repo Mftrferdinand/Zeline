@@ -89,6 +89,60 @@ class _TurnCancelled(Exception):
 #: jadi ia harus satu sumber, bukan literal yang diulang di tiap gateway.
 CANCELLED_REPLY = "Stopped."
 
+#: Awalan yang dipakai saat provider mengembalikan status HTTP non-OK. Gateway
+#: memotongnya saat sudah menampilkan kode di badge-nya sendiri, jadi user tidak
+#: membaca "403" dua kali dalam satu baris.
+PROVIDER_STATUS_PREFIX = "The provider returned HTTP "
+
+#: Arti tiap status HTTP MENURUT ROUTER, bukan tebakan.
+#:
+#: Diambil dari tabel status 9Router sendiri (``app/.next-cli-build/server/
+#: chunks/8847.js``), yang memetakan tiap kode ke ``type``/``code``/pesan:
+#: 401 authentication_error/invalid_api_key, 402 billing_error/payment_required,
+#: **403 permission_error/insufficient_quota "You exceeded your current quota"**,
+#: 404 invalid_request_error/model_not_found, 406 model_not_supported,
+#: 429 rate_limit_error, 500 internal_server_error, 502 bad_gateway,
+#: 503 service_unavailable, 504 gateway_timeout.
+#:
+#: Sebelumnya 401 dan 403 disamakan menjadi "API key tidak valid, jalankan
+#: zeline setup". Itu SALAH dan mahal: 403 di router berarti kuota/izin habis
+#: dengan cooldown (body nyata di device ini:
+#: ``[<node>/<model>] [403]: HTTP 403 (reset after 1m 25s)``), sedangkan kunci
+#: yang benar-benar salah mengembalikan 401 dengan
+#: ``{"error":{"code":"invalid_api_key"}}``. Menyuruh user mengganti kunci yang
+#: sehat adalah saran yang menyesatkan.
+PROVIDER_STATUS_HINTS: dict[int, str] = {
+    400: "Bad request — the provider rejected the request shape. This is a Zeline-side bug; please report it.",
+    401: "The API key is invalid or unauthorized. Update it with `zeline setup`.",
+    402: "Payment required — the provider account has no balance left. Top up, then try again.",
+    403: "Insufficient provider quota. Check your balance or usage limit and try again.",
+    404: "Model not found on this provider (or it has no active credentials). Pick another with /model.",
+    406: "This model is not supported on that route. Pick another with /model.",
+    429: "Rate limited — too many requests for this key right now. Wait a moment and try again.",
+    500: "The provider hit an internal server error. Try again shortly.",
+    502: "The model provider returned a bad gateway response. Please try again shortly.",
+    503: "The model provider is temporarily unavailable. Please wait a moment and try again.",
+    504: "The provider timed out behind the gateway. Try again, or switch model with /model.",
+}
+
+
+def provider_status_message(status: int, model: str = "") -> str:
+    """Pesan siap-tampil untuk satu status HTTP provider.
+
+    Satu sumber supaya CLI, Telegram, dan app runtime tidak masing-masing
+    menebak arti kode yang sama.
+    """
+    hint = PROVIDER_STATUS_HINTS.get(int(status))
+    if hint is None:
+        if 500 <= int(status) < 600:
+            hint = "The provider is having a server-side problem. Try again shortly."
+        else:
+            hint = "The provider rejected the request."
+    if int(status) in {404, 406} and model:
+        hint = hint.replace("Model not found", f"Model '{model}' was not found", 1)
+        hint = hint.replace("This model is not supported", f"Model '{model}' is not supported", 1)
+    return f"{PROVIDER_STATUS_PREFIX}{status} — {hint}"
+
 
 def _parse_response(text: str) -> dict[str, Any]:
     """Parse normal JSON dan quirk router yang mengirim JSON+trailing SSE."""
@@ -395,16 +449,7 @@ class Zeline:
         # kirim UTF-8, jadi paksa UTF-8 sebelum decode teks/stream apa pun.
         response.encoding = "utf-8"
         if not response.ok:
-            hint = ""
-            if response.status_code in (401, 403):
-                hint = " — the API key is invalid or unauthorized. Update it with `zeline setup`."
-            elif response.status_code == 404:
-                hint = f" — the model '{self.model}' was not found on this provider. Pick another with /model."
-            elif response.status_code == 429:
-                hint = " — rate limited or out of credits on the provider."
-            elif response.status_code >= 500:
-                hint = " — the provider is having a server-side problem. Try again shortly."
-            raise ZelineError(f"The provider returned HTTP {response.status_code}{hint}")
+            raise ZelineError(provider_status_message(response.status_code, self.model))
 
         if stream:
             if self.protocol == "anthropic":
