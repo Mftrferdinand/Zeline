@@ -532,6 +532,43 @@ class AgentLoopTests(unittest.TestCase):
         # Panggilan terakhir tidak menyertakan daftar tools.
         self.assertNotIn("tools", post.call_args_list[-1].kwargs["json"])
 
+    def test_the_turn_budget_leaves_room_for_every_configured_tool_round(self):
+        # Regression: the wall-clock budget is a backstop for a stuck turn, not
+        # the thing that decides how much work fits. When it is tighter than
+        # max_tool_rounds x a realistic LLM call, the round limit becomes
+        # unreachable and real multi-step work is cut off mid-task and forced to
+        # summarise -- which reads as the agent giving up. Keep the default
+        # budget above the worst-case round count at a slow-but-normal call.
+        config = self.agent_module.config
+        slow_call_seconds = 30.0
+        self.assertGreaterEqual(
+            config.MAX_TURN_SECONDS,
+            config.MAX_TOOL_ROUNDS * slow_call_seconds,
+        )
+
+    def test_operators_can_widen_or_narrow_the_turn_budget(self):
+        config = self.agent_module.config
+        cfg = config.config_copy()
+        cfg["agent"]["max_turn_seconds"] = 900
+        config.save_config(cfg)
+        self.assertEqual(config.MAX_TURN_SECONDS, 900.0)
+
+    def test_an_unusable_turn_budget_is_clamped_into_the_supported_range(self):
+        # A tiny budget would starve ask_user and abort before the first tool
+        # returns; an enormous one lets a single stuck turn hold the gateway.
+        # Both are clamped rather than trusted or crashed on.
+        config = self.agent_module.config
+        for requested, expected in (
+            (1, config.MIN_CONFIGURABLE_TURN_SECONDS),
+            (10**9, config.MAX_CONFIGURABLE_TURN_SECONDS),
+            ("not-a-number", config.DEFAULT_MAX_TURN_SECONDS),
+        ):
+            with self.subTest(requested=requested):
+                cfg = config.config_copy()
+                cfg["agent"]["max_turn_seconds"] = requested
+                config.save_config(cfg)
+                self.assertEqual(config.MAX_TURN_SECONDS, float(expected))
+
     def test_multiple_readonly_tool_calls_run_and_preserve_order(self):
         # Model meminta DUA tool read-only (list_memory + runtime_info) dalam satu
         # giliran; keduanya harus dieksekusi dan tool result-nya muncul sesuai

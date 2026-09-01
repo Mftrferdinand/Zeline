@@ -33,11 +33,24 @@ DEFAULT_RESTART_DRAIN_TIMEOUT = 30
 DEFAULT_ASK_USER_TIMEOUT = 180
 # Batas waktu wall-clock satu turn agent (detik). Setelah lewat, agent berhenti
 # memanggil tool dan memaksa jawaban final — mencegah "Processing" berlarut saat
-# sebuah tool (mis. web_search) gagal/lambat berulang. Dibuat cukup longgar untuk
-# tugas coding multi-langkah: satu panggilan LLM saja bisa 7-50 detik, jadi 90s
-# terlalu pendek (model kehabisan budget sebelum sempat write_file → malah
-# nge-dump kode ke chat). 6 menit memberi ruang untuk beberapa write_file + tes.
-MAX_TURN_SECONDS = 360.0
+# sebuah tool (mis. web_search) gagal/lambat berulang.
+#
+# Ini backstop, BUKAN penjadwal kerja. Yang membatasi panjang kerja adalah
+# ``max_tool_rounds``; batas waktu hanya menangkap turn yang benar-benar macet.
+# 360s dulu dipilih dengan asumsi satu panggilan LLM 7-50 detik, tapi asumsi itu
+# menjadikan waktu sebagai batas yang lebih ketat daripada ronde: 20 ronde x ~20s
+# sudah melewati 360s, jadi ronde ke-20 praktis tak pernah tercapai dan tugas
+# coding nyata (baca file, patch, jalankan tes, commit) dipotong di tengah lalu
+# dipaksa merangkum — terlihat seperti agent yang menyerah padahal dicabut
+# tool-nya. Default sekarang dibuat lebih longgar dari perkiraan terburuk
+# ``max_tool_rounds`` x satu panggilan LLM lambat, dan bisa diatur operator.
+DEFAULT_MAX_TURN_SECONDS = 1800.0
+MAX_TURN_SECONDS = DEFAULT_MAX_TURN_SECONDS
+# Rentang yang diterima dari config. Batas bawah menjaga ask_user tetap punya
+# ruang (lihat interaction.py); batas atas mencegah satu turn menyandera gateway
+# selamanya kalau operator mengetik angka yang tidak masuk akal.
+MIN_CONFIGURABLE_TURN_SECONDS = 60.0
+MAX_CONFIGURABLE_TURN_SECONDS = 21600.0
 # Berapa ronde tool GAGAL beruntun (semua hasil ERROR) sebelum agent menyerah
 # nge-loop dan menyintesis jawaban dari data yang ada.
 MAX_REPEATED_TOOL_FAILURES = 3
@@ -466,6 +479,10 @@ def _defaults() -> dict[str, Any]:
             "restart_drain_timeout": DEFAULT_RESTART_DRAIN_TIMEOUT,
             # Detik menunggu jawaban ask_user sebelum agent lanjut dengan asumsi.
             "ask_user_timeout": DEFAULT_ASK_USER_TIMEOUT,
+            # Batas wall-clock satu turn (detik). Backstop untuk turn yang macet,
+            # bukan penjadwal kerja: naikkan kalau tugas coding panjang terpotong
+            # di tengah, turunkan kalau ingin gateway cepat menyerah.
+            "max_turn_seconds": DEFAULT_MAX_TURN_SECONDS,
             # Catat token usage dari provider ke ~/.zeline/usage.db untuk
             # `zeline stats`. Hanya angka token; tidak ada isi percakapan.
             "usage_tracking": True,
@@ -703,6 +720,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MAX_PARALLEL_SUBAGENTS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
+    global MAX_TURN_SECONDS
     global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, OPENAPI_TOOLS, PLUGINS, TOOL_SEARCH
     global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS, CRON
     PROVIDER = cfg["provider"]
@@ -738,6 +756,16 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
         )
     except (TypeError, ValueError):
         ASK_USER_TIMEOUT = float(DEFAULT_ASK_USER_TIMEOUT)
+    try:
+        MAX_TURN_SECONDS = min(
+            MAX_CONFIGURABLE_TURN_SECONDS,
+            max(
+                MIN_CONFIGURABLE_TURN_SECONDS,
+                float(cfg.get("agent", {}).get("max_turn_seconds", DEFAULT_MAX_TURN_SECONDS)),
+            ),
+        )
+    except (TypeError, ValueError):
+        MAX_TURN_SECONDS = float(DEFAULT_MAX_TURN_SECONDS)
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))

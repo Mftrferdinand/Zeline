@@ -376,7 +376,11 @@ def cmd_setup_agent() -> int:
     cfg = config.stored_config_copy()
     agent_cfg = cfg.setdefault("agent", {})
     name = _ask("Agent name", str(cfg.get("name", "Zeline"))).strip() or "Zeline"
-    rounds_raw = _ask("Max tool rounds [1-50]", str(agent_cfg.get("max_tool_rounds", 8)))
+    rounds_raw = _ask("Max tool rounds [1-50]", str(agent_cfg.get("max_tool_rounds", config.DEFAULT_MAX_TOOL_ROUNDS)))
+    turn_seconds_raw = _ask(
+        f"Max turn seconds [{int(config.MIN_CONFIGURABLE_TURN_SECONDS)}-{int(config.MAX_CONFIGURABLE_TURN_SECONDS)}]",
+        str(int(float(agent_cfg.get("max_turn_seconds", config.DEFAULT_MAX_TURN_SECONDS)))),
+    )
     sessions_raw = _ask("Max sessions [1-1000]", str(agent_cfg.get("max_sessions", 50)))
     stream_raw = _ask("Stream responses? [Y/n]", "y" if agent_cfg.get("stream", True) else "n")
     persist_raw = _ask(
@@ -386,11 +390,19 @@ def cmd_setup_agent() -> int:
     try:
         rounds = int(rounds_raw)
         sessions_count = int(sessions_raw)
+        turn_seconds = float(turn_seconds_raw)
     except ValueError:
-        print("Max tool rounds and max sessions must be whole numbers.")
+        print("Max tool rounds, max turn seconds, and max sessions must be numbers.")
         return 2
     if not 1 <= rounds <= 50:
         print("Max tool rounds must be between 1 and 50.")
+        return 2
+    if not config.MIN_CONFIGURABLE_TURN_SECONDS <= turn_seconds <= config.MAX_CONFIGURABLE_TURN_SECONDS:
+        print(
+            "Max turn seconds must be between "
+            f"{int(config.MIN_CONFIGURABLE_TURN_SECONDS)} and "
+            f"{int(config.MAX_CONFIGURABLE_TURN_SECONDS)}."
+        )
         return 2
     if not 1 <= sessions_count <= 1000:
         print("Max sessions must be between 1 and 1000.")
@@ -399,6 +411,7 @@ def cmd_setup_agent() -> int:
     agent_cfg.update(
         {
             "max_tool_rounds": rounds,
+            "max_turn_seconds": turn_seconds,
             "max_sessions": sessions_count,
             "stream": _parse_yes_no(stream_raw, default=True),
             "persist_sessions": _parse_yes_no(persist_raw, default=True),
