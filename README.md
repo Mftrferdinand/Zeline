@@ -36,7 +36,7 @@ Run it locally for development or deploy it to your own server or cloud, and con
 - **Real browser control** — the `browser` tool drives an installed Chromium/Chrome over the Chrome DevTools Protocol (open, click, type, read, screenshot), so JavaScript-rendered and logged-in pages are reachable where raw HTML fetching is not. No Playwright or Puppeteer dependency
 - **Scheduled jobs inside the gateway** — `zeline cron` runs interval or cron-expression jobs in the running gateway process, reusing its config, provider key, and workspace, and delivers results to the chat that owns the job
 - **Language-server intelligence** — `code_intel` asks a real LSP server for diagnostics, definitions, references, hover, and symbols; servers are discovered on PATH and never downloaded, falling back to the project linter when none is installed
-- **Operator extension points** — Python plugin hooks can audit, rewrite, or block any tool call before it runs, and plain Python files can be loaded as `custom_*` tools
+- **Operator extension points** — Python plugin hooks can audit, rewrite, or block any tool call before it runs, plain Python files can be loaded as `custom_*` tools, and local OpenAPI 3 documents become namespaced `api_*` tools without handwritten wrappers
 - **Nothing is silently lost** — oversized tool output is written to disk and replaced by a pointer with a head/tail preview, and conversation turns evicted to keep the context window bounded are appended to an on-disk transcript plus a deterministic digest (what you asked, which files were touched, where the archive lives) injected at the front of history. Both are recoverable with `read_file`, and neither costs a model call
 - **Undo** — writes and edits are snapshotted first; `zeline undo` lists and restores them
 - **Human-in-the-loop** — `ask_user` pauses the run to ask you one question, with tappable options on messaging gateways and a keyboard prompt in the CLI
@@ -207,6 +207,8 @@ zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions
 zeline tools workspace <path>  Set the owner workspace root
+zeline tools openapi-add FILE  Install a local OpenAPI 3 YAML/JSON document
+zeline tools openapi           List parsed API operations and credential variable names
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
 zeline config show             Print configuration with masked secrets
@@ -242,6 +244,7 @@ API keys and gateway tokens are never included.
 ## Security
 
 - Keep `~/.zeline/`, `.env`, provider keys, and bot tokens out of Git.
+- OpenAPI credentials are read only from `~/.zeline/.env` (`ZELINE_OPENAPI_<FILE>_<SCHEME>`), never exposed in model schemas, and loaded only for `workspace`/`full` profiles.
 - Gateway users receive the `safe` profile by default.
 - Webhooks require a secret token and bind to loopback by default.
 - Memory is namespaced by platform identity, for example `telegram:123` or `webhook:alice`.

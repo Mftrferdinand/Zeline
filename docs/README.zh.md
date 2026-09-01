@@ -36,7 +36,7 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 - **真实浏览器控制** —— `browser` 工具通过 Chrome DevTools Protocol 驱动已安装的 Chromium/Chrome（打开、点击、输入、读取、截图），因此可以访问由 JavaScript 渲染或需要登录的页面——这是抓取原始 HTML 做不到的。无需 Playwright 或 Puppeteer 依赖
 - **网关内的定时任务** —— `zeline cron` 在运行中的网关进程内执行按间隔或 cron 表达式调度的任务，复用其配置、提供商密钥和工作区，并把结果投递到拥有该任务的会话
 - **语言服务器智能** —— `code_intel` 向真实的 LSP 服务器查询诊断、定义、引用、悬停信息和符号；服务器只在 PATH 中查找，绝不下载，未安装时回退到项目的 linter
-- **运维扩展点** —— Python 插件钩子可在任何工具调用执行前审计、改写或阻止它，普通 Python 文件也可作为 `custom_*` 工具加载
+- **运维扩展点** —— Python 插件钩子可在任何工具调用执行前审计、改写或阻止它，普通 Python 文件可作为 `custom_*` 工具加载，本地 OpenAPI 3 文档也可自动变成带命名空间的 `api_*` 工具
 - **撤销** —— 写入和编辑前先做快照；`zeline undo` 可列出并恢复它们
 - **人类参与回路** —— `ask_user` 会暂停运行以向你提出一个问题，在消息网关上提供可点击的选项，在 CLI 中提供键盘提示
 - **写入时自动格式化** —— 智能体写入或编辑文件后，会运行项目中已安装的格式化工具（ruff、gofmt、biome、prettier、rustfmt、shfmt 等），使生成的代码符合仓库风格；可按扩展名配置，且绝不会因格式化失败而丢失写入内容
@@ -203,6 +203,8 @@ zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions
 zeline tools workspace <path>  Set the owner workspace root
+zeline tools openapi-add FILE  Install a local OpenAPI 3 YAML/JSON document
+zeline tools openapi           List parsed API operations and credential variable names
 zeline doctor                  Check dependencies and configuration
 zeline config path             Print the configuration location
 zeline config show             Print configuration with masked secrets
@@ -238,6 +240,7 @@ API 密钥和网关令牌绝不会被包含在内。
 ## 安全
 
 - 将 `~/.zeline/`、`.env`、提供商密钥和机器人令牌排除在 Git 之外。
+- OpenAPI 凭据仅从 `~/.zeline/.env` 读取（`ZELINE_OPENAPI_<FILE>_<SCHEME>`），不会进入模型 schema，并且只在 `workspace`/`full` 配置中加载。
 - 网关用户默认获得 `safe` 配置。
 - Webhook 需要一个密钥令牌，并默认绑定到回环地址。
 - 记忆按平台身份进行命名空间隔离，例如 `telegram:123` 或 `webhook:alice`。

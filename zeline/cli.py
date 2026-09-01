@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import yaml
 
 from zeline import __version__, config, skills
 from zeline._termkey import raw_mode, read_key, read_menu_key, read_secret
@@ -1645,6 +1646,69 @@ def cmd_customtools(action: str = "list", *, name: str | None = None) -> int:
     return 0
 
 
+def cmd_openapi(
+    action: str = "list", *, path: str | None = None, name: str | None = None
+) -> int:
+    """Install and inspect operator-owned OpenAPI tool documents."""
+    from zeline import openapi_tools
+
+    if not openapi_tools.enabled():
+        print("OpenAPI tools are disabled (tools.openapi_tools = false).")
+        return 0
+    directory = openapi_tools.specs_dir()
+    if action == "path":
+        print(openapi_tools.ensure_dir())
+        return 0
+    if action == "add":
+        source = Path(str(path or "")).expanduser().resolve(strict=False)
+        if not source.is_file() or source.suffix.lower() not in {".yaml", ".yml", ".json"}:
+            print("ERROR: openapi-add needs an existing .yaml, .yml, or .json file.")
+            return 2
+        target_name = str(name or source.name).strip()
+        if Path(target_name).name != target_name or Path(target_name).suffix.lower() not in {".yaml", ".yml", ".json"}:
+            print("ERROR: --name must be one safe .yaml, .yml, or .json file name.")
+            return 2
+        target = openapi_tools.ensure_dir() / target_name
+        if target.exists():
+            print(f"{target} already exists — not overwriting it.")
+            return 1
+        try:
+            parsed = openapi_tools._parse_document(target, openapi_tools._load(source))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError, yaml.YAMLError) as exc:
+            print(f"ERROR: invalid OpenAPI document: {exc}")
+            return 1
+        target.write_bytes(source.read_bytes())
+        print(f"Added {target} — {len(parsed)} operation(s) become api_{target.stem}_* tools.")
+        print("  Credentials stay local: put the variable named by `zeline tools openapi` in ~/.zeline/.env.")
+        return 0
+
+    tools, errors = openapi_tools.discover()
+    if not directory.is_dir():
+        print(f"No OpenAPI tools directory yet: {directory}")
+        print("  Add one with: zeline tools openapi-add ./openapi.yaml")
+        return 0
+    if tools:
+        print(f"{len(tools)} OpenAPI tool(s) from {directory}:")
+        for tool in tools:
+            print(f"  {tool.name:<40} {tool.method} {tool.url}")
+            if tool.security:
+                alternatives = [
+                    " + ".join(openapi_tools.credential_env_name(tool.source, scheme) for scheme in item)
+                    for item in tool.security if item
+                ]
+                if alternatives:
+                    print(f"    credential: {' or '.join(alternatives)}")
+    else:
+        print(f"No OpenAPI tools loaded from {directory}")
+    if errors:
+        print(f"\n{len(errors)} document(s) or operation(s) could not be loaded:")
+        for problem in errors:
+            print(f"  {problem}")
+        print("  Broken documents are skipped; valid tools above still work.")
+    print("\n  OpenAPI tools load only for workspace and full profiles.")
+    return 0
+
+
 def cmd_cron(
     action: str = "list",
     *,
@@ -2113,6 +2177,11 @@ def build_parser() -> argparse.ArgumentParser:
     tools_custom_init = tools_sub.add_parser("custom-init", help="create a starter custom tool file")
     tools_custom_init.add_argument("name", nargs="?", help="file name (default: my_tools.py)")
     tools_sub.add_parser("custom-path", help="print the custom tools directory")
+    tools_sub.add_parser("openapi", help="list tools loaded from ~/.zeline/openapi/")
+    openapi_add = tools_sub.add_parser("openapi-add", help="install one local OpenAPI 3 document")
+    openapi_add.add_argument("path", help="path to a .yaml, .yml, or .json document")
+    openapi_add.add_argument("--name", help="destination file name (default: source name)")
+    tools_sub.add_parser("openapi-path", help="print the OpenAPI tools directory")
 
     cron_parser = subparsers.add_parser("cron", help="schedule jobs the agent runs on its own")
     cron_sub = cron_parser.add_subparsers(dest="cron_action")
@@ -2322,6 +2391,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     if command == "tools":
         action = namespace.tools_command or "list"
+        if action in {"openapi", "openapi-add", "openapi-path"}:
+            return cmd_openapi(
+                {"openapi": "list", "openapi-add": "add", "openapi-path": "path"}[action],
+                path=getattr(namespace, "path", None),
+                name=getattr(namespace, "name", None),
+            )
         if action in {"custom", "custom-init", "custom-path"}:
             return cmd_customtools(
                 {"custom": "list", "custom-init": "init", "custom-path": "path"}[action],

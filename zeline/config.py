@@ -516,6 +516,9 @@ def _defaults() -> dict[str, Any]:
             # Hanya untuk profile operator (workspace/full) — isinya kode lokal
             # arbitrer, jadi gateway publik (safe) tidak pernah melihatnya.
             "custom_tools": True,
+            # Muat dokumen OpenAPI 3 lokal sebagai tool HTTP namespaced. Sama
+            # seperti MCP/custom tools, hanya profile operator yang menerimanya.
+            "openapi_tools": True,
             # Muat hook di ~/.zeline/plugins/ yang membungkus SETIAP tool call:
             # audit, rewrite argumen, redaksi output, atau tolak lewat deny().
             # Hook yang error dilewati; tool call-nya tetap jalan.
@@ -700,7 +703,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MAX_PARALLEL_SUBAGENTS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
-    global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, PLUGINS, TOOL_SEARCH
+    global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, OPENAPI_TOOLS, PLUGINS, TOOL_SEARCH
     global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS, CRON
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
@@ -744,6 +747,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     PROJECT_RULES = bool(cfg.get("tools", {}).get("project_rules", True))
     CHECKPOINTS = bool(cfg.get("tools", {}).get("checkpoints", True))
     CUSTOM_TOOLS = bool(cfg.get("tools", {}).get("custom_tools", True))
+    OPENAPI_TOOLS = bool(cfg.get("tools", {}).get("openapi_tools", True))
     PLUGINS = bool(cfg.get("tools", {}).get("plugins", True))
     TOOL_SEARCH = bool(cfg.get("tools", {}).get("tool_search", True))
     BROWSER = bool(cfg.get("tools", {}).get("browser", True))
