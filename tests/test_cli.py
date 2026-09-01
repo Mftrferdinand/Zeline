@@ -245,21 +245,31 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("setup center", result.lower())
 
     def test_agent_setup_persists_validated_runtime_preferences(self):
-        answers = iter(["Zeline Agent", "12", "80", "n", "y"])
+        answers = iter(["Zeline Agent", "12", "900", "80", "n", "y"])
         with mock.patch.object(self.cli, "_ask", side_effect=lambda *args, **kwargs: next(answers)):
             result = self.invoke(["setup", "agent"])
         self.assertIn("agent settings saved", result.lower())
         saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["name"], "Zeline Agent")
         self.assertEqual(saved["agent"]["max_tool_rounds"], 12)
+        self.assertEqual(saved["agent"]["max_turn_seconds"], 900)
         self.assertEqual(saved["agent"]["max_sessions"], 80)
         self.assertFalse(saved["agent"]["stream"])
         self.assertTrue(saved["agent"]["persist_sessions"])
 
     def test_agent_setup_rejects_out_of_range_numbers_without_writing(self):
-        with mock.patch.object(self.cli, "_ask", side_effect=["Zeline", "0", "50", "y", "y"]):
+        with mock.patch.object(self.cli, "_ask", side_effect=["Zeline", "0", "900", "50", "y", "y"]):
             result = self.invoke(["setup", "agent"], expected_status=2)
         self.assertIn("max tool rounds", result.lower())
+        self.assertFalse((self.home / "config.json").exists())
+
+    def test_agent_setup_rejects_a_turn_budget_outside_the_supported_range(self):
+        # A turn budget below the floor starves ask_user; one above the ceiling
+        # lets a single stuck turn hold the gateway indefinitely. Neither is
+        # written to disk.
+        with mock.patch.object(self.cli, "_ask", side_effect=["Zeline", "20", "5", "50", "y", "y"]):
+            result = self.invoke(["setup", "agent"], expected_status=2)
+        self.assertIn("max turn seconds", result.lower())
         self.assertFalse((self.home / "config.json").exists())
 
     def test_telegram_setup_with_owner_id_enables_full_toolset_and_mcp(self):
