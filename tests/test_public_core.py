@@ -1093,46 +1093,96 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_working_status_shows_progress_and_stop_hint(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        # Header status harus membuktikan agent MASIH kerja: jam berjalan,
-        # langkah ke berapa, sisa budget, dan bahwa /stop tersedia.
+        # Header status harus membuktikan agent MASIH kerja: jam berjalan + /stop.
         line = telegram._working_status_text(125, iteration=4, maximum=20, remaining_seconds=235)
-        self.assertIn("⏳ Working — 2 min 5 s", line)
-        self.assertEqual(line, "⏳ Working — 2 min 5 s · /stop to cancel")
+        self.assertIn(f"{telegram.WORKING_ICON} Working — 2 min 5 s", line)
+        self.assertEqual(line, f"{telegram.WORKING_ICON} Working — 2 min 5 s · /stop to cancel")
         self.assertNotIn("step", line)
         self.assertNotIn("left", line)
         # Satu baris saja — user membenci status yang turun ke baris baru.
         self.assertNotIn("\n", line)
         # Tidak pernah menyalahkan provider/model.
         self.assertNotIn("slow to respond", line)
-        self.assertIn("⏳ Working — 8 s", telegram._working_status_text(8))
+        self.assertIn(f"{telegram.WORKING_ICON} Working — 8 s", telegram._working_status_text(8))
+
+    def test_working_icon_is_the_developer_emoji_not_an_hourglass(self):
+        """Diminta user: 🧑🏻‍💻, bukan ⏳ (jam pasir = menunggu, bukan mengerjakan)."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        self.assertEqual(telegram.WORKING_ICON, "🧑🏻‍💻")
+        line = telegram._working_status_text(45)
+        self.assertTrue(line.startswith("🧑🏻‍💻"), line)
+        self.assertNotIn("⏳", line)
+
+    def test_a_turn_with_no_tools_says_thinking_not_working(self):
+        """Sapaan yang lambat bukan "Working" — nol pekerjaan dikerjakan.
+
+        Keluhan nyata: "kenapa setiap gua chat, mau hay ataupun oy, dia harus
+        Working dulu? kan Working khusus kalo gua kasih kerjaan coding".
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        line = telegram._working_status_text(70, working=False)
+        self.assertTrue(line.startswith(telegram.THINKING_ICON), line)
+        self.assertIn("Thinking — 1 min 10 s", line)
+        self.assertNotIn("Working", line)
+        self.assertIn("/stop to cancel", line)
 
     def test_telegram_status_bubble_appears_when_work_takes_long(self):
         # Keluhan nyata: "punya gituan ga biar gua ga didiemin terus".
         # Turn pendek tetap bersih (tanpa bubble), turn panjang WAJIB memunculkan
-        # status berjalan walaupun belum ada satu pun tool yang jalan.
+        # status berjalan — TAPI hanya sebagai "Working" kalau tool memang jalan.
         telegram = importlib.import_module("zeline.gateways.telegram")
         with mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 5}}):
             live = telegram._LiveStatus("bot-api", 1, model="m")
             self.assertEqual(live._render(), "")  # baru mulai → diam itu benar
+            live.lines.append("🌐 Searching bitcoin")  # ada pekerjaan nyata
             live.turn_started -= telegram._STATUS_AFTER_SECONDS + 5
             live.set_iteration(3, 20)
             rendered = live._render()
-        self.assertIn("⏳ Working", rendered)
+        self.assertIn("Working", rendered)
+        self.assertIn(telegram.WORKING_ICON, rendered)
         self.assertNotIn("step", rendered)
         self.assertNotIn("left", rendered)
         self.assertIn("/stop to cancel", rendered)
 
+    def test_a_slow_greeting_never_renders_a_working_header(self):
+        """30 detik tanpa tool = tidak ada bubble sama sekali; 60s+ = Thinking.
+
+        Angka nyata di device ini untuk sapaan (5 sampel lewat jalur agent):
+        4,8s / 5,4s / 8,4s / 12,8s / 33,3s — median 8,4s. Satu sampel melewati
+        30 detik, dan dulu itulah yang memunculkan "Working" untuk kata "p".
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        with mock.patch.object(telegram, "_api_call", return_value={"ok": True}):
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            # 35 detik, nol tool → masih diam. Dulu di sini muncul "⏳ Working".
+            live.turn_started = time.monotonic() - 35.0
+            self.assertEqual(live._header(), "")
+            self.assertEqual(live._render(), "")
+            # Lewat ambang thinking → beri kabar, tapi sebut Thinking.
+            live.turn_started = time.monotonic() - (telegram._THINKING_AFTER_SECONDS + 1)
+            header = live._header()
+            self.assertIn("Thinking", header)
+            self.assertNotIn("Working", header)
+
     def test_telegram_working_header_waits_full_30_seconds(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._STATUS_AFTER_SECONDS, 30.0)
+        self.assertEqual(telegram._THINKING_AFTER_SECONDS, 60.0)
         with mock.patch.object(telegram, "_api_call", return_value={"ok": True}):
             live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.lines.append("📖 Reading file x.py")  # ada pekerjaan nyata
             live.turn_started = time.monotonic() - 29.0
             self.assertEqual(live._header(), "")
             live.turn_started = time.monotonic() - 30.1
-            self.assertIn("⏳ Working — 30 s", live._header())
+            self.assertIn(f"{telegram.WORKING_ICON} Working — 30 s", live._header())
 
     def test_telegram_long_wait_creates_status_bubble_from_heartbeat(self):
+        """Heartbeat pada turn yang BENAR-BENAR kerja tetap memunculkan bubble.
+
+        Turn tanpa tool sengaja dikecualikan (lihat
+        ``test_a_slow_greeting_never_renders_a_working_header``): sapaan lambat
+        tidak boleh dilabeli "Working".
+        """
         telegram = importlib.import_module("zeline.gateways.telegram")
         sent = []
 
@@ -1142,11 +1192,26 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
             live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.lines.append("📖 Reading file x.py")  # tool sudah jalan
             live.turn_started -= telegram._STATUS_AFTER_SECONDS + 1
-            live.tick()  # heartbeat saja, tanpa tool
+            live.tick()  # heartbeat saja, tanpa tool baru
         created = [text for method, text in sent if method == "sendMessage"]
         self.assertTrue(created)
-        self.assertIn("⏳ Working", created[0])
+        self.assertIn(f"{telegram.WORKING_ICON} Working", created[0])
+
+    def test_heartbeat_on_a_toolless_turn_creates_no_bubble_before_the_thinking_mark(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        sent = []
+
+        def fake_api(_api, method, **kwargs):
+            sent.append(method)
+            return {"ok": True, "result": {"message_id": 9}}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
+            live = telegram._LiveStatus("bot-api", 1, model="m")
+            live.turn_started -= telegram._STATUS_AFTER_SECONDS + 1
+            live.tick()
+        self.assertEqual([m for m in sent if m == "sendMessage"], [])
 
     def test_api_call_retries_send_on_transient_network_error(self):
         # sendMessage must retry on ConnectionError so a reply isn't lost when
