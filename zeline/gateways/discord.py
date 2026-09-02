@@ -48,6 +48,34 @@ def _verify_bot(token: str) -> str:
     return str(response.json().get("id", ""))
 
 
+def _heartbeat_loop(
+    ws: Any,
+    interval: float,
+    stop: threading.Event,
+    state: dict[str, Any],
+) -> None:
+    """Send op 1 keepalives for one connection until that connection stops.
+
+    Every value this thread needs is a parameter rather than a closure over the
+    reconnect loop's locals. As a closure it read whatever the loop had rebound
+    since: after a reconnect a surviving thread from the previous connection
+    would wait on the *new* stop event and send frames on the *new* socket,
+    alongside the new thread. Two threads writing to one websocket interleaves
+    frames, Discord drops the connection, and the next reconnect leaks another
+    thread -- a self-feeding loop that ends with a bot that is connected but no
+    longer receiving messages.
+
+    ``state`` stays shared on purpose: the heartbeat must report the latest
+    sequence number the reader has seen, or Discord treats the session as
+    desynchronised and forces a full reconnect.
+    """
+    while not stop.wait(interval):
+        try:
+            ws.send(json.dumps({"op": 1, "d": state.get("sequence")}))
+        except Exception:
+            return
+
+
 def start(sessions, cfg: dict[str, Any], stop_event, ready=None) -> None:
     errors = validate_config(cfg)
     if errors:
@@ -70,22 +98,21 @@ def start(sessions, cfg: dict[str, Any], stop_event, ready=None) -> None:
     while not stop_event.is_set():
         ws = None
         heartbeat_stop = threading.Event()
+        heartbeat_thread: threading.Thread | None = None
         try:
             ws = websocket.create_connection(GATEWAY, timeout=45)
             hello = json.loads(ws.recv())
             interval = float(hello.get("d", {}).get("heartbeat_interval", 45000)) / 1000
-            sequence: int | None = None
+            # Shared with the heartbeat thread so it always reports the latest
+            # sequence, without the thread closing over this loop's locals.
+            state: dict[str, Any] = {"sequence": None}
 
-            def heartbeat() -> None:
-                while not heartbeat_stop.wait(interval):
-                    try:
-                        if ws is None:
-                            return
-                        ws.send(json.dumps({"op": 1, "d": sequence}))
-                    except Exception:
-                        return
-
-            threading.Thread(target=heartbeat, daemon=True).start()
+            heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                args=(ws, interval, heartbeat_stop, state),
+                daemon=True,
+            )
+            heartbeat_thread.start()
             ws.send(json.dumps({"op": 2, "d": {
                 "token": token, "intents": INTENTS,
                 "properties": {"os": "linux", "browser": "zeline", "device": "zeline"},
@@ -93,7 +120,7 @@ def start(sessions, cfg: dict[str, Any], stop_event, ready=None) -> None:
             while not stop_event.is_set():
                 payload = json.loads(ws.recv())
                 if payload.get("s") is not None:
-                    sequence = int(payload["s"])
+                    state["sequence"] = int(payload["s"])
                 if payload.get("op") == 7:
                     break
                 if payload.get("op") != 0 or payload.get("t") != "MESSAGE_CREATE":
@@ -123,3 +150,8 @@ def start(sessions, cfg: dict[str, Any], stop_event, ready=None) -> None:
                     ws.close()
                 except Exception:
                     pass
+            # Do not reconnect while the previous heartbeat is still alive: two
+            # writers on one socket is exactly the failure this guards against.
+            # A short join is enough because the thread only waits on the event.
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=5)
