@@ -70,7 +70,7 @@ The installer route needs no existing Python tooling — it provisions a private
 environment for you:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 ```
 
 Then `zeline setup`. The installer downloads the versioned wheel and verifies it
@@ -80,7 +80,7 @@ hand. On iSH, run `apk add bash curl python3` first.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Then `zeline setup`.
@@ -266,21 +266,31 @@ API keys and gateway tokens are never included.
 
 See [SECURITY.md](SECURITY.md) for reporting guidance.
 
+## Extend it
+
+Custom Python tools, plugin hooks that can audit or block any tool call, local
+OpenAPI documents as tools, and MCP servers all work without changing the
+package. See [docs/extending.md](docs/extending.md).
+
 ## Development
 
 ```bash
 python3 -m unittest discover -s tests -v
+ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
+CI runs `unittest`, not `pytest`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+branch/PR flow, what each CI job proves, and where things live;
+[CHANGELOG.md](CHANGELOG.md) records every release with links to its pull
+requests.
+
 ## Roadmap
 
-- PyPI publishing and signed release artifacts
 - Service integration for systemd and Termux:Boot
 - More messaging adapters
-- Scheduled jobs
-- Plugin and extension APIs
-- Session search and richer interfaces
+- Richer interfaces on top of the app gateway
+- Promoting more ruff rules into the blocking lint gate
 
 ## License
 

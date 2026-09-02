@@ -52,10 +52,24 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 Di platform POSIX, Zeline memakai environment Python privat; di Windows paket
 dipasang hanya untuk akun pengguna. Tidak perlu root atau Administrator.
 
-### Termux, Linux, macOS, dan iSH
+### Dari PyPI
+
+Kalau Python tooling sudah ada, ini jalur terpendek di semua platform:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+uv tool install zeline
+```
+
+Atau dengan pip, ke environment yang kamu kelola sendiri: `pip install zeline`.
+Lalu `zeline setup`.
+
+### Termux, Linux, macOS, dan iSH
+
+Jalur installer tidak butuh Python tooling apa pun — dia menyiapkan environment
+privat untukmu:
+
+```bash
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 ```
 
 Lalu `zeline setup`. Installer-nya mengunduh wheel bertag dan memverifikasinya
@@ -68,7 +82,7 @@ gateway saat iSH tidak berada di foreground.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Lalu `zeline setup`.
@@ -256,21 +270,31 @@ API key dan token gateway tidak pernah disertakan.
 
 Lihat [SECURITY.md](../SECURITY.md) untuk panduan pelaporan.
 
+## Memperluas Zeline
+
+Tool Python sendiri, plugin hook yang bisa mengaudit atau memblokir tool call
+apa pun, dokumen OpenAPI lokal sebagai tool, dan server MCP semuanya bekerja
+tanpa mengubah paketnya. Lihat [docs/extending.md](extending.md).
+
 ## Pengembangan
 
 ```bash
 python3 -m unittest discover -s tests -v
+ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
+CI menjalankan `unittest`, bukan `pytest`. Lihat
+[CONTRIBUTING.md](../CONTRIBUTING.md) untuk alur branch/PR, apa yang dibuktikan
+tiap job CI, dan lokasi setiap bagian kode; [CHANGELOG.md](../CHANGELOG.md)
+mencatat setiap rilis beserta tautan ke pull request-nya.
+
 ## Peta jalan
 
-- Publikasi PyPI dan artefak rilis yang ditandatangani
 - Integrasi layanan untuk systemd dan Termux:Boot
 - Lebih banyak adapter perpesanan
-- Tugas terjadwal
-- API plugin dan ekstensi
-- Pencarian sesi dan antarmuka yang lebih kaya
+- Antarmuka yang lebih kaya di atas app gateway
+- Menaikkan lebih banyak aturan ruff ke gate lint yang blocking
 
 ## Lisensi
 

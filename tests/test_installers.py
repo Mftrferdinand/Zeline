@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "0.2.7"
+RELEASE_VERSION = "0.2.8"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 
@@ -44,9 +44,12 @@ class ReleaseVersionContractTests(unittest.TestCase):
             ROOT / "docs" / "README.id.md",
             ROOT / "docs" / "README.zh.md",
             ROOT / "docs" / "installation.md",
+            ROOT / "docs" / "extending.md",
             ROOT / "install.sh",
             ROOT / "install.ps1",
             ROOT / "pyproject.toml",
+            ROOT / "CONTRIBUTING.md",
+            ROOT / "CHANGELOG.md",
             ROOT / ".github" / "RELEASE_NOTES.md",
         ]
         for page in pages:
