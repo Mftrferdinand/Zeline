@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeline"
-version = "0.2.7"
+version = "0.2.8"
 description = "Zeline — an open-source agentic AI framework by Zerolinear."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["ai", "agent", "llm", "telegram", "whatsapp", "openai-compatible"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
@@ -40,9 +40,15 @@ dev = ["build>=1.2", "ruff>=0.16"]
 zeline = "zeline.cli:main"
 
 [project.urls]
+# Homepage points at the repository, not zeline.<the project domain>, because
+# that domain does not resolve yet and PyPI renders this as a clickable sidebar
+# link on every visit. Switch it once DNS is live -- a 404 on the project page
+# is worse than a plain GitHub link.
 Homepage = "https://github.com/Mftrferdinand/Zeline"
+Documentation = "https://github.com/Mftrferdinand/Zeline/blob/main/docs/installation.md"
 Repository = "https://github.com/Mftrferdinand/Zeline"
 Issues = "https://github.com/Mftrferdinand/Zeline/issues"
+Changelog = "https://github.com/Mftrferdinand/Zeline/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["zeline", "zeline.*"]

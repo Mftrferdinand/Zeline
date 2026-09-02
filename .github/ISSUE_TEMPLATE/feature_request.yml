@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a capability Zeline does not have
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you are trying to do and where Zeline stops you. Describe the
+        situation, not the implementation — the best solution is often not the
+        one that first comes to mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: The behaviour, CLI surface, or config you would expect.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Zeline already extends four ways without changing the package — custom
+        tools, plugin hooks, OpenAPI documents, and MCP servers (see
+        `docs/extending.md`). If one of those nearly works, say where it falls
+        short; that is usually the more useful bug report.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent core (loop, context, sessions)
+        - Tools and extensions
+        - Gateways (Telegram, WhatsApp, Discord, webhook, app)
+        - CLI
+        - Skills
+        - Install and packaging
+        - Docs
+        - Other / not sure
+    validations:
+      required: true

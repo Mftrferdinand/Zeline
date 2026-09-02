@@ -4,7 +4,7 @@
 ╭───────────────────────────────────────╮
 │           Z  E  L  I  N  E            │
 ├───────────────────────────────────────┤
-│   AGENTIC AI BY ZEROLINEAR • v0.2.7   │
+│   AGENTIC AI BY ZEROLINEAR • v0.2.8   │
 ╰───────────────────────────────────────╯
 ```
 
@@ -29,7 +29,7 @@ WhatsApp also needs Node.js 18+ and npm.
 One line on every POSIX platform — Termux, Linux, macOS, and iSH:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 ```
 
 Then `zeline setup`.
@@ -80,7 +80,7 @@ Install Termux from F-Droid or GitHub (the Play Store build is obsolete), then:
 ```bash
 pkg update -y
 pkg install python curl -y
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -98,7 +98,7 @@ Debian / Ubuntu:
 ```bash
 sudo apt update
 sudo apt install python3 python3-venv curl -y
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -106,7 +106,7 @@ Fedora:
 
 ```bash
 sudo dnf install python3 curl -y
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -114,7 +114,7 @@ Arch Linux:
 
 ```bash
 sudo pacman -S --needed python curl
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -127,7 +127,7 @@ Install Apple command-line tools and Homebrew Python if needed:
 ```bash
 xcode-select --install
 brew install python
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -143,7 +143,7 @@ Use [iSH](https://ish.app/), an Alpine Linux shell for iOS/iPadOS:
 ```sh
 apk update
 apk add bash curl python3 py3-pip
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 zeline setup
 ```
 
@@ -158,7 +158,7 @@ Open **PowerShell** or **Windows Terminal**, not Command Prompt. Administrator
 rights are not required:
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Then `zeline setup`. `install.ps1` verifies the versioned wheel with

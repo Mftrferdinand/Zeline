@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in Zeline does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a suspected security vulnerability, do **not** open an issue —
+        use GitHub's private vulnerability reporting for this repository.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+      placeholder: |
+        Expected: `zeline gateway restart` reports connected.
+        Actual: it prints "connected" but Telegram receives nothing.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: >
+        The smallest sequence that shows the problem. Exact commands, not a
+        description of them — most reports that go unfixed are the ones nobody
+        could reproduce.
+      placeholder: |
+        1. zeline setup gateway telegram
+        2. zeline gateway start telegram
+        3. send "hi" from the allowed account
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Zeline version
+      description: Output of `zeline --version`
+      placeholder: "0.2.8"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and Python
+      description: OS (and Termux/iSH if applicable), plus `python3 --version`
+      placeholder: "Termux on Android 14, Python 3.12.5"
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: How it was installed
+      placeholder: "install.sh / pip install zeline / uv tool install / editable checkout"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: >
+        Error message or traceback. Redact provider keys, bot tokens, and chat
+        IDs before pasting.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked `zeline doctor` output
+        - label: I removed credentials and personal data from everything pasted above
+          required: true

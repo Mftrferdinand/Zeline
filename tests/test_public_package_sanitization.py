@@ -41,8 +41,16 @@ class PublicPackageSanitizationTests(unittest.TestCase):
         self.assertNotRegex(text, r"\+1\s*\d{10}\b")
 
     def test_public_readmes_do_not_link_to_unresolved_domains(self):
+        """Also covers pyproject: PyPI renders project URLs on every page view, so
+        a dead Homepage there is more visible than one buried in a README."""
         dead_domains = ("zero" + "linear.com", "zeline." + "zerolinear.com")
-        for path in (ROOT / "README.md", ROOT / "docs/README.id.md", ROOT / "docs/README.zh.md"):
+        pages = (
+            ROOT / "README.md",
+            ROOT / "docs/README.id.md",
+            ROOT / "docs/README.zh.md",
+            ROOT / "pyproject.toml",
+        )
+        for path in pages:
             text = path.read_text(encoding="utf-8")
             for domain in dead_domains:
                 self.assertNotIn(f"https://{domain}", text, path)

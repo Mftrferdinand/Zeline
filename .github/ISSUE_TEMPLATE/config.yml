@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Mftrferdinand/Zeline/security/advisories/new
+    about: Report privately through GitHub. Do not open a public issue.
+  - name: Installation guide
+    url: https://github.com/Mftrferdinand/Zeline/blob/main/docs/installation.md
+    about: Platform prerequisites, PATH fixes, updates, and uninstall.
+  - name: Extending Zeline
+    url: https://github.com/Mftrferdinand/Zeline/blob/main/docs/extending.md
+    about: Custom tools, plugin hooks, OpenAPI documents, and MCP servers.

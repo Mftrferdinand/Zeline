@@ -52,10 +52,23 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 平台上，Zeline 使用私有 Python 环境；Windows 只为当前用户安装。无需 root
 或管理员权限。
 
-### Termux、Linux、macOS 和 iSH
+### 从 PyPI 安装
+
+如果你已经有 Python 工具链，这是所有平台上最短的路径：
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.sh && bash install.sh
+uv tool install zeline
+```
+
+或者用 pip 安装到你自己管理的环境中：`pip install zeline`。然后运行
+`zeline setup`。
+
+### Termux、Linux、macOS 和 iSH
+
+安装脚本这条路径不需要任何现成的 Python 工具链——它会为你准备一个私有环境：
+
+```bash
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 ```
 
 然后运行 `zeline setup`。安装脚本会自行下载带版本号的 wheel，并在安装前对照
@@ -67,7 +80,7 @@ curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/r
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.7/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 然后运行 `zeline setup`。
@@ -249,21 +262,30 @@ API 密钥和网关令牌绝不会被包含在内。
 
 有关报告指引，请参阅 [SECURITY.md](../SECURITY.md)。
 
+## 扩展 Zeline
+
+自定义 Python 工具、可以审计或阻止任何工具调用的插件钩子、作为工具加载的本地
+OpenAPI 文档，以及 MCP 服务器，全部都无需修改本包即可使用。请参阅
+[docs/extending.md](extending.md)。
+
 ## 开发
 
 ```bash
 python3 -m unittest discover -s tests -v
+ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
+CI 运行的是 `unittest`，而不是 `pytest`。分支/PR 流程、每个 CI 任务验证的内容以及
+代码结构请参阅 [CONTRIBUTING.md](../CONTRIBUTING.md)；
+[CHANGELOG.md](../CHANGELOG.md) 记录了每个版本及其对应的 pull request 链接。
+
 ## 路线图
 
-- PyPI 发布和签名的发布制品
 - 面向 systemd 和 Termux:Boot 的服务集成
 - 更多消息适配器
-- 定时任务
-- 插件与扩展 API
-- 会话搜索和更丰富的界面
+- 基于 app gateway 的更丰富界面
+- 将更多 ruff 规则提升为阻断式 lint 门禁
 
 ## 许可证
 

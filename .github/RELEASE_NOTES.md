@@ -2,76 +2,89 @@
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
+### Zeline is on PyPI
+
+This is the first release published to [PyPI](https://pypi.org/project/zeline/),
+so on any machine that already has Python tooling the install is:
+
+```bash
+uv tool install zeline
+```
+
+Publishing runs from the release workflow through PyPI Trusted Publishing (OIDC)
+— no API token is stored in this repository. The job uploads the exact artifacts
+that already passed checksum and metadata verification instead of rebuilding, so
+the bytes on PyPI are the bytes attested in this GitHub release. The installer
+one-liners below still work unchanged for machines with no Python tooling.
+
 ### Highlights
 
-- **A first-party gateway for the mobile app — REST + SSE on `/api/v1`** — the
-  Android/iOS client now talks to the same `zeline.agent.Zeline` the CLI and
-  Telegram use, with no duplicated runtime. Token deltas stream as
-  `assistant.delta`, tool activity arrives as its own `tool.started` /
-  `tool.output` / `tool.completed` events so the client never parses assistant
-  prose to learn what happened, and history replays those events as the same
-  collapsible cards. Contract in `docs/ZELINE_APP_API.md`, every event field in
-  `docs/SSE_EVENT_SCHEMA.md`, a working consumer in
-  `examples/zeline_app_client.py`.
-- **Stop actually stops** — cancellation is a flag checked inside the streaming
-  read loop, so with streaming off there was no loop to check it and a stop
-  request waited for the blocking provider call to return: **113–211 seconds**
-  measured. Streaming is now a per-instance property, and the app gateway forces
-  it on because for its protocol streaming is a requirement rather than a
-  preference. Cancel now lands in **2.7 seconds**, and partial text is kept
-  rather than discarded. The global `agent.stream` preference still governs the
-  CLI exactly as before.
-- **A cancelled turn no longer erases the work it already did** — the tool-call
-  protocol requires every `tool_calls` entry to have a matching result, and
-  Zeline used to satisfy that by amputation: drop the results, then drop the
-  assistant message that asked for them. Stop after three of five calls had
-  finished and those three real results went with it, along with the plan the
-  model had written, so the next turn started blind and re-ran the same
-  commands. Unanswered calls now get a result that says plainly the call did not
-  complete — never a fabricated outcome, which the model would then reason from.
-  The repair also scans the whole history instead of only the tail, so a dangling
-  call in the middle (a parallel batch where one worker raised, a transcript from
-  an older build, a crash between writing the call and its results) no longer
-  leaves a session permanently rejected with nothing to do but wipe it.
-- **Oversized tool output is offloaded to disk, not thrown away** — a large
-  result used to be truncated into uselessness. It is now written to disk with a
-  summary and a path the agent can read back in slices.
-- **Trimming archives what it evicts and injects a digest** — context trimming
-  silently deleted the oldest turns. Evicted turns are archived and a digest of
-  them is injected, so the agent still knows what was decided fifty turns ago
-  instead of confidently contradicting it.
-- **`/version` and `/update` in Telegram** — a phone install can report its
-  version and upgrade itself without ever opening a shell.
-- **Discord gateway** — a bot over the official Gateway websocket and Bot API.
-  Setup asks for a Bot Token; intents, heartbeat, and REST endpoints are
-  transport details, not questions.
-- **`openconnector` skill** — self-host OpenConnector and reach 1451 SaaS
-  providers from Zeline over MCP.
-- **One-line install** — the manual copy-paste checksum block is gone. It asked
-  users to compare two hex strings by eye, which is not verification; artifacts
-  are published with build provenance and the installer verifies checksums
-  itself.
+- **A turn is no longer cut short by a clock that could never agree with the
+  round limit.** The per-turn wall clock was a hardcoded 360 s while
+  `max_tool_rounds` defaults to 20. One model call takes 7–50 s, so the clock
+  always expired first: the round limit was unreachable and long multi-step
+  tasks were interrupted mid-work and forced to summarise. The default is now
+  1800 s — a backstop for a genuinely stuck turn rather than the work scheduler
+  — and it is configurable with `zeline setup agent`.
+- **A local OpenAPI document becomes real tools.** Point Zeline at an OpenAPI 3
+  file and its operations load as namespaced `api_*` tools with schemas derived
+  from the document, instead of hand-written wrappers that drift from the API.
+  Credentials come from `~/.zeline/.env`, never from the model-visible schema,
+  and only `workspace`/`full` profiles load them.
+- **Self-improvement writes through a real skill surface.** `manage_skill`
+  replaces the old save-only path: `create`, `patch`, `write_file`, `delete`, and
+  `list`. Skills are folders (`SKILL.md` plus `references/`, `templates/`,
+  `scripts/`, `assets/`), a bundled skill is repaired by copy-on-write into a
+  private override that survives upgrades, and a duplicate can be merged away
+  with `absorbed_into` instead of accumulating three files for one lesson.
+- **A Discord bot no longer goes quiet after a reconnect.** The keepalive thread
+  closed over the reconnect loop's locals, so after a reconnect a thread from the
+  dead connection wrote heartbeat frames to the *new* socket alongside the new
+  thread. Two writers interleave frames, Discord drops the link, and the next
+  reconnect leaks another thread — a self-feeding failure whose symptom is a bot
+  that reports connected and silently stops receiving messages. Each heartbeat
+  now belongs to exactly one connection, and the loop joins it before
+  reconnecting.
+- **Telegram status tells the truth about who is slow.** The activity feed sits
+  above and the status line below it, and once the wait for the provider passes
+  20 s the line says so explicitly instead of implying Zeline is busy. A slow
+  greeting that ran no tools is no longer labelled "Working".
+- **Provider errors say what the status actually means.** `403` is provider quota
+  exhausted, not a bad API key; `402` is payment required; `404` is an unknown
+  model; `429` is rate limiting. One status table is shared by the agent, the
+  CLI, Telegram, media analysis, and image generation.
+- **`/stop` sends one message**, and `lanjut` / `terusin` / `gas` resume the most
+  recent thread rather than an older topic that happened to share more keywords.
+- **CI blocks on correctness lint.** `ruff check` selects undefined names, broken
+  f-strings, invalid syntax, and mistaken comparisons — bugs, not taste — so the
+  gate can be blocking without a mass reformat. Remaining style debt is reported
+  without failing the build and promoted into the gate as it is cleared.
+
+### For contributors
+
+The repository now documents its own process: `CONTRIBUTING.md`,
+`CODE_OF_CONDUCT.md`, `CHANGELOG.md`, issue and pull request templates, and
+`docs/extending.md` — a written path for adding your own tools, plugin hooks,
+OpenAPI tools, and MCP servers, which previously existed only as docstrings in
+`zeline/custom_tools.py` and `zeline/plugins.py`.
 
 ### Security
 
-The app gateway binds `127.0.0.1` by default. Binding a routable interface
-exposes an agent that can run shell commands to your network — put it behind a
-TLS terminator with its own auth, and rotate the gateway token if it leaks.
-Provider API keys never appear in any response (`/providers` returns a
-`••••XXXX` hint only), every endpoint except `/health` and `/auth/login`
-requires a Bearer JWT, and `/system` deliberately carries no IP address.
-Session ids name files on disk, so they are validated at the storage boundary
-and the resolved path is asserted to stay inside the data directory.
+Custom tools, plugin hooks, and MCP stdio servers are arbitrary local Python in
+the agent's process and load only on the `workspace`/`full` profiles — a public
+gateway on `safe` never reaches them. The app gateway binds `127.0.0.1` by
+default; exposing a routable interface exposes an agent that can run shell
+commands, so put it behind a TLS terminator with its own auth and rotate the
+gateway token if it leaks. Provider API keys never appear in any response.
 
 ### Upgrade note
 
-No configuration changes are required. `discord` and `zeline_app` now have
-config defaults, so `zeline gateway enable discord` works instead of failing on
-a name its own help text offered; both stay disabled until you enable them.
+No configuration changes are required. Existing installs can upgrade in place
+with `zeline update`, or `/update` from Telegram.
 
 ### Installation
 
-See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.2.7/docs/installation.md) for install commands on every supported platform.
+See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.2.8/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.2.8/CHANGELOG.md) for the full list of changes with links to every pull request.
 
 ### Assets
 
