@@ -12,6 +12,14 @@ release's documented one-liner keeps working after a newer release ships.
 
 ### Fixed
 
+- A release no longer reports failure because PyPI has no Trusted Publisher
+  configured. `publish-pypi` failed with `invalid-publisher` on every release and
+  painted the `pypi` deployment red on the repository page — for a release whose
+  assets were built, checksum-verified, attested, and published. The upload is
+  now gated on a probe that asks PyPI whether it accepts this workflow's
+  identity, so the job is *skipped* with setup instructions when no publisher
+  exists and runs normally once one does. A skipped job says "not configured";
+  a failed job says "broken".
 - `zeline update` restarts the gateways that were actually running. It read the
   selection after `drain_then_stop()` had already deleted the state file, so an
   operator who started only Telegram got every enabled gateway back — WhatsApp

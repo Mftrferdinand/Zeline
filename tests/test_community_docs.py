@@ -327,13 +327,55 @@ class PyPiAvailabilityClaimTests(unittest.TestCase):
         self.assertIn("API token", notes)
 
     def test_the_workflow_still_carries_the_publish_job(self):
-        """The gate above is about claims in prose, not about removing the job --
-        a failing publish-pypi is the signal that the publisher is still unset."""
+        """The gate above is about claims in prose, not about removing the job."""
         workflow = yaml.safe_load(_read(".github", "workflows", "release.yml"))
         self.assertIn("publish-pypi", workflow["jobs"])
         job = workflow["jobs"]["publish-pypi"]
-        self.assertEqual(job["needs"], "build-release")
+        self.assertIn("build-release", job["needs"])
         self.assertEqual(job["permissions"]["id-token"], "write")
+
+    def test_the_upload_is_gated_on_a_probe_instead_of_failing(self):
+        """A release must not go red because PyPI has no publisher configured.
+
+        A Trusted Publisher lives in a PyPI account, so the workflow cannot know
+        from its own files whether an upload will work. Before this gate,
+        ``publish-pypi`` failed with ``invalid-publisher`` on every release and
+        painted the `pypi` deployment red on the repository page -- for a release
+        whose assets were built, verified, attested, and published. A skipped job
+        says "not configured"; a failed job says "broken".
+        """
+        workflow = yaml.safe_load(_read(".github", "workflows", "release.yml"))
+        jobs = workflow["jobs"]
+        self.assertIn("check-pypi-publisher", jobs)
+        probe = jobs["check-pypi-publisher"]
+        publish = jobs["publish-pypi"]
+
+        self.assertIn("check-pypi-publisher", publish["needs"])
+        self.assertEqual(
+            publish["if"].strip(),
+            "needs.check-pypi-publisher.outputs.armed == 'true'",
+        )
+        self.assertEqual(probe["outputs"]["armed"], "${{ steps.probe.outputs.armed }}")
+        self.assertEqual(probe["permissions"]["id-token"], "write")
+
+        # The probe must not declare an environment: `environment:` creates a
+        # deployment record, which is the very red badge being removed.
+        self.assertNotIn("environment", probe)
+        self.assertEqual(publish["environment"]["name"], "pypi")
+
+        script = "\n".join(
+            str(step.get("run", "")) for step in probe["steps"]
+        )
+        # It exchanges a token the same way the publish action does; anything
+        # weaker (e.g. GETting the project JSON) tests the wrong thing.
+        self.assertIn("/_/oidc/mint-token", script)
+        self.assertIn("ACTIONS_ID_TOKEN_REQUEST_URL", script)
+        # The minted upload token must never be written anywhere.
+        self.assertIn("-o /dev/null", script)
+        # And the failure path has to tell the operator exactly what to configure.
+        for hint in ("pending publisher", "release.yml", "environment : pypi"):
+            with self.subTest(hint=hint):
+                self.assertIn(hint, script)
 
     def test_when_flipped_the_docs_must_document_the_pypi_route(self):
         """Guards the other direction: once PyPI works, silent docs are the bug."""
