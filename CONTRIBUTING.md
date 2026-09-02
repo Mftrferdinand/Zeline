@@ -131,3 +131,10 @@ Releases are cut by the maintainer. A version bump touches ten files that a test
 cross-checks against each other, and the tag triggers a workflow that verifies
 the tag belongs to merged `main` before publishing anything. Do not include a
 version bump in a feature pull request.
+
+Public docs may only advertise an install command that actually works.
+`PyPiAvailabilityClaimTests` in `tests/test_community_docs.py` enforces this with
+a single `PYPI_PUBLISHED` switch: while it is `False`, no page may hand a reader
+`pip install zeline` or `uv tool install zeline`; flip it in the same commit that
+lands the first successful PyPI upload and the same test then requires the READMEs
+and install guide to document that route.

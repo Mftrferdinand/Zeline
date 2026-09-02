@@ -133,6 +133,17 @@ jobs:
     # Runs only after the artifacts above passed checksum + metadata
     # verification, and publishes those same files -- never a rebuild, so the
     # bytes on PyPI match the bytes attested in the GitHub release.
+    #
+    # This job fails with `invalid-publisher` until a *pending publisher* exists
+    # at pypi.org for a project that has never been uploaded before. It is an
+    # account action, not a code one: pypi.org -> Your projects -> Publishing ->
+    # add a pending publisher with owner `Mftrferdinand`, repository `Zeline`,
+    # workflow `release.yml`, environment `pypi`. Those four values must match
+    # the OIDC claims exactly; the failure log prints the claims it sent.
+    #
+    # The failure is deliberately non-fatal to the release: `build-release` has
+    # already published the GitHub release and its assets by the time this runs,
+    # so a missing publisher costs the PyPI upload and nothing else.
     needs: build-release
     runs-on: ubuntu-latest
     environment:
