@@ -377,6 +377,46 @@ class PyPiAvailabilityClaimTests(unittest.TestCase):
             with self.subTest(hint=hint):
                 self.assertIn(hint, script)
 
+    def test_a_manual_run_can_verify_the_publisher_without_a_release(self):
+        """You must be able to ask "will the next release publish?" for free.
+
+        Only PyPI knows whether a Trusted Publisher matches, and the answer had
+        to be discovered by cutting a release -- burning a version number on a
+        configuration question. `workflow_dispatch` + verify-pypi-publisher makes
+        it a button, and the release path is untouched by it.
+        """
+        workflow = yaml.safe_load(_read(".github", "workflows", "release.yml"))
+        # PyYAML parses a bare `on:` key as the boolean True.
+        triggers = workflow[True] if True in workflow else workflow["on"]
+        self.assertIn("workflow_dispatch", triggers)
+        self.assertIn("push", triggers)
+
+        jobs = workflow["jobs"]
+        verify = jobs["verify-pypi-publisher"]
+        # Manual-only, so a release never waits on it or reports its result.
+        self.assertEqual(verify["if"].strip(), "github.event_name == 'workflow_dispatch'")
+        self.assertEqual(jobs["build-release"]["if"].strip(), "github.event_name == 'push'")
+        self.assertNotIn("needs", verify)
+        # Same reasoning as the release-path probe: `environment:` would create a
+        # deployment record, which is the red badge being avoided.
+        self.assertNotIn("environment", verify)
+        self.assertEqual(verify["permissions"]["id-token"], "write")
+
+        script = "\n".join(str(step.get("run", "")) for step in verify["steps"])
+        self.assertIn("/_/oidc/mint-token", script)
+        self.assertIn("-o /dev/null", script)
+        self.assertIn("GITHUB_STEP_SUMMARY", script)
+        # It reports a configuration fact, so it must not go red either.
+        self.assertIn("exit 0", script)
+        # The failure path has to name every field, including the project name --
+        # a mismatch there fails at upload with "Non-user identities cannot
+        # create new projects", which reads like a permissions problem and is not.
+        for field in ("PyPI Project Name", "Owner", "Repository name",
+                      "Workflow name", "Environment name",
+                      "pypi.org/manage/account/publishing/"):
+            with self.subTest(field=field):
+                self.assertIn(field, script)
+
     def test_when_flipped_the_docs_must_document_the_pypi_route(self):
         """Guards the other direction: once PyPI works, silent docs are the bug."""
         if not self.PYPI_PUBLISHED:
