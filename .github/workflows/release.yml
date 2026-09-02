@@ -129,22 +129,79 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  check-pypi-publisher:
+    # Does PyPI actually accept this workflow's identity? Nothing else can answer
+    # that: a Trusted Publisher lives in a PyPI account, not in this repository,
+    # so the workflow cannot know from its own files whether an upload will work.
+    #
+    # Without this gate `publish-pypi` fails with `invalid-publisher` on every
+    # release until someone configures the publisher -- a red job and a red
+    # `pypi` deployment on the repository page, for a release that was otherwise
+    # completely successful. Worse, it trains the maintainer to ignore red.
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    outputs:
+      armed: ${{ steps.probe.outputs.armed }}
+    steps:
+      - name: Ask PyPI whether a Trusted Publisher exists for this workflow
+        id: probe
+        run: |
+          set -euo pipefail
+          audience=$(curl -fsS https://pypi.org/_/oidc/audience \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["audience"])' \
+            || echo pypi)
+          # An OIDC token identifying this workflow run. Not a PyPI credential.
+          oidc=$(curl -fsS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          # Exchange it exactly as gh-action-pypi-publish does -- the only check
+          # that reflects reality rather than guessing from the project's
+          # existence. On success the body carries a real short-lived upload
+          # token, so it goes to /dev/null and is never logged or stored; only
+          # the status code is read. The payload goes through a file so the OIDC
+          # token never appears in a process argument list either.
+          printf '{"token": "%s"}' "$oidc" > mint-request.json
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            --data-binary @mint-request.json \
+            "https://pypi.org/_/oidc/mint-token")
+          rm -f mint-request.json
+          if [ "$code" = "200" ]; then
+            echo "armed=true" >> "$GITHUB_OUTPUT"
+            echo "PyPI accepted this workflow's identity — publishing."
+          else
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PyPI refused the token exchange (HTTP $code); skipping the upload."
+            echo
+            echo "No Trusted Publisher is configured for this repository yet, so"
+            echo "there is nothing to upload to. The GitHub release above is"
+            echo "unaffected: its assets are built, checksum-verified, attested,"
+            echo "and published."
+            echo
+            echo "To arm it, at pypi.org -> Publishing -> add a pending publisher:"
+            echo "  owner       : ${GITHUB_REPOSITORY%%/*}"
+            echo "  repository  : ${GITHUB_REPOSITORY##*/}"
+            echo "  workflow    : release.yml"
+            echo "  environment : pypi"
+            echo "All four must match exactly. The next release then publishes"
+            echo "with no further changes here."
+          fi
+
   publish-pypi:
     # Runs only after the artifacts above passed checksum + metadata
     # verification, and publishes those same files -- never a rebuild, so the
     # bytes on PyPI match the bytes attested in the GitHub release.
     #
-    # This job fails with `invalid-publisher` until a *pending publisher* exists
-    # at pypi.org for a project that has never been uploaded before. It is an
-    # account action, not a code one: pypi.org -> Your projects -> Publishing ->
-    # add a pending publisher with owner `Mftrferdinand`, repository `Zeline`,
-    # workflow `release.yml`, environment `pypi`. Those four values must match
-    # the OIDC claims exactly; the failure log prints the claims it sent.
-    #
-    # The failure is deliberately non-fatal to the release: `build-release` has
-    # already published the GitHub release and its assets by the time this runs,
-    # so a missing publisher costs the PyPI upload and nothing else.
-    needs: build-release
+    # Gated on the probe rather than allowed to fail: a skipped job says "not
+    # configured", a failed job says "broken", and only one of those is true.
+    # `environment:` also means a *job* deployment record -- so gating the job
+    # (not a step inside it) is what keeps a phantom `pypi` deployment off the
+    # repository page while no publisher exists.
+    needs: [build-release, check-pypi-publisher]
+    if: needs.check-pypi-publisher.outputs.armed == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
