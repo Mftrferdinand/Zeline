@@ -10,15 +10,15 @@ release's documented one-liner keeps working after a newer release ships.
 
 ## [0.2.8] — 2026-09-01
 
-First release published to [PyPI](https://pypi.org/project/zeline/):
-`uv tool install zeline`.
-
 ### Added
 
 - Publish to PyPI from the release workflow using Trusted Publishing (OIDC), so
   no API token is stored in the repository. The job uploads the artifacts that
   already passed checksum and metadata verification rather than rebuilding, so
-  the bytes on PyPI are the bytes attested in the GitHub release. ([#210])
+  the bytes on PyPI are the bytes attested in the GitHub release. The `zeline`
+  name is not claimed on PyPI yet, so `pip install zeline` does not work from
+  this release — the pipeline is in place and the installer remains the
+  supported route. ([#210])
 - A correctness lint gate in CI (`ruff check`, selecting undefined names, broken
   f-strings, invalid syntax, mistaken comparisons) plus a non-blocking report of
   remaining style debt. ([#210])

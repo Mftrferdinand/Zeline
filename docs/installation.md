@@ -34,23 +34,19 @@ curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/r
 
 Then `zeline setup`.
 
-### From PyPI
+### Why not `pip install zeline` yet
 
-Zeline is also published to PyPI, so if you already have Python tooling you can
-skip the installer entirely:
+The release workflow publishes to PyPI through Trusted Publishing (OIDC), with no
+API token stored in the repository, and it uploads the same artifacts that
+already passed checksum and metadata verification rather than rebuilding them.
+The name is not claimed on PyPI yet, so `pip install zeline` and
+`uv tool install zeline` would fetch nothing — this page will document them as
+soon as the first upload lands, and the installer below stays the supported route
+either way.
 
-```bash
-uv tool install zeline
-```
-
-`uv tool install` is preferred over `pip install zeline` because it puts Zeline in
-its own isolated environment with the `zeline` command on your PATH, which is what
-the installer script arranges by hand. Use `pip install zeline` only inside an
-environment you manage yourself.
-
-The installer remains the recommended route for a fresh machine: it provisions
-Python, creates the private environment, and verifies the release wheel against
-`SHA256SUMS` without assuming you already have `uv` or `pip`.
+The installer is the recommended route for a fresh machine regardless: it
+provisions Python, creates the private environment, and verifies the release
+wheel against `SHA256SUMS` without assuming you already have `uv` or `pip`.
 
 ### Why there is no checksum step to copy
 

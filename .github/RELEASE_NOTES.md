@@ -2,20 +2,23 @@
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
-### Zeline is on PyPI
+### Installing
 
-This is the first release published to [PyPI](https://pypi.org/project/zeline/),
-so on any machine that already has Python tooling the install is:
+One line on every POSIX platform — Termux, Linux, macOS, iSH:
 
 ```bash
-uv tool install zeline
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
 ```
 
-Publishing runs from the release workflow through PyPI Trusted Publishing (OIDC)
-— no API token is stored in this repository. The job uploads the exact artifacts
-that already passed checksum and metadata verification instead of rebuilding, so
-the bytes on PyPI are the bytes attested in this GitHub release. The installer
-one-liners below still work unchanged for machines with no Python tooling.
+The installer downloads the versioned wheel and verifies it against
+`SHA256SUMS` itself, so there is nothing to check by hand.
+
+This release also carries the PyPI publishing pipeline: the workflow uploads
+through Trusted Publishing (OIDC), with no API token stored in the repository,
+and it publishes the exact artifacts that already passed checksum and metadata
+verification rather than rebuilding — so the bytes on PyPI are the bytes attested
+here. `pip`/`uv` installs become available with the first release whose upload
+completes; until then use the installer above.
 
 ### Highlights
 

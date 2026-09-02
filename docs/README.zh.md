@@ -52,20 +52,9 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 平台上，Zeline 使用私有 Python 环境；Windows 只为当前用户安装。无需 root
 或管理员权限。
 
-### 从 PyPI 安装
-
-如果你已经有 Python 工具链，这是所有平台上最短的路径：
-
-```bash
-uv tool install zeline
-```
-
-或者用 pip 安装到你自己管理的环境中：`pip install zeline`。然后运行
-`zeline setup`。
-
 ### Termux、Linux、macOS 和 iSH
 
-安装脚本这条路径不需要任何现成的 Python 工具链——它会为你准备一个私有环境：
+只需一行，而且不需要任何现成的 Python 工具链——它会为你准备一个私有环境：
 
 ```bash
 curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh

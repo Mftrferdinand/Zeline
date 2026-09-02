@@ -52,20 +52,9 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 Di platform POSIX, Zeline memakai environment Python privat; di Windows paket
 dipasang hanya untuk akun pengguna. Tidak perlu root atau Administrator.
 
-### Dari PyPI
-
-Kalau Python tooling sudah ada, ini jalur terpendek di semua platform:
-
-```bash
-uv tool install zeline
-```
-
-Atau dengan pip, ke environment yang kamu kelola sendiri: `pip install zeline`.
-Lalu `zeline setup`.
-
 ### Termux, Linux, macOS, dan iSH
 
-Jalur installer tidak butuh Python tooling apa pun — dia menyiapkan environment
+Satu baris, dan tidak butuh Python tooling apa pun — dia menyiapkan environment
 privat untukmu:
 
 ```bash

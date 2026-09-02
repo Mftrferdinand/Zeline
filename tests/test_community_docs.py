@@ -266,5 +266,83 @@ class IssueAndPullRequestTemplateTests(unittest.TestCase):
         self.assertIn("No version bump", text)
 
 
+class PyPiAvailabilityClaimTests(unittest.TestCase):
+    """Public docs may only advertise an install command that actually works.
+
+    0.2.8 shipped the Trusted Publishing pipeline and the docs announced
+    ``uv tool install zeline`` as available in the same breath. The upload then
+    failed with ``invalid-publisher`` -- valid OIDC token, no pending publisher
+    configured at pypi.org -- so the release notes, three READMEs, the install
+    guide, and the changelog all documented a command that fetches nothing.
+
+    ``PYPI_PUBLISHED`` is the single switch. Flip it to ``True`` in the same
+    commit that lands the first successful upload, and this class then *requires*
+    the docs to document the PyPI route instead of forbidding it. Either way the
+    pages cannot disagree with reality, and they cannot disagree with each other.
+    """
+
+    PYPI_PUBLISHED = False
+
+    PAGES = (
+        "README.md",
+        "docs/README.id.md",
+        "docs/README.zh.md",
+        "docs/installation.md",
+        "CHANGELOG.md",
+        ".github/RELEASE_NOTES.md",
+    )
+
+    # Commands a reader would copy. The pipeline may be *described* in prose --
+    # including a disclaimer that names the command it is disclaiming -- so the
+    # gate is on the runnable form: a line that STARTS with the command, i.e.
+    # something sitting in a fenced block waiting to be pasted into a shell.
+    INSTALL_COMMANDS = ("uv tool install zeline", "pip install zeline")
+
+    def _claims(self, relative: str) -> list[str]:
+        text = _read(*relative.split("/"))
+        runnable = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            for command in self.INSTALL_COMMANDS:
+                if stripped.startswith(command) or stripped.startswith(f"$ {command}"):
+                    runnable.append(command)
+        return runnable
+
+    def test_docs_agree_with_whether_the_package_is_on_pypi(self):
+        for relative in self.PAGES:
+            claims = self._claims(relative)
+            with self.subTest(page=relative):
+                if self.PYPI_PUBLISHED:
+                    continue
+                self.assertEqual(
+                    claims, [],
+                    f"{relative} hands the reader {claims} but PYPI_PUBLISHED is False",
+                )
+
+    def test_at_least_one_page_explains_the_publishing_pipeline(self):
+        """Not advertising the command is not the same as hiding the work: the
+        OIDC pipeline is a real security property and stays documented."""
+        notes = _read(".github", "RELEASE_NOTES.md")
+        self.assertIn("Trusted Publishing", notes)
+        self.assertIn("API token", notes)
+
+    def test_the_workflow_still_carries_the_publish_job(self):
+        """The gate above is about claims in prose, not about removing the job --
+        a failing publish-pypi is the signal that the publisher is still unset."""
+        workflow = yaml.safe_load(_read(".github", "workflows", "release.yml"))
+        self.assertIn("publish-pypi", workflow["jobs"])
+        job = workflow["jobs"]["publish-pypi"]
+        self.assertEqual(job["needs"], "build-release")
+        self.assertEqual(job["permissions"]["id-token"], "write")
+
+    def test_when_flipped_the_docs_must_document_the_pypi_route(self):
+        """Guards the other direction: once PyPI works, silent docs are the bug."""
+        if not self.PYPI_PUBLISHED:
+            self.skipTest("PYPI_PUBLISHED is False; the forbidding direction applies")
+        for relative in ("README.md", "docs/installation.md"):
+            with self.subTest(page=relative):
+                self.assertTrue(self._claims(relative), f"{relative} omits the PyPI route")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
