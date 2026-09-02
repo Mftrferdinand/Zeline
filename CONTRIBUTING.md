@@ -132,6 +132,14 @@ cross-checks against each other, and the tag triggers a workflow that verifies
 the tag belongs to merged `main` before publishing anything. Do not include a
 version bump in a feature pull request.
 
+Whether a release also publishes to PyPI depends on a Trusted Publisher
+registered in a PyPI account, which nothing in this repository can see. Check it
+without cutting a release: **Actions → Release → Run workflow**. That runs
+`verify-pypi-publisher`, which exchanges an OIDC token with PyPI exactly as the
+publish step does and writes the verdict to the run summary — including the exact
+fields to register if it is not configured. It builds nothing and never fails the
+run.
+
 Public docs may only advertise an install command that actually works.
 `PyPiAvailabilityClaimTests` in `tests/test_community_docs.py` enforces this with
 a single `PYPI_PUBLISHED` switch: while it is `False`, no page may hand a reader

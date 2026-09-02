@@ -3,6 +3,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual runs answer one question: will the next release publish to PyPI?
+  # A Trusted Publisher lives in a PyPI account, so nothing in this repository
+  # can answer that -- and finding out by cutting a release is a terrible way to
+  # learn it. See the verify-pypi-publisher job.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -10,7 +15,74 @@ permissions:
   attestations: write
 
 jobs:
+  verify-pypi-publisher:
+    # A dry run of the ONLY thing a release cannot check for itself.
+    #
+    # Trigger it by hand (Actions -> Release -> Run workflow) after registering a
+    # pending publisher at pypi.org. It exchanges an OIDC token exactly as the
+    # publish step does and reports whether PyPI accepts this workflow, without
+    # building or tagging anything. The alternative -- cutting a release to find
+    # out -- burns a version number on a configuration question.
+    #
+    # Skipped entirely on tag pushes: a release must not depend on it, and
+    # check-pypi-publisher already gates the real upload.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Exchange a token with PyPI and report the verdict
+        run: |
+          set -uo pipefail
+          audience=$(curl -fsS https://pypi.org/_/oidc/audience \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["audience"])' \
+            || echo pypi)
+          oidc=$(curl -fsS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          # The response body carries a real short-lived upload token on success,
+          # so only the status code is ever read. The request goes through a file
+          # so the OIDC token never lands in a process argument list.
+          printf '{"token": "%s"}' "$oidc" > mint-request.json
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            --data-binary @mint-request.json \
+            "https://pypi.org/_/oidc/mint-token")
+          rm -f mint-request.json
+          {
+            if [ "$code" = "200" ]; then
+              echo "### ✅ PyPI accepts this workflow"
+              echo
+              echo "A Trusted Publisher is configured and matches. The next"
+              echo "\`v*\` tag will publish to PyPI."
+            else
+              echo "### ❌ PyPI refused the token exchange (HTTP $code)"
+              echo
+              echo "No matching Trusted Publisher. Register a **pending publisher**"
+              echo "at <https://pypi.org/manage/account/publishing/> with exactly:"
+              echo
+              echo "| field | value |"
+              echo "| --- | --- |"
+              echo "| PyPI Project Name | \`zeline\` |"
+              echo "| Owner | \`${GITHUB_REPOSITORY%%/*}\` |"
+              echo "| Repository name | \`${GITHUB_REPOSITORY##*/}\` |"
+              echo "| Workflow name | \`release.yml\` |"
+              echo "| Environment name | \`pypi\` |"
+              echo
+              echo "All five must match character for character — the project"
+              echo "name is compared against the package metadata at upload time,"
+              echo "and the other four against this workflow's OIDC claims."
+              echo "Re-run this job to confirm before cutting a release."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+          # Never fail: this job reports a configuration fact, and a red X here
+          # would be the same misleading signal it exists to remove.
+          exit 0
+
   build-release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
