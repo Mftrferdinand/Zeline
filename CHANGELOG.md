@@ -8,6 +8,21 @@ configuration are treated as stable and migrated on upgrade.
 The install commands for each release are pinned to its tag, so an older
 release's documented one-liner keeps working after a newer release ships.
 
+## [Unreleased]
+
+### Fixed
+
+- `zeline update` restarts the gateways that were actually running. It read the
+  selection after `drain_then_stop()` had already deleted the state file, so an
+  operator who started only Telegram got every enabled gateway back — WhatsApp
+  and Discord launched on a phone by an unrelated command, with no indication
+  why. The selection is now captured from `status()` before the stop and passed
+  back to `start()`.
+- `tests/test_updater.py` no longer drains and relaunches the machine's real
+  gateway while it runs. Every test that calls `update()` now stubs
+  `zeline.gateway_service`; previously the suite killed a live gateway and left
+  a stale PID behind.
+
 ## [0.2.8] — 2026-09-01
 
 ### Added
@@ -117,6 +132,7 @@ release's documented one-liner keeps working after a newer release ships.
 Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
+[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.2.8...main
 [0.2.8]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.8
 [0.2.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.7
 [0.2.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.6
