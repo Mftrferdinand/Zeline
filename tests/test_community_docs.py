@@ -373,9 +373,38 @@ class PyPiAvailabilityClaimTests(unittest.TestCase):
         # The minted upload token must never be written anywhere.
         self.assertIn("-o /dev/null", script)
         # And the failure path has to tell the operator exactly what to configure.
-        for hint in ("pending publisher", "release.yml", "environment : pypi"):
+        for hint in ("pending publisher", "release.yml", "zeline"):
             with self.subTest(hint=hint):
                 self.assertIn(hint, script)
+
+    def test_the_registration_instructions_require_a_blank_environment(self):
+        """Telling the operator to register ``environment: pypi`` breaks the gate.
+
+        PyPI verifies the ``environment`` claim only when the publisher declares
+        one (``_check_environment`` returns True for an empty ground truth), and
+        a job emits that claim only by declaring ``environment:`` -- which is the
+        deployment record this gate exists to avoid. So the probe, which
+        deliberately has no environment, sends no claim: against a publisher
+        registered for ``pypi`` its exchange is refused, ``armed`` stays false,
+        and the upload is skipped on *every* release even though the publisher is
+        otherwise perfect. A blank environment accepts both the probe and the
+        environment-scoped publish job.
+        """
+        workflow = yaml.safe_load(_read(".github", "workflows", "release.yml"))
+        jobs = workflow["jobs"]
+        for name in ("check-pypi-publisher", "verify-pypi-publisher"):
+            script = "\n".join(
+                str(step.get("run", "")) for step in jobs[name]["steps"]
+            )
+            with self.subTest(job=name):
+                collapsed = " ".join(script.split())
+                # Must not hand out the value that disarms the gate.
+                self.assertNotIn("environment : pypi", collapsed)
+                self.assertNotIn("Environment name | `pypi`", collapsed)
+                # Must say, in the operator's words, to leave it empty.
+                self.assertRegex(collapsed, r"(?i)environment[^\n]{0,40}blank")
+                # And say why, so nobody "helpfully" fills it in later.
+                self.assertIn("deployment record", collapsed)
 
     def test_a_manual_run_can_verify_the_publisher_without_a_release(self):
         """You must be able to ask "will the next release publish?" for free.
