@@ -156,13 +156,17 @@ def _safe_progress_line(line: str, limit: int = 200) -> str:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal — command langsung di dalam blok monospace.
+    """Preview terminal satu baris ringkas dengan akhiran '...'.
 
-    Baik untuk pencarian maupun coding: TANPA emoji dan TANPA judul 'Zeline
-    Terminal' (dihapus atas permintaan user). Cukup blok <pre> berisi command.
+    Menghindari blok <pre> multi-baris yang memicu kartu COPY CODE besar di Telegram.
+    Cukup satu baris inline <code>command...</code> yang rapi dan padat.
     """
-    escaped = html.escape(command.strip()[:1500], quote=False)
-    return f"<pre>{escaped}</pre>"
+    cmd = command.replace("\n", " ").strip()
+    limit = 70
+    if len(cmd) > limit:
+        cmd = cmd[:limit].rstrip() + "…"
+    escaped = html.escape(cmd, quote=False)
+    return f"💻 <code>{escaped}</code>"
 
 
 def _is_search_command(command: str) -> bool:
