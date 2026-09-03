@@ -265,9 +265,24 @@ ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI 运行的是 `unittest`，而不是 `pytest`。分支/PR 流程、每个 CI 任务验证的内容以及
-代码结构请参阅 [CONTRIBUTING.md](../CONTRIBUTING.md)；
-[CHANGELOG.md](../CHANGELOG.md) 记录了每个版本及其对应的 pull request 链接。
+CI 运行的是 `unittest`，而不是 `pytest`。
+
+**欢迎贡献，你无需本仓库的写入权限。** 请 fork、建分支，然后向 `main` 提交 pull
+request；来自 fork 的 PR 会运行与维护者完全相同的 CI 矩阵 —— Linux、Windows、
+macOS，以及两个安装脚本：
+
+```bash
+gh repo fork Mftrferdinand/Zeline --clone --remote
+cd Zeline && git checkout -b fix/simple-description
+git push -u origin fix/simple-description
+gh pr create --repo Mftrferdinand/Zeline --base main
+```
+
+完整流程、每个 CI 任务验证的内容以及代码结构请参阅
+[CONTRIBUTING.md](../CONTRIBUTING.md)。标记为
+[good first issue](https://github.com/Mftrferdinand/Zeline/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+的 issue 都刻意限定了范围。[CHANGELOG.md](../CHANGELOG.md) 记录了每个版本及其对应的
+pull request 链接。
 
 ## 路线图
 

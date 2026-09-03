@@ -121,6 +121,52 @@ class ContributingAccuracyTests(unittest.TestCase):
         self.assertIn("111222333", self.text)
         self.assertIn("SECURITY.md", self.text)
 
+    def test_it_tells_an_outside_contributor_to_fork(self):
+        """The first command in the guide has to be one a stranger can run.
+
+        `main` is protected and nobody outside the maintainer has push access, so
+        `git push -u origin <branch>` against this repository returns 403. The
+        guide used to hand out exactly that command, which means a first-time
+        contributor's opening move failed and the guide gave no hint why. 68
+        stars, 9 forks, zero outside pull requests.
+        """
+        collapsed = " ".join(self.text.split())
+        # Match a RUNNABLE line, not the bare phrase: the guide legitimately
+        # explains `gh repo fork --remote` in prose, so a substring check passes
+        # even with both commands deleted. Verified by perturbation.
+        runnable_fork = [
+            line for line in self.text.splitlines()
+            if re.match(r"\s*gh repo fork\s+[\w.-]+/[\w.-]+", line)
+        ]
+        self.assertTrue(runnable_fork, "no runnable `gh repo fork <owner>/<repo>` command")
+        # The PR must target THIS repo explicitly; from a fork, a bare
+        # `gh pr create --base main` opens the pull request against the fork.
+        self.assertTrue(
+            [line for line in self.text.splitlines()
+             if re.match(r"\s*gh pr create --repo\s+[\w.-]+/[\w.-]+", line)],
+            "no runnable `gh pr create --repo <owner>/<repo>` command",
+        )
+        # A fork without an upstream remote cannot be kept current.
+        self.assertIn("git remote add upstream", collapsed)
+        self.assertIn("git fetch upstream", collapsed)
+        # And say plainly why, so the reader does not read forking as optional.
+        self.assertRegex(collapsed, r"(?i)(do not need write access|403)")
+
+    def test_it_states_that_fork_pull_requests_get_the_same_ci(self):
+        """Contributors need to know their PR is really tested, and why.
+
+        The workflows trigger on `pull_request`, not `pull_request_target`, so a
+        fork's code runs without access to repository secrets. That is both the
+        safe choice and a promise worth stating: the same gate applies to
+        everyone.
+        """
+        workflow = yaml.safe_load(_read(".github", "workflows", "tests.yml"))
+        triggers = workflow[True] if True in workflow else workflow["on"]
+        self.assertIn("pull_request", triggers)
+        self.assertNotIn("pull_request_target", triggers)
+        collapsed = " ".join(self.text.split())
+        self.assertIn("pull_request_target", collapsed)
+
 
 class ExtendingGuideTests(unittest.TestCase):
     """The extension guide is executable documentation: every command must run."""

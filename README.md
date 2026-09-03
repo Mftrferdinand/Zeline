@@ -270,10 +270,24 @@ ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI runs `unittest`, not `pytest`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-branch/PR flow, what each CI job proves, and where things live;
-[CHANGELOG.md](CHANGELOG.md) records every release with links to its pull
-requests.
+CI runs `unittest`, not `pytest`.
+
+**Contributions are welcome, and you do not need write access here.** Fork,
+branch, and open a pull request against `main`; it runs the same CI matrix the
+maintainer's does — Linux, Windows, macOS, and both installers:
+
+```bash
+gh repo fork Mftrferdinand/Zeline --clone --remote
+cd Zeline && git checkout -b fix/short-description
+git push -u origin fix/short-description
+gh pr create --repo Mftrferdinand/Zeline --base main
+```
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the full flow, what each CI job proves,
+and where things live. Issues labelled
+[good first issue](https://github.com/Mftrferdinand/Zeline/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+are scoped small on purpose. [CHANGELOG.md](CHANGELOG.md) records every release
+with links to its pull requests.
 
 ## Roadmap
 
