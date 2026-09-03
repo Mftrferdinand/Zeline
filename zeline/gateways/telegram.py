@@ -156,17 +156,17 @@ def _safe_progress_line(line: str, limit: int = 200) -> str:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal satu baris ringkas dengan akhiran '...'.
+    """Preview terminal satu baris ringkas dengan akhiran '...' jika panjang.
 
-    Menghindari blok <pre> multi-baris yang memicu kartu COPY CODE besar di Telegram.
-    Cukup satu baris inline <code>command...</code> yang rapi dan padat.
+    Mencegah blok terminal raksasa multi-baris di Telegram: command diratakan
+    menjadi satu baris dan dipangkas pada batas ringkas dengan akhiran ellipsis.
     """
     cmd = command.replace("\n", " ").strip()
-    limit = 70
+    limit = 80
     if len(cmd) > limit:
         cmd = cmd[:limit].rstrip() + "…"
     escaped = html.escape(cmd, quote=False)
-    return f"💻 <code>{escaped}</code>"
+    return f"<pre>{escaped}</pre>"
 
 
 def _is_search_command(command: str) -> bool:
