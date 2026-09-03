@@ -278,7 +278,7 @@ def _slugify_provider_id(name: str, existing: dict[str, Any]) -> str:
 def detect_models(base_url: str, api_key: str) -> list[str]:
     """Panggil GET /models untuk mendeteksi model yang tersedia.
 
-    Mendukung format respons OpenAI, Hermes, Ollama, vLLM, dan endpoint
+    Mendukung format respons OpenAI, Anthropic, Ollama, vLLM, dan endpoint
     alternatif (/models, /v1/models, /api/tags).
     """
     base = str(base_url or "").rstrip("/")

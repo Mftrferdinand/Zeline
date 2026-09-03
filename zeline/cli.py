@@ -132,7 +132,7 @@ def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
 
 
 def _model_ids(payload: Any) -> list[str]:
-    """Parse model IDs from various provider payload structures (OpenAI, Hermes, Ollama, vLLM, etc.)."""
+    """Parse model IDs from various provider payload structures (OpenAI, Anthropic, Ollama, vLLM, etc.)."""
     items = []
     if isinstance(payload, list):
         items = payload
@@ -154,7 +154,7 @@ def _model_ids(payload: Any) -> list[str]:
 
 
 def _discover_provider_models(base_url: str, api_key: str) -> tuple[str, list[str]]:
-    """Probe provider models across OpenAI-compatible, Anthropic, Hermes, Ollama, and variant endpoints."""
+    """Probe provider models across OpenAI-compatible, Anthropic, Ollama, and variant endpoints."""
     base = base_url.rstrip('/')
     # Candidate endpoints for various server architectures (OpenAI standard, root /models, /v1/models, /api/tags)
     endpoints = [f"{base}/models"]

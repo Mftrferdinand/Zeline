@@ -886,7 +886,7 @@ def _provider_picker_payload(providers: list[dict[str, str]], current_slug: str)
 def _fetch_models_catalog(base_url: str, api_key: str, *, timeout: int = 12) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """Ambil /models SEKALI lalu isi kedua cache (id list + metadata per id).
 
-    Mendukung berbagai format (OpenAI, Hermes, Ollama, vLLM) dan endpoint
+    Mendukung berbagai format (OpenAI, Anthropic, Ollama, vLLM) dan endpoint
     alternatif (/models, /v1/models, /api/tags).
     """
     base = str(base_url or "").rstrip("/")
