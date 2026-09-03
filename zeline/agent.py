@@ -998,14 +998,15 @@ class Zeline:
             message = self._call_llm(use_tools=False, on_stream_delta=on_stream_delta)
         except ZelineError:
             return (
-                "Aku sudah mengumpulkan banyak data tapi butuh lebih banyak "
-                "langkah untuk merampungkannya. Coba persempit pertanyaannya ya."
+                "⚠️ Batas tool tercapai dan provider gagal merangkum. "
+                "Data sudah terkumpul tapi gagal dirangkum otomatis — coba tanya ulang lebih spesifik, "
+                "atau ganti model ke yang lebih kuat."
             )
         content = str(message.get("content") or "").strip()
         self.messages.append({"role": "assistant", "content": content})
         return content or (
-            "Aku sudah mengumpulkan banyak data tapi belum bisa merangkumnya. "
-            "Coba persempit pertanyaannya ya."
+            "⚠️ Batas tool tercapai tapi provider tidak mengirim jawaban. "
+            "Coba pecah pertanyaannya jadi bagian lebih kecil."
         )
 
     def reflect(self, min_tool_calls: int = 5) -> str | None:
