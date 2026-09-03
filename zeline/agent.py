@@ -288,6 +288,19 @@ class Zeline:
         self._drop_incomplete_tail()
         self._trim_history()
 
+    def force_cancel(self) -> None:
+        """Paksa putus active HTTP connection / in-flight request seketika."""
+        active = getattr(self, "_active_response", None)
+        if active is not None:
+            try:
+                active.close()
+                raw = getattr(active, "raw", None)
+                if raw is not None and hasattr(raw, "close"):
+                    raw.close()
+            except Exception:
+                pass
+            self._active_response = None
+
     def _cancelled(self) -> bool:
         """True bila user menekan /stop di tengah turn ini.
 
@@ -397,6 +410,9 @@ class Zeline:
             if use_tools:
                 payload["tools"] = [{"name": tool["function"]["name"], "description": tool["function"]["description"], "input_schema": tool["function"]["parameters"]} for tool in self.executor.schemas]
 
+        if self._cancelled():
+            raise _TurnCancelled()
+
         stream = bool(payload.get("stream"))
         try:
             candidates = [str(payload["model"])]
@@ -408,8 +424,12 @@ class Zeline:
             response = None
             retryable = {400, 408, 409, 429, 500, 502, 503, 504, 529}
             for model_index, candidate in enumerate(candidates):
+                if self._cancelled():
+                    raise _TurnCancelled()
                 payload["model"] = candidate
                 for attempt in range(2):
+                    if self._cancelled():
+                        raise _TurnCancelled()
                     response = requests.post(
                         endpoint,
                         headers=headers,
@@ -417,6 +437,7 @@ class Zeline:
                         timeout=180,
                         stream=stream,
                     )
+                    self._active_response = response
                     if response.status_code not in retryable:
                         break
                     close_response = getattr(response, "close", None)
