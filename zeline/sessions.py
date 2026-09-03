@@ -168,6 +168,12 @@ class SessionStore:
             if session is None or not session.running:
                 return False
             session.cancel_event.set()
+            agent = getattr(session, "agent", None)
+            if agent is not None and hasattr(agent, "force_cancel"):
+                try:
+                    agent.force_cancel()
+                except Exception:
+                    pass
         # Sebuah tool yang sedang MENUNGGU jawaban ask_user tidak punya proses
         # untuk dibunuh — ia menunggu event. Tanpa ini /stop tidak melepaskan
         # tunggu itu dan sesi terlihat menggantung meski sudah dibatalkan.
@@ -214,6 +220,12 @@ class SessionStore:
             session = self._sessions.pop(identity, None)
             if session is not None:
                 session.cancel_event.set()
+                agent = getattr(session, "agent", None)
+                if agent is not None and hasattr(agent, "force_cancel"):
+                    try:
+                        agent.force_cancel()
+                    except Exception:
+                        pass
         # /new juga harus melepaskan pertanyaan yang menggantung.
         try:
             interaction.cancel(identity)
