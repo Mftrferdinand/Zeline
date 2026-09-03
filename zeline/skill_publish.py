@@ -20,6 +20,7 @@ Modul ini murni logika; gateway Telegram yang memanggilnya (lihat
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -28,38 +29,84 @@ from pathlib import Path
 from zeline import config, skills
 
 # --------------------------------------------------------------------------- #
-# Scrub identitas pribadi (samakan dgn scripts/scrub_personal.py, spesifik dulu)
+# Scrub identitas pribadi.
+#
+# Daftar ini TIDAK boleh berisi nama/akun satu orang. Versi sebelumnya
+# meng-hardcode identitas maintainer (email, chat id, nama proyek, dan kata
+# ``aes``), yang berarti setiap pengguna lain mendapat scrubber yang tidak
+# mengenali identitas MEREKA — sementara aturan ``\baes\b`` merusak teks yang
+# sah: "AES-256-GCM" menjadi "the user-256-GCM".
+#
+# Sekarang: pola struktural yang benar untuk semua orang (home directory,
+# identitas owner dari config gateway), plus istilah tambahan yang dideklarasikan
+# pemilik install lewat ``publish.scrub_terms`` di config atau
+# ``ZELINE_SCRUB_TERMS`` (dipisah koma).
 # --------------------------------------------------------------------------- #
-_SCRUBS: list[tuple[str, str]] = [
-    (r"(?i)\bmftrferdinand@gmail\.com\b", "user@example.com"),
-    (r"(?i)\bmahesa f\.? ferdinand\b", "the user"),
-    (r"(?i)MftrferdinandDocs", "UserDocs"),
-    (r"(?i)@?kedaicloudcsbot", "@mystore_cs_bot"),
-    (r"(?i)@?kedaicloudbot", "@mystore_bot"),
-    (r"(?i)MyStore-backend", "store-backend"),
-    (r"(?i)@?web3addicter_bot", "@community_bot"),
-    (r"(?i)Web3addicterSite", "CommunitySite"),
-    (r"(?i)\bkd-fresh\b", "store-frontend"),
-    (r"(?i)\bdompetin\b", "walletapp"),
-    (r"(?i)\baequitas\b", "SampleApp"),
-    (r"(?i)\bmftrferdinand\b", "user"),
-    (r"(?i)\bmahesa\b", "the user"),
-    (r"(?i)\bkedaicloud\b", "MyStore"),
-    (r"(?i)\bweb3\s?addicter\b", "the community"),
-    (r"(?i)\btwenty3ph?\b", "SampleProject"),
-    (r"(?i)\bzeline-guide\b", "docs-site"),
-    (r"\b7387183839\b", "<OWNER_CHAT_ID>"),
-    (r"(?i)(?<![A-Za-z])aes(?![A-Za-z])", "the user"),
-    # Path rumah Termux operator -> placeholder generik.
-    (r"/data/data/com\.termux/files/home", "~"),
-]
+_PLACEHOLDER = "<REDACTED>"
+
+
+def _config_scrub_terms() -> list[str]:
+    """Istilah pribadi yang dideklarasikan pemilik install ini."""
+    terms: list[str] = []
+    env = os.environ.get("ZELINE_SCRUB_TERMS", "")
+    terms += [part.strip() for part in env.split(",") if part.strip()]
+    try:
+        saved = config.stored_config_copy()
+    except Exception:  # noqa: BLE001 — config rusak tidak boleh mematikan scrub
+        saved = {}
+    declared = (saved.get("publish") or {}).get("scrub_terms") or []
+    if isinstance(declared, list):
+        terms += [str(term).strip() for term in declared if str(term).strip()]
+    return terms
+
+
+def _owner_identities() -> list[str]:
+    """Chat/user id owner dari config gateway — ini yang tidak boleh publik."""
+    identities: list[str] = []
+    try:
+        saved = config.stored_config_copy()
+    except Exception:  # noqa: BLE001
+        return identities
+    for gateway in (saved.get("gateways") or {}).values():
+        if not isinstance(gateway, dict):
+            continue
+        owner = str(gateway.get("owner_identity", "")).strip()
+        if owner:
+            identities.append(owner)
+        allowed = gateway.get("allowed")
+        if isinstance(allowed, list):
+            identities += [
+                str(entry).strip() for entry in allowed
+                if str(entry).strip() and str(entry).strip() != "*"
+            ]
+    return identities
+
+
+def _scrub_rules() -> list[tuple[str, str]]:
+    """Bangun aturan scrub untuk install INI, bukan untuk satu orang."""
+    rules: list[tuple[str, str]] = []
+    # Home directory pemilik — apa pun platformnya. Ini menggantikan satu path
+    # Termux yang di-hardcode dan sekaligus benar di Linux/macOS/Windows.
+    home = str(Path.home())
+    if home and home not in ("/", "~"):
+        rules.append((re.escape(home), "~"))
+    # Termux tetap dikenali walau HOME di-set lain (mis. saat test).
+    rules.append((r"/data/data/com\.termux/files/home", "~"))
+    for identity in sorted(set(_owner_identities()), key=len, reverse=True):
+        rules.append((rf"\b{re.escape(identity)}\b", "<OWNER_ID>"))
+    for term in sorted(set(_config_scrub_terms()), key=len, reverse=True):
+        # Istilah pendek (<4 huruf) hanya cocok sebagai kata utuh case-sensitive
+        # supaya tidak memotong kata lain — pelajaran dari "aes" vs "AES-256".
+        flags = "" if len(term) < 4 else "(?i)"
+        rules.append((rf"{flags}\b{re.escape(term)}\b", _PLACEHOLDER))
+    return rules
 
 
 def scrub(text: str) -> tuple[str, int, list[str]]:
     """Ganti identitas pribadi dengan placeholder. Return (teks, jumlah, contoh)."""
     total = 0
     samples: list[str] = []
-    for pattern, replacement in _SCRUBS:
+    for pattern, replacement in _scrub_rules():
         new_text, count = re.subn(pattern, replacement, text)
         if count:
             total += count
@@ -95,19 +142,20 @@ _L1_SECRETS: list[tuple[str, str]] = [
 ]
 
 # L2: identitas pribadi yang MASIH tersisa setelah scrub (harusnya sudah bersih).
+# Pola struktural saja — sebuah literal seperti satu chat id atau satu handle
+# hanya melindungi satu orang dan tidak berarti apa pun bagi pengguna lain.
 _L2_IDENTITY: list[tuple[str, str]] = [
     ("Email", r"(?i)\b[A-Za-z0-9._%+\-]+@(?!example\.com)[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
-    ("Phone (+62)", r"\+62\d{7,13}\b"),
-    ("Owner chat id", r"\b7387183839\b"),
-    ("Termux home path", r"/data/data/com\.termux/files/home"),
-    ("Operator handle", r"(?i)\bmftrferdinand\b"),
+    ("Phone (E.164)", r"(?<![\w+])\+\d{8,15}\b"),
+    # Sebuah home directory absolut = jalur mesin satu orang, apa pun OS-nya.
+    ("Absolute home path", r"(/home/[a-z0-9._\-]+|/Users/[A-Za-z0-9._\-]+|/data/data/com\.termux/files/home|C:\\\\Users\\\\[A-Za-z0-9._\-]+)"),
 ]
 
 # L3: kebocoran infra/provider — endpoint internal / header rahasia.
 _L3_INFRA: list[tuple[str, str]] = [
-    ("Local proxy endpoint", r"localhost:20128"),
+    # Endpoint yang hanya ada di mesin penulisnya: localhost/LAN + port.
+    ("Local/LAN endpoint", r"(?i)\b(localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{2,5}\b"),
     ("extra_headers group_key", r"(?i)group_key"),
-    ("TokenHarbor secret ref", r"(?i)tokenharbor[^\n]{0,40}(key|token|secret)"),
     ("Provider url+key inline", r"https?://[^\s]+[?&](api[_-]?key|token|key)="),
 ]
 

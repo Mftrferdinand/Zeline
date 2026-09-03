@@ -73,7 +73,7 @@ rm a.txt b.txt
 
 **Do not create a cron job unless the user explicitly asks for one.** Offering
 "I'll schedule it daily" reads as the agent taking ownership of the account, and
-aes rejected exactly that ("jangan cronjob, pas gua suruh aja"). Default to
+That is exactly the pattern to avoid here. Default to
 running one batch when told to.
 
 The queue file is what makes on-demand batching work with no scheduler at all —
@@ -116,7 +116,7 @@ Both fine → it was transient network, not GitHub. Only 403/429 means back off.
 
 ### Cron vs manual
 
-Ask first. This user wants bulk ops **manual on request, not scheduled**. If
+Ask first. Treat bulk follow/unfollow as **manual on request, never scheduled**. If
 scheduling is wanted, use `no_agent=True` with `script=` (pure script, zero
 tokens).
 

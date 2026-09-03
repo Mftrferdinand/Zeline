@@ -59,7 +59,7 @@ MEDIA:/absolute/path/to/filename.md
 ## Edge Cases & Pitfalls
 
 - **Markdown tables vs raw CSV**: Markdown pipe tables (`| col | col |`) are structured formatting and are fine for simple account listings. Avoid raw CSV (unquoted values, no headers, no formatting) — that's machine-only.
-- **Choosing between formats**: Default to Option B (horizontal table) for 1-2 accounts with few columns. Default to Option A (vertical block) for 3+ accounts or 3+ links per account. **User override (the user)**: this user always prefers Option B (horizontal table) regardless of account count — see `references/iterative-file-workflow.md`.
+- **Choosing between formats**: Default to Option B (horizontal table) for 1-2 accounts with few columns. Default to Option A (vertical block) for 3+ accounts or 3+ links per account. **If the requester states a preference, it wins over this heuristic** — record it and apply it consistently for the rest of the task; see `references/iterative-file-workflow.md`.
 - **User iterates**: The user will ask to see the file, then refine column names or format. Expect 2-3 rounds. Just apply each change, don't ask for confirmation between every tweak. This iteration pattern applies broadly — not just data files but also in-chat tables, project lists, any structured output. See `skill: project-list-tracking` for the same iterative-refinement pattern applied to a persistent project registry.
 - **Link accuracy**: The user may ask you to verify a link is correct. Use `diff` or character-by-character comparison — do not visually scan.
 - **Long URLs**: They make the file look messy in chat display, but in the actual file they're fine — the user can open the file separately. Still deliver the file.
@@ -124,6 +124,6 @@ Key rules:
 - Default format: `| Email | Service Name |`
 - The file path is `~/<service-name>.md` (e.g. `netflix-dana.md`).
 - **Batch recording**: When user sends email+link pairs one at a time, append each new row to the existing table with `patch`. Never rewrite the whole file. See `references/batch-recording-pattern.md`.
-- **User prefers Option B (horizontal table) even with 4+ accounts** — ignore the "3+ accounts → Option A" heuristic for this user. Always use Markdown pipe tables.
+- **A stated preference overrides the account-count heuristic.** If the requester asks for horizontal tables, keep using Markdown pipe tables even at 4+ accounts instead of switching to Option A.
 - **Bulk verification**: When asked "pada aman kan?", run a bulk uniqueness check on all URLs in the file.
 - **Delete-and-re-add**: "hapus X" then re-sending X with a new link = new OAuth session, not a restoration. Treat as a fresh entry.

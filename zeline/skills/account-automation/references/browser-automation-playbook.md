@@ -27,31 +27,56 @@ browser.
 | Driver | **Playwright** (preferred), Selenium, Puppeteer | Playwright = best API, auto-waits, contexts, storage_state |
 | Stealth | undetected-chromedriver, playwright-stealth, patchright, Camoufox | reduce (not eliminate) bot fingerprints |
 
-Platform reality (verified on this user's setup):
-- **Termux/Android**: Selenium + system Chromium WORKS for plain sites
-  (`pkg install chromium`, chromedriver at
-  `/data/data/com.termux/files/usr/bin/chromedriver`, binary at
-  `.../usr/lib/chromium/chrome`, use `--headless=new`, explicit
-  `Service`, NOT Selenium Manager). **Playwright has NO aarch64 wheel →
-  unavailable on Termux.** Camoufox depends on Playwright → also
-  unavailable. So Termux browser automation = Selenium + Chromium only.
-- **Linux PC/VPS**: full Playwright + Chromium. This is where heavy
-  browser jobs (X login, OAuth) should run.
+Platform reality (measured, not assumed):
+- **Termux/Android**: Selenium + system Chromium works for plain sites
+  (`pkg install chromium`, then `--headless=new` and an explicit `Service`,
+  NOT Selenium Manager). **Playwright has no aarch64 wheel → unavailable on
+  Termux**, and Camoufox depends on Playwright → also unavailable. So Termux
+  browser automation means Selenium + Chromium only.
+- **Linux PC/VPS, macOS, Windows**: full Playwright + Chromium. Heavy browser
+  jobs (interactive logins, OAuth) belong here.
 
-## Selenium on Termux (working recipe)
+## Selenium recipe (resolves the browser instead of hardcoding it)
+
+Paths differ per platform, so ask the system where the binaries are. A
+hardcoded path is a script that runs on exactly one machine and raises a
+`WebDriverException` on every other one — a failure that reads like a Selenium
+bug instead of a wrong path.
 
 ```python
+import shutil
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+
+def chrome_paths():
+    browser = next(
+        (p for p in (shutil.which(n) for n in (
+            'chromium', 'chromium-browser', 'chrome',
+            'google-chrome', 'google-chrome-stable')) if p),
+        None,
+    )
+    driver = shutil.which('chromedriver')
+    if not driver:
+        raise SystemExit(
+            'chromedriver not found. Termux: pkg install chromium; '
+            'Debian/Ubuntu: apt install chromium-driver; macOS: brew install chromedriver'
+        )
+    return browser, driver
+
+browser, driver = chrome_paths()
 opt = Options()
-opt.add_argument('--headless=new'); opt.add_argument('--no-sandbox')
-opt.add_argument('--disable-dev-shm-usage'); opt.add_argument('--disable-gpu')
-opt.add_argument('--window-size=1280,800')
-opt.binary_location = '/data/data/com.termux/files/usr/lib/chromium/chrome'
-d = webdriver.Chrome(service=Service('/data/data/com.termux/files/usr/bin/chromedriver'), options=opt)
+for flag in ('--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
+             '--disable-gpu', '--window-size=1280,800'):
+    opt.add_argument(flag)
+if browser:                      # let Selenium find it when already on PATH
+    opt.binary_location = browser
+d = webdriver.Chrome(service=Service(driver), options=opt)
 d.get('https://example.com'); print(d.title); d.quit()
 ```
+
+Override with `CHROME_BIN` / `CHROMEDRIVER` when the install is in an unusual
+location.
 
 ## Session persistence — the single most important technique
 

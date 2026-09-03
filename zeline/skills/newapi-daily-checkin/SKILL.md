@@ -1,158 +1,164 @@
 ---
 name: newapi-daily-checkin
 description: |
-  Automate daily check-in on ANY "New-API / one-api" LLM token panel
-  (tabitoken.com, gorouter.app, and the many other one-api forks) using
-  an account access token + Cloudflare Turnstile solved via 2Captcha.
-  Panel-agnostic: detect support, read config from /api/status, run the
-  generic template. Works across multiple accounts per panel. Load when
-  the user says "checkin <panel>", adds a new token panel, or asks to
-  claim daily quota/credit on a token dashboard.
+  Automate the daily reward check-in on any self-hosted "New-API / one-api"
+  LLM token panel, using an account access token plus a Cloudflare Turnstile
+  solve when the panel demands one. The panel describes itself through
+  GET /api/status, so no site is hardcoded: point the runner at any fork and
+  it discovers the captcha requirement, site key, credit divisor, and display
+  currency. Load when a user asks to check in, claim a daily reward or quota,
+  or wire a new token dashboard.
 metadata:
   zeline:
-    tags: [checkin, new-api, one-api, turnstile, 2captcha, automation]
+    tags: [checkin, new-api, one-api, turnstile, captcha, automation]
     category: productivity
 ---
 
-# Daily check-in for New-API / one-api token panels (any panel)
+# Daily check-in for New-API / one-api token panels
 
-Tons of LLM token resellers run the open-source **one-api / New-API**
-dashboard. They all share the same REST shape and gate their daily
-reward check-in behind **Cloudflare Turnstile**. This skill checks in
-**any** such panel using an account **access token** + a Turnstile
-token solved by **2Captcha**. tabitoken.com and gorouter.app are just
-the first two wired up — the method is identical for any fork.
+Many LLM token resellers run the open-source **one-api / New-API** dashboard.
+Every fork exposes the same REST surface and usually gates its daily reward
+behind **Cloudflare Turnstile**. This skill drives *any* of them with one
+runner: `scripts/newapi_checkin.sh`.
 
-**500,000 credit = $1.** ALWAYS report balances/rewards in `$`, never
-raw M/credit (user preference).
+Only run this against panels you own or are explicitly authorised to use.
 
-## Step 0 — is this panel supported?
+## Run it
 
-```
-curl -s <BASE>/api/status | python3 -m json.tool
+```bash
+PANEL=https://panel.example bash scripts/newapi_checkin.sh
 ```
 
-If the JSON `data` has `checkin_enabled:true` and a
-`turnstile_site_key`, it's a one-api panel this skill can drive. Note
-the `turnstile_site_key` and `quota_per_unit` (usually 500000).
-`turnstile_check:false` → no captcha needed, skip 2Captcha entirely.
+Everything else is discovered or has a sane default:
 
-## Auth model (differs per panel — check both)
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `PANEL` | panel origin — the only required input | — |
+| `TOKENS` | accounts file | `$ZELINE_HOME/scripts/<host>_tokens.txt` |
+| `CAPTCHA_KEY` | solver API key | read from `CAPTCHA_KEY_FILE` |
+| `CAPTCHA_KEY_FILE` | file holding the key | `~/.2captcha_key` |
+| `SITEKEY` | override the discovered Turnstile key | from `/api/status` |
 
-Header always: `Authorization: Bearer <token>` + UA `Mozilla/5.0`.
-Some forks (e.g. gorouter) ALSO require `New-Api-User: <numeric id>` on
-every authed request, else `Unauthorized, New-Api-User header not
-provided`. Test with `GET /api/user/self`:
-- Works with token alone → plain panel (tabitoken-style).
-- Says "New-Api-User header not provided" → needs the id header.
-
-Finding the id: it's on the account's Profile page. If the user hands
-you tokens and candidate ids **separately/unordered**, cross-match by
-looping every id × every token against `/api/user/self` and keep the
-pairs that authenticate (one id ↔ one token; rest error). No captcha
-needed for this probe.
-
-## API shape (same across forks)
-
-- `GET /api/user/self` → `data.display_name`, `data.id`, `data.quota` (÷500000 = $).
-- `GET /api/user/checkin` → `data.stats.checked_in_today`, `checkin_count` (streak), `records[0].quota_awarded`, `min_quota`/`max_quota`.
-- `POST /api/user/checkin?turnstile=<TOKEN>` → success `{"success":true}` / `签到成功`; already done `今日已签到`.
-  - Turnstile token MUST be a **query param** `?turnstile=`, not body/header (body → `Turnstile token 为空`).
-
-## Golden rule (user-stated) — save 2Captcha fees
-
-**ALWAYS check `checked_in_today` BEFORE solving Turnstile.** A solve
-costs ~$0.003. Skip accounts already checked in. The template does this;
-never bypass it.
-
-## Turnstile via 2Captcha
-
-1. Submit: `POST https://2captcha.com/in.php` params `key, method=turnstile, sitekey=<site_key>, pageurl=<BASE>/, json=1` → task id.
-2. Poll: `GET https://2captcha.com/res.php?key=..&action=get&id=<id>&json=1` every ~7s until `status:1`; `request` = the ~800-char token.
-3. Token is single-use, expires in minutes. Site key is per-panel (from `/api/status`).
-
-Check 2Captcha balance:
-`curl -s "https://2captcha.com/res.php?key=$CAP&action=getbalance&json=1"`
-
-## Adding a new panel (the whole point)
-
-The runner is generic — one script per panel, differing only in a few
-top vars. Copy `scripts/checkin_template.sh`, fill:
-- `BASE` = panel origin, `SITEKEY` = from `/api/status`,
-- `NEEDS_USER_HEADER` = `true`/`false`,
-- `TOKFILE` = a per-panel tokens file.
-
-Tokens file line format:
-- plain panel: `TOKEN|label`
-- New-Api-User panel: `TOKEN|USERID|label`
-- `#` = comment line.
-
-Keep secrets (2Captcha key, tokens, ids) ONLY in local gitignored files
-— never commit them. The template ships with `REPLACE_ME` placeholders.
-
-## Example panel scripts
-
-- tabitoken.com — plain token; create a project-local script and gitignored token file.
-- gorouter.app — needs `New-Api-User`; create a project-local script and gitignored token file.
-
-Run the script from its actual project path. This skill does not claim those
-panel-specific scripts or credentials are preinstalled.
-
-## Report format (user preference — use verbatim)
-
-Per panel, per account, capture balance BEFORE and AFTER:
+Accounts file, one per line, `#` starts a comment. Both layouts work and the
+runner detects which one it is looking at:
 
 ```
-GoRouter
-• Username : <display_name>
-• Yesterday : $<balance before check-in>
-• Now       : $<balance after check-in>
+TOKEN|label              # plain panel
+TOKEN|USER_ID|label      # panel that requires the New-Api-User header
 ```
 
-Always `$` (quota ÷ 500000), never M/credit. "Yesterday" = the `/self`
-balance read right before check-in.
+The token is the panel's **System Access Token** (Profile → System Access
+Token), not an `sk-…` LLM API key. An `sk-` key authenticates model calls and is
+useless for check-in.
 
-## When 2Captcha "won't work" — troubleshooting (common!)
+## Why nothing is hardcoded
 
-Turnstile solving fails intermittently. It's almost never random — check
-these in order (the `res.php` response tells you which):
+`GET /api/status` answers every site-specific question, so hardcoding a site key
+or a credit divisor is wrong the moment the same script meets another fork:
 
-1. **`ERROR_ZERO_BALANCE`** — top up 2Captcha. Check with
-   `action=getbalance`. Each Turnstile solve ≈ $0.003.
-2. **`CAPCHA_NOT_READY` on every poll then times out** — worker pool
-   busy/slow. Poll longer (up to ~120s) or resubmit. Not a code bug.
-3. **`ERROR_CAPTCHA_UNSOLVABLE`** — worker gave up. Just resubmit the
-   task; 2nd/3rd attempt usually succeeds. Build in 1–2 retries.
-4. **Token returned but server says `Turnstile 校验失败 / token 为空`** —
-   the token is being rejected, meaning a MISMATCH:
-   - **Wrong `sitekey`** — must be the panel's live key from
-     `/api/status` (they differ per panel; don't reuse another panel's).
-   - **Wrong `pageurl`** — must be the exact origin (`https://<panel>/`).
-     A token minted for domain A is invalid on domain B.
-   - **Token expired** — Turnstile tokens live only a few minutes.
-     Solve → submit check-in IMMEDIATELY, don't batch-solve then wait.
-   - **Passed in the wrong place** — MUST be `?turnstile=` query param.
-     Body or header → `token 为空`.
-5. **Panel switched Turnstile to managed/interactive mode** — then the
-   widget needs extra `action` / `cdata` params. Add them to the 2Captcha
-   submit (`&action=<x>&data=<cdata>`), read from the panel's page HTML
-   (`data-action` / `data-cdata` on the `cf-turnstile` div). Rare.
-6. **IP mismatch** — a few strict Turnstile configs bind the token to the
-   solver's IP. Use 2Captcha's `proxy`/`proxytype` params so the token is
-   minted from the same IP that submits. Rare; only if all else passes.
+| Field | Used for |
+| --- | --- |
+| `turnstile_check` | whether a captcha is needed at all — `false` means skip the solver and spend nothing |
+| `turnstile_site_key` | the key to solve against; it differs per panel |
+| `quota_per_unit` | credits per one display unit (commonly 500000) |
+| `quota_display_type` | `USD` or `CNY` — decides the symbol |
+| `usd_exchange_rate` | only needed when converting a CNY panel to USD |
 
-Rule of thumb: if `/api/status` shows the right sitekey and you pass a
-fresh token as `?turnstile=` on the correct origin, it works. "Oon"
-failures are usually **expired token** (waited too long) or
-**UNSOLVABLE** (needs a retry).
+**Check the currency before reporting.** A Chinese panel displays **¥**, and
+reporting ¥7046 as "$7046" is a real error a user will catch. Also keep `quota`
+(remaining balance) apart from `used_quota` (lifetime spend) — "how much do I
+have" means `quota`.
 
-## Pitfalls
+## API shape (identical across forks)
 
-- **`UID` is read-only in bash** — using it as a var aborts the loop
-  silently (`UID: readonly variable`). Use `UUID`.
-- **Access tokens are static** until the user regenerates them in
-  Profile → System Access Token. Expired → template prints
-  `SKIP: token/id invalid`; ask for a fresh one.
-- Only run for panels the user owns or is explicitly authorized to use.
+- `GET /api/user/self` → `data.display_name`, `data.id`, `data.quota`
+- `GET /api/user/checkin` → `data.stats.checked_in_today`,
+  `data.stats.checkin_count` (streak), `records[0].quota_awarded`
+- `POST /api/user/checkin?turnstile=<TOKEN>` → `{"success":true, "message":"签到成功"}`
 
-See `scripts/checkin_template.sh` for the sanitized generic runner.
+The Turnstile token **must** be a query parameter. In the body or a header the
+panel answers `Turnstile token 为空` (token is empty).
+
+## Two rules the runner enforces for you
+
+**Check `checked_in_today` before solving.** A solve costs money; an account that
+already checked in must never pay for one.
+
+**Read the POST response.** Discarding it is how a rejected token gets reported
+as success — measured on a live panel: the POST returned
+`{"data":{"quota_awarded":4295745},"message":"签到成功","success":true}` while an
+earlier version of this runner printed `checked in: $0.29 -> $0.29`, a "success"
+next to a balance that had not moved, because the quota read raced the panel's
+own write. The runner now requires `success:true` **and** re-reads
+`checked_in_today` from the panel before claiming anything.
+
+## Diagnosing failures — in this order
+
+**Every account fails the solve → it is the KEY, not the panel.** A run where all
+accounts print a captcha failure is one dead solver key. Check first:
+
+```bash
+K=$(tr -d '\r\n' < ~/.2captcha_key)
+curl -s "https://2captcha.com/res.php?key=$K&action=getbalance&json=1"
+```
+
+`{"status":1,"request":"2.59"}` means the key is fine. `ERROR_KEY_DOES_NOT_EXIST`
+means it was rotated — write the new key to `~/.2captcha_key` (chmod 600) and
+re-run. The runner probes the balance once at startup and refuses to start on a
+dead key, precisely so this never appears as 13 separate "captcha failed" lines.
+
+Keep the key in **one** place. A key pasted into several runners means one
+rotation silently breaks every panel at once.
+
+Then, in order of likelihood:
+
+1. `ERROR_ZERO_BALANCE` — top up the solver.
+2. `CAPCHA_NOT_READY` until timeout — worker pool is busy; poll longer or retry.
+   Not a bug.
+3. `ERROR_CAPTCHA_UNSOLVABLE` — the worker gave up; the runner retries 3×.
+4. Token returned but the panel rejects it — a mismatch: wrong site key, wrong
+   `pageurl` (must be the exact origin), token expired (solve → submit
+   immediately), or passed somewhere other than `?turnstile=`.
+5. Panel switched Turnstile to managed mode — the widget then needs `action` and
+   `cdata` from the page's `cf-turnstile` div.
+
+**Panel down is not a token problem.** Cloudflare 522/403 or a plain timeout is
+the panel's infrastructure failing. Do not regenerate tokens; report it and move
+on. Note also that `/api/status` can answer **HTTP 200 with an empty body** on
+some panels, so a JSON parse error there is not proof the panel is dead — the
+authenticated `/api/user/self` path may still work.
+
+## Speed matters — check-in is time-critical
+
+Check-in resets at the panel's local day rollover, and a missed day breaks the
+streak permanently. Near a rollover, minutes count:
+
+- Run the runner immediately. Do not explore with per-token curl probes first.
+- Fire one process per panel in parallel — they read independent token files.
+- Write logs to a path that exists (`~/ci_<panel>.log`); `/tmp` does not exist on
+  Termux and the job dies with no log.
+- A `process wait` timeout of 60s is not a failure. Several Turnstile solves take
+  longer; call wait again.
+- If asked for results mid-run, dump the balances known so far rather than
+  holding everything for a prettier final pass.
+
+## Report format
+
+A markdown table per panel — Account | Balance | Streak, sorted by balance
+descending — reads better than stacked bullets. Close with the per-panel total,
+the grand total, the solver balance, and one line naming any account that was
+already checked in before the run so a stale streak is not read as a failure.
+Report in the panel's own currency symbol, never in raw credits.
+
+## Adding a panel
+
+There is nothing to add. Point `PANEL` at it and create its tokens file. If
+`/api/status` shows `checkin_enabled` and a `turnstile_site_key`, the runner
+drives it.
+
+## Credentials
+
+Keep access tokens and solver keys in local, git-ignored files only — never in a
+skill, a script, a commit, or chat output. Runner output may show a short
+redacted fingerprint at most. If a key is pasted into a transcript, advise
+rotation rather than quoting it back.

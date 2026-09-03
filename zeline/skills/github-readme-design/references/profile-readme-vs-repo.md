@@ -3,7 +3,7 @@
 Users conflate these. Get the distinction straight before building anything.
 
 ## Special profile repo (`username/username`)
-- Repo name MUST be **exactly** the GitHub username (e.g. `Mftrferdinand/Mftrferdinand`).
+- Repo name MUST be **exactly** the GitHub username (e.g. `octocat/octocat`).
 - MUST be **public** — private = the README does not render on the profile at all,
   and any image/GIF referenced from it is not publicly reachable.
 - Renders the root `README.md` at the top of `github.com/<username>`.

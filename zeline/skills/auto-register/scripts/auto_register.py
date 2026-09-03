@@ -29,7 +29,7 @@ Override field (optional):
     --domain myemail.com  (default: random mail.gw)
 """
 
-import json, random, string, os, sys, time, re, argparse
+import json, random, string, os, shutil, sys, time, re, argparse
 from urllib.request import Request, urlopen
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -40,11 +40,12 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # ─────────── Config ───────────
 SIGNIN_URL_DEFAULT = ""  # di-override via --login-url
-OUTPUT_FILE = os.path.expanduser("~/auto_register_accounts.txt")
+OUTPUT_FILE = os.path.expanduser(
+    os.environ.get("AUTO_REGISTER_OUTPUT", "~/auto_register_accounts.txt")
+)
 
-# Chromium di Termux
-CHROME_BIN = "/data/data/com.termux/files/usr/lib/chromium/chrome"
-CHROMEDRIVER = "/data/data/com.termux/files/usr/bin/chromedriver"
+# Chromium/chromedriver dicari lewat PATH (lihat _resolve_browser); override
+# dengan CHROME_BIN / CHROMEDRIVER kalau terpasang di lokasi tidak standar.
 
 # mail.gw API
 MAIL_GW_API = "https://api.mail.gw"
@@ -183,16 +184,56 @@ def poll_inbox(email, mail_password, max_attempts=8, delay=3):
     return None
 
 
+def _resolve_browser() -> tuple[str, str]:
+    """Locate a Chromium binary and its driver on THIS machine.
+
+    Hardcoding Termux paths made this script a no-op everywhere else: the
+    binary_location simply did not exist, and Selenium raised a
+    WebDriverException that read like a Selenium bug rather than a wrong path.
+    Order: explicit env override, then PATH, across the names each platform
+    actually ships.
+    """
+    chrome = os.environ.get("CHROME_BIN", "")
+    driver = os.environ.get("CHROMEDRIVER", "")
+    if not chrome:
+        for name in (
+            "chromium", "chromium-browser", "chrome", "google-chrome",
+            "google-chrome-stable", "chrome.exe",
+        ):
+            found = shutil.which(name)
+            if found:
+                chrome = found
+                break
+    if not driver:
+        for name in ("chromedriver", "chromedriver.exe"):
+            found = shutil.which(name)
+            if found:
+                driver = found
+                break
+    return chrome, driver
+
+
 def make_driver():
-    """Buat instance Chromium headless untuk Termux."""
+    """Buat instance Chromium headless (lintas platform)."""
+    chrome, driver_path = _resolve_browser()
+    if not driver_path:
+        raise SystemExit(
+            "chromedriver tidak ditemukan di PATH.\n"
+            "  Install: Termux `pkg install chromium`; Debian/Ubuntu "
+            "`apt install chromium-driver`; macOS `brew install chromedriver`.\n"
+            "  Atau set CHROMEDRIVER=/path/ke/chromedriver (dan CHROME_BIN bila perlu)."
+        )
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1280,800")
-    options.binary_location = CHROME_BIN
-    service = Service(executable_path=CHROMEDRIVER)
+    # Let Selenium find the browser itself when it is on PATH under a name it
+    # already knows; only override when we resolved something concrete.
+    if chrome:
+        options.binary_location = chrome
+    service = Service(executable_path=driver_path)
     return webdriver.Chrome(service=service, options=options)
 
 
