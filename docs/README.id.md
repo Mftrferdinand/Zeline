@@ -273,10 +273,24 @@ ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI menjalankan `unittest`, bukan `pytest`. Lihat
-[CONTRIBUTING.md](../CONTRIBUTING.md) untuk alur branch/PR, apa yang dibuktikan
-tiap job CI, dan lokasi setiap bagian kode; [CHANGELOG.md](../CHANGELOG.md)
-mencatat setiap rilis beserta tautan ke pull request-nya.
+CI menjalankan `unittest`, bukan `pytest`.
+
+**Kontribusi terbuka, dan kamu tidak perlu akses tulis ke repo ini.** Fork,
+buat branch, lalu buka pull request ke `main`; PR dari fork menjalankan matriks
+CI yang sama — Linux, Windows, macOS, dan kedua installer:
+
+```bash
+gh repo fork Mftrferdinand/Zeline --clone --remote
+cd Zeline && git checkout -b fix/deskripsi-singkat
+git push -u origin fix/deskripsi-singkat
+gh pr create --repo Mftrferdinand/Zeline --base main
+```
+
+[CONTRIBUTING.md](../CONTRIBUTING.md) memuat alur lengkapnya, apa yang dibuktikan
+tiap job CI, dan lokasi setiap bagian kode. Issue berlabel
+[good first issue](https://github.com/Mftrferdinand/Zeline/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+sengaja dibuat kecil dan jelas batasnya. [CHANGELOG.md](../CHANGELOG.md) mencatat
+setiap rilis beserta tautan ke pull request-nya.
 
 ## Peta jalan
 

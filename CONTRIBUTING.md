@@ -21,7 +21,7 @@ steps below will simply fail.
 ## Set up
 
 ```bash
-git clone https://github.com/Mftrferdinand/Zeline.git
+gh repo fork Mftrferdinand/Zeline --clone --remote   # or clone your own fork
 cd Zeline
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
@@ -29,6 +29,9 @@ pip install -e ".[dev]"
 
 `-e` matters: the CLI you run is then the code you are editing, so
 `zeline --version` and `zeline tools list` exercise your working tree.
+
+Fork first even for a one-line change — `main` is protected, so the branch has to
+live somewhere you can push to. See [Opening a pull request](#opening-a-pull-request).
 
 ## The loop
 
@@ -50,14 +53,44 @@ before pushing.
 
 ## Opening a pull request
 
+You do not need write access to this repository, and you should not expect it:
+`git push -u origin <branch>` fails with a 403 for everyone except the
+maintainer. Work from your own fork instead.
+
 ```bash
+gh repo fork Mftrferdinand/Zeline --clone --remote
+cd Zeline
 git checkout -b fix/short-description
 # work, commit
 git push -u origin fix/short-description
-gh pr create --base main
+gh pr create --repo Mftrferdinand/Zeline --base main
+```
+
+`gh repo fork --remote` leaves you with `origin` pointing at your fork and
+`upstream` at this repository, which is what the commands above assume. Without
+`gh`, fork through the web UI and wire the remotes by hand:
+
+```bash
+git clone https://github.com/<your-username>/Zeline.git
+cd Zeline
+git remote add upstream https://github.com/Mftrferdinand/Zeline.git
+```
+
+Keep the fork current before starting new work, or your pull request arrives with
+unrelated conflicts:
+
+```bash
+git fetch upstream
+git checkout main && git merge --ff-only upstream/main
 ```
 
 Branch names follow the commit type: `fix/`, `feat/`, `docs/`, `ci/`, `chore/`.
+
+Your pull request runs the full CI matrix — Linux, Windows, macOS, and the
+installers. Fork pull requests get the same treatment as the maintainer's,
+because the workflows trigger on `pull_request` rather than
+`pull_request_target`. That means a first-time contributor sees exactly the same
+gate, and no secret is exposed to a fork.
 
 **Commit messages** use `type(scope): what changed, in the imperative`, and the
 body explains *why* — what broke for a user, and why this fix rather than the
@@ -77,7 +110,8 @@ reasoning — instead of leaving a reviewer to assume it was all covered.
 
 ## What CI checks
 
-Every pull request runs, and all of it must be green before merge:
+Every pull request runs, and **all of it must be green before merge** — every row
+below is a required status check, so none of them can be red and still merge:
 
 | Job | What it proves |
 | --- | --- |
