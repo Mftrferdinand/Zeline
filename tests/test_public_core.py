@@ -2392,6 +2392,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(coding, "<pre>pytest -q</pre>")
         self.assertNotIn("Zeline Terminal", coding)
         self.assertNotIn("📺", coding)
+        # Command panjang dipangkas satu baris dengan ellipsis di ujung
+        long_cmd = "python3 -c 'from zeline import config, tools; cfg = config.load_config(); executor = tools.ToolExecutor(cfg, identity=\"cli\", profile=\"full\")'"
+        truncated = telegram._tool_progress_text("run_shell", {"command": long_cmd})
+        self.assertTrue(truncated.endswith("…</pre>"))
+        self.assertNotIn("\n", truncated)
 
     def test_telegram_web_progress_hides_raw_links(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
