@@ -23,7 +23,7 @@ from typing import Any
 # Default generik untuk OpenAI-compatible provider fresh install.
 # Pengguna tetap memilih model sendiri lewat `zeline setup`.
 DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_MAX_TOOL_ROUNDS = 20
+DEFAULT_MAX_TOOL_ROUNDS = 150
 DEFAULT_MAX_SESSIONS = 100
 # Detik menunggu turn aktif selesai saat restart/update yang sopan sebelum
 # proses gateway keluar. Nol berarti keluar segera (perilaku lama).
@@ -44,7 +44,7 @@ DEFAULT_ASK_USER_TIMEOUT = 180
 # dipaksa merangkum — terlihat seperti agent yang menyerah padahal dicabut
 # tool-nya. Default sekarang dibuat lebih longgar dari perkiraan terburuk
 # ``max_tool_rounds`` x satu panggilan LLM lambat, dan bisa diatur operator.
-DEFAULT_MAX_TURN_SECONDS = 1800.0
+DEFAULT_MAX_TURN_SECONDS = 4500.0
 MAX_TURN_SECONDS = DEFAULT_MAX_TURN_SECONDS
 # Rentang yang diterima dari config. Batas bawah menjaga ask_user tetap punya
 # ruang (lihat interaction.py); batas atas mencegah satu turn menyandera gateway

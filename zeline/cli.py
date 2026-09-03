@@ -132,27 +132,54 @@ def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
 
 
 def _model_ids(payload: Any) -> list[str]:
-    data = payload.get("data", []) if isinstance(payload, dict) else []
-    models = [str(item.get("id", "")).strip() for item in data if isinstance(item, dict)]
+    """Parse model IDs from various provider payload structures (OpenAI, Hermes, Ollama, vLLM, etc.)."""
+    items = []
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        for key in ("data", "models", "data_list"):
+            val = payload.get(key)
+            if isinstance(val, list):
+                items = val
+                break
+    models = []
+    for item in items:
+        if isinstance(item, str) and item.strip():
+            models.append(item.strip())
+        elif isinstance(item, dict):
+            m_id = str(item.get("id") or item.get("name") or item.get("model") or item.get("model_name") or "").strip()
+            if m_id:
+                models.append(m_id)
     return sorted(dict.fromkeys(model for model in models if model))
 
 
 def _discover_provider_models(base_url: str, api_key: str) -> tuple[str, list[str]]:
-    """Probe OpenAI-compatible first, then native Anthropic model listing."""
-    endpoint = f"{base_url.rstrip('/')}/models"
+    """Probe provider models across OpenAI-compatible, Anthropic, Hermes, Ollama, and variant endpoints."""
+    base = base_url.rstrip('/')
+    # Candidate endpoints for various server architectures (OpenAI standard, root /models, /v1/models, /api/tags)
+    endpoints = [f"{base}/models"]
+    if not base.endswith("/v1"):
+        endpoints.append(f"{base}/v1/models")
+    else:
+        root_base = base[:-3]
+        if root_base:
+            endpoints.append(f"{root_base}/models")
+    endpoints.append(f"{base}/api/tags")
+
     probes = (
-        ("openai", {"Authorization": f"Bearer {api_key}"}),
+        ("openai", {"Authorization": f"Bearer {api_key}"} if api_key else {}),
         ("anthropic", {"x-api-key": api_key, "anthropic-version": "2023-06-01"}),
     )
-    for protocol, headers in probes:
-        try:
-            response = requests.get(endpoint, headers=headers, timeout=20)
-            if response.ok:
-                models = _model_ids(response.json())
-                if models:
-                    return protocol, models
-        except (requests.RequestException, ValueError):
-            continue
+    for endpoint in dict.fromkeys(endpoints):
+        for protocol, headers in probes:
+            try:
+                response = requests.get(endpoint, headers=headers, timeout=20)
+                if response.ok:
+                    models = _model_ids(response.json())
+                    if models:
+                        return protocol, models
+            except (requests.RequestException, ValueError):
+                continue
     return "openai", []
 
 

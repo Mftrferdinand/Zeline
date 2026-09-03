@@ -276,29 +276,61 @@ def _slugify_provider_id(name: str, existing: dict[str, Any]) -> str:
 
 
 def detect_models(base_url: str, api_key: str) -> list[str]:
-    """Panggil GET {base_url}/models untuk mendeteksi model yang tersedia.
+    """Panggil GET /models untuk mendeteksi model yang tersedia.
 
-    Dipakai saat menambah provider: user cukup memberi base_url + API key,
-    daftar model diambil otomatis (bukan diketik manual). Return list kosong
-    bila endpoint tidak menjawab atau tidak berbentuk daftar model OpenAI.
+    Mendukung format respons OpenAI, Hermes, Ollama, vLLM, dan endpoint
+    alternatif (/models, /v1/models, /api/tags).
     """
     base = str(base_url or "").rstrip("/")
     if not base:
         return []
     try:
         import requests
-        response = requests.get(
-            f"{base}/models",
-            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-            timeout=8,
-        )
-        payload = response.json()
-    except Exception:
+    except ImportError:
         return []
-    items = payload.get("data") if isinstance(payload, dict) else None
-    models = [str(m.get("id")) for m in items
-              if isinstance(m, dict) and m.get("id")] if isinstance(items, list) else []
-    return sorted(dict.fromkeys(models))
+
+    endpoints = [f"{base}/models"]
+    if not base.endswith("/v1"):
+        endpoints.append(f"{base}/v1/models")
+    else:
+        root_base = base[:-3]
+        if root_base:
+            endpoints.append(f"{root_base}/models")
+    endpoints.append(f"{base}/api/tags")
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    for endpoint in dict.fromkeys(endpoints):
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=8)
+            if not response.ok:
+                continue
+            payload = response.json()
+        except Exception:
+            continue
+
+        items = []
+        if isinstance(payload, list):
+            items = payload
+        elif isinstance(payload, dict):
+            for key in ("data", "models", "data_list"):
+                val = payload.get(key)
+                if isinstance(val, list):
+                    items = val
+                    break
+
+        models = []
+        for item in items:
+            if isinstance(item, str) and item.strip():
+                models.append(item.strip())
+            elif isinstance(item, dict):
+                m_id = str(item.get("id") or item.get("name") or item.get("model") or item.get("model_name") or "").strip()
+                if m_id:
+                    models.append(m_id)
+
+        models = sorted(dict.fromkeys(models))
+        if models:
+            return models
+    return []
 
 
 def save_provider(name: str, base_url: str, api_key: str, *,

@@ -886,10 +886,8 @@ def _provider_picker_payload(providers: list[dict[str, str]], current_slug: str)
 def _fetch_models_catalog(base_url: str, api_key: str, *, timeout: int = 12) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """Ambil /models SEKALI lalu isi kedua cache (id list + metadata per id).
 
-    Dipakai oleh picker dan oleh teks konfirmasi ganti model. Tanpa ini,
-    `_fetch_model_capabilities` melakukan panggilan /models KEDUA sesudah tap
-    model — di jaringan Termux itu tambahan ~1-20s yang membuat tap pertama
-    tampak tidak berefek (aes harus tap 2x).
+    Mendukung berbagai format (OpenAI, Hermes, Ollama, vLLM) dan endpoint
+    alternatif (/models, /v1/models, /api/tags).
     """
     base = str(base_url or "").rstrip("/")
     if not base:
@@ -899,28 +897,54 @@ def _fetch_models_catalog(base_url: str, api_key: str, *, timeout: int = 12) -> 
     cached_meta = _MODEL_META_CACHE.get(base)
     if cached_ids and cached_meta and now - cached_ids[0] < _MODELS_CACHE_TTL:
         return cached_ids[1], cached_meta[1]
-    try:
-        response = _HTTP.get(
-            f"{base}/models",
-            headers={"Authorization": f"Bearer {api_key or ''}"},
-            timeout=timeout,
-        )
-        payload = response.json() if response.ok else {}
-    except (requests.RequestException, ValueError):
-        return [], {}
-    if not isinstance(payload, dict):
-        return [], {}
+
+    endpoints = [f"{base}/models"]
+    if not base.endswith("/v1"):
+        endpoints.append(f"{base}/v1/models")
+    else:
+        root_base = base[:-3]
+        if root_base:
+            endpoints.append(f"{root_base}/models")
+    endpoints.append(f"{base}/api/tags")
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     ids: list[str] = []
     meta: dict[str, dict[str, Any]] = {}
-    for item in payload.get("data", []):
-        if not isinstance(item, dict):
+
+    for endpoint in dict.fromkeys(endpoints):
+        try:
+            response = _HTTP.get(endpoint, headers=headers, timeout=timeout)
+            if not response.ok:
+                continue
+            payload = response.json()
+        except (requests.RequestException, ValueError):
             continue
-        model_id = str(item.get("id", "")).strip()
-        if not model_id:
-            continue
-        ids.append(model_id)
-        meta[model_id] = item
-    ids = list(dict.fromkeys(ids))
+
+        items = []
+        if isinstance(payload, list):
+            items = payload
+        elif isinstance(payload, dict):
+            for key in ("data", "models", "data_list"):
+                val = payload.get(key)
+                if isinstance(val, list):
+                    items = val
+                    break
+
+        for item in items:
+            if isinstance(item, str) and item.strip():
+                m_id = item.strip()
+                ids.append(m_id)
+                meta[m_id] = {"id": m_id}
+            elif isinstance(item, dict):
+                m_id = str(item.get("id") or item.get("name") or item.get("model") or item.get("model_name") or "").strip()
+                if m_id:
+                    ids.append(m_id)
+                    meta[m_id] = item
+
+        ids = list(dict.fromkeys(ids))
+        if ids:
+            break
+
     if ids:
         _MODELS_CACHE[base] = (now, ids)
         _MODEL_META_CACHE[base] = (now, meta)
