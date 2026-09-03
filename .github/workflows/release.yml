@@ -68,11 +68,21 @@ jobs:
               echo "| Owner | \`${GITHUB_REPOSITORY%%/*}\` |"
               echo "| Repository name | \`${GITHUB_REPOSITORY##*/}\` |"
               echo "| Workflow name | \`release.yml\` |"
-              echo "| Environment name | \`pypi\` |"
+              echo "| Environment name | **leave blank** |"
               echo
-              echo "All five must match character for character — the project"
-              echo "name is compared against the package metadata at upload time,"
-              echo "and the other four against this workflow's OIDC claims."
+              echo "The first four must match character for character — the"
+              echo "project name is compared against the package metadata at"
+              echo "upload time, and the others against this workflow's OIDC"
+              echo "claims."
+              echo
+              echo "**Environment must stay empty.** PyPI only checks the"
+              echo "\`environment\` claim when the publisher declares one, and a"
+              echo "job can only emit that claim by declaring \`environment:\`,"
+              echo "which creates a deployment record. Registering \`pypi\` here"
+              echo "would make this check — and the release's own gate — fail"
+              echo "forever on a publisher that is actually correct, so the"
+              echo "upload would be skipped on every release."
+              echo
               echo "Re-run this job to confirm before cutting a release."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -254,12 +264,21 @@ jobs:
             echo "and published."
             echo
             echo "To arm it, at pypi.org -> Publishing -> add a pending publisher:"
+            echo "  project     : zeline"
             echo "  owner       : ${GITHUB_REPOSITORY%%/*}"
             echo "  repository  : ${GITHUB_REPOSITORY##*/}"
             echo "  workflow    : release.yml"
-            echo "  environment : pypi"
-            echo "All four must match exactly. The next release then publishes"
-            echo "with no further changes here."
+            echo "  environment : (leave BLANK)"
+            echo
+            echo "The environment field must stay empty. PyPI only verifies the"
+            echo "environment claim when the publisher declares one, and only a"
+            echo "job that declares 'environment:' emits that claim -- which also"
+            echo "creates a deployment record. This gate runs without one, so a"
+            echo "publisher registered against 'pypi' would refuse this exchange"
+            echo "and skip the upload on every release, forever."
+            echo
+            echo "The other four must match exactly. The next release then"
+            echo "publishes with no further changes here."
           fi
 
   publish-pypi:
