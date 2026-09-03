@@ -129,6 +129,12 @@ def _tool_names_for_profile(profile: str) -> list[str]:
     return [definition.name for definition in TOOL_DEFS if profile in definition.profiles]
 
 
+# Panjang maksimal preview perintah terminal di feed progres Telegram.
+# Sengaja pendek: feed harus terbaca sebagai SATU BARIS ringkas, bukan dinding
+# perintah. Sisanya dipangkas dengan ellipsis.
+_TERMINAL_PREVIEW_LIMIT = 64
+
+
 def _safe_progress_line(line: str, limit: int = 200) -> str:
     """Ringkas satu baris feed ke ``limit`` char TANPA merusak tag HTML.
 
@@ -156,17 +162,22 @@ def _safe_progress_line(line: str, limit: int = 200) -> str:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal satu baris ringkas dengan akhiran '...' jika panjang.
+    """Preview terminal SATU BARIS pendek, monospace inline, akhiran '…'.
 
-    Mencegah blok terminal raksasa multi-baris di Telegram: command diratakan
-    menjadi satu baris dan dipangkas pada batas ringkas dengan akhiran ellipsis.
+    KENAPA `<code>` dan BUKAN `<pre>`: Telegram merender `<pre>` sebagai kartu
+    blok kode penuh lebar lengkap dengan tombol COPY CODE dan label bahasa.
+    Saat agent menjalankan banyak perintah, feed jadi tumpukan kartu raksasa.
+    `<code>` merender monospace inline pada satu baris — ringkas seperti
+    progress feed CLI — tanpa kartu, tanpa COPY CODE.
+
+    Command diratakan (newline → spasi, whitespace ganda dirapatkan) lalu
+    dipangkas di ``_TERMINAL_PREVIEW_LIMIT`` char dengan ellipsis.
     """
-    cmd = command.replace("\n", " ").strip()
-    limit = 80
-    if len(cmd) > limit:
-        cmd = cmd[:limit].rstrip() + "…"
+    cmd = " ".join(str(command).split())
+    if len(cmd) > _TERMINAL_PREVIEW_LIMIT:
+        cmd = cmd[:_TERMINAL_PREVIEW_LIMIT].rstrip() + "…"
     escaped = html.escape(cmd, quote=False)
-    return f"<pre>{escaped}</pre>"
+    return f"<code>{escaped}</code>"
 
 
 def _is_search_command(command: str) -> bool:
