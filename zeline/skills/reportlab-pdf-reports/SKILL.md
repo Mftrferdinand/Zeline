@@ -56,19 +56,19 @@ calls instead of rewriting the whole document.
 - **Cover**: a full-bleed navy `Table` (one cell, fixed `rowHeights`) with centered white title/subtitle paragraphs; `VALIGN=MIDDLE`.
 - **TOC**: a plain list of section titles (hand-authored is fine for a one-shot report; reportlab's live TOC needs multi-pass build).
 - **Comparison tables**: a helper `cmp_table(rows, headers, widths)` with a header row, alternating `WHITE`/`PALE` row backgrounds, thin grid, `VALIGN=TOP`, `repeatRows=1` so it re-headers across page breaks.
-  - **Header-row color (aes preference):** use a LIGHT tint for the header row with dark text, NOT a heavy dark/navy bar. aes rejected the dark header: "di setiap tabel jangan ada tabel hitam kosong sebagai atas tabelnya, lgsg aja tabel" — a solid navy/black header bar reads to her as an empty black strip stuck on top of the table. Style header cells `('BACKGROUND',(0,0),(-1,0), LIGHT)` + `('TEXTCOLOR',(0,0),(-1,0), NAVY)` (e.g. `#EAF3FF` fill, navy text). Apply this to EVERY table helper (`cmp_table`, `catalog`, metrics tables) — she means all of them, not just one.
+  - **Header-row color:** use a LIGHT tint with dark text, not a heavy dark/navy bar. A solid navy or black header bar reads as an empty dark strip stuck on top of the table rather than part of it. Style header cells `('BACKGROUND',(0,0),(-1,0), LIGHT)` + `('TEXTCOLOR',(0,0),(-1,0), NAVY)` (e.g. `#EAF3FF` fill, navy text), and apply it to *every* table helper (`cmp_table`, `catalog`, metrics tables) — a single styled table next to unstyled ones looks like a mistake.
 - **Callout boxes**: single-cell `Table` with a tinted background + colored box border for "in short / note / recommendation" emphasis (blue = info, amber = warning, green = recommendation).
 - **Code/command blocks**: a mono paragraph style (`DejaVuSansMono`) with a pale background + border; use `<br/>` for line breaks inside one Paragraph.
 - Full copy-paste cookbook (Doc class, all style definitions, cmp_table, callout, catalog, cover): `references/reportlab-report-cookbook.md`.
 
-## User preferences for premium reports (embed these — aes stated them explicitly)
-- **No watermark** by default. A diagonal page watermark reads as cheap/draft; only add one if explicitly asked. (User: "jangan ada watermark".)
-- **No empty or half-empty pages; no gratuitous `PageBreak()`.** Let content flow densely and continuously — only break where a major section genuinely should start fresh. (User: "setiap pages jangan ada yang kosong, saling sambung gt jangan, langsung aja padat".) Over-using `PageBreak()` after every short section is the #1 cause of near-empty pages.
-- **Prefer MORE pages via real content**, not padding — expand with genuine reference sections (detailed tables, glossary, per-item breakdowns, workflows), not whitespace. (User: "yang banyak pages nya".)
+## Design rules for a premium-looking report
+- **No watermark** by default. A diagonal page watermark reads as cheap or draft; add one only when asked.
+- **No empty or half-empty pages, and no gratuitous `PageBreak()`.** Let content flow densely and continuously; break only where a major section genuinely starts fresh. A `PageBreak()` after every short section is the single biggest cause of near-empty pages.
+- **Add pages with real content, never padding** — expand into genuine reference sections (detailed tables, glossary, per-item breakdowns, workflows) rather than whitespace.
 - **Explain the concepts, don't just tabulate.** For a technical audience doc, include a "What is X?" / anatomy / glossary section so the report teaches, not just compares.
 - Justified body text (`alignment=TA_JUSTIFY`) + a navy/blue palette reads premium.
-- **Give every point/paragraph top spacing — don't let items butt against the line above.** aes: "setiapp point baru kasih jarak paragraf dr atas, karena itu nempel banget keliatanya." Set `spaceBefore` on the bullet style (`spaceBefore=5`), the body style (`spaceBefore=3`), and generous `spaceBefore` on headings (H1 ~16, H2 ~13) so each new element visibly breathes. `spaceAfter` alone is not enough — without `spaceBefore` a bullet sits flush under the preceding sentence and looks cramped.
-- **Keep heading sizes modest / proportional — don't oversize them.** aes flagged big headings as too large. Section headings (H1) ~14pt, sub-headings (H2) ~11pt, cover title ~22pt (not 19/13/27). Oversized headings look unbalanced against 9–10pt body.
+- **Give every point and paragraph top spacing** so nothing butts against the line above. Set `spaceBefore` on the bullet style (`spaceBefore=5`), the body style (`spaceBefore=3`), and generous `spaceBefore` on headings (H1 ~16, H2 ~13) so each new element visibly breathes. `spaceAfter` alone is not enough — without `spaceBefore` a bullet sits flush under the preceding sentence and looks cramped.
+- **Keep heading sizes modest and proportional.** Section headings (H1) ~14pt, sub-headings (H2) ~11pt, cover title ~22pt (not 19/13/27). Oversized headings look unbalanced against 9–10pt body.
 
 ## Sourcing accurate data (don't fabricate figures)
 When comparing two versions/tags, pull real numbers from git rather than

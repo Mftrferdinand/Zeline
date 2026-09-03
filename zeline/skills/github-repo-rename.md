@@ -247,6 +247,9 @@ Before staging, explicitly exclude unrelated untracked directories. A broad `git
 
 If docs point to the new repository slug, rename the live GitHub repository before publishing those docs; otherwise install URLs can temporarily 404. After rename, update `origin`, installer URLs, package URLs, README clone commands, and verify the live repository endpoint.
 
-## Communication preference learned
+## Reporting during a rebrand
 
-For this user's rebrand work, avoid a long audit flood. Give short progress updates after each small verified slice, and follow the user's requested sequence (for example, complete rebrand before unrelated CLI features).
+Avoid a wall of audit output. Give a short progress note after each verified
+slice, and finish the requested sequence in order — complete the rename before
+starting unrelated feature work, so a half-renamed repo never sits on the
+default branch.

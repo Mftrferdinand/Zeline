@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 #
 # gh-unfollow-retry-loop.sh — resilient bulk unfollow for flaky mobile networks.
 #
@@ -19,8 +19,7 @@
 # or GitHub returns 403/429 (rate limit — never fight it).
 
 set -uo pipefail
-export PATH="/data/data/com.termux/files/usr/bin:$PATH"
-cd "$HOME" || exit 1
+cd "${HOME:?HOME must be set}" || exit 1
 
 SLEEP_SECS="${SLEEP_SECS:-6}"      # GitHub docs require >=1s between mutations
 MAX_ROUNDS="${MAX_ROUNDS:-12}"

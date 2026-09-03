@@ -213,8 +213,8 @@ Why the ordering: `~/.zeline/` would swallow `~/.zeline/skills` if run first, lo
 
 When a repo is developed against a personal 9Router or API endpoint, README Python/CLI examples often contain hardcoded model IDs from that specific environment:
 ```python
-pick("gpt")         # → bai/gpt-5.6-sol       ← specific to aes's 9Router
-pick("claude")      # → bai/claude-sonnet-5   ← specific to aes's 9Router
+pick("gpt")         # → myrouter/gpt-5.6-sol      ← only exists on one private router
+pick("claude")      # → myrouter/claude-sonnet-5  ← only exists on one private router
 ```
 External users cloning the repo won't have those exact models. Replace with generic descriptions:
 ```python
@@ -231,7 +231,7 @@ Add MIT LICENSE and standard .gitignore.
 ```
 MIT License
 
-Copyright (c) 2026 Mftrferdinand
+Copyright (c) <YEAR> <COPYRIGHT HOLDER>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

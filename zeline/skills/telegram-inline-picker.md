@@ -161,7 +161,7 @@ Mandatory checklist before `git push`:
 
 5. **Repo default to private** for bot projects with API keys. `gh repo create OWNER/REPO --private`.
 
-6. **Termux gotcha**: `/usr/bin/env` does not exist (only `/bin/env` symlink to toybox). Scripts with `#!/usr/bin/env bash` crash silent. Use absolute path `#!/data/data/com.termux/files/usr/bin/bash` in `run.sh` / `stop.sh`. Always `head -1 <script>` to verify shebang before running.
+6. **Shebang portability** — `#!/usr/bin/env bash` is the portable form and is what to ship: it works on Linux, macOS, and Termux. On Termux `/usr/bin/env` genuinely does not exist as a file, but `termux-exec` (preloaded via `LD_PRELOAD`) rewrites the interpreter path at exec time, so the script runs. Verified on Termux/Android: both `#!/usr/bin/env bash` and `#!/usr/bin/env python3` execute and exit 0. Do **not** hardcode `#!/data/data/com.termux/...` — that makes the script Android-only and it fails everywhere else. If a script really does fail to exec on a Termux install without `termux-exec`, run it explicitly (`bash run.sh`) rather than baking in an absolute path.
 
 ## Build → Push Workflow
 
@@ -374,7 +374,7 @@ if __name__ == "__main__":
 ## Lampiran: `scripts/pre-push-check.sh`
 
 ```sh
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # Pre-push security check. Run before git push on any bot project.
 # Exits non-zero if any real secret is found in staged content.
 set -e
@@ -428,17 +428,23 @@ else
     echo -e "${YELLOW}[4/5] WARN: .env.example missing${NC}"
 fi
 
-# 5. Termux shebang check
+# 5. Shebang portability check. A machine-specific absolute interpreter path
+# makes the script run on exactly one install; #!/usr/bin/env is the portable
+# form and works on Termux too (termux-exec rewrites it at exec time).
 if [ -f run.sh ] || [ -f start.sh ]; then
     for f in run.sh start.sh; do
         [ ! -f "$f" ] && continue
         SHEBANG=$(head -1 "$f")
-        if [[ "$SHEBANG" == *"/usr/bin/env"* ]]; then
-            echo -e "${YELLOW}[5/5] WARN: $f uses /usr/bin/env (broken on Termux)${NC}"
-            echo "  Use absolute path: #!/data/data/com.termux/files/usr/bin/bash"
-        else
-            echo -e "${GREEN}[5/5] $f shebang OK${NC}"
-        fi
+        case "$SHEBANG" in
+            *"/usr/bin/env"*)
+                echo -e "${GREEN}[5/5] $f shebang OK (portable)${NC}" ;;
+            *"/data/data/"*|*"/home/"*|*"/Users/"*)
+                echo -e "${YELLOW}[5/5] WARN: $f hardcodes a machine-specific interpreter path${NC}"
+                echo "  $SHEBANG"
+                echo "  Use: #!/usr/bin/env bash" ;;
+            *)
+                echo -e "${GREEN}[5/5] $f shebang OK${NC}" ;;
+        esac
     done
 else
     echo "[5/5] No run.sh / start.sh to check"

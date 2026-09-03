@@ -10,11 +10,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 ZENITH_SCRIPTS = ROOT / "zeline" / "zenith_tools" / "scripts"
+# The one account script that ships. A site-specific twin used to sit beside it
+# with a hardcoded signup URL and the maintainer's own referral code -- unusable
+# by anyone else, so it was removed rather than genericised twice.
 ACCOUNT_SCRIPTS = (
-    ROOT / "scripts" / "auto_register.py",
-    ROOT / "scripts" / "meridian_register.py",
     ROOT / "zeline" / "skills" / "auto-register" / "scripts" / "auto_register.py",
-    ROOT / "zeline" / "skills" / "auto-register" / "scripts" / "meridian_register.py",
 )
 
 

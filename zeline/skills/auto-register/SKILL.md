@@ -1,13 +1,12 @@
 ---
 name: auto-register
 description: |
-  Daftar akun otomatis untuk signup form generic (prop firm, exchange,
-  exchange, dll) via Chromium headless di Termux. Form 2-step
-  (nama/email/password → phone/alamat/ref code) atau 1-step.
-  Temp email mail.gw (5 domain random) atau custom domain.
-  Email = namadepan + namabelakang + digit (mudah diingat = nama profil).
-  Load saat user minta daftar akun massal di situs dengan form signup
-  serupa Meridian Funded, prop firm lain, atau exchange crypto.
+  Daftar akun otomatis untuk form signup generic (prop firm, exchange, SaaS)
+  via Chromium headless. Form 2-step (nama/email/password → phone/alamat/ref
+  code) atau 1-step. Temp email mail.gw atau custom domain. Email =
+  namadepan + namabelakang + digit. Chromium/chromedriver dicari lewat PATH,
+  jadi jalan di Termux, Linux, macOS, dan Windows. Load saat user minta daftar
+  akun massal di situs dengan form signup serupa.
 metadata:
   zeline:
     tags: [automation, signup, register, tempmail, prop-firm, chromium]
@@ -23,9 +22,22 @@ field seperti refCode, ref, reference).
 
 ## Prasyarat
 
-- Chromium + chromedriver terinstall di Termux
-- Python 3.10+ dengan selenium
-- Path: `chromedriver` di `/data/data/com.termux/files/usr/bin/chromedriver`
+- Chromium + chromedriver terpasang dan ada di `PATH`
+  - Termux: `pkg install chromium`
+  - Debian/Ubuntu: `apt install chromium chromium-driver`
+  - macOS: `brew install chromium chromedriver`
+  - Windows: pasang Chrome + chromedriver, pastikan keduanya di `PATH`
+- Python 3.10+ dengan `selenium`
+
+Script mencari binary sendiri lewat `PATH` (`chromium`, `chromium-browser`,
+`chrome`, `google-chrome`, …). Kalau terpasang di lokasi tidak standar, override:
+
+```bash
+CHROME_BIN=/path/ke/chrome CHROMEDRIVER=/path/ke/chromedriver python3 scripts/auto_register.py …
+```
+
+Kalau chromedriver tidak ditemukan, script berhenti dengan instruksi install —
+bukan melempar `WebDriverException` yang terbaca seperti bug Selenium.
 
 ## Script
 
@@ -51,13 +63,15 @@ python3 scripts/auto_register.py https://situs.com/signup --ref REF123 \
   --first-name John --last-name Doe --phone-area 512
 ```
 
-### 2. Meridian Funded (hardcoded URL + ref)
+### 2. Kenapa hanya satu script
 
-**Lokasi:** `scripts/meridian_register.py`
+Dulu ada versi kedua yang mengunci satu URL signup dan satu kode referral milik
+maintainer. Untuk orang lain itu bukan fitur — cuma mendaftarkan akun ke situs
+yang mungkin tidak mereka pakai, dengan kode referral orang lain. Bentuk
+form-nya persis sama, jadi `auto_register.py` dengan `--ref` sudah mencakupnya:
 
 ```bash
-python3 scripts/meridian_register.py 5              # 5 akun, ref default
-python3 scripts/meridian_register.py 1 REF8DFA3814  # 1 akun, custom ref
+python3 scripts/auto_register.py "https://situs.com/auth/sign-up?ref={ref}" --ref KODE_KAMU --count 5
 ```
 
 ## Field yang didukung
@@ -88,8 +102,8 @@ python3 scripts/meridian_register.py 1 REF8DFA3814  # 1 akun, custom ref
 
 ## Output
 
-Semua akun disimpan ke `~/auto_register_accounts.txt` (generic) atau
-`~/meridian_accounts.txt` (meridian), format append:
+Semua akun disimpan ke `~/auto_register_accounts.txt` (override dengan
+`AUTO_REGISTER_OUTPUT`), format append:
 
 ```
 ============================================================

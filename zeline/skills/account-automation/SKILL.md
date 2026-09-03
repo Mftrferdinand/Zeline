@@ -2,12 +2,12 @@
 name: account-automation
 description: |
   Let an agent act on the user's own online accounts the way a human
-  assistant would — push to GitHub, call service APIs, log into token
-  panels (GoRouter/TabiToken-style) and claim rewards, manage anything
-  that exposes an API or CLI. API-first (works today, headless, even on
-  Termux); browser-driven login (X, no-API sites) is the harder Phase-2
-  path. Load when the user asks the agent to "manage my accounts", log
-  into a service, or automate actions on GitHub / a web dashboard.
+  assistant would — push to GitHub, call service APIs, log into one-api
+  token panels and claim rewards, manage anything that exposes an API or
+  CLI. API-first (headless, works on any platform); browser-driven login
+  for sites with no API is the harder Phase-2 path. Load when the user
+  asks the agent to "manage my accounts", log into a service, or automate
+  actions on GitHub or a web dashboard.
 metadata:
   zeline:
     tags: [accounts, automation, github, api, credentials, 2captcha, playwright]
@@ -30,14 +30,15 @@ Read the credential-safety section before storing anything.
    CLIs. Auth once, reuse. This is how the agent already pushes to
    GitHub. Zero scraping, no ban risk.
 2. **Official REST/GraphQL API + token** — anything with an API:
-   GitHub, Telegram, Notion, Airtable, Cloudflare, one-api token panels
-   (GoRouter/TabiToken — see `newapi-daily-checkin` skill). Send
-   `Authorization: Bearer <token>`; some panels also need
+   GitHub, Telegram, Notion, Airtable, Cloudflare, any one-api /
+   New-API token panel (see the `newapi-daily-checkin` skill). Send
+   `Authorization: Bearer <token>`; some forks also require
    `New-Api-User: <id>`.
-3. **API + captcha solver** — when the API works but a Cloudflare
-   Turnstile / reCAPTCHA gates a specific action (e.g. daily check-in),
-   mint the captcha token via **2Captcha** and pass it to the API. No
-   browser needed. This is the GoRouter pattern.
+3. **API + captcha solver** — when the API itself works but a Cloudflare
+   Turnstile or reCAPTCHA gates one specific action (a daily check-in,
+   say), mint the captcha token with a solver and pass it to the API. No
+   browser needed, and it is the cheapest way past a captcha-gated
+   endpoint.
 4. **Headless browser (Playwright/Selenium + Chromium)** — LAST resort,
    only for sites with NO usable API that require a rendered login
    (JS forms, OAuth click-through). Heavy; see Phase 2.
@@ -174,13 +175,13 @@ then execute.
 ## Related skills (load as needed)
 - `temp-email-automation` — signup, temp mail, OTP capture, Cloudflare/
   Turnstile bypass, API-key extraction, mass registration.
-- `newapi-daily-checkin` — daily reward check-in on one-api/New-API
-  panels (GoRouter, TabiToken, any fork).
+- `newapi-daily-checkin` — daily reward check-in on any one-api /
+  New-API panel; the runner discovers each panel's own settings.
 - `github-pr-workflow` / `github-auth` — GitHub specifics.
 
 ## Deep references (in this skill)
 - `references/browser-automation-playbook.md` — full browser/web
-  automation playbook: engines & drivers, Selenium-on-Termux recipe,
+  automation playbook: engines and drivers, a portable Selenium recipe,
   session persistence (the key technique), Cloudflare/Turnstile tiers,
   anti-detection, rate-limit reality, building a Zeline browser tool.
 - `references/zeline-browser-tool-roadmap.md` — step-by-step plan to add

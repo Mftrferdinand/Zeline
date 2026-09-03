@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 #
 # gh-unfollow-batch.sh — unfollow akun GitHub non-mutual secara bertahap.
 #
@@ -16,7 +16,9 @@
 
 set -uo pipefail
 
-HOME_DIR="/data/data/com.termux/files/home"
+# State lives beside the user's other data, wherever HOME points. A hardcoded
+# Android path made every file land nowhere on any other platform.
+HOME_DIR="${HOME:?HOME must be set}"
 QUEUE="$HOME_DIR/gh-unfollow-queue.txt"
 DONE_LOG="$HOME_DIR/gh-unfollow-done.txt"
 FAIL_LOG="$HOME_DIR/gh-unfollow-failed.txt"
@@ -26,8 +28,6 @@ DAILY_LIMIT="${DAILY_LIMIT:-400}"
 # Jeda antar request. Dokumen GitHub: "wait at least one second between each"
 # untuk request mutatif (DELETE). Gua pakai 3s = 3x lebih longgar dari minimum.
 SLEEP_SECS="${SLEEP_SECS:-3}"
-
-export PATH="/data/data/com.termux/files/usr/bin:$PATH"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 

@@ -302,7 +302,7 @@ Example: play/pause colors require changing both the base triangle and the playi
 - If one logical message must contain several bubbles, model it as an array and render one element per item rather than inserting line breaks into one bubble.
 - Keep message totals, counters, navigation bounds, dots, and icon badges derived from the same array length. Removing a message must update all of them.
 - If each bubble must remain one line, use `white-space:nowrap` with a responsive font size and compact horizontal padding. Verify the longest requested line still fits the target mobile width.
-- Header order for this user’s compact message UI: centered sender name, horizontal divider, message counter below the divider, then bubbles.
+- A compact message UI reads best in this order: centred sender name, horizontal divider, message counter below the divider, then the bubbles.
 
 ## Verification loop
 

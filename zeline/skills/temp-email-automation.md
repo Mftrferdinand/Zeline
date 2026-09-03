@@ -203,11 +203,13 @@ pip install selenium
 Selenium Manager does NOT support Android aarch64. Use `Service` directly:
 
 ```python
+import shutil
+import time
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-import time
 
 chrome_options = Options()
 chrome_options.add_argument('--headless=new')
@@ -216,9 +218,19 @@ chrome_options.add_argument('--disable-dev-shm-usage')
 chrome_options.add_argument('--disable-gpu')
 chrome_options.add_argument('--window-size=1280,800')
 chrome_options.add_argument('--ignore-certificate-errors')
-chrome_options.binary_location = '/data/data/com.termux/files/usr/lib/chromium/chrome'
 
-service = Service(executable_path='/data/data/com.termux/files/usr/bin/chromedriver')
+# Resolve the browser from PATH. A hardcoded path pins the script to one
+# machine and fails with a WebDriverException everywhere else.
+browser = next((p for p in (shutil.which(n) for n in (
+    'chromium', 'chromium-browser', 'chrome',
+    'google-chrome', 'google-chrome-stable')) if p), None)
+driver_path = shutil.which('chromedriver')
+if not driver_path:
+    raise SystemExit('chromedriver not found on PATH; install it or set CHROMEDRIVER')
+if browser:
+    chrome_options.binary_location = browser
+
+service = Service(executable_path=driver_path)
 
 driver = webdriver.Chrome(service=service, options=chrome_options)
 driver.get('https://example.com')
@@ -229,11 +241,14 @@ driver.quit()
 
 ### Key Facts
 
-- **Chromium binary:** `/data/data/com.termux/files/usr/lib/chromium/chrome`
-- **Chromedriver:** `/data/data/com.termux/files/usr/bin/chromedriver`
-- **Version:** ~149 (check with `chromium-browser --version`)
+- **Locate the binaries, do not hardcode them.** `shutil.which('chromium')` /
+  `shutil.which('chromedriver')`, with `CHROME_BIN` / `CHROMEDRIVER` as
+  overrides. Install: Termux `pkg install chromium`; Debian/Ubuntu
+  `apt install chromium chromium-driver`; macOS `brew install chromedriver`.
+- **Check the version** with `chromium --version` (or `chromium-browser`,
+  `google-chrome`) — driver and browser majors must match.
 - **`--headless=new`** works. Old `--headless` may fail.
-- **DNS issues:** Some domains (e.g., `t.me`) may not resolve on Indonesian ISPs (Telkom/IndiHome). `--dns-server=8.8.8.8,8.8.4.4` flag may not help — the block is at ISP level, not resolver. `ping 8.8.8.8` works but domain resolution fails. Use VPN or mobile data for blocked domains. Netflix domains resolve fine from ID IPs.
+- **DNS-level blocks:** in some countries an ISP blocks a domain at the resolver, so `t.me` and similar simply do not resolve while `ping 8.8.8.8` succeeds. Chromium's `--dns-server=` flag does not help, because the block is upstream of the resolver you chose. Detect it by resolving the host over DoH (`curl -s "https://dns.google/resolve?name=<host>&type=A"`) and comparing with the local resolver; work around it with a VPN or a different network. Do not read this as "the site is down".
 - **SPA pages:** Netflix loads as a React SPA. The page shell always returns 200 with JS-rendered content in `netflix.reactContext` — extract with regex on `page_source` after `time.sleep(5)`.
 
 ### Netflix Signup Specifics

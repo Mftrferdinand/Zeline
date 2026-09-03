@@ -15,12 +15,18 @@ When the user asks for a "template", **generate the actual .xlsx** rather than h
 2. Reload-verify after every build: open the saved file with `openpyxl.load_workbook`, print `sheetnames`, spot-check a couple of formulas/page-setups. Catches corruption before you deliver.
 3. Deliver `MEDIA:` path + a short bullet summary of sheets/features.
 
-## Iteration pattern (this user, the user)
-the user iterates: "buat lebih bagus" → "lebih lengkap dan rapih" → "presisi, landscape tablet, opsi menarik". Each pass **escalate**, don't restart:
-- Pass 1: core sheets + basic dashboard.
-- Pass 2: add sheets (Savings Goals, Recurring Bills), status logic, a Guide sheet.
-- Pass 3: landscape fit-to-page on every sheet, KPI card grid, doughnut/line charts, Top-N leaderboard, zebra striping, colored input cells.
-Keep the same script file and layer features; keep a stable palette (navy/blue/orange/silver/white, NO green-heavy — the user dislikes "norak" green).
+## Iteration pattern
+
+Dashboard requests arrive as escalating rounds ("make it better", "more complete
+and tidier", "precise, landscape, more options"). **Escalate each pass, never
+restart** — keep the same script file and layer features onto it:
+- Pass 1: core sheets + a basic dashboard.
+- Pass 2: extra sheets (Savings Goals, Recurring Bills), status logic, a Guide sheet.
+- Pass 3: landscape fit-to-page on every sheet, KPI card grid, doughnut/line charts, Top-N leaderboard, zebra striping, coloured input cells.
+
+Keep one stable palette across passes (navy/blue/orange/silver/white reads
+professional; heavy green tends to look garish in a finance sheet). If the
+requester names a palette, use theirs.
 
 ## Core techniques (openpyxl)
 

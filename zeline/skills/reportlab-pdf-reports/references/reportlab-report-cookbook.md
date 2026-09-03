@@ -18,7 +18,28 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (BaseDocTemplate, Frame, PageTemplate, Paragraph,
     Spacer, Table, TableStyle, PageBreak, HRFlowable)
 
-FD = Path('/data/data/com.termux/files/usr/share/fonts/TTF')  # Termux DejaVu
+# DejaVu lives in a different directory on every platform, so search instead of
+# hardcoding one. A missing path here raises TTFError at import time, which reads
+# like a reportlab problem rather than "the font is somewhere else".
+def _font_dir() -> Path:
+    candidates = [Path(os.environ['DEJAVU_DIR'])] if os.environ.get('DEJAVU_DIR') else []
+    candidates += [
+        Path(os.environ.get('PREFIX', '/usr')) / 'share/fonts/TTF',   # Termux
+        Path('/usr/share/fonts/truetype/dejavu'),                     # Debian/Ubuntu
+        Path('/usr/share/fonts/dejavu'),                              # Fedora/Arch
+        Path('/opt/homebrew/share/fonts'), Path('/usr/local/share/fonts'),  # macOS
+        Path('C:/Windows/Fonts'),                                     # Windows
+    ]
+    for directory in candidates:
+        if (directory / 'DejaVuSans.ttf').is_file():
+            return directory
+    raise SystemExit(
+        'DejaVuSans.ttf not found. Install the DejaVu fonts '
+        '(Termux: pkg install ttf-dejavu; Debian: apt install fonts-dejavu) '
+        'or set DEJAVU_DIR to the directory holding them.'
+    )
+
+FD = _font_dir()
 pdfmetrics.registerFont(TTFont('DV',  str(FD/'DejaVuSans.ttf')))
 pdfmetrics.registerFont(TTFont('DVB', str(FD/'DejaVuSans-Bold.ttf')))
 pdfmetrics.registerFont(TTFont('DVO', str(FD/'DejaVuSans-Oblique.ttf')))
