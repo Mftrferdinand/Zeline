@@ -41,6 +41,19 @@ RANK_POOL_FACTOR = 5
 #: pembatas thread di ``last_thread``.
 _UNTITLED = {"", "new session", "active task"}
 
+#: Jeda antar-turn yang menandai BATAS SESI di ``last_thread``.
+#:
+#: ``title`` sendirian tidak cukup sebagai pembatas thread. ``session.title``
+#: diambil dari pesan pertama sesi (lihat ``sessions.py``), jadi setiap sesi
+#: baru yang dibuka dengan kata yang sama ("lanjut", "hy", "oy") masuk ke
+#: bucket title YANG SAMA. Bucket itu lalu membentang berhari-hari dan
+#: ``last_thread`` mundur menembus batas sesi — user bilang "lanjut" pagi ini
+#: tapi yang di-recall pekerjaan kemarin.
+#:
+#: 3 jam: cukup longgar untuk jeda makan/rapat di tengah satu sesi kerja,
+#: cukup ketat untuk memisahkan sesi yang berbeda hari.
+_THREAD_GAP_SECONDS = 3 * 3600
+
 
 def _db_path() -> Path:
     return config.DATA_DIR / "sessions.db"
@@ -268,17 +281,39 @@ class SessionPersistence:
             "title": title or "",
         }
 
-    def last_thread(self, identity: str, limit: int = 12) -> list[dict[str, Any]]:
-        """Turn terakhir yang masih SATU topik dengan pesan paling baru.
+    def last_thread(
+        self,
+        identity: str,
+        limit: int = 12,
+        *,
+        stale_after: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Turn terakhir yang masih SATU SESI dengan pesan paling baru.
 
         Ini anchor deterministik untuk "lanjut / lanjutin / terusin". Pencarian
         kata kunci tidak bisa menjawab itu — "lanjut" bukan topik, ia rujukan ke
-        *yang terakhir dikerjakan*. Kita ambil ``title`` dari turn terbaru lalu
-        mundur selama title-nya masih sama, jadi hasilnya satu percakapan utuh
-        dan tidak tercampur topik sebelumnya.
+        *yang terakhir dikerjakan*.
 
-        Judul kosong/``New Session`` tidak bisa dipakai sebagai pembatas topik,
-        jadi untuk kasus itu kita jatuh ke N turn terakhir secara kronologis.
+        Batas thread ditentukan DUA hal, dan keduanya wajib:
+
+        1. **Jeda waktu** (``_THREAD_GAP_SECONDS``). Ini pembatas utama. Begitu
+           jarak antar-turn melebihi ambang, apa pun sebelum titik itu adalah
+           sesi lain dan tidak boleh ikut terbawa.
+        2. **``title``**, sebagai pembatas tambahan di dalam rentang waktu yang
+           sama.
+
+        Kenapa title sendirian tidak cukup: ``session.title`` diambil dari
+        pesan PERTAMA sesi (``sessions.py``), jadi setiap sesi baru yang dibuka
+        dengan kata yang sama ("lanjut", "hy", "oy") menempel ke bucket title
+        yang sama. Bucket itu membentang berhari-hari, dan tanpa pembatas waktu
+        ``last_thread`` mundur menembus batas sesi.
+
+        ``stale_after``: bila turn TERBARU pun sudah lebih tua dari ini
+        (detik), kembalikan kosong. Ini menutup kasus paling menyesatkan —
+        ``append_turn`` baru jalan SETELAH reply, jadi saat user mengetik
+        "lanjut" di sesi baru, baris terbaru di archive masih milik sesi
+        sebelumnya. Tanpa cek ini, "lanjut" pagi ini me-recall pekerjaan
+        semalam sebagai kalau itu yang sedang dikerjakan.
         """
         want = max(1, int(limit))
         try:
@@ -292,17 +327,34 @@ class SessionPersistence:
             return []
         if not rows:
             return []
+
+        # Turn terbaru pun sudah basi → tidak ada "pekerjaan terakhir" yang
+        # relevan untuk dilanjutkan. Lebih baik jujur kosong daripada
+        # menyodorkan sesi semalam sebagai konteks aktif.
+        if stale_after is not None:
+            age = time.time() - float(rows[0][2] or 0.0)
+            if age > float(stale_after):
+                return []
+
         head_title = (rows[0][3] or "").strip()
-        if head_title and head_title.lower() not in _UNTITLED:
-            same: list[Any] = []
-            for row in rows:
-                if (row[3] or "").strip() != head_title:
-                    break
-                same.append(row)
-            rows = same[:want]
-        else:
-            rows = rows[:want]
-        out = [self._archive_row(r[0], r[1], r[2], r[3]) for r in rows]
+        title_bounded = bool(head_title) and head_title.lower() not in _UNTITLED
+
+        # rows terurut ts DESC (terbaru dulu). Mundur dari turn terbaru dan
+        # berhenti pada pemisah PERTAMA yang ditemui — jeda waktu atau ganti
+        # title. Jeda diukur antar-turn berurutan, bukan terhadap turn terbaru,
+        # supaya sesi panjang yang aktif terus tidak terpotong di tengah.
+        kept: list[Any] = [rows[0]]
+        for previous, row in zip(rows, rows[1:]):
+            gap = float(previous[2] or 0.0) - float(row[2] or 0.0)
+            if gap > _THREAD_GAP_SECONDS:
+                break
+            if title_bounded and (row[3] or "").strip() != head_title:
+                break
+            kept.append(row)
+            if len(kept) >= want:
+                break
+
+        out = [self._archive_row(r[0], r[1], r[2], r[3]) for r in kept[:want]]
         out.reverse()  # kronologis
         return out
 

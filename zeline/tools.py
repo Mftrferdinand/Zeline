@@ -83,6 +83,15 @@ _CONTINUATION_WORDS = {
     "what", "were", "we", "doing", "last", "again",
 }
 
+#: Umur maksimal turn TERBARU agar "lanjut" masih dianggap punya rujukan.
+#:
+#: ``append_turn`` baru jalan SETELAH reply, jadi saat user mengetik "lanjut"
+#: di sesi baru, baris terbaru di archive masih milik sesi SEBELUMNYA. Tanpa
+#: batas ini, "lanjut" pagi ini me-recall pekerjaan semalam seolah itu yang
+#: sedang berjalan. 6 jam menampung jeda tidur/kerja tapi tetap memisahkan
+#: sesi yang berbeda hari.
+_CONTINUATION_STALE_AFTER = 6 * 3600
+
 
 def _is_continuation_query(query: str) -> bool:
     """True bila query cuma bilang "lanjut" tanpa menyebut topik apa pun.
@@ -2145,7 +2154,14 @@ class ToolExecutor:
         pekerjaan TERAKHIR. Dicari sebagai kata kunci, ia justru mengembalikan
         topik terlama yang paling sering menyebut kata "lanjut", yang persis
         bikin bot balik ke sesi pertama. Untuk query seperti itu kita pakai
-        anchor deterministik ``last_thread`` (thread terbaru, satu topik).
+        anchor deterministik ``last_thread`` (thread terbaru, satu sesi).
+
+        Untuk kontinuasi, thread terbaru dibatasi ``_CONTINUATION_STALE_AFTER``.
+        Kalau turn terbaru pun sudah lebih tua dari itu, TIDAK ada pekerjaan
+        yang wajar disebut "yang tadi" — dan menyodorkan sesi semalam sebagai
+        konteks aktif jauh lebih menyesatkan daripada mengaku tidak tahu. Kita
+        juga TIDAK jatuh ke ``recent_archive`` di jalur kontinuasi, karena
+        fungsi itu mengabaikan batas sesi dan mengembalikan bug yang sama.
         """
         from zeline.session_store import SessionPersistence
         try:
@@ -2155,9 +2171,9 @@ class ToolExecutor:
         q = (query or "").strip()
         continuation = not q or _is_continuation_query(q)
         if continuation:
-            rows = store.last_thread(self.identity)
-            if not rows:
-                rows = store.recent_archive(self.identity)
+            rows = store.last_thread(
+                self.identity, stale_after=_CONTINUATION_STALE_AFTER
+            )
             header = (
                 "MOST RECENT thread in this chat, in order (this is what "
                 "'lanjut/terusin/yang tadi' refers to — continue THIS, not an "
@@ -2168,10 +2184,17 @@ class ToolExecutor:
             header = f"Past conversation matching '{q}' (most relevant and most recent first):"
         if not rows:
             # Untuk query kontinuasi kita TIDAK mencari topik apa pun, jadi
-            # "tidak ada yang cocok dengan 'lanjut'" akan menyesatkan: yang
-            # benar adalah chat ini belum punya transkrip sama sekali.
+            # "tidak ada yang cocok dengan 'lanjut'" akan menyesatkan. Yang
+            # benar: tidak ada pekerjaan RECENT untuk dilanjutkan — dan model
+            # harus BERTANYA, bukan mengarang dari sesi lama.
             if continuation:
-                return "No earlier conversation archived for this chat yet."
+                return (
+                    "No recent work to continue in this chat. The last "
+                    "archived turn is older than the continuation window, so "
+                    "there is nothing that 'lanjut/terusin/yang tadi' can "
+                    "safely refer to. Ask the user what they want to continue "
+                    "instead of guessing from an older session."
+                )
             return f"No past conversation found matching '{q}'. This chat has no earlier transcript on that topic."
         lines = [header, ""]
         for r in rows:
