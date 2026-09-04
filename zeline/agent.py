@@ -210,8 +210,9 @@ class Zeline:
         self._turn_cloudflare_detected = False
         # Override streaming per-instance. None = ikuti config global
         # (``agent.stream``). Front-end yang protokolnya MEMBUTUHKAN token
-        # mengalir — gateway SSE Zeline App — menyetel True agar preferensi CLI
-        # global tidak mematikan fitur yang dijanjikan ke client-nya.
+        # mengalir — misalnya adapter SSE/WebSocket di luar repo ini — menyetel
+        # True agar preferensi CLI global tidak mematikan fitur yang dijanjikan
+        # ke client-nya.
         self.stream_responses: bool | None = None
 
     def _streaming_enabled(self) -> bool:

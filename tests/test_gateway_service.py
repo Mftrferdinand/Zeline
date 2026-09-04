@@ -175,26 +175,28 @@ class GatewayServiceTests(unittest.TestCase):
     def test_wait_until_connected_matches_a_hyphenated_log_tag(self):
         """The config key may be snake_case while the log tag is hyphenated.
 
-        zeline_app prints "[zeline-app] listening http://…". Matching the raw
-        config key alone missed it, so a healthy gateway timed out.
+        An adapter is free to print a human-facing tag with a hyphen
+        (``[my-gateway]``) while its config key uses an underscore
+        (``my_gateway``). Matching the raw config key alone missed the readiness
+        line, so a healthy gateway timed out.
         """
         self.config.ensure_data_dirs()
         cfg = self.config.config_copy()
-        cfg.setdefault("gateways", {})["zeline_app"] = {
-            "enabled": True, "token": "z" * 40, "host": "127.0.0.1", "port": 8082,
+        cfg.setdefault("gateways", {})["my_gateway"] = {
+            "enabled": True, "token": "z" * 40, "host": "127.0.0.1", "port": 8099,
         }
         self.config.save_config(cfg)
         self.service.LOG_FILE.write_text("", encoding="utf-8")
         self.config.PID_FILE.write_text(
-            json.dumps({"pid": 4242, "start_ticks": "1", "only": ["zeline_app"], "log_offset": 0}),
+            json.dumps({"pid": 4242, "start_ticks": "1", "only": ["my_gateway"], "log_offset": 0}),
             encoding="utf-8",
         )
         with self.service.LOG_FILE.open("a", encoding="utf-8") as handle:
-            handle.write("  [zeline-app] listening http://127.0.0.1:8082/api/v1 (real agent runtime)\n")
+            handle.write("  [my-gateway] listening http://127.0.0.1:8099/api/v1 (real agent runtime)\n")
         with mock.patch.object(self.service, "_process_matches_state", return_value=True):
             ready, lines = self.service.wait_until_connected(timeout=2.0)
         self.assertTrue(ready, msg=f"expected connected, got {lines}")
-        self.assertEqual(lines, ["zeline_app: connected"])
+        self.assertEqual(lines, ["my_gateway: connected"])
 
     def test_start_records_log_offset_for_readiness_watch(self):
         cfg = self.config.config_copy()

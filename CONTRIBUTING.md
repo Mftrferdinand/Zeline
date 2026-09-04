@@ -135,18 +135,19 @@ first CI run to teach you something.
 | `zeline/agent.py` | the agent loop: tool rounds, cancellation, reflection |
 | `zeline/tools.py` | native tools, tool definitions, profile gating |
 | `zeline/config.py` | configuration, defaults, the system prompt |
-| `zeline/gateways/` | Telegram, WhatsApp, Discord, webhook, app gateway |
+| `zeline/gateways/` | Telegram, WhatsApp, Discord, webhook |
 | `zeline/skills.py` | the skill store and `manage_skill` |
 | `zeline/custom_tools.py` | operator-supplied Python files as `custom_*` tools |
 | `zeline/plugins.py` | hooks that audit, rewrite, or block a tool call |
 | `zeline/openapi_tools.py` | a local OpenAPI 3 document as `api_*` tools |
 | `docs/extending.md` | how to add your own tools without forking |
+| `docs/agent-working-style-and-reliability.md` | reliability and chat-UX lessons already paid for |
 | `tests/` | one module per subject, `unittest` |
 
 Adding a tool is not a one-file change: a new native tool needs its `ToolDef` in
-`zeline/tools.py`, a handler, a title in the Telegram and app gateway progress
-renderers, and an entry in the compaction artifact map. Grep for an existing
-tool name before you declare it done.
+`zeline/tools.py`, a handler, a title in the Telegram progress renderer, and an
+entry in the compaction artifact map. Grep for an existing tool name before you
+declare it done.
 
 If you want to extend Zeline for yourself rather than change it for everyone,
 read `docs/extending.md` first — custom tools, plugin hooks, OpenAPI tools, and
