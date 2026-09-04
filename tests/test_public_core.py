@@ -2401,24 +2401,33 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn("<code", coding)
         self.assertNotIn("Zeline Terminal", coding)
         self.assertNotIn("📺", coding)
-        # Command panjang / multiline diratakan jadi SATU baris pendek dengan
-        # ellipsis; panjang teks dibatasi agar kartu tetap setinggi satu baris.
+        # Command panjang / multiline diratakan jadi SATU baris pendek yang
+        # dipotong di batas kata; panjangnya dibatasi agar kartu tetap setinggi
+        # satu baris.
         long_cmd = (
             "python3 -c 'from zeline import config, tools\n"
             "cfg = config.load_config()\n"
             "executor = tools.ToolExecutor(cfg, identity=\"cli\", profile=\"full\")'"
         )
         truncated = telegram._tool_progress_text("run_shell", {"command": long_cmd})
-        self.assertTrue(truncated.endswith("…</pre>"))
+        # Penanda potong: tiga titik ASCII, bukan glyph ellipsis "…" (yang di
+        # font monospace Telegram menempel ke karakter terakhir dan terlihat
+        # seperti potongan yang dipaksakan).
+        self.assertTrue(truncated.endswith(f"{telegram._TRUNCATION_MARK}</pre>"))
+        self.assertNotIn("…", truncated)
         self.assertNotIn("\n", truncated)
         self.assertNotIn("<code", truncated)
-        # Isi mentah (sebelum escaping HTML) tidak melebihi batas preview +
-        # ellipsis, jadi kartu tidak bisa tumbuh melewati satu baris.
-        raw_inner = truncated[len("<pre>"):-len("</pre>")]
+        # Isi mentah (setelah unescape) tidak melebihi batas preview + penanda,
+        # jadi kartu tidak bisa tumbuh melewati satu baris.
         import html as _html
+        raw_inner = _html.unescape(truncated[len("<pre>"):-len("</pre>")])
         self.assertLessEqual(
-            len(_html.unescape(raw_inner)), telegram._TERMINAL_PREVIEW_LIMIT + 1
+            len(raw_inner),
+            telegram._TERMINAL_PREVIEW_LIMIT + 1 + len(telegram._TRUNCATION_MARK),
         )
+        # Potongan jatuh di batas kata: karakter sebelum penanda adalah spasi,
+        # dan tidak ada token yang terputus di tengah.
+        self.assertTrue(raw_inner.endswith(f" {telegram._TRUNCATION_MARK}"))
 
     def test_telegram_web_progress_hides_raw_links(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

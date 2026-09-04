@@ -131,11 +131,18 @@ def _tool_names_for_profile(profile: str) -> list[str]:
 
 # Panjang maksimal preview perintah terminal di feed progres Telegram.
 #
-# 37 + ellipsis = 40 char total. Angka ini BUKAN selera: Telegram merender blok
+# 37 + "..." = 40 char total. Angka ini BUKAN selera: Telegram merender blok
 # kode pendek satu baris sebagai kartu ringkas, tapi begitu isinya melewati
 # lebar satu baris (atau punya newline) ia beralih ke varian kartu besar dengan
 # tombol COPY CODE. 40 char aman di bawah ambang itu pada layar ponsel.
 _TERMINAL_PREVIEW_LIMIT = 37
+
+# Penanda pemotongan. Tiga titik ASCII, BUKAN karakter ellipsis "…".
+# Alasan: pada font monospace kartu kode Telegram, "…" dirender sebagai satu
+# glyph rapat yang menempel ke karakter terakhir sehingga terlihat seperti
+# potongan yang dipaksakan; tiga titik terbaca sebagai kelanjutan yang wajar
+# dan konsisten dengan feed CLI.
+_TRUNCATION_MARK = "..."
 
 
 def _safe_progress_line(line: str, limit: int = 200) -> str:
@@ -165,7 +172,7 @@ def _safe_progress_line(line: str, limit: int = 200) -> str:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal SATU BARIS pendek, kartu kode ringkas, akhiran '…'.
+    """Preview terminal SATU BARIS pendek, kartu kode ringkas, akhiran '...'.
 
     Bentuk target (sama seperti feed progres CLI): satu kartu kode setinggi
     satu baris, tanpa label bahasa dan tanpa tombol COPY CODE.
@@ -178,11 +185,21 @@ def _terminal_progress(command: str, *, search: bool = False) -> str:
        TANPA `<code class=...>` di dalamnya.
     2. **Isi yang melebihi satu baris.** Newline atau perintah panjang membuat
        kartu tumbuh dan memicu varian besar. Command diratakan jadi satu baris
-       lalu dipangkas di ``_TERMINAL_PREVIEW_LIMIT`` char dengan ellipsis.
+       lalu dipangkas di ``_TERMINAL_PREVIEW_LIMIT`` char.
+
+    Pemotongan diusahakan jatuh di batas kata (spasi terakhir dalam jendela
+    potong) supaya tidak memutus token di tengah — "gh pr chec..." terlihat
+    dipaksakan, "gh pr ..." terbaca sebagai kelanjutan yang wajar.
     """
     cmd = " ".join(str(command).split())
     if len(cmd) > _TERMINAL_PREVIEW_LIMIT:
-        cmd = cmd[:_TERMINAL_PREVIEW_LIMIT].rstrip() + "…"
+        window = cmd[:_TERMINAL_PREVIEW_LIMIT]
+        cut = window.rfind(" ")
+        # Hanya hormati batas kata bila spasi itu tidak membuang terlalu banyak
+        # konteks (>= 60% jendela); kalau tidak, potong keras di batas jendela.
+        if cut >= int(_TERMINAL_PREVIEW_LIMIT * 0.6):
+            window = window[:cut]
+        cmd = window.rstrip() + " " + _TRUNCATION_MARK
     escaped = html.escape(cmd, quote=False)
     return f"<pre>{escaped}</pre>"
 
