@@ -2409,6 +2409,26 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # dan tidak ada token yang terputus di tengah.
         self.assertTrue(raw_inner.endswith(f" {telegram._TRUNCATION_MARK}"))
 
+    def test_terminal_preview_limit_fills_the_card_without_wrapping(self):
+        """Batas preview DIUKUR dari lebar render, bukan dipilih dari selera.
+
+        Diukur pada screenshot feed di perangkat operator: pitch monospace kartu
+        kode 13,2 px/char, area teks dalam kartu 642 px (48,6 char), dan bubble
+        terlebar di chat 885 px — teks mulai membungkus ke baris kedua di sekitar
+        59 char. Batas lama 37 (41 char dengan penanda) berhenti di 541 px dan
+        menyisakan ~101 px kosong, yang membuat kartu terlihat ramping dan
+        dipangkas terlalu dini.
+
+        Dua sisi harus dijaga sekaligus: cukup lebar supaya kartu terisi, dan
+        tetap di bawah ambang bungkus supaya kartu tinggal SATU baris.
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        total = telegram._TERMINAL_PREVIEW_LIMIT + 1 + len(telegram._TRUNCATION_MARK)
+        # Lebih lebar dari kartu 37-char yang terlihat terlalu ramping…
+        self.assertGreaterEqual(telegram._TERMINAL_PREVIEW_LIMIT, 48)
+        # …tapi total (termasuk " ...") tidak boleh mencapai ambang bungkus 58.
+        self.assertLess(total, 58)
+
     def test_telegram_web_progress_hides_raw_links(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # web_fetch tidak menampilkan URL mentah (dan tidak jadi baris feed).

@@ -132,11 +132,20 @@ def _tool_names_for_profile(profile: str) -> list[str]:
 
 # Panjang maksimal preview perintah terminal di feed progres Telegram.
 #
-# 37 + "..." = 40 char total. Angka ini BUKAN selera: Telegram merender blok
-# kode pendek satu baris sebagai kartu ringkas, tapi begitu isinya melewati
-# lebar satu baris (atau punya newline) ia beralih ke varian kartu besar dengan
-# tombol COPY CODE. 40 char aman di bawah ambang itu pada layar ponsel.
-_TERMINAL_PREVIEW_LIMIT = 37
+# 50 + " ..." = 54 char. Angka ini DIUKUR dari screenshot feed di perangkat
+# operator, bukan selera:
+#
+#   pitch monospace kartu kode : 13,2 px/char
+#   area teks di dalam kartu   : 642 px  -> 48,6 char muat TANPA bubble melebar
+#   bubble terlebar di chat    : 885 px  -> 58,9 char sebelum teks membungkus
+#
+# Batas lama 37 (= 41 char) berhenti di 541 px dan menyisakan 101 px kosong di
+# dalam kartu yang sudah ada — kartunya terlihat ramping/dipangkas terlalu dini.
+# 54 char berakhir ~811 px, jadi bubble memang melebar mendekati lebar maksimal
+# (yang diminta), tapi masih menyisakan ~5 char headroom sebelum membungkus di
+# ukuran font yang lebih besar. Yang TIDAK boleh dilewati adalah 58: di situ
+# teks menyentuh tepi bubble maksimal dan kartu beralih ke varian dua baris.
+_TERMINAL_PREVIEW_LIMIT = 50
 
 # Penanda pemotongan. Tiga titik ASCII, BUKAN karakter ellipsis "…".
 # Alasan: pada font monospace kartu kode Telegram, "…" dirender sebagai satu
