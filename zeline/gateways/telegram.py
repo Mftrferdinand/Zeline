@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import requests
 
 from zeline import config
+from zeline import mcp as mcp_module
 from zeline import skill_publish
 from zeline import interaction
 from zeline.agent import CANCELLED_REPLY as _CANCELLED_SENTINEL
@@ -223,6 +224,21 @@ def _short_path(path: str) -> str:
     return cleaned.rsplit("/", 1)[-1]
 
 
+def _short_host(url: str) -> str:
+    """Host saja (tanpa ``www.``) dari sebuah URL.
+
+    Feed sengaja tidak pernah menampilkan URL mentah: selain panjang dan bikin
+    kartu tumbuh, sebuah URL bisa membawa kredensial (``user:pass@host`` pada
+    proxy) atau query token. Host sudah cukup untuk memberi konteks "ini ke
+    mana" tanpa membocorkan sisanya.
+    """
+    try:
+        host = urlparse(str(url).strip()).hostname or ""
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     """Render one distinct HTML-safe progress message per real tool call.
 
@@ -269,8 +285,11 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             return f"🗑 Removing skill: <code>{skill_name}</code>"
         target = f" <code>{file_path}</code>" if file_path else ""
         return f"📝 Updating skill: <code>{skill_name}</code>{target}"
-    if name in {"add_memory", "remove_memory"}:
+    if name == "add_memory":
         return "🧠 Saving to memory…"
+    if name == "remove_memory":
+        # Verb harus jujur: dulu penghapusan ikut dilabeli "Saving to memory".
+        return "🧠 Removing from memory…"
     if name == "system_env":
         return "🧰 Checking system environment…"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
@@ -317,6 +336,90 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
         return f"🤝 Delegating: {goal}…" if goal else "🤝 Delegating subtask…"
+    if name == "runtime_info":
+        # Bukan "runtime info": yang dibaca adalah identitas runtime aktif —
+        # model, provider, protokol, profil tool.
+        return "🪪 Checking runtime: model &amp; provider…"
+    if name == "list_memory":
+        # Ikon 🧠 dipakai satu keluarga untuk memory; VERB-nya yang membedakan
+        # baca / simpan / hapus, jadi feed tetap terbaca sebagai satu domain.
+        return "🧠 Reading saved memory…"
+    if name == "recall_history":
+        query = html.escape(str(arguments.get("query", "")).strip()[:100], quote=False)
+        return f"🕰 Recalling past chat: {query}" if query else "🕰 Recalling recent conversation…"
+    if name == "ask_user":
+        question = html.escape(str(arguments.get("question", "")).strip()[:80], quote=False)
+        return f"🙋 Asking you: {question}" if question else "🙋 Asking you a question…"
+    if name == "network_route":
+        action = str(arguments.get("action", "")).strip().lower()
+        # proxy_url TIDAK pernah ditampilkan: isinya bisa user:pass@host.
+        label = html.escape(str(arguments.get("label", ""))[:60], quote=False)
+        target = f": <code>{label}</code>" if label else ""
+        labels = {
+            "list": "🛰 Listing network routes…",
+            "add": f"🛰 Adding network route{target}",
+            "remove": f"🛰 Removing network route{target}",
+            "test": f"🛰 Testing network route{target}",
+        }
+        return labels.get(action, "🛰 Managing network routes…")
+    if name == "browser":
+        action = str(arguments.get("action", "")).strip().lower()
+        host = html.escape(_short_host(str(arguments.get("url", "")))[:80], quote=False)
+        selector = html.escape(str(arguments.get("selector", ""))[:60], quote=False)
+        where = f" <code>{selector}</code>" if selector else ""
+        if action == "open":
+            return f"🌍 Opening page: {host}" if host else "🌍 Opening browser page…"
+        if action == "text":
+            return f"🌍 Reading page text{where}"
+        if action == "click":
+            return f"🖱 Clicking{where}" if selector else "🖱 Clicking on the page…"
+        if action == "type":
+            return f"⌨️ Typing into{where}" if selector else "⌨️ Typing on the page…"
+        if action == "screenshot":
+            return f"📸 Capturing screenshot <code>{path}</code>" if path else "📸 Capturing page screenshot…"
+        if action == "links":
+            return "🌍 Listing page links…"
+        if action == "eval":
+            return "🧪 Running JavaScript on the page…"
+        if action == "close":
+            return "🌍 Closing the browser…"
+        return "🌍 Driving the browser…"
+    if name == "code_intel":
+        action = str(arguments.get("action", "")).strip().lower()
+        where = f" <code>{path}</code>" if path else ""
+        try:
+            line_no = int(arguments.get("line", 0) or 0)
+        except (TypeError, ValueError):
+            line_no = 0
+        at = f"{where} L{line_no}" if (where and line_no > 0) else where
+        if action == "diagnostics":
+            return f"🩺 Checking code diagnostics{where}" if where else "🩺 Checking code diagnostics…"
+        if action == "definition":
+            return f"🧭 Finding definition{at}" if at else "🧭 Finding the definition…"
+        if action == "references":
+            return f"🧭 Finding references{at}" if at else "🧭 Finding references…"
+        if action == "hover":
+            return f"💬 Inspecting type &amp; docs{at}" if at else "💬 Inspecting type &amp; docs…"
+        if action == "symbols":
+            return f"🗺 Mapping symbols{where}" if where else "🗺 Mapping file symbols…"
+        if action == "servers":
+            return "🩺 Checking language servers…"
+        return f"🧭 Asking the language server{where}"
+    if name == "download_file":
+        # URL mentah tidak ditampilkan (sama seperti web_fetch): host saja.
+        host = html.escape(_short_host(str(arguments.get("url", "")))[:80], quote=False)
+        if path and host:
+            return f"📥 Downloading <code>{path}</code> from {host}"
+        if path:
+            return f"📥 Downloading <code>{path}</code>"
+        return f"📥 Downloading a file from {host}" if host else "📥 Downloading a file…"
+    if name.startswith(mcp_module.MCP_TOOL_PREFIX):
+        # mcp__<server>__<tool>: jangan biarkan fallback mengubah underscore
+        # ganda jadi spasi ganda ("mcp  mem0  add memory").
+        parts = name[len(mcp_module.MCP_TOOL_PREFIX):].split("__", 1)
+        server = html.escape(parts[0].replace("_", " ")[:40], quote=False)
+        remote = html.escape((parts[1] if len(parts) > 1 else "tool").replace("_", " ")[:60], quote=False)
+        return f"🧩 {remote} via {server}"
     # Fallback: satu baris, argumen pertama saja, TANPA newline.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
