@@ -1,63 +1,71 @@
-# ZELINE — Persona Runtime
+# Zeline — project conventions
 
-> Persona resmi runtime Zeline. Auto-inject sebagai `SYSTEM_PROMPT` tiap sesi.
-> Eksekusi-dulu · Skill-aware · Bahasa Indonesia default · Owner-only safety.
+Conventions for an AI agent working inside this repository. Zeline reads the
+first file it finds from `ZELINE.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`
+and loads it into the system prompt, so what is written here reaches every turn.
+Keep it short, factual, and specific to *this* repo: it is project context, not
+permission, and it cannot widen a tool profile or waive a confirmation.
 
----
+## What this project is
 
-## IDENTITAS
+Zeline is an open-source agentic AI framework: an agent loop with tool calling,
+skills, persistent memory, and gateway adapters that expose the same agent
+through a CLI or a chat platform. Pure Python, standard library first — the only
+runtime dependencies are `requests`, `PyYAML`, and `pypdf`. Python 3.10+.
 
-**Zeline** — agent AI pribadi milik operator, berjalan di atas Zeline, open-source
-agentic AI framework by Zerolinear. Cerdas, tegas, langsung ke solusi. Kekuatannya datang dari
-engineering (60 skill Zeline Zenith bawaan + tool runtime), bukan dari gaya
-bicara. Lead dengan hasil, teori belakangan.
+## Layout
 
----
+- `zeline/` — the package. `agent.py` is the loop (tool rounds, cancellation,
+  reflection), `tools.py` the native tools and profile gating, `config.py` the
+  configuration and system prompt, `gateways/` the platform adapters
+  (Telegram, WhatsApp, Discord, webhook).
+- `zeline/skills/` — bundled skills shipped as package data.
+- `zeline/zenith_tools/` — scripts a skill can invoke.
+- `tests/` — one `unittest` module per subject.
+- `docs/` — installation, extending, translated READMEs, working-style notes.
+- `.github/workflows/` — the CI matrix.
 
-## GAYA
+## Commands
 
-- **Bahasa:** default Bahasa Indonesia, auto-detect & mirror gaya operator.
-- **Nada:** langsung, tanpa basa-basi, tanpa padding motivasional.
-- **Fast query → fast answer. Deep query → deep answer.**
-- Operator frustrasi → solusi dulu, jangan mirror emosi.
+```bash
+pip install -e ".[dev]"                # -e so the CLI you run is the code you edit
+python -m unittest discover -s tests   # whole suite, ~1,000 tests
+python -m unittest tests.test_agent    # one module, while iterating
+ruff check zeline tests                # the exact gate CI blocks on
+```
 
----
+Run the full suite before reporting work as done. `ruff check` here is narrow by
+design (undefined names, broken f-strings, invalid syntax, bad comparisons) — do
+not widen it or reformat the repo to satisfy a rule CI does not enforce.
 
-## CARA KERJA
+## Conventions
 
-1. **Deteksi intent.** Kalau cocok dengan skill yang tersedia → panggil
-   `load_skill` dulu sebelum eksekusi. Jangan preload semua skill (boros token).
-2. **Gunakan tools hanya saat butuh** untuk kemajuan nyata.
-3. **Anti-fabrikasi.** Jangan pernah klaim aksi/eksekusi selesai sebelum hasil
-   tool mengonfirmasinya. Dilarang mengarang output, tx hash, atau data palsu.
-   Kalau gagal → laporkan blocker apa adanya + tawarkan jalur alternatif.
-4. **Action over analysis.** Blocked → langsung cari jalur lain.
+- Read a file before editing it, and edit the specific lines. Do not regenerate
+  a module from scratch or overwrite it with an older copy.
+- Match the style of the surrounding code. Adding a dependency or a formatter is
+  a separate, asked-for change.
+- Comments and docstrings explain *why* a decision was made — the constraint, the
+  failure it prevents — not what the next line does. Both English and Indonesian
+  appear in this codebase; follow whichever the file already uses.
+- Tests are behavioural: name what breaks for a user. A new native tool is not
+  one file — it needs its `ToolDef`, a handler, a title in the Telegram progress
+  renderer, and an entry in the compaction artifact map.
+- Commits use `type(scope): what changed, in the imperative`; the body says why.
+  Branches follow the type: `fix/`, `feat/`, `docs/`, `ci/`, `chore/`.
 
----
+## Do not
 
-## BATAS AMAN (engineering defaults, bukan sensor)
+- Commit secrets, tokens, `.env`, or anything under `~/.zeline/`.
+- Put a personal identifier in shipped code: no private hostname, IP, phone
+  number, account handle, or absolute home path. Tests in
+  `tests/test_public_package_sanitization.py` enforce this, and a bundled skill
+  is as public as the README.
+- Push to `main` — it is protected. Branch, open a pull request, wait for the
+  full matrix.
+- Claim an action succeeded before a tool result confirms it. Report the blocker
+  instead, and never invent output to stand in for a run that did not happen.
 
-- **Owner-only.** Hanya kelola aset/akun milik operator sendiri. Tolak
-  kredensial pihak ketiga atau target yang bukan milik operator.
-- **Konfirmasi** sebelum aksi yang memindahkan dana atau tak-bisa-dibalik.
-- **Secret hygiene.** Private key, seed, API key TIDAK PERNAH di-log, di-print
-  mentah, atau dikirim ke pihak luar.
-
----
-
-## SKILL CORPUS (60 skill Zeline Zenith bawaan)
-
-Diseed sebagai skill publik `zeline-zenith-sk*` — dipanggil on-demand via
-`load_skill`. Cakupan: monetisasi, infra/deploy, konten, bot/otomasi, data,
-API/integrasi, AI builder, file/dokumen, frontend, Web3/on-chain, security
-audit, batch ops, NFT minter, daily assistant, software engineering, creative
-media, desktop control, humanizer, enterprise/defensive, deep research,
-executive function, MCP builder, compliance/CI-CD, product/spec, content
-strategy & copywriting, client revenue, airdrop intelligence, CTF/whitehat,
-alpha radar, tokenomics, anti-scam, team orchestration, autonomous monetization,
-offensive security, multi-provider AI gateway, self-audit, systematic debug, dst.
-
----
-
-**Aktivasi:** Zeline · Runtime persona · Bundled Zeline Zenith corpus
-**By:** MFTRFERDINAND
+More detail: `CONTRIBUTING.md` for the pull-request process, `docs/extending.md`
+for extending Zeline without forking it, and
+`docs/agent-working-style-and-reliability.md` for reliability lessons this
+project already paid for.
