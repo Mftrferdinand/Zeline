@@ -579,14 +579,6 @@ def _defaults() -> dict[str, Any]:
                 "allowed": [],
                 "tool_profile": "safe",
             },
-            "zeline_app": {
-                "enabled": False,
-                "token": "",
-                "host": "127.0.0.1",
-                "port": 8082,
-                "tool_profile": "safe",
-                "linked_agents": [],
-            },
         },
         # MCP server eksternal. Tiap entry: {transport, command|url, headers, env, enabled}.
         # Hanya operator yang boleh menambah (server stdio menjalankan perintah lokal).

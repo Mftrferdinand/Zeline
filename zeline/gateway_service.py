@@ -696,7 +696,7 @@ def _log_tags(name: str) -> tuple[str, ...]:
     """Log tags an adapter may print for gateway ``name``.
 
     Adapters are free to prefer a hyphen in their human-facing tag
-    (``[zeline-app]``) over the config key (``zeline_app``), so match both or a
+    (``[my-gateway]``) over the config key (``my_gateway``), so match both or a
     readiness line is missed and start waits out the whole timeout.
     """
     variants = {name, name.replace("_", "-"), name.replace("-", "_")}

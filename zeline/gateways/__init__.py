@@ -29,7 +29,7 @@ GATEWAYS: dict[str, ModuleType] = {
 
 # Local WIP adapters: registered only when the module is present in this
 # checkout, so an install without them still imports cleanly.
-for _optional in ("discord", "zeline_app"):
+for _optional in ("discord",):
     try:
         import importlib as _importlib
 
@@ -64,24 +64,6 @@ def _validate_tool_policy(name: str, cfg: dict[str, Any]) -> list[str]:
     # prove an individual owner identity, so keep it safe-only.
     if name == "webhook":
         return ["webhook tool_profile must remain safe; use an owner-allowlisted messaging gateway for elevated tools"]
-    if name == "zeline_app":
-        # This gateway has no platform user ids to allowlist: every caller
-        # authenticates with a secret this machine minted (gateway token or a
-        # per-agent token), so ownership is proven by holding the secret, not by
-        # matching an identity. What must be pinned instead is reachability —
-        # the loopback interface keeps the surface on-device.
-        errors: list[str] = []
-        host = str(cfg.get("host", "127.0.0.1")).strip()
-        if host not in {"127.0.0.1", "::1", "localhost"}:
-            errors.append(
-                f"zeline_app tool_profile {profile} requires host 127.0.0.1; "
-                f"{host or 'an empty host'} would expose elevated tools to the network"
-            )
-        if len(str(cfg.get("token", ""))) < 32:
-            errors.append(f"zeline_app tool_profile {profile} requires a token of at least 32 chars")
-        if profile == "full" and cfg.get("remote_code_execution_ack") is not True:
-            errors.append("tool_profile full requires explicit remote_code_execution_ack=true")
-        return errors
     allowed = cfg.get("allowed")
     owner = str(cfg.get("owner_identity", "")).strip()
     if not isinstance(allowed, list) or len(allowed) != 1 or str(allowed[0]).strip() in {"", "*"}:

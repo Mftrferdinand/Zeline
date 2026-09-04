@@ -1848,41 +1848,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
         errors = gateways.validate_gateway("webhook", cfg)
         self.assertTrue(any("safe" in item and "webhook" in item.lower() for item in errors))
 
-    def test_zeline_app_elevated_profile_is_pinned_to_loopback(self):
-        """This gateway proves ownership by secret, not by a platform user id.
+    def test_gateway_service_ready_marker_covers_an_http_listener(self):
+        """Readiness must accept both transports a gateway can announce.
 
-        It has no allowlist to match, so the elevated-profile guard checks the
-        two things that DO bound the blast radius: the listener stays on
-        loopback, and the bearer token is long. Binding a routable interface
-        with an elevated profile must be refused.
-
-        Calls the policy function directly: the adapter module itself is a local
-        WIP and is not part of every checkout, so going through
-        validate_gateway() would only report "unknown gateway" here.
+        A poller prints "connected via polling"; an HTTP adapter prints
+        "listening http://…". Dropping the HTTP marker makes a gateway that is
+        already serving sit out the whole start timeout and get reported as
+        failed.
         """
-        gateways = importlib.import_module("zeline.gateways")
-        policy = gateways._validate_tool_policy
-        cfg = {
-            "enabled": True,
-            "token": "z" * 40,
-            "host": "127.0.0.1",
-            "port": 8082,
-            "tool_profile": "full",
-            "remote_code_execution_ack": True,
-        }
-        self.assertEqual(policy("zeline_app", cfg), [])
-        # No explicit ack for the profile that can run shell commands.
-        no_ack = dict(cfg)
-        no_ack.pop("remote_code_execution_ack")
-        self.assertTrue(any("remote_code_execution_ack" in item for item in policy("zeline_app", no_ack)))
-        # Reachable from the network → refused.
-        exposed = dict(cfg, host="0.0.0.0")
-        self.assertTrue(any("127.0.0.1" in item for item in policy("zeline_app", exposed)))
-        # A guessable token is not an ownership proof.
-        weak = dict(cfg, token="short-token")
-        self.assertTrue(any("32 chars" in item for item in policy("zeline_app", weak)))
-        # safe stays unconditionally allowed.
-        self.assertEqual(policy("zeline_app", dict(cfg, tool_profile="safe", host="0.0.0.0")), [])
+        service = importlib.import_module("zeline.gateway_service")
+        self.assertIn("connected via polling", service.READY_MARKERS)
+        self.assertIn("listening http://", service.READY_MARKERS)
+        # An underscored config key must also match a hyphenated log tag.
+        self.assertEqual(service._log_tags("my_gateway"), ("[my-gateway]", "[my_gateway]"))
 
     def test_safe_profile_exposes_deep_research_tool(self):
         tools = importlib.import_module("zeline.tools")

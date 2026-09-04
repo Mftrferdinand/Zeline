@@ -10,6 +10,27 @@ release's documented one-liner keeps working after a newer release ships.
 
 ## [Unreleased]
 
+### Removed
+
+- The mobile-app HTTP surface no longer lives in this repository. The framework
+  ships the agent runtime and the messaging gateways that adapt it to a chat
+  platform; the app's own REST/SSE server, its agent/session store, its JWT
+  auth, and its client-facing event schema are a separate product with a
+  separate release cycle, and keeping them here made a framework release gate on
+  an app change. Removed: `zeline/gateways/zeline_app.py`,
+  `zeline/gateways/zeline_app_runtime.py`, `zeline/app_auth.py`,
+  `zeline/app_data.py`, `zeline/tool_events.py`, `run_zeline_app.py`,
+  `verify_zeline_app_real.py`, `ARCHITECTURE.md`, `docs/ZELINE_APP_API.md`,
+  `docs/SSE_EVENT_SCHEMA.md`, `examples/zeline_app_client.py`, and their two
+  test modules. Nothing the CLI or the messaging gateways use is affected — no
+  remaining module imported any of them. The `gateways.zeline_app` config
+  block and its loopback tool-policy branch are gone with it; a `zeline_app`
+  entry left in an existing `config.json` is inert.
+- Dead files with no importer or reference: `tests/mock_provider.py` (unused
+  since the real provider stubs landed) and `assets/zeline-logo.png` /
+  `assets/zeline-social-preview.png`, which rendered a pre-rebrand wordmark and
+  were referenced by nothing — the README uses `assets/zerolinear-logo.png`.
+
 ### Fixed
 
 - A release no longer reports failure because PyPI has no Trusted Publisher
@@ -89,9 +110,8 @@ release's documented one-liner keeps working after a newer release ships.
   same agent runtime as the CLI and Telegram. Token deltas stream as
   `assistant.delta`; tool activity arrives as `tool.started` / `tool.output` /
   `tool.completed` so the client never parses prose to learn what happened.
-  Contract in `docs/ZELINE_APP_API.md`, event fields in
-  `docs/SSE_EVENT_SCHEMA.md`, working consumer in
-  `examples/zeline_app_client.py`. ([#202])
+  ([#202]) *This surface has since moved out of this repository — see
+  Unreleased.*
 - Oversized tool output is offloaded to disk instead of discarded. ([#199])
 - `/version` and `/update` in Telegram, so a phone install never needs a
   shell. ([#197])
