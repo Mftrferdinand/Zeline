@@ -60,7 +60,7 @@ One line, and it needs no existing Python tooling — it provisions a private
 environment for you:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.sh && bash install.sh
 ```
 
 Then `zeline setup`. The installer downloads the versioned wheel and verifies it
@@ -70,7 +70,7 @@ hand. On iSH, run `apk add bash curl python3` first.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Then `zeline setup`.

@@ -58,7 +58,7 @@ Satu baris, dan tidak butuh Python tooling apa pun — dia menyiapkan environmen
 privat untukmu:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.sh && bash install.sh
 ```
 
 Lalu `zeline setup`. Installer-nya mengunduh wheel bertag dan memverifikasinya
@@ -71,7 +71,7 @@ gateway saat iSH tidak berada di foreground.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.8/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Lalu `zeline setup`.
