@@ -2355,6 +2355,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "🎬 Editing file <code>app.py</code>")
         self.assertEqual(telegram._tool_progress_text("search_files", {"query": "name"}), "🔎 Searching files: name")
         self.assertEqual(telegram._tool_progress_text("add_memory", {"fact": "x"}), "🧠 Saving to memory…")
+        # Hapus memory TIDAK boleh dilabeli "Saving": verb-nya harus jujur.
+        self.assertEqual(telegram._tool_progress_text("remove_memory", {"substring": "x"}), "🧠 Removing from memory…")
         self.assertEqual(telegram._tool_progress_text("system_env", {}), "🧰 Checking system environment…")
         task = telegram._tool_progress_text("update_task", {"task": "Run tests", "status": "in_progress"})
         # Satu baris, tanpa newline.
@@ -2522,6 +2524,106 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # An inventory read is orientation, not an improvement: reporting it would
         # push the private skill list into the chat on every reflection.
         self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "list"}, "3 skills:\n- a [private/folder]: x"))
+
+    def test_every_registered_tool_has_a_designed_progress_label(self):
+        """Tidak ada tool yang jatuh ke fallback generik `🔧 <nama tool>`.
+
+        Audit sebelumnya: 8 dari 29 tool tampil sebagai `🔧 recall history: lanjut`
+        — nama fungsi mentah, bukan label yang menjelaskan pekerjaannya. Test ini
+        memaksa setiap tool baru ikut punya cabang label sendiri sejak awal.
+        """
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        tools = importlib.import_module("zeline.tools")
+        samples = {
+            "add_memory": {"fact": "x"},
+            "remove_memory": {"substring": "x"},
+            "load_skill": {"name": "s"},
+            "web_search": {"query": "q"},
+            "web_fetch": {"url": "https://example.com"},
+            "network_route": {"action": "list"},
+            "deep_research": {"query": "q"},
+            "analyze_media": {"path_or_url": "a.png"},
+            "generate_image": {"prompt": "p", "path": "o.png"},
+            "http_request": {"method": "GET", "url": "https://example.com/api"},
+            "browser": {"action": "open", "url": "https://example.com"},
+            "code_intel": {"action": "diagnostics", "path": "a.py"},
+            "read_file": {"path": "a.py"},
+            "write_file": {"path": "a.py"},
+            "edit_file": {"path": "a.py"},
+            "patch_file": {"path": "a.py"},
+            "search_files": {"query": "q"},
+            "download_file": {"url": "https://example.com/a.zip", "path": "a.zip"},
+            "update_task": {"task": "t", "status": "pending"},
+            "manage_skill": {"action": "list"},
+            "execute_code": {"code": "print(1)"},
+            "run_shell": {"command": "ls"},
+            "process_control": {"action": "list"},
+            "delegate_task": {"goal": "g"},
+            "recall_history": {"query": "q"},
+            "ask_user": {"question": "Lanjut?"},
+        }
+        unlabelled = [
+            definition.name
+            for definition in tools.TOOL_DEFS
+            if telegram._tool_progress_text(definition.name, samples.get(definition.name, {})).startswith("🔧")
+        ]
+        self.assertEqual(unlabelled, [])
+
+    def test_telegram_progress_labels_runtime_memory_history_and_question(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # runtime_info bukan "runtime info": yang dibaca identitas runtime aktif.
+        self.assertEqual(telegram._tool_progress_text("runtime_info", {}), "🪪 Checking runtime: model &amp; provider…")
+        # Memory satu keluarga ikon 🧠; verb-nya yang membedakan baca/simpan/hapus.
+        self.assertEqual(telegram._tool_progress_text("list_memory", {}), "🧠 Reading saved memory…")
+        self.assertEqual(
+            telegram._tool_progress_text("recall_history", {"query": "invoice tabel"}),
+            "🕰 Recalling past chat: invoice tabel",
+        )
+        self.assertEqual(telegram._tool_progress_text("recall_history", {}), "🕰 Recalling recent conversation…")
+        self.assertEqual(
+            telegram._tool_progress_text("ask_user", {"question": "Squash atau merge commit?"}),
+            "🙋 Asking you: Squash atau merge commit?",
+        )
+        self.assertEqual(telegram._tool_progress_text("ask_user", {}), "🙋 Asking you a question…")
+
+    def test_telegram_progress_labels_browser_code_intel_route_and_download(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # browser: aksi jadi verb nyata, dan URL diringkas ke HOST saja (query
+        # string bisa membawa token).
+        opened = telegram._tool_progress_text("browser", {"action": "open", "url": "https://www.example.com/p?token=SECRET"})
+        self.assertEqual(opened, "🌍 Opening page: example.com")
+        self.assertNotIn("SECRET", opened)
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "click", "selector": "button.login"}), "🖱 Clicking <code>button.login</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "type", "selector": "#email"}), "⌨️ Typing into <code>#email</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "screenshot", "path": "shots/home.png"}), "📸 Capturing screenshot <code>home.png</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "eval", "script": "document.title"}), "🧪 Running JavaScript on the page…")
+        # code_intel: sebut file + baris, bukan cuma nama aksi.
+        self.assertEqual(
+            telegram._tool_progress_text("code_intel", {"action": "definition", "path": "zeline/agent.py", "line": 820}),
+            "🧭 Finding definition <code>agent.py</code> L820",
+        )
+        self.assertEqual(telegram._tool_progress_text("code_intel", {"action": "servers"}), "🩺 Checking language servers…")
+        # network_route: label rute boleh tampil, proxy_url TIDAK (user:pass@host).
+        route = telegram._tool_progress_text(
+            "network_route", {"action": "add", "label": "sg-1", "proxy_url": "socks5h://user:hunter2@1.2.3.4:1080"}
+        )
+        self.assertEqual(route, "🛰 Adding network route: <code>sg-1</code>")
+        self.assertNotIn("hunter2", route)
+        # download_file: nama tujuan + host, bukan URL panjang mentah.
+        got = telegram._tool_progress_text(
+            "download_file", {"url": "https://github.com/o/r/releases/download/v1/install.sh", "path": "tmp/install.sh"}
+        )
+        self.assertEqual(got, "📥 Downloading <code>install.sh</code> from github.com")
+        self.assertNotIn("releases/download", got)
+
+    def test_telegram_progress_renders_mcp_tools_without_double_spaces(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # Fallback lama mengubah `mcp__mem0__add_memory` jadi "🔧 mcp  mem0  add memory".
+        line = telegram._tool_progress_text("mcp__mem0__add_memory", {"text": "x"})
+        self.assertEqual(line, "🧩 add memory via mem0")
+        self.assertNotIn("  ", line)
+        self.assertNotIn("mcp", line)
+        self.assertEqual(telegram._tool_progress_text("mcp__notion__query_database", {}), "🧩 query database via notion")
 
     def test_telegram_live_status_no_header_when_only_waiting(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
