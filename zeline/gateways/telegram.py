@@ -130,9 +130,12 @@ def _tool_names_for_profile(profile: str) -> list[str]:
 
 
 # Panjang maksimal preview perintah terminal di feed progres Telegram.
-# Sengaja pendek: feed harus terbaca sebagai SATU BARIS ringkas, bukan dinding
-# perintah. Sisanya dipangkas dengan ellipsis.
-_TERMINAL_PREVIEW_LIMIT = 64
+#
+# 37 + ellipsis = 40 char total. Angka ini BUKAN selera: Telegram merender blok
+# kode pendek satu baris sebagai kartu ringkas, tapi begitu isinya melewati
+# lebar satu baris (atau punya newline) ia beralih ke varian kartu besar dengan
+# tombol COPY CODE. 40 char aman di bawah ambang itu pada layar ponsel.
+_TERMINAL_PREVIEW_LIMIT = 37
 
 
 def _safe_progress_line(line: str, limit: int = 200) -> str:
@@ -162,22 +165,26 @@ def _safe_progress_line(line: str, limit: int = 200) -> str:
 
 
 def _terminal_progress(command: str, *, search: bool = False) -> str:
-    """Preview terminal SATU BARIS pendek, monospace inline, akhiran '…'.
+    """Preview terminal SATU BARIS pendek, kartu kode ringkas, akhiran '…'.
 
-    KENAPA `<code>` dan BUKAN `<pre>`: Telegram merender `<pre>` sebagai kartu
-    blok kode penuh lebar lengkap dengan tombol COPY CODE dan label bahasa.
-    Saat agent menjalankan banyak perintah, feed jadi tumpukan kartu raksasa.
-    `<code>` merender monospace inline pada satu baris — ringkas seperti
-    progress feed CLI — tanpa kartu, tanpa COPY CODE.
+    Bentuk target (sama seperti feed progres CLI): satu kartu kode setinggi
+    satu baris, tanpa label bahasa dan tanpa tombol COPY CODE.
 
-    Command diratakan (newline → spasi, whitespace ganda dirapatkan) lalu
-    dipangkas di ``_TERMINAL_PREVIEW_LIMIT`` char dengan ellipsis.
+    Dua hal yang memaksa Telegram menampilkan varian kartu BESAR — keduanya
+    dihindari di sini:
+
+    1. **Label bahasa.** ``<pre><code class="language-shell">`` membuat Telegram
+       menggambar header "Shell" + tombol COPY CODE. Jadi `<pre>` dipakai
+       TANPA `<code class=...>` di dalamnya.
+    2. **Isi yang melebihi satu baris.** Newline atau perintah panjang membuat
+       kartu tumbuh dan memicu varian besar. Command diratakan jadi satu baris
+       lalu dipangkas di ``_TERMINAL_PREVIEW_LIMIT`` char dengan ellipsis.
     """
     cmd = " ".join(str(command).split())
     if len(cmd) > _TERMINAL_PREVIEW_LIMIT:
         cmd = cmd[:_TERMINAL_PREVIEW_LIMIT].rstrip() + "…"
     escaped = html.escape(cmd, quote=False)
-    return f"<code>{escaped}</code>"
+    return f"<pre>{escaped}</pre>"
 
 
 def _is_search_command(command: str) -> bool:
