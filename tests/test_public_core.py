@@ -2360,11 +2360,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Reading skill: test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
-        self.assertEqual(shell, "<code>python -m unittest tests.test_agent</code>")
-        self.assertTrue(shell.endswith("</code>"))
-        # `<pre>` memicu kartu blok kode + tombol COPY CODE di Telegram; feed
-        # progres harus monospace INLINE satu baris.
-        self.assertNotIn("<pre>", shell)
+        self.assertEqual(shell, "<pre>python -m unittest tests.test_agent</pre>")
+        self.assertTrue(shell.endswith("</pre>"))
+        # `<code class="language-...">` di dalam `<pre>` memicu header bahasa +
+        # tombol COPY CODE di Telegram; feed progres harus kartu polos.
+        self.assertNotIn("<code", shell)
+        self.assertNotIn("class=", shell)
         self.assertNotIn("Zeline Terminal", shell)
         self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
@@ -2384,34 +2385,40 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_terminal_progress_has_no_title_or_emoji(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        # Semua perintah shell (pencarian maupun coding) tampil sebagai
-        # monospace INLINE satu baris — TANPA judul 'Zeline Terminal', TANPA
-        # emoji, dan TANPA `<pre>` (yang di Telegram jadi kartu blok kode
-        # penuh lebar + tombol COPY CODE).
+        # Semua perintah shell (pencarian maupun coding) tampil sebagai kartu
+        # kode POLOS setinggi satu baris — tanpa judul 'Zeline Terminal', tanpa
+        # emoji, tanpa label bahasa, dan tanpa tombol COPY CODE. Yang memicu
+        # varian kartu besar di Telegram ada dua: `<code class="language-...">`
+        # di dalam `<pre>`, dan isi yang melebihi satu baris.
         search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
-        self.assertEqual(search, "<code>python -searching ftmo -v</code>")
-        self.assertNotIn("<pre>", search)
+        self.assertEqual(search, "<pre>python -searching ftmo -v</pre>")
+        self.assertNotIn("<code", search)
+        self.assertNotIn("class=", search)
         self.assertNotIn("Zeline Terminal", search)
         self.assertNotIn("📺", search)
         coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
-        self.assertEqual(coding, "<code>pytest -q</code>")
-        self.assertNotIn("<pre>", coding)
+        self.assertEqual(coding, "<pre>pytest -q</pre>")
+        self.assertNotIn("<code", coding)
         self.assertNotIn("Zeline Terminal", coding)
         self.assertNotIn("📺", coding)
         # Command panjang / multiline diratakan jadi SATU baris pendek dengan
-        # ellipsis; panjang teks terlihat dibatasi agar feed tidak jadi dinding.
+        # ellipsis; panjang teks dibatasi agar kartu tetap setinggi satu baris.
         long_cmd = (
             "python3 -c 'from zeline import config, tools\n"
             "cfg = config.load_config()\n"
             "executor = tools.ToolExecutor(cfg, identity=\"cli\", profile=\"full\")'"
         )
         truncated = telegram._tool_progress_text("run_shell", {"command": long_cmd})
-        self.assertTrue(truncated.endswith("…</code>"))
+        self.assertTrue(truncated.endswith("…</pre>"))
         self.assertNotIn("\n", truncated)
-        self.assertNotIn("<pre>", truncated)
-        # Isi di dalam tag (tanpa chrome HTML) tidak melebihi batas preview + ellipsis.
-        inner = truncated[len("<code>"):-len("</code>")]
-        self.assertLessEqual(len(inner), telegram._TERMINAL_PREVIEW_LIMIT + 1)
+        self.assertNotIn("<code", truncated)
+        # Isi mentah (sebelum escaping HTML) tidak melebihi batas preview +
+        # ellipsis, jadi kartu tidak bisa tumbuh melewati satu baris.
+        raw_inner = truncated[len("<pre>"):-len("</pre>")]
+        import html as _html
+        self.assertLessEqual(
+            len(_html.unescape(raw_inner)), telegram._TERMINAL_PREVIEW_LIMIT + 1
+        )
 
     def test_telegram_web_progress_hides_raw_links(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
