@@ -10,6 +10,19 @@ release's documented one-liner keeps working after a newer release ships.
 
 ## [Unreleased]
 
+### Changed
+
+- `ZELINE.md` is now this repository's project-conventions file rather than a
+  persona document. It sits first in `RULE_FILENAMES`, so anyone who clones the
+  repo and runs `zeline` inside it had ~3k characters injected into the system
+  prompt of every turn — and that text claimed "60 bundled Zenith skills" (there
+  are 109), referred to a `zeline-zenith-sk*` skill prefix that no longer
+  exists, and carried a maintainer credit line. Runtime identity was never
+  sourced from it: `config._load_soul()` reads the packaged `zeline/SOUL.md`.
+  The file now states what `project_rules` is for — layout, the real build and
+  test commands, code and commit conventions, and what not to commit — with
+  every claim checked against the tree.
+
 ### Removed
 
 - The mobile-app HTTP surface no longer lives in this repository. The framework

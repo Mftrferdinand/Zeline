@@ -37,6 +37,39 @@ class ReleaseVersionContractTests(unittest.TestCase):
         self.assertIn('"SOUL.md"', pyproject)
         self.assertIn("include zeline/SOUL.md", manifest)
 
+    def test_manifest_ships_the_non_python_files_package_data_misses(self):
+        """MANIFEST.in is not redundant with `[tool.setuptools.package-data]`.
+
+        package-data lists globs by extension (`zenith_tools/**/*.py`), so a
+        script's companion files — `.env.example`, `requirements.txt`,
+        `scope.example.json`, `Dockerfile.sandbox`, `run_tests.sh` — are left
+        out of the built distribution. A bundled skill tells the operator to
+        `cp .env.example .env` and build that Dockerfile, so dropping the
+        recursive-include would ship instructions referring to files that are
+        not in the wheel. Measured: six files, all under `zenith_tools/scripts`.
+        """
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn("recursive-include zeline/zenith_tools *", manifest)
+        self.assertIn("recursive-include zeline/skills *", manifest)
+        companions = [
+            "zenith_tools/scripts/ctf/.env.example",
+            "zenith_tools/scripts/ctf/requirements.txt",
+            "zenith_tools/scripts/ctf/scope.example.json",
+            "zenith_tools/scripts/ctf/sandbox/Dockerfile.sandbox",
+            "zenith_tools/scripts/tests/run_tests.sh",
+        ]
+        missing = [name for name in companions if not (ROOT / "zeline" / name).is_file()]
+        self.assertEqual(missing, [], "MANIFEST.in promises files that no longer exist")
+        # None of these match a package-data glob, which is why the include is needed.
+        package_data = re.search(
+            r"^zeline = \[([^\]]+)\]",
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(package_data)
+        globs = package_data.group(1) if package_data else ""
+        self.assertNotIn('zenith_tools/**/*"', globs)
+
     def test_public_urls_use_canonical_repo_name(self):
         """Nama repo lama cuma hidup lewat redirect GitHub — jangan diandalkan."""
         pages = [
