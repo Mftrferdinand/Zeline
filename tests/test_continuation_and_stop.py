@@ -104,12 +104,47 @@ class ContinuationAnchorTests(_ArchiveFixture):
         self.assertEqual(rows[-1]["role"], "assistant")
 
     def test_last_thread_does_not_split_on_a_title_that_names_no_topic(self):
-        """``New Session``/kosong bukan pembatas topik — jatuh ke N turn terakhir."""
-        self.seed("user", "topik lama", "Sesuatu", self.now - DAY)
+        """``New Session``/kosong bukan pembatas topik.
+
+        Turn tanpa judul tetap boleh bergabung dengan turn sebelumnya — SELAMA
+        keduanya masih dalam satu rentang waktu sesi. Jeda waktu tetap pembatas
+        utama, jadi seed di sini dibuat berdekatan.
+        """
+        self.seed("user", "topik lama", "Sesuatu", self.now - 900)
         self.seed("user", "pesan tanpa judul", "New Session", self.now - 60)
         rows = self.store.last_thread(self.identity, limit=5)
         self.assertGreaterEqual(len(rows), 2)
         self.assertEqual(rows[-1]["content"], "pesan tanpa judul")
+
+    def test_last_thread_stops_at_a_session_gap_even_when_titles_match(self):
+        """Jeda waktu adalah pembatas utama, bukan title.
+
+        ``session.title`` diambil dari pesan pertama sesi, jadi dua sesi yang
+        dibuka dengan kata yang sama ("lanjut") masuk bucket title yang sama.
+        Tanpa pembatas waktu, "lanjut" hari ini menyeret kerjaan kemarin.
+        """
+        self.seed("user", "kerjaan kemarin", "lanjut", self.now - DAY)
+        self.seed("assistant", "hasil kemarin", "lanjut", self.now - DAY + 60)
+        self.seed("user", "kerjaan sekarang", "lanjut", self.now - 300)
+        self.seed("assistant", "hasil sekarang", "lanjut", self.now - 240)
+        rows = self.store.last_thread(self.identity, limit=12)
+        contents = [r["content"] for r in rows]
+        self.assertEqual(contents, ["kerjaan sekarang", "hasil sekarang"])
+        self.assertNotIn("kerjaan kemarin", contents)
+
+    def test_last_thread_returns_nothing_when_the_newest_turn_is_stale(self):
+        """``stale_after``: tidak ada kerja RECENT → jangan sodorkan sesi lama.
+
+        ``append_turn`` jalan setelah reply, jadi saat user mengetik "lanjut"
+        di sesi baru, baris terbaru archive masih milik sesi sebelumnya.
+        """
+        self.seed("user", "kerjaan semalam", "hy", self.now - 8 * 3600)
+        self.seed("assistant", "hasil semalam", "hy", self.now - 8 * 3600 + 60)
+        self.assertEqual(
+            self.store.last_thread(self.identity, stale_after=6 * 3600), []
+        )
+        # Tanpa ambang, perilaku lama tetap tersedia untuk pemanggil lain.
+        self.assertTrue(self.store.last_thread(self.identity))
 
     def test_last_thread_on_empty_archive_is_empty_not_an_error(self):
         self.assertEqual(self.store.last_thread(self.identity), [])
@@ -181,7 +216,24 @@ class RecallHistoryToolTests(_ArchiveFixture):
 
     def test_empty_archive_says_so_instead_of_failing(self):
         out = self._executor()._recall_history("lanjut")
-        self.assertIn("No earlier conversation archived", out)
+        self.assertIn("No recent work to continue", out)
+
+    def test_stale_archive_tells_the_model_to_ask_not_to_guess(self):
+        """Regresi nyata: "lanjut" pagi ini me-recall pekerjaan semalam.
+
+        ``append_turn`` jalan SETELAH reply, jadi saat user membuka sesi baru
+        dan bilang "lanjut", baris terbaru archive masih milik sesi sebelumnya.
+        Jalur kontinuasi tidak boleh menyodorkan itu sebagai konteks aktif —
+        dan tidak boleh jatuh ke ``recent_archive`` yang mengabaikan batas sesi.
+        """
+        old = self.now - 8 * 3600
+        self.seed("user", "bikin veo-chat fastapi", "hy", old)
+        self.seed("assistant", "veo-chat: pip lambat, install manual", "hy", old + 60)
+        out = self._executor()._recall_history("lanjut")
+        self.assertIn("No recent work to continue", out)
+        self.assertIn("Ask the user", out)
+        # Yang paling penting: transkrip sesi lama TIDAK ikut terbawa.
+        self.assertNotIn("veo-chat", out)
 
 
 class StopRepliesOnceTests(unittest.TestCase):
