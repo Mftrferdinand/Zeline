@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "0.2.8"
+RELEASE_VERSION = "0.2.9"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 
@@ -312,6 +312,86 @@ class ReleaseWorkflowTests(unittest.TestCase):
         notes = (ROOT / ".github" / "RELEASE_NOTES.md").read_text(encoding="utf-8")
         self.assertIn(f"blob/{RELEASE_TAG}/docs/installation.md", notes)
         self.assertNotIn("blob/main/docs/installation.md", notes)
+
+    def test_release_verifies_the_wheel_carries_every_skill_tool_and_asset(self):
+        """A release ships the ACCUMULATED surface, not only what changed.
+
+        `[tool.setuptools.package-data]` lists globs by extension, so a bundled
+        skill that gains a companion file of a new type (a `.sh`, `.json`, or
+        `.yaml`) can silently miss the wheel — and then `zeline update` quietly
+        removes a working skill from an operator's install. Measured on a clean
+        clone: 495 files, 255 skills, 29 tools. The workflow now diffs the built
+        wheel against the source tree and fails the release instead of
+        publishing a thinner install.
+        """
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("Verify the release ships every bundled skill, tool, and asset", workflow)
+        self.assertIn("release would ship an incomplete surface", workflow)
+        for tree in ("zeline/skills", "zeline/zenith_tools"):
+            self.assertIn(tree, workflow)
+        # The gate compares against the source tree; a hardcoded expected count
+        # would silently pass once the corpus grew.
+        self.assertIn("missing_skills = sorted(source_skills - wheel_skills())", workflow)
+        self.assertIn("missing_tools = sorted(source_tools - wheel_tools)", workflow)
+
+
+class BundledSurfaceCompletenessTests(unittest.TestCase):
+    """The declared packaging rules must cover the whole bundled corpus.
+
+    Building a wheel takes ~40s and needs network for `build`, so CI's release
+    job owns the byte-level check (see
+    `ReleaseWorkflowTests.test_release_verifies_the_wheel_carries_every_skill_tool_and_asset`).
+    What runs here is the cheap half: every asset extension present in the
+    source tree must be reachable by a declared `package-data` glob or by a
+    `recursive-include`, which is the condition that makes the wheel complete.
+    """
+
+    def _declared_globs(self) -> str:
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        found = re.search(r"^zeline = \[([^\]]+)\]", pyproject, re.MULTILINE)
+        self.assertIsNotNone(found)
+        return found.group(1) if found else ""
+
+    def test_every_bundled_asset_extension_is_covered_by_a_declared_rule(self):
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        recursive_trees = {
+            line.split()[1]
+            for line in manifest.splitlines()
+            if line.startswith("recursive-include ")
+        }
+        uncovered = []
+        for tree in ("zeline/skills", "zeline/zenith_tools"):
+            covered_by_include = tree in recursive_trees
+            for path in (ROOT / tree).rglob("*"):
+                if not path.is_file() or "__pycache__" in path.parts:
+                    continue
+                if covered_by_include:
+                    continue
+                uncovered.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual(uncovered, [], "bundled assets with no packaging rule")
+
+    def test_the_bundled_skill_corpus_is_not_silently_shrinking(self):
+        """A floor, not an exact count — new skills are welcome, losses are not."""
+        root = ROOT / "zeline" / "skills"
+        folders = {path.name for path in root.iterdir() if path.is_dir()}
+        singles = {path.name for path in root.glob("*.md")}
+        self.assertGreaterEqual(len(folders | singles), 255)
+        # The renamed Zenith corpus is the largest single group; #143 fixed the
+        # skN → zeline-zenith-zN rename and the ids are stable identifiers.
+        self.assertGreaterEqual(len(list(root.glob("zeline-zenith-z*.md"))), 109)
+
+    def test_every_registered_tool_reaches_the_owner_profile(self):
+        """A tool nobody can call is a tool that did not ship."""
+        import importlib
+
+        tools = importlib.import_module("zeline.tools")
+        unreachable = [
+            definition.name
+            for definition in tools.TOOL_DEFS
+            if "full" not in definition.profiles
+        ]
+        self.assertEqual(unreachable, [])
+        self.assertGreaterEqual(len(tools.TOOL_DEFS), 29)
 
 
 class InstallationPageTests(unittest.TestCase):

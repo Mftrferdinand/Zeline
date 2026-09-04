@@ -181,6 +181,62 @@ jobs:
           if sdist.name != f"zeline-{expected_version}.tar.gz":
               raise SystemExit(f"unexpected sdist filename: {sdist.name}")
           PY
+      - name: Verify the release ships every bundled skill, tool, and asset
+        # A release is the accumulated surface, not just the code that changed.
+        # `[tool.setuptools.package-data]` lists globs by extension, so a new
+        # asset type (a skill's .sh, .json, .yaml companion) can silently miss
+        # the wheel and the operator's `zeline update` quietly loses a skill.
+        # This compares the built wheel against the source tree and fails the
+        # release rather than shipping a thinner install.
+        run: |
+          python - <<'PY'
+          import glob
+          import re
+          import zipfile
+          from pathlib import Path
+
+          wheel = Path(sorted(glob.glob("dist/zeline-*.whl"))[-1])
+          archive = zipfile.ZipFile(wheel)
+          names = set(archive.namelist())
+
+          missing_assets = []
+          for tree in ("zeline/skills", "zeline/zenith_tools"):
+              for path in Path(tree).rglob("*"):
+                  if not path.is_file():
+                      continue
+                  rel = path.as_posix()
+                  if "__pycache__" in rel or rel.endswith((".pyc", ".pyo")):
+                      continue
+                  if rel not in names:
+                      missing_assets.append(rel)
+
+          def wheel_skills():
+              folders = {n.split("/")[2] for n in names
+                         if n.startswith("zeline/skills/") and n.count("/") >= 3}
+              files = {n.split("/")[-1] for n in names
+                       if re.fullmatch(r"zeline/skills/[^/]+\.md", n)}
+              return folders | files
+
+          source_root = Path("zeline/skills")
+          source_skills = ({p.name for p in source_root.iterdir() if p.is_dir()}
+                           | {p.name for p in source_root.glob("*.md")})
+          missing_skills = sorted(source_skills - wheel_skills())
+
+          tool_pattern = re.compile(r'ToolDef\(\s*\n\s*"([a-z_]+)"')
+          source_tools = set(tool_pattern.findall(Path("zeline/tools.py").read_text(encoding="utf-8")))
+          wheel_tools = set(tool_pattern.findall(archive.read("zeline/tools.py").decode("utf-8")))
+          missing_tools = sorted(source_tools - wheel_tools)
+
+          print(f"wheel {wheel.name}: {len(names)} files, "
+                f"{len(source_skills)} skills, {len(source_tools)} tools")
+          if missing_assets or missing_skills or missing_tools:
+              raise SystemExit(
+                  "release would ship an incomplete surface:\n"
+                  f"  assets missing from wheel: {missing_assets[:20]}\n"
+                  f"  skills missing from wheel: {missing_skills}\n"
+                  f"  tools missing from wheel: {missing_tools}"
+              )
+          PY
       - name: Generate build provenance
         uses: actions/attest-build-provenance@v4
         with:

@@ -36,7 +36,7 @@ body:
     attributes:
       label: Zeline version
       description: Output of `zeline --version`
-      placeholder: "0.2.8"
+      placeholder: "0.2.9"
     validations:
       required: true
   - type: input
