@@ -44,6 +44,12 @@ class SecurityHygieneTests(unittest.TestCase):
                 folded = path.read_text(encoding="utf-8").casefold()
             except (UnicodeDecodeError, IsADirectoryError):
                 continue
+            except FileNotFoundError:
+                # `git ls-files` reports the index; a file deleted in the working
+                # tree but not yet staged is listed and unreadable. Crashing there
+                # makes the whole suite unrunnable mid-change instead of reporting
+                # the branding problem this test exists to catch.
+                continue
             hits = [term for term in terms if term in folded]
             if hits:
                 offenders.append(f"{relative}: {','.join(hits)}")

@@ -323,7 +323,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_bundled_skills_do_not_expose_upstream_branding(self):
         skill_root = Path(__file__).resolve().parents[1] / "zeline" / "skills"
-        source_suffixes = {".md", ".txt", ".py", ".sh", ".ts", ".json", ".yml", ".yaml"}
+        # Every text type a skill may ship must be listed here, because the
+        # branding scan below only reads these suffixes — an unlisted type would be
+        # a hole in the scan. The `unknown` assertion enforces that: a new file kind
+        # fails this test until it is added to the scanned set.
+        source_suffixes = {
+            ".md", ".txt", ".py", ".sh", ".ts", ".js", ".json", ".yml", ".yaml", ".html", ".css",
+        }
         sources = sorted(
             path for path in skill_root.rglob("*")
             if path.is_file() and path.suffix.lower() in source_suffixes

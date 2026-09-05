@@ -24,7 +24,8 @@ state incrementally, explore APIs, inspect DataFrames, or iterate on complex cod
 
 ## Setup
 
-The hamelnb script location:
+The driver script comes from an EXTERNAL repository (not bundled with Zeline — it
+is cloned in the next step, so this path does not exist until then):
 ```
 SCRIPT="$HOME/.agent-skills/hamelnb/skills/jupyter-live-kernel/scripts/jupyter_live_kernel.py"
 ```

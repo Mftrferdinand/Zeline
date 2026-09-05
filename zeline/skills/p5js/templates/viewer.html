@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<!--
+  Interactive viewer for an explorable p5.js sketch.
+
+  What it gives the user for free: seed navigation (prev / next / random / jump),
+  live parameter sliders, and PNG download. Start from this file, keep the fixed
+  sections, and replace only the two marked blocks:
+
+    1. PARAMS   — the parameter definitions that become sliders
+    2. SKETCH   — draw() and any helpers
+
+  Two rules that make the exploration actually reproducible, which is the whole
+  point of seed navigation:
+
+    - Draw from `rng()`, never `Math.random()` or bare `random()`. The seeded
+      generator here is deterministic, so seed 42 renders identically forever.
+      One stray unseeded call and the same seed gives a different image.
+    - The sketch runs with `noLoop()` and redraws on demand. A looping sketch
+      re-randomises under the user while they read the seed number, and a headless
+      capture of it stutters.
+
+  Standalone: no build step, no bundler, one CDN tag. Open the file directly.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sketch Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+<style>
+  :root {
+    --bg: #0e0f13;
+    --panel: #16181f;
+    --line: #262a35;
+    --text: #e6e8ee;
+    --muted: #8b93a7;
+    --accent: #5ad1a5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 16px;
+    padding: 16px;
+  }
+  /* Single column on a phone: the canvas is the point, the panel follows it. */
+  @media (max-width: 760px) {
+    main { grid-template-columns: minmax(0, 1fr); }
+  }
+  #stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+    min-height: 40vh;
+  }
+  #stage canvas {
+    max-width: 100%;
+    height: auto !important;
+    border-radius: 4px;
+    display: block;
+  }
+  aside {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    align-self: start;
+  }
+  h1 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+  .seed-row { display: flex; gap: 6px; align-items: center; margin-bottom: 14px; }
+  .seed-row input {
+    flex: 1; min-width: 0;
+    background: #0b0c10; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 8px; font: inherit; text-align: center;
+  }
+  button {
+    background: #1e222c; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 10px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .param { margin-bottom: 12px; }
+  .param label { display: flex; justify-content: space-between; color: var(--muted); margin-bottom: 4px; }
+  .param output { color: var(--accent); }
+  .param input[type=range] { width: 100%; accent-color: var(--accent); }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 14px; }
+  .actions button { width: 100%; }
+  footer { color: var(--muted); padding: 0 16px 16px; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div id="stage"></div>
+  <aside>
+    <h1>Seed</h1>
+    <div class="seed-row">
+      <button id="prev" aria-label="Previous seed">◀</button>
+      <input id="seed" type="number" value="1" min="0" step="1" aria-label="Seed value">
+      <button id="next" aria-label="Next seed">▶</button>
+    </div>
+    <h1>Parameters</h1>
+    <div id="params"></div>
+    <div class="actions">
+      <button id="random">Random</button>
+      <button id="save">Download PNG</button>
+    </div>
+  </aside>
+</main>
+<footer id="status">ready</footer>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------- PARAMS
+// Replace with the sketch's own parameters. Each becomes a labelled slider.
+const PARAMS = {
+  count:     { label: 'count',     min: 10,  max: 400, step: 10,   value: 120 },
+  scale:     { label: 'scale',     min: 0.1, max: 4,   step: 0.1,  value: 1.2 },
+  thickness: { label: 'thickness', min: 0.5, max: 8,   step: 0.5,  value: 2 },
+};
+const CANVAS = { width: 1000, height: 1000 };
+// ------------------------------------------------------------ END PARAMS
+
+const state = { seed: 1, params: {} };
+for (const [key, spec] of Object.entries(PARAMS)) state.params[key] = spec.value;
+
+// Deterministic PRNG (mulberry32): same seed, same image, forever.
+let _rngState = 1;
+function seedRng(seed) { _rngState = (seed >>> 0) || 1; }
+function rng() {
+  _rngState |= 0; _rngState = (_rngState + 0x6D2B79F5) | 0;
+  let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+const rand = (min, max) => min + rng() * (max - min);
+const pick = (list) => list[Math.floor(rng() * list.length)];
+
+// ---------------------------------------------------------------- SKETCH
+// Replace with the real sketch. Use rng()/rand()/pick() — never Math.random().
+function drawSketch(p) {
+  const { count, scale, thickness } = state.params;
+  p.background(14, 15, 19);
+  p.noFill();
+  p.strokeWeight(thickness);
+  for (let index = 0; index < count; index += 1) {
+    const hue = rand(150, 210);
+    p.stroke(p.color(`hsla(${hue}, 70%, 60%, 0.7)`));
+    const x = rand(0, p.width);
+    const y = rand(0, p.height);
+    const radius = rand(10, 120) * scale;
+    p.circle(x, y, radius);
+  }
+}
+// ------------------------------------------------------------ END SKETCH
+
+let sketchInstance = null;
+
+new p5((p) => {
+  sketchInstance = p;
+  p.setup = () => {
+    const canvas = p.createCanvas(CANVAS.width, CANVAS.height);
+    canvas.parent('stage');
+    p.pixelDensity(Math.min(2, window.devicePixelRatio || 1));
+    p.noLoop();
+    render();
+    // Signals scripts/export-frames.js that setup finished and every redraw()
+    // from here on is a real, complete frame.
+    window._p5Ready = true;
+  };
+  p.draw = () => drawSketch(p);
+});
+
+function render() {
+  seedRng(state.seed);
+  if (sketchInstance) sketchInstance.redraw();
+  document.getElementById('status').textContent =
+    `seed ${state.seed} · ` + Object.entries(state.params).map(([k, v]) => `${k} ${v}`).join(' · ');
+}
+
+function setSeed(value) {
+  const seed = Math.max(0, Math.trunc(Number(value) || 0));
+  state.seed = seed;
+  document.getElementById('seed').value = String(seed);
+  render();
+}
+
+// Sliders are generated from PARAMS so adding a parameter needs one line, not
+// a matching block of HTML that can drift out of sync with the sketch.
+const panel = document.getElementById('params');
+for (const [key, spec] of Object.entries(PARAMS)) {
+  const wrap = document.createElement('div');
+  wrap.className = 'param';
+  const id = `param-${key}`;
+  wrap.innerHTML =
+    `<label for="${id}"><span>${spec.label}</span><output id="${id}-out">${spec.value}</output></label>` +
+    `<input id="${id}" type="range" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${spec.value}">`;
+  panel.appendChild(wrap);
+  wrap.querySelector('input').addEventListener('input', (event) => {
+    const value = Number(event.target.value);
+    state.params[key] = value;
+    document.getElementById(`${id}-out`).textContent = String(value);
+    render();
+  });
+}
+
+document.getElementById('prev').addEventListener('click', () => setSeed(state.seed - 1));
+document.getElementById('next').addEventListener('click', () => setSeed(state.seed + 1));
+document.getElementById('seed').addEventListener('change', (event) => setSeed(event.target.value));
+document.getElementById('random').addEventListener('click',
+  () => setSeed(Math.floor(Math.random() * 1e6)));
+document.getElementById('save').addEventListener('click', () => {
+  if (sketchInstance) sketchInstance.saveCanvas(`sketch-seed-${state.seed}`, 'png');
+});
+document.addEventListener('keydown', (event) => {
+  if (event.target instanceof HTMLInputElement) return;
+  if (event.key === 'ArrowLeft') setSeed(state.seed - 1);
+  if (event.key === 'ArrowRight') setSeed(state.seed + 1);
+  if (event.key.toLowerCase() === 'r') setSeed(Math.floor(Math.random() * 1e6));
+  if (event.key.toLowerCase() === 's' && sketchInstance) {
+    sketchInstance.saveCanvas(`sketch-seed-${state.seed}`, 'png');
+  }
+});
+</script>
+</body>
+</html>

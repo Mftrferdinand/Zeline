@@ -22,7 +22,7 @@ Every project goes through this process. A todo list, a single-function utility,
 You MUST create a task for each of these items and complete them in order:
 
 1. **Explore project context** — check files, docs, recent commits
-2. **Offer the visual companion just-in-time** — NOT upfront. The first time a question would genuinely be clearer shown than described, offer it then (its own message); on approval its browser tab opens for you. If no visual question ever arises, never offer it. See the Visual Companion section below.
+2. **Offer a visual just-in-time** — NOT upfront. The first time a question would genuinely be clearer shown than described, offer it then (its own message); on approval build it and `send_file` it. If no visual question ever arises, never offer it. See the Visual Companion section below.
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
@@ -133,19 +133,41 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 ## Visual Companion
 
-A browser-based companion for showing mockups, diagrams, and visual options during brainstorming. Available as a tool — not a mode. Accepting the companion means it's available for questions that benefit from visual treatment; it does NOT mean every question goes through the browser.
+Some brainstorming questions are genuinely visual — a layout choice, two wireframes
+side by side, an architecture diagram. For those, build the visual and **deliver
+it** instead of describing it.
 
-**Offering the companion (just-in-time):** Do NOT offer it upfront. Wait until a question would genuinely be clearer shown than told — a real mockup / layout / diagram question, not merely a UI *topic*. The first time that happens, offer it then, as its own message:
-> "This next part might be easier if I show you — I can put together mockups, diagrams, and comparisons in a browser tab as we go. It's still new and can be token-intensive. Want me to? I'll open it for you."
+**Offering it (just-in-time):** Do NOT offer upfront. Wait until a question would
+be clearer shown than told — a real mockup / layout / diagram question, not merely
+a UI *topic*. The first time that happens, offer it as its own message:
 
-**This offer MUST be its own message.** Only the offer — no clarifying question, summary, or other content. Wait for the user's response. If they accept, start the server with `--open` so their browser opens to the first screen automatically. If they decline, continue text-only and don't offer again unless they raise it.
+> "This next part is easier if I show you — I can put together a mockup with the
+> options side by side and send it over. Want me to?"
 
-**Per-question decision:** Even after the user accepts, decide FOR EACH QUESTION whether to use the browser or the terminal. The test: **would the user understand this better by seeing it than reading it?**
+**This offer MUST be its own message.** No clarifying question or summary attached.
+Wait for the answer. If they decline, continue text-only and do not offer again
+unless they raise it.
 
-- **Use the browser** for content that IS visual — mockups, wireframes, layout comparisons, architecture diagrams, side-by-side visual designs
-- **Use the terminal** for content that is text — requirements questions, conceptual choices, tradeoff lists, A/B/C/D text options, scope decisions
+**How to build it in Zeline** (all first-party, nothing to install):
 
-A question about a UI topic is not automatically a visual question. "What does personality mean in this context?" is a conceptual question — use the terminal. "Which wizard layout works better?" is a visual question — use the browser.
+1. `write_file` a single self-contained `.html` — inline CSS, no external assets, so
+   it opens anywhere. Put the options side by side with a visible label per option.
+2. `send_file` that HTML to the user. This is the step that matters: a path in a
+   chat message is not a visual.
+3. For a raster preview instead of a page, render it and send the image
+   (`browser` action=`screenshot` → `send_file`), which is better on a phone where
+   opening an attachment costs a tap.
+4. Ask the question referencing the labels ("A or B?"), so the reply is unambiguous
+   without re-describing the design.
 
-If they agree to the companion, read the detailed guide before proceeding:
-`skills/brainstorming/visual-companion.md`
+**Per-question decision:** even after they accept, decide FOR EACH question whether
+it is visual. The test: **would the user understand this better by seeing it than
+reading it?**
+
+- **Visual** — mockups, wireframes, layout comparisons, architecture diagrams
+- **Text** — requirements, conceptual choices, tradeoff lists, scope decisions
+
+A question about a UI topic is not automatically a visual question. "What does
+personality mean here?" is conceptual — ask it as text. "Which wizard layout works
+better?" is visual — show it.
+
