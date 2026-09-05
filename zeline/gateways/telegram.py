@@ -343,6 +343,23 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "send_file":
         target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
         return f"📤 Sending file <code>{target}</code>" if target else "📤 Sending a file…"
+    if name == "schedule_task":
+        verb = str(arguments.get("action", "")).strip().lower()
+        if verb == "add":
+            when = html.escape(str(arguments.get("schedule", ""))[:40], quote=False)
+            return f"⏰ Scheduling a job: {when}" if when else "⏰ Scheduling a job…"
+        if verb == "list":
+            return "⏰ Checking scheduled jobs…"
+        job = html.escape(str(arguments.get("job_id", ""))[:32], quote=False)
+        labels = {
+            "show": "⏰ Reading scheduled job",
+            "pause": "⏸ Pausing scheduled job",
+            "resume": "▶️ Resuming scheduled job",
+            "run": "⚡ Running scheduled job now",
+            "remove": "🗑 Removing scheduled job",
+        }
+        label = labels.get(verb, "⏰ Managing scheduled jobs")
+        return f"{label} {job}".strip() if job else f"{label}…"
     if name == "http_request":
         url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
         return f"🔗 Calling API: {url}" if url else "🔗 Calling API…"

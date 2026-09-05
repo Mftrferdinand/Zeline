@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from zeline import config
+from zeline import delivery
 
 # datetime is used WITHOUT a timezone throughout, deliberately: "09:00" from an
 # operator means 09:00 where they are. Converting to UTC would silently move
@@ -73,6 +74,23 @@ def format_time(moment: float) -> str:
     if not moment:
         return "never"
     return datetime.fromtimestamp(moment).strftime("%Y-%m-%d %H:%M")
+
+
+def describe_next_run(job: Job) -> str:
+    """When a job will fire, in words that match what it will actually do.
+
+    `next_run` is a timestamp, but two values are not times: 0.0 means "armed to
+    fire on the next tick" (what `run_now()` sets), and any past value means it is
+    already due. Passing either through ``format_time`` reads as "never" or as a
+    stale date — the opposite of the truth for a job about to run.
+    """
+    if not job.enabled:
+        return "paused"
+    if job.next_run <= 0:
+        return f"on the next tick (within {int(TICK_SECONDS)}s)"
+    if job.next_run <= time.time():
+        return "due now"
+    return format_time(job.next_run)
 
 
 def cron_dir() -> Path:
@@ -199,8 +217,7 @@ class Job:
 
     def describe(self) -> str:
         state = "enabled" if self.enabled else "paused"
-        when = format_time(self.next_run)
-        line = f"{self.id}  {self.parsed().describe():<18} {state:<8} next {when}  -> {self.deliver}"
+        line = f"{self.id}  {self.parsed().describe():<18} {state:<8} next {describe_next_run(self)}  -> {self.deliver}"
         if self.skips:
             line += f"  [{self.skips} skipped: runs longer than its interval]"
         return line
@@ -447,6 +464,20 @@ def _deliver_telegram(chat_id: str, text: str) -> tuple[bool, str]:
     return True, f"sent to telegram:{chat_id}"
 
 
+def _deliver_file_telegram(chat_id: str, path: Any, caption: str, kind: str) -> bool:
+    """Upload a file a scheduled job produced, using the gateway's own uploader."""
+    token = str((getattr(config, "GATEWAYS", {}) or {}).get("telegram", {}).get("token", "") or "").strip()
+    if not token or not chat_id:
+        return False
+    try:
+        from zeline.gateways import telegram as telegram_module
+
+        api = telegram_module.API_TEMPLATE.format(token=token)
+        return telegram_module._send_produced_file(api, int(chat_id), Path(path), caption, kind)
+    except Exception:  # noqa: BLE001 — a failed upload must not kill the job
+        return False
+
+
 # --------------------------------------------------------------- the loop
 class Scheduler:
     """Runs due jobs on a background thread inside the gateway process."""
@@ -583,15 +614,33 @@ class Scheduler:
         A dedicated identity per job keeps cron work out of the operator's chat
         history and memory — a nightly job should not appear as though the user
         had asked for it, nor inherit that conversation's context.
+
+        A file the job produces is delivered through the job's own target, for the
+        duration of the run only. Without this a scheduled job that renders a chart
+        could create the PNG and have no way to hand it over: `send_file` looks up
+        the calling identity, and `cron:<id>` is not a chat. The channel is released
+        in `finally` so a later turn cannot push a file through a finished job.
         """
         extra = (
             "\n\nThis is a SCHEDULED run with nobody watching. Nobody can answer a "
             "question, so never ask one — decide and act. Produce the finished "
             "result the job asks for, not a plan or a status note."
         )
-        return self.sessions.send(
-            identity=f"cron:{job.id}",
-            text=job.prompt,
-            tool_profile=str(getattr(config, "CLI_TOOL_PROFILE", "full")),
-            system_extra=extra,
-        )
+        identity = f"cron:{job.id}"
+        target = (job.deliver or "").strip()
+        if target.startswith("telegram:"):
+            delivery.register_channel(
+                identity,
+                lambda path, caption, kind, chat=target.split(":", 1)[1].strip(): _deliver_file_telegram(
+                    chat, path, caption, kind
+                ),
+            )
+        try:
+            return self.sessions.send(
+                identity=identity,
+                text=job.prompt,
+                tool_profile=str(getattr(config, "CLI_TOOL_PROFILE", "full")),
+                system_extra=extra,
+            )
+        finally:
+            delivery.unregister_channel(identity)
