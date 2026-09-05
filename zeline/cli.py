@@ -217,6 +217,7 @@ def _configure_provider(provider: dict[str, Any]) -> None:
         "api_key": api_key,
         "model": _choose_model(models, str(provider.get("model", ""))),
         "image_model": str(provider.get("image_model", "")),
+        "audio_model": str(provider.get("audio_model", "")),
         "name": provider_name,
         "protocol": protocol,
         "model_verified": True,
@@ -652,17 +653,26 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
         shown_base_url = str(provider.get("base_url", "?"))
         shown_model = str(provider.get("model", "?"))
         shown_image_model = str(provider.get("image_model", "")) or "(none)"
+        shown_audio_model = str(provider.get("audio_model", "")) or "(none)"
         masked_key = config.mask_secret(str(provider.get("api_key", "")))
         print(f"\n  Provider: {name}")
         print(f"  Base URL: {shown_base_url}")
         print(f"  Model   : {shown_model}")
         print(f"  Image model: {shown_image_model}")
+        print(f"  Audio (speech-to-text) model: {shown_audio_model}")
         print(f"  API key : {masked_key}")
         action = _arrow_menu(
             "Aksi provider:",
-            ["Set as active", "Change model", "Change image model", "Change API key", "Cancel"],
+            [
+                "Set as active",
+                "Change model",
+                "Change image model",
+                "Change audio model",
+                "Change API key",
+                "Cancel",
+            ],
         )
-        if action == -1 or action == 4:
+        if action == -1 or action == 5:
             return
         if action == 0:  # Set as active
             provider["model_verified"] = True
@@ -699,7 +709,18 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
                 cfg["provider"] = copy.deepcopy(provider)
             config.save_config(cfg)
             print(f"  Image model updated: {new_image_model or '(none)'}")
-        elif action == 3:  # Change API key
+        elif action == 3:  # Change audio model
+            new_audio_model = _ask(
+                "Audio (speech-to-text) model for voice notes, blank to disable",
+                str(provider.get("audio_model", "")),
+            ).strip()
+            provider["audio_model"] = new_audio_model
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            if slug == _active_slug(cfg):
+                cfg["provider"] = copy.deepcopy(provider)
+            config.save_config(cfg)
+            print(f"  Audio model updated: {new_audio_model or '(none)'}")
+        elif action == 4:  # Change API key
             new_key = _ask("API key", str(provider.get("api_key", "")), secret=True)
             provider["api_key"] = new_key
             cfg["providers"][slug] = copy.deepcopy(provider)

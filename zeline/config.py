@@ -303,9 +303,12 @@ Web research efficiency (REQUIRED — don't waste tools):
   use download_file. To check available tools/runtime on the system before running
   a command, use system_env.
 - To SEE an image (screenshot, photo, diagram) the user sends/points to, use
-  analyze_media (file path in the workspace or a URL). For audio/video, that tool
-  explains the correct step (transcript / frame extraction) — don't fabricate the
-  contents of media you haven't seen/heard.
+  analyze_media (file path in the workspace or a URL). The same tool HEARS audio:
+  point it at a voice note and it returns a transcript. When the user sends voice,
+  transcribe it and act on what they said — that IS their message, so don't read it
+  back to them as though it were a document. A video transcript covers the audio
+  only; for what is on screen, extract frames with ffmpeg and analyze those. Never
+  fabricate the contents of media you haven't seen or heard.
 - Producing a file is NOT finishing the job: a path in a chat message is useless
   to someone on a phone. Whenever you create something the user is meant to look
   at — a generated image, a chart, a PDF/XLSX/CSV report, an export, an archive —
@@ -468,6 +471,11 @@ def _defaults() -> dict[str, Any]:
             # (e.g. "gpt-image-1", "dall-e-3", or a router alias). Empty = the
             # tool is unavailable until the owner sets one via `zeline setup`.
             "image_model": "",
+            # Optional speech-to-text model for transcribing inbound voice notes
+            # (e.g. "whisper-1", "gpt-4o-mini-transcribe"). Transcription is a
+            # separate, often separately-billed model, so guessing one produces a
+            # confusing 404 rather than a transcript. Empty = unavailable.
+            "audio_model": "",
         },
         "providers": {},
         "agent": {
@@ -630,6 +638,7 @@ def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
         "api_key": "ZELINE_API_KEY",
         "model": "ZELINE_MODEL",
         "image_model": "ZELINE_IMAGE_MODEL",
+        "audio_model": "ZELINE_AUDIO_MODEL",
     }
     for field, env_name in mapping.items():
         value = os.environ.get(env_name)
@@ -709,7 +718,7 @@ def new_webhook_token() -> str:
 
 def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
-    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, IMAGE_MODEL, GATEWAYS, NAME
+    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, IMAGE_MODEL, AUDIO_MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global MAX_PARALLEL_SUBAGENTS
@@ -724,6 +733,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     API_KEY = str(PROVIDER.get("api_key", ""))
     MODEL = str(PROVIDER.get("model", DEFAULT_MODEL))
     IMAGE_MODEL = str(PROVIDER.get("image_model", ""))
+    AUDIO_MODEL = str(PROVIDER.get("audio_model", ""))
     GATEWAYS = cfg["gateways"]
     NAME = str(cfg.get("name", "Zeline"))
     GATEWAY_SETUP_COMPLETE = bool(cfg.get("gateway_setup_complete", False))
