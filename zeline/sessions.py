@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Callable
 
 from zeline import config
+from zeline import tasks
 from zeline import tools
 from zeline.agent import Zeline
 from zeline import interaction
@@ -244,6 +245,14 @@ class SessionStore:
                 cleared_disk = self._persistence.reset(identity)
             except Exception:
                 cleared_disk = False
+        # Papan tugas ikut dikosongkan: sesi baru yang membawa task lama adalah
+        # polusi yang sama seperti memory yang tidak pernah lupa. Task yang belum
+        # selesai diarsipkan lebih dulu ke tasks/cleared.md, jadi hilang dari
+        # konteks tapi tidak hilang dari disk.
+        try:
+            tasks.clear(identity)
+        except Exception:
+            pass
         return session is not None or cleared_disk
 
     def switch_provider(self, identity: str) -> None:
