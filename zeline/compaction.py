@@ -40,6 +40,10 @@ MAX_ASK_CHARS = 220
 MAX_ARTIFACTS = 12
 MAX_DIGEST_CHARS = 3_000
 
+#: Budget for the open-task block appended to a digest. Separate from the digest
+#: cap so a long plan cannot squeeze out the record of what already happened.
+MAX_TASK_BLOCK_CHARS = 800
+
 #: Tool calls whose arguments name a file the agent created or changed.
 _ARTIFACT_TOOLS = {
     "write_file": "path",
@@ -278,4 +282,34 @@ def compact(
     if not meaningful:
         return None
     path = archive(meaningful, identity)
-    return {"role": "user", "content": digest(meaningful, path)}
+    text = digest(meaningful, path)
+    # The plan is the thing most worth keeping across a trim: compaction fires
+    # during long multi-step work, which is exactly when the agent needs to know
+    # what is still open. The board lives on disk, so this is a read, not a guess.
+    board = _open_task_block(identity)
+    if board:
+        text = f"{text}\n\n{board}"
+        if len(text) > MAX_DIGEST_CHARS + MAX_TASK_BLOCK_CHARS:
+            text = text[: MAX_DIGEST_CHARS + MAX_TASK_BLOCK_CHARS] + "\n… [truncated]"
+    return {"role": "user", "content": text}
+
+
+def _open_task_block(identity: str) -> str:
+    """Still-open update_task items, rendered for the digest."""
+    try:
+        from zeline import tasks
+
+        items = tasks.open_items(identity)
+    except Exception:  # noqa: BLE001 — a digest must never fail on a side lookup
+        return ""
+    if not items:
+        return ""
+    symbols = {"in_progress": "[>]", "pending": "[ ]"}
+    lines = "\n".join(f"{symbols.get(item['status'], '[ ]')} {item['task']}" for item in items)
+    if len(lines) > MAX_TASK_BLOCK_CHARS:
+        lines = lines[:MAX_TASK_BLOCK_CHARS] + "\n… [truncated]"
+    return (
+        "## Tasks still open (from update_task, not yet done)\n"
+        f"{lines}\n"
+        "Continue these rather than re-planning from scratch."
+    )

@@ -39,6 +39,7 @@ from zeline import compaction
 from zeline import memory
 from zeline import offload
 from zeline import skills
+from zeline import tasks
 from zeline import network_routes
 from zeline import interaction
 from zeline import checkpoints, custom_tools, formatters, openapi_tools
@@ -220,15 +221,21 @@ def _patch_file(path: str, old_text: str, new_text: str, workspace: Path) -> str
     return result.replace("edited", "patched")
 
 
-def _update_task(task: str, status: str) -> str:
-    allowed = {"pending", "in_progress", "completed", "cancelled"}
-    clean_status = status.strip().lower()
-    if clean_status not in allowed:
-        return f"ERROR task: status must be one of {', '.join(sorted(allowed))}."
-    clean_task = task.strip()[:500]
-    if not clean_task:
-        return "ERROR task: empty description."
-    return json.dumps({"task": clean_task, "status": clean_status}, ensure_ascii=False)
+def _update_task(task: str, status: str, identity: str) -> str:
+    """Record a task status on the identity's persistent board.
+
+    Returning the board rather than an echo of the arguments is the point: the model
+    reads back what is still open, so a long build does not lose its own plan when
+    older turns are compacted out of the window.
+    """
+    try:
+        board, note = tasks.update(identity, task, status)
+    except ValueError as exc:
+        return f"ERROR task: {exc}"
+    except OSError as exc:
+        return f"ERROR task: could not save the board ({exc.__class__.__name__})."
+    prefix = f"NOTE: {note}\n" if note else ""
+    return f"{prefix}{tasks.render(board)}"
 
 
 def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
@@ -1946,8 +1953,15 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "update_task",
-        "Report a status change for one coding task. Call when a task starts, finishes, is cancelled, or is replaced.",
-        {"type": "object", "properties": {"task": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}}, "required": ["task", "status"]},
+        (
+            "Track a multi-step plan on a persistent board. Call when a task starts, "
+            "finishes, is cancelled, or is replaced — one call per task. The board is "
+            "saved to disk and read back to you, so it survives context compaction "
+            "and a gateway restart; re-calling with the same description updates that "
+            "item instead of adding a duplicate. Returns the whole board, so use the "
+            "reply to see what is still open."
+        ),
+        {"type": "object", "properties": {"task": {"type": "string", "description": "Short task description. Reuse the same wording to update an existing item."}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}}, "required": ["task", "status"]},
         frozenset({"full"}),
     ),
     ToolDef(
@@ -2195,7 +2209,7 @@ class ToolExecutor:
             "patch_file": lambda path, old_text, new_text: _patch_file(path, old_text, new_text, self.workspace),
             "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
-            "update_task": _update_task,
+            "update_task": lambda task, status: _update_task(task, status, self.identity),
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
                 action, name, content, old_text, new_text, file_path, category, absorbed_into
             ),

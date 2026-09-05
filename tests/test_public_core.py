@@ -1911,7 +1911,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn("old", (self.home / "app.py").read_text(encoding="utf-8"))
         task = executor.run("update_task", {"task": "Run tests", "status": "in_progress"})
         self.assertIn("Run tests", task)
-        self.assertIn("in_progress", task)
+        # The reply is the rendered board, not an echo of the arguments: an echo
+        # tells the model nothing it did not already know. `[>]` is in_progress.
+        self.assertIn("[>] Run tests", task)
+        self.assertIn("(0/1 completed)", task)
 
     def test_full_profile_execute_code_and_manage_skill_execute_real_actions(self):
         tools = importlib.import_module("zeline.tools")

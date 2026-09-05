@@ -17,6 +17,7 @@ import requests
 
 from zeline import __version__, config
 from zeline import compaction
+from zeline import tasks
 from zeline import skills
 from zeline.tools import ToolExecutor
 from zeline import project_rules
@@ -238,6 +239,10 @@ class Zeline:
             # once here so the system prompt stays byte-stable for the life of the
             # session (prompt caching); edits apply to the next session.
             + project_rules.prompt_block(self.executor.workspace)
+            # Unfinished update_task items. This is what makes a plan survive a
+            # gateway restart: a rebuilt session starts knowing what was left open
+            # instead of the operator re-explaining it.
+            + tasks.prompt_block(self.identity)
             + self._system_extra
             + f"\n\nActive runtime (non-secret): model={self.model}; protocol={self.protocol}; profile={self.executor.profile}. "
             + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
