@@ -39,6 +39,7 @@ from zeline._termkey import raw_mode, read_key, read_menu_key, read_secret
 from zeline.agent import ZelineError
 from zeline.gateways import GATEWAYS, gateway_status, run_all
 from zeline import gateway_service
+from zeline import delivery
 from zeline import interaction
 from zeline import project_rules
 from zeline.sessions import SessionStore
@@ -833,6 +834,17 @@ def cmd_chat(query: str | None = None) -> int:
         return reply or "(empty answer)"
 
     interaction.register_channel("cli:local", _cli_ask)
+
+    # send_file di CLI: tidak ada chat untuk mengunggah, jadi channel-nya
+    # mencetak lokasi file dengan jelas. Tanpa ini tool-nya melaporkan
+    # "NOT DELIVERED" dan model bisa menyimpulkan filenya gagal dibuat —
+    # padahal file ADA, cuma kanal chatnya tidak ada.
+    def _cli_deliver(path: Any, caption: str, kind: str) -> bool:
+        note = f" — {caption}" if caption else ""
+        print(f"  {_label('file:')} {path} ({kind}){note}")
+        return True
+
+    delivery.register_channel("cli:local", _cli_deliver)
 
     def ask(text: str) -> str:
         def on_tool(name: str, arguments: dict[str, Any]) -> None:

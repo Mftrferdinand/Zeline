@@ -923,6 +923,23 @@ def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1
     return f"OK, generated image saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
 
 
+def _send_file(path: str, workspace: Path, identity: str, caption: str = "") -> str:
+    """Hand a file the agent produced to the operator through the active channel.
+
+    Zeline could already write a PNG, an XLSX, or a PDF and had no way to give it
+    to the user — the model printed a filesystem path, which is unusable from a
+    phone. Delivery itself lives in :mod:`zeline.delivery` so each gateway owns
+    its own wire format; this wrapper only enforces the workspace sandbox.
+    """
+    from zeline import delivery
+
+    try:
+        target = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR send_file: {exc}"
+    return delivery.send(identity, target, caption)
+
+
 def _system_env() -> str:
     """Ringkasan lingkungan sistem: OS/arch, tool/runtime terpasang, port lokal aktif.
 
@@ -1486,6 +1503,28 @@ def _deep_research(query: str) -> str:
 
 TOOL_DEFS: list[ToolDef] = [
     ToolDef(
+        "send_file",
+        (
+            "Send a file from the workspace to the user in this chat: an image, a "
+            "PDF, a spreadsheet, an archive, anything you produced. Use this "
+            "whenever you create a file the user should SEE — after generate_image, "
+            "after building a report/invoice/chart, after exporting data. Printing "
+            "the file path alone is useless to someone on a phone; the file must be "
+            "delivered. Images arrive as photos, audio as a voice/audio message, "
+            "everything else as a document. Optional 'caption' is one short line of "
+            "context, not a summary of your whole answer."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path of the file in the workspace to send."},
+                "caption": {"type": "string", "description": "Optional one-line caption shown with the file."},
+            },
+            "required": ["path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "runtime_info",
         "Show Zeline runtime identity, model, provider, protocol, profile, and tools without leaking the API key or token.",
         {"type": "object", "properties": {}},
@@ -1587,7 +1626,7 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "generate_image",
-        "Generate an image from a text prompt (text-to-image) and save it into the workspace as a PNG/JPG/WEBP. Use when the user asks to create/draw/render a picture, illustration, logo, or artwork. Requires the owner to have configured an image model. Returns the saved file path.",
+        "Generate an image from a text prompt (text-to-image) and save it into the workspace as a PNG/JPG/WEBP. Use when the user asks to create/draw/render a picture, illustration, logo, or artwork. Requires the owner to have configured an image model. Returns the saved file path — then call send_file with that path so the user actually SEES the image instead of a filename.",
         {
             "type": "object",
             "properties": {
@@ -1973,6 +2012,7 @@ class ToolExecutor:
             "deep_research": lambda query: _deep_research(query),
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
+            "send_file": lambda path, caption="": _send_file(path, self.workspace, self.identity, caption),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
             "code_intel": lambda action, path="", line=0, character=0: self._code_intel(

@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import requests
 
 from zeline import config
+from zeline import delivery
 from zeline import mcp as mcp_module
 from zeline import skill_publish
 from zeline import interaction
@@ -339,6 +340,9 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return f"🎨 Generating image: {prompt}…" if prompt else "🎨 Generating image…"
     if name == "analyze_media":
         return "🖼 Looking at image…"
+    if name == "send_file":
+        target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
+        return f"📤 Sending file <code>{target}</code>" if target else "📤 Sending a file…"
     if name == "http_request":
         url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
         return f"🔗 Calling API: {url}" if url else "🔗 Calling API…"
@@ -2003,6 +2007,54 @@ def _send_document(api: str, chat_id: int, path: Path) -> bool:
         return False
 
 
+# Metode Bot API + nama field multipart per jenis file. Gambar dikirim sebagai
+# FOTO (bisa dilihat langsung di chat, tidak perlu diunduh), audio sebagai audio,
+# sisanya dokumen. Ini keputusan spesifik klien, karena itu tinggal di gateway —
+# `zeline.delivery` hanya mengklasifikasikan, tidak tahu soal Bot API.
+_UPLOAD_METHODS = {
+    "image": ("sendPhoto", "photo"),
+    "audio": ("sendAudio", "audio"),
+    "video": ("sendVideo", "video"),
+    "document": ("sendDocument", "document"),
+}
+
+
+def _send_produced_file(api: str, chat_id: int, path: Path, caption: str = "", kind: str = "document") -> bool:
+    """Unggah file hasil kerja agen ke chat, dengan metode sesuai jenisnya.
+
+    Dipakai oleh tool ``send_file``. Kalau Telegram menolak varian khusus
+    (mis. PNG terlalu besar untuk sendPhoto, atau rasio ekstrem), fallback ke
+    ``sendDocument`` — lebih baik terkirim sebagai dokumen daripada gagal total
+    dan operator tidak menerima apa pun.
+    """
+    method, field = _UPLOAD_METHODS.get(kind, _UPLOAD_METHODS["document"])
+    data: dict[str, str] = {"chat_id": str(chat_id)}
+    if caption:
+        data["caption"] = caption[:1024]
+    for attempt_method, attempt_field in ((method, field), ("sendDocument", "document")):
+        try:
+            with path.open("rb") as handle:
+                response = _HTTP.post(
+                    f"{api}/{attempt_method}",
+                    data=data,
+                    files={attempt_field: (path.name, handle)},
+                    timeout=120,
+                )
+            payload = response.json()
+            if response.ok and payload.get("ok"):
+                return True
+            print(
+                f"  [telegram] {attempt_method} rejected {path.name}: "
+                f"{str(payload.get('description'))[:160]}",
+                flush=True,
+            )
+        except (OSError, requests.RequestException, ValueError) as exc:
+            print(f"  [telegram] {attempt_method} failed: {exc.__class__.__name__}", flush=True)
+        if attempt_method == "sendDocument":
+            break
+    return False
+
+
 def _split_plain(text: str, limit: int) -> list[str]:
     """Pecah prose (tanpa blok kode) di batas newline/spasi, bukan di tengah kata."""
     parts: list[str] = []
@@ -2416,6 +2468,19 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
     ok = False
+    # send_file mengirim file lewat channel ini. Didaftarkan HANYA selama turn
+    # berjalan lalu dilepas di finally: kalau tetap terdaftar, sebuah cron job
+    # atau turn lain bisa mengirim file ke chat yang salah.
+    def _deliver_file(path: Path, caption: str, kind: str) -> bool:
+        # Bubble progres yang sedang berjalan dikunci lebih dulu supaya file
+        # muncul DI BAWAH aktivitas tool, bukan menimpanya.
+        live.detach()
+        sent = _send_produced_file(api, chat_id, path, caption, kind)
+        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+        return sent
+
+    delivery.register_channel(identity, _deliver_file)
     try:
         reply = sessions.send(
             identity=identity,
@@ -2435,6 +2500,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     finally:
         done.set()
         heartbeat.join(timeout=0.2)
+        delivery.unregister_channel(identity)
         if ok:
             # Kunci bubble progres sebagai catatan alur (tidak dihapus), lalu
             # kirim jawaban final sebagai pesan baru terpisah.
