@@ -105,17 +105,17 @@ function multiLerp(colors, t) {
 ### Linear Gradient
 
 ```javascript
-function linearGradient(z29, y1, z30, y2, c1, c2) {
-  let steps = dist(z29, y1, z30, y2);
+function linearGradient(x1, y1, x2, y2, c1, c2) {
+  let steps = dist(x1, y1, x2, y2);
   for (let i = 0; i <= steps; i++) {
     let t = i / steps;
     let c = lerpColor(c1, c2, t);
     stroke(c);
-    let x = lerp(z29, z30, t);
+    let x = lerp(x1, x2, t);
     let y = lerp(y1, y2, t);
     // Draw perpendicular line at each point
     let dx = -(y2 - y1) / steps * 1000;
-    let dy = (z30 - z29) / steps * 1000;
+    let dy = (x2 - x1) / steps * 1000;
     line(x - dx, y - dy, x + dx, y + dy);
   }
 }

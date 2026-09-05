@@ -316,7 +316,7 @@ let v = noise(x * 0.01, y * 0.01);  // returns 0.0 to 1.0
 | `constrain(v, lo, hi)` | Clamp to range |
 | `lerp(a, b, t)` | Linear interpolation |
 | `norm(v, lo, hi)` | Normalize to 0-1 |
-| `dist(z29, y1, z30, y2)` | Euclidean distance |
+| `dist(x1, y1, x2, y2)` | Euclidean distance |
 | `mag(x, y)` | Vector magnitude |
 | `abs()`, `ceil()`, `floor()`, `round()` | Standard math |
 | `sq(n)`, `sqrt(n)`, `pow(b, e)` | Powers |
