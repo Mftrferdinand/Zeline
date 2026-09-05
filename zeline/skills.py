@@ -24,7 +24,7 @@ import shutil
 import time
 from pathlib import Path
 
-from zeline import config
+from zeline import checkpoints, config
 
 SKILLS_ROOT = config.DATA_DIR / "skills"
 PUBLIC_SKILLS_DIR = SKILLS_ROOT / "public"
@@ -662,6 +662,35 @@ def _frontmatter(name: str, content: str, category: str = "") -> str:
     return "\n".join(lines) + "\n\n" + body + "\n"
 
 
+def _checkpoint_skill_file(path: Path, reason: str) -> None:
+    """Best-effort backup before a skill file is overwritten or removed.
+
+    Skill authoring is allowed to continue when the safety net is unavailable:
+    full disk, a locked checkpoint index, or a damaged checkpoint store must not
+    turn a valid skill edit into a failed tool call. ``checkpoints.snapshot``
+    already handles filesystem errors; the broad guard also protects this seam
+    from an unexpected storage/backend exception.
+    """
+    if not path.is_file():
+        return
+    try:
+        checkpoints.snapshot(path, reason=reason)
+    except Exception:
+        pass
+
+
+def _checkpoint_skill_tree(path: Path, reason: str) -> None:
+    """Snapshot every regular file in a skill before deleting its tree."""
+    if path.is_file():
+        _checkpoint_skill_file(path, reason)
+        return
+    if not path.is_dir():
+        return
+    for child in sorted(path.rglob("*")):
+        if child.is_file() and not child.is_symlink():
+            _checkpoint_skill_file(child, reason)
+
+
 def _private_skill_dir(name: str) -> Path:
     return PRIVATE_SKILLS_DIR / name
 
@@ -705,6 +734,7 @@ def _adopt_into_private(name: str) -> tuple[Path, str]:
         target.mkdir(parents=True, exist_ok=True)
         _chmod_private(target)
         entry = target / SKILL_ENTRY
+        _checkpoint_skill_file(path, "skill-promote")
         entry.write_text(_frontmatter(name, body), encoding="utf-8")
         _chmod_private(entry, 0o600)
         path.unlink()
@@ -733,12 +763,14 @@ def _create_skill(name: str, content: str, category: str) -> str:
     skill_dir.mkdir(parents=True, exist_ok=True)
     _chmod_private(skill_dir)
     entry = skill_dir / SKILL_ENTRY
+    _checkpoint_skill_file(entry, "skill-create-overwrite")
     entry.write_text(_frontmatter(name, content, category), encoding="utf-8")
     _chmod_private(entry, 0o600)
     # Sebuah file flat dengan nama sama akan muncul sebagai unit kedua di
     # ``_iter_skill_units`` (satu nama, dua entri katalog), jadi dibuang.
     legacy = PRIVATE_SKILLS_DIR / f"{name}.md"
     if legacy.is_file():
+        _checkpoint_skill_file(legacy, "skill-create-remove-legacy")
         legacy.unlink()
     return f"OK, skill '{name}' created at {_describe(entry)}."
 
@@ -762,6 +794,7 @@ def _patch_skill(name: str, old_text: str, new_text: str, file_path: str) -> str
     count = content.count(old_text)
     if count != 1:
         return f"ERROR patch skill: old_text must be unique (found {count})."
+    _checkpoint_skill_file(target, "skill-patch")
     target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
     _chmod_private(target, 0o600)
     suffix = f" ({note})" if note else ""
@@ -778,6 +811,7 @@ def _write_skill_file(name: str, file_path: str, content: str) -> str:
         return f"ERROR skill file: {exc}"
     target.parent.mkdir(parents=True, exist_ok=True)
     _chmod_private(target.parent)
+    _checkpoint_skill_file(target, "skill-write-file")
     target.write_text(content, encoding="utf-8")
     _chmod_private(target, 0o600)
     suffix = f" ({note})" if note and note != "created" else ""
@@ -806,6 +840,7 @@ def _delete_skill(name: str, absorbed_into: str) -> str:
                 f"ERROR: absorbed_into target '{merged}' does not exist yet — "
                 "write the umbrella skill first, then delete this one."
             )
+    _checkpoint_skill_tree(path, "skill-delete")
     if path.is_dir():
         shutil.rmtree(path, ignore_errors=True)
     else:
@@ -844,7 +879,9 @@ def manage_skill(
     pun di dalam folder skill; skill bundled di-copy-on-write ke private lebih
     dulu), ``write_file`` (``references/`` · ``templates/`` · ``scripts/`` ·
     ``assets/``), ``delete`` (dengan ``absorbed_into`` untuk menggabungkan
-    duplikat), dan ``list`` (inventaris untuk cek duplikat).
+    duplikat), dan ``list`` (inventaris untuk cek duplikat). Existing files are
+    checkpointed before patch/write/delete, so an autonomous reflection edit can
+    be restored through the normal ``zeline undo`` surface.
 
     Sebelumnya hanya ada ``save_skill``/``update_skill``: satu file markdown flat
     tanpa struktur, tanpa hapus, dan tak mampu menyentuh skill bundled — sehingga
