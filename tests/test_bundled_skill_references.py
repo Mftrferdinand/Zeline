@@ -336,6 +336,42 @@ class BundledSkillReferenceTests(unittest.TestCase):
         # meaningless on a runner without a shell.
         self.assertTrue(any(p.suffix == ".py" for p in SKILLS.rglob("scripts/*")))
 
+    def test_a_blind_skill_rename_never_corrupts_code_examples(self):
+        """PR #141 renamed x1-x7 → z29-z35 with a global textual replace.
+
+        It could not tell a skill reference from an ordinary identifier, so every
+        `x1`, `x2`, ... appearing as a VARIABLE in a code example was rewritten too:
+        `line(z29, y1, z30, y2)`, `box = np.array([z29, y1, z30, y2])`,
+        `<line z29="4" .../>`. None of that is valid p5.js, numpy, or SVG — the
+        skills were teaching broken code, and it survived because nothing checks
+        example bodies.
+
+        `zN` is a legitimate zenith skill ID, so the rule cannot be "no zN". The
+        signal is a zN token sharing a line with a coordinate sibling (`x0`, `y1`,
+        ...): skill references never appear next to those. Validated by
+        re-corrupting all six affected files exactly as #141 did — the rule flagged
+        29 lines across 6/6 files with zero false positives on the clean tree.
+        """
+        coordinate_token = re.compile(r"\bz(?:[12]?[0-9]|3[0-5])\b")
+        sibling = re.compile(r"\b[xy][0-9]\b")
+        offenders: list[str] = []
+        for md in sorted(SKILLS.rglob("*.md")):
+            relative = md.relative_to(SKILLS).as_posix()
+            # The zenith corpus is *named* zN; its own cross-references are fine.
+            if relative.startswith("zeline-zenith-") or relative == "ZENITH_INDEX.md":
+                continue
+            for number, line in enumerate(
+                md.read_text(encoding="utf-8", errors="ignore").splitlines(), 1
+            ):
+                if coordinate_token.search(line) and sibling.search(line):
+                    offenders.append(f"{relative}:{number}: {line.strip()[:80]}")
+        self.assertEqual(
+            offenders,
+            [],
+            "a skill rename overwrote identifiers inside code examples; rename skill "
+            "references by exact filename, never by bare token",
+        )
+
     def test_the_unresolved_reference_backlog_only_shrinks(self):
         """A ratchet, because the corpus is mid-migration.
 

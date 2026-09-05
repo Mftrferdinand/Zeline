@@ -4,15 +4,15 @@
 
 ```javascript
 point(x, y);
-line(z29, y1, z30, y2);
+line(x1, y1, x2, y2);
 rect(x, y, w, h);            // default: corner mode
 rect(x, y, w, h, r);         // rounded corners
 rect(x, y, w, h, tl, tr, br, bl);  // per-corner radius
 square(x, y, size);
 ellipse(x, y, w, h);
 circle(x, y, d);             // diameter, not radius
-triangle(z29, y1, z30, y2, z31, y3);
-quad(z29, y1, z30, y2, z31, y3, z32, y4);
+triangle(x1, y1, x2, y2, x3, y3);
+quad(x1, y1, x2, y2, x3, y3, x4, y4);
 arc(x, y, w, h, start, stop, mode);  // mode: OPEN, CHORD, PIE
 ```
 
@@ -20,7 +20,7 @@ arc(x, y, w, h, start, stop, mode);  // mode: OPEN, CHORD, PIE
 
 ```javascript
 rectMode(CENTER);   // x,y is center (default: CORNER)
-rectMode(CORNERS);  // z29,y1 to z30,y2
+rectMode(CORNERS);  // x1,y1 to x2,y2
 ellipseMode(CORNER); // x,y is top-left corner
 ellipseMode(CENTER); // default — x,y is center
 ```
@@ -88,11 +88,11 @@ endShape(CLOSE);
 ### Cubic Bezier
 
 ```javascript
-bezier(z29, y1, cx1, cy1, cx2, cy2, z30, y2);
-// z29,y1 = start point
+bezier(x1, y1, cx1, cy1, cx2, cy2, x2, y2);
+// x1,y1 = start point
 // cx1,cy1 = first control point
 // cx2,cy2 = second control point
-// z30,y2 = end point
+// x2,y2 = end point
 ```
 
 ### Bezier in custom shapes
@@ -118,18 +118,18 @@ endShape();
 ### Interpolation along Bezier
 
 ```javascript
-let x = bezierPoint(z29, cx1, cx2, z30, t);  // t = 0..1
+let x = bezierPoint(x1, cx1, cx2, x2, t);  // t = 0..1
 let y = bezierPoint(y1, cy1, cy2, y2, t);
-let tx = bezierTangent(z29, cx1, cx2, z30, t); // tangent
+let tx = bezierTangent(x1, cx1, cx2, x2, t); // tangent
 ```
 
 ## Catmull-Rom Splines
 
 ```javascript
-curve(cpx1, cpy1, z29, y1, z30, y2, cpx2, cpy2);
+curve(cpx1, cpy1, x1, y1, x2, y2, cpx2, cpy2);
 // cpx1,cpy1 = control point before start
-// z29,y1 = start point (visible)
-// z30,y2 = end point (visible)
+// x1,y1 = start point (visible)
+// x2,y2 = end point (visible)
 // cpx2,cpy2 = control point after end
 
 curveVertex(x, y);  // in beginShape() — smooth curve through all points
@@ -256,10 +256,10 @@ function star(cx, cy, r1, r2, npoints) {
 ### Rounded Line (Capsule)
 
 ```javascript
-function capsule(z29, y1, z30, y2, weight) {
+function capsule(x1, y1, x2, y2, weight) {
   strokeWeight(weight);
   strokeCap(ROUND);
-  line(z29, y1, z30, y2);
+  line(x1, y1, x2, y2);
 }
 ```
 
