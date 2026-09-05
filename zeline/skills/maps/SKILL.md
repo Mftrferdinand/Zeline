@@ -2,7 +2,7 @@
 
 > Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.
 
-Location intelligence using free, open data sources. 8 commands, 44 POI
+Location intelligence using free, open data sources. 8 commands, 50 POI
 categories, zero dependencies (Python stdlib only), no API key required.
 
 Data sources: OpenStreetMap/Nominatim, Overpass API, OSRM, TimeAPI.io.
@@ -26,12 +26,12 @@ functionality is covered by the `nearby` command below, with the same
 
 Python 3.8+ (stdlib only — no pip installs needed).
 
-Script path: `~/.zeline/skills/maps/scripts/maps_client.py`
+Script path: `${ZELINE_HOME:-$HOME/.zeline}/skills/public/maps/scripts/maps_client.py`
 
 ## Commands
 
 ```bash
-MAPS=~/.zeline/skills/maps/scripts/maps_client.py
+MAPS="${ZELINE_HOME:-$HOME/.zeline}/skills/public/maps/scripts/maps_client.py"
 ```
 
 ### search — Geocode a place name
@@ -66,13 +66,16 @@ python3 $MAPS nearby --near "90210" --category pharmacy
 python3 $MAPS nearby --near "downtown austin" --category restaurant --category bar --limit 10
 ```
 
-46 categories: restaurant, cafe, bar, hospital, pharmacy, hotel, guest_house,
-camp_site, supermarket, atm, gas_station, parking, museum, park, school,
-university, bank, police, fire_station, library, airport, train_station,
-bus_stop, church, mosque, synagogue, dentist, doctor, cinema, theatre, gym,
-swimming_pool, post_office, convenience_store, bakery, bookshop, laundry,
-car_wash, car_rental, bicycle_rental, taxi, veterinary, zoo, playground,
-stadium, nightclub.
+50 categories — `python3 $MAPS categories` prints the live list, which is the only
+one that cannot go stale:
+
+restaurant, cafe, bar, pub, fast_food, hospital, clinic, pharmacy, dentist,
+doctor, veterinary, hotel, guest_house, hostel, camp_site, museum, zoo,
+supermarket, convenience_store, bakery, bookshop, laundry, car_wash, car_rental,
+bicycle_rental, atm, bank, gas_station, parking, taxi, post_office, police,
+fire_station, library, school, university, park, playground, gym, swimming_pool,
+stadium, cinema, theatre, nightclub, church, mosque, synagogue, airport,
+train_station, bus_stop.
 
 Each result includes: `name`, `address`, `lat`/`lon`, `distance_m`,
 `maps_url` (clickable Google Maps link), `directions_url` (Google Maps
@@ -174,15 +177,9 @@ current.
 ## Verification
 
 ```bash
-python3 ~/.zeline/skills/maps/scripts/maps_client.py search "Statue of Liberty"
+python3 "${ZELINE_HOME:-$HOME/.zeline}/skills/public/maps/scripts/maps_client.py" search "Statue of Liberty"
 # Should return lat ~40.689, lon ~-74.044
 
-python3 ~/.zeline/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python3 "${ZELINE_HOME:-$HOME/.zeline}/skills/public/maps/scripts/maps_client.py" nearby --near "Times Square" --category restaurant --limit 3
 # Should return a list of restaurants within ~500m of Times Square
 ```
-
----
-
-## Catatan adaptasi Zeline
-- File pendukung tidak di-inline (terlalu besar/biner): scripts/maps_client.py.
-

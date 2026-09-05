@@ -51,6 +51,31 @@ LEGACY_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
 # shipped under it. This preserves safe upgrades without retaining old product
 # branding in source or deleting user-modified copies.
 RETIRED_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
+    # Four flat skills became folder skills so their companion files could ship.
+    # Without these entries an existing install keeps loading the stale flat copy
+    # forever: _find_skill() checks `<name>.md` before `<name>/SKILL.md`, so the
+    # new folder never wins. LF and CRLF revisions both listed — the package ships
+    # LF, a Windows checkout can seed CRLF.
+    # excalidraw.md → excalidraw/ (+ scripts/upload.py, references/)
+    'b08e844e4e9152e2b91023d056e103a5d90dcc8c6170a586dd8fd71bdc4298b0': (
+        '7c7f3e08c6e399ff1b3fc2ce06f98e8c0a609e47696460cc58dca0ef672cee11',
+        '6f3be51527ca53b44d29d77c5790cf57925283598906eb9722674d63fda6b692',
+    ),
+    # github-auth.md → github-auth/ (+ scripts/gh-env.sh)
+    'c5b8b21d138f859db534e8f6963749d1d0fdb3bb46f01a2df7e60225ed69675b': (
+        'a99a9fb20d9669542aa8410b48993023ca5a40bbfdf9100e3ce92ec347f20d89',
+        'c279f2ebf85b8e5fd5db4f8abd96f651d8b44d2dfdac7406dcdb3c7bdf836546',
+    ),
+    # maps.md → maps/ (+ scripts/maps_client.py, which never shipped at all)
+    '46dbb8fc8f2f62f02d43f7be721f173eb9ee2308dd08b8c9e3162109f06062e3': (
+        'cc1eb650625824695ddf7b058d9b0fc78d3c16f782277e2fabf3a46484048e34',
+        'c0e39bbe525ccbc25ba13e6e020b105432e7582dfcb57147c6cbcabb209c428f',
+    ),
+    # p5js.md → p5js/ (+ scripts/, templates/viewer.html, references/)
+    '4e44193e36cedab0ffe2509872260c4b961eabac911b88b50900b5725d82cc34': (
+        'fe4ac4983bc33a811b0ad3c221513ccd5dcd797ee0a6803c7e5734239fd6fec8',
+        '4281cb904dc78fe1a3f5769350a4921aee34bb72f24250c9cac2f9a82c724ac6',
+    ),
     # Removed NBA betting workflow, LF and CRLF package revisions.
     '57d5f28520c4381518d7026e54afb9d453c4a262a1c6fa22f5653c663d33927c': (
         '56eef747ca4dd3335fe414b54a611beb107cf8ac607f320fd18377e0c93d1f40',
