@@ -40,6 +40,7 @@ from zeline import memory
 from zeline import offload
 from zeline import skills
 from zeline import tasks
+from zeline import vcs
 from zeline import network_routes
 from zeline import interaction
 from zeline import checkpoints, custom_tools, formatters, openapi_tools
@@ -552,6 +553,63 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
         return f"exit={code}\n{_truncate_output(output)}"
     except Exception as exc:
         return f"ERROR running command: {exc}"
+
+
+def _git(
+    action: str,
+    workspace: Path,
+    *,
+    path: str = "",
+    message: str = "",
+    ref: str = "",
+    staged: Any = False,
+    limit: Any = 10,
+) -> str:
+    """Structured git, so a repo-capable agent does not need a whole shell.
+
+    Read operations plus the two writes that cannot lose work. Anything that
+    rewrites or discards history is refused by name — see ``zeline.vcs``.
+    """
+    verb = (action or "").strip().lower()
+    if verb in vcs.REFUSED:
+        return (
+            f"ERROR git: '{verb}' is not available here because it {vcs.REFUSED[verb]}. "
+            "Allowed: " + ", ".join(vcs.ACTIONS) + ". If the operator really wants "
+            f"'{verb}', run it with run_shell so it is an explicit, visible step."
+        )
+    if verb not in vcs.ACTIONS:
+        return f"ERROR git: unknown action '{action}'. Use one of: {', '.join(vcs.ACTIONS)}."
+    try:
+        if verb == "status":
+            return vcs.status(workspace)
+        if verb == "diff":
+            return vcs.diff(workspace, staged=_as_bool(staged), path=path)
+        if verb == "log":
+            return vcs.log(workspace, limit=_as_int(limit, 10), path=path)
+        if verb == "show":
+            return vcs.show(workspace, ref=ref or "HEAD")
+        if verb == "branch":
+            return vcs.branch(workspace)
+        if verb == "add":
+            return vcs.add(workspace, path=path)
+        return vcs.commit(workspace, message=message)
+    except vcs.GitError as exc:
+        return f"ERROR git: {exc}"
+    except OSError as exc:
+        return f"ERROR git: {exc.__class__.__name__}: {exc}"
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
@@ -1646,6 +1704,41 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "git",
+        (
+            "Inspect and record work in a git repository without a shell. "
+            "action='status' (branch + what changed), 'diff' (patch; staged=true for "
+            "the staged version), 'log', 'show' (one commit), 'branch', 'add' (stage "
+            "specific paths), 'commit' (needs a message). Use status/diff before "
+            "claiming what you changed, and add specific paths rather than '.' so "
+            "unrelated work is not committed. Operations that rewrite or discard "
+            "history — push, pull, reset, checkout, rebase, clean, stash, tag — are "
+            "refused here on purpose; ask the operator or use run_shell for those."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "diff", "log", "show", "branch", "add", "commit"],
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "For 'add': the paths to stage, comma separated. For "
+                        "'diff'/'log': limit output to this path."
+                    ),
+                },
+                "message": {"type": "string", "description": "For 'commit': the commit message."},
+                "ref": {"type": "string", "description": "For 'show': a commit ref. Defaults to HEAD."},
+                "staged": {"type": "boolean", "description": "For 'diff': show the staged diff instead of the unstaged one."},
+                "limit": {"type": "integer", "description": "For 'log': how many commits (default 10, max 100)."},
+            },
+            "required": ["action"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "schedule_task",
         (
             "Schedule work to run later, on a repeating schedule, without anyone "
@@ -2192,6 +2285,9 @@ class ToolExecutor:
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
             "send_file": lambda path, caption="": _send_file(path, self.workspace, self.identity, caption),
+            "git": lambda action, path="", message="", ref="", staged=False, limit=10: _git(
+                action, self.workspace, path=path, message=message, ref=ref, staged=staged, limit=limit
+            ),
             "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="": _schedule_task(
                 action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver
             ),
