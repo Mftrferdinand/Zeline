@@ -320,7 +320,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         skill that gains a companion file of a new type (a `.sh`, `.json`, or
         `.yaml`) can silently miss the wheel — and then `zeline update` quietly
         removes a working skill from an operator's install. Measured on a clean
-        clone: 495 files, 255 skills, 30 tools. The workflow now diffs the built
+        clone: 495 files, 255 skills, 31 tools. The workflow now diffs the built
         wheel against the source tree and fails the release instead of
         publishing a thinner install.
         """
@@ -391,7 +391,7 @@ class BundledSurfaceCompletenessTests(unittest.TestCase):
             if "full" not in definition.profiles
         ]
         self.assertEqual(unreachable, [])
-        self.assertGreaterEqual(len(tools.TOOL_DEFS), 30)
+        self.assertGreaterEqual(len(tools.TOOL_DEFS), 31)
 
 
 class InstallationPageTests(unittest.TestCase):

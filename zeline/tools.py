@@ -923,6 +923,120 @@ def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1
     return f"OK, generated image saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
 
 
+def _schedule_task(
+    action: str,
+    identity: str,
+    *,
+    schedule: str = "",
+    prompt: str = "",
+    job_id: str = "",
+    deliver: str = "",
+) -> str:
+    """Let the agent manage its own scheduled jobs.
+
+    Zeline's scheduler already ran inside the gateway process, but the only way to
+    reach it was `zeline cron` on a terminal. On a phone that means "remind me every
+    morning" could not be set up in the conversation where it was asked for.
+
+    Delivery defaults to the CALLING session, which is the whole point: a job created
+    from a Telegram chat should report back into that chat. `local` is honoured when
+    asked for explicitly, since a job whose work is a file or a commit does not need
+    to say anything.
+    """
+    from zeline import scheduler as cron
+
+    verb = (action or "").strip().lower()
+    if verb not in {"list", "add", "remove", "pause", "resume", "run", "show"}:
+        return (
+            f"ERROR schedule_task: unknown action '{action}'. Use list, add, remove, "
+            "pause, resume, run, or show."
+        )
+    if not cron.enabled():
+        return (
+            "ERROR schedule_task: scheduled jobs are disabled in this install "
+            "(tools.cron = false). The owner must enable it before jobs can run."
+        )
+
+    def render(job) -> str:
+        state = "enabled" if job.enabled else "paused"
+        lines = [
+            f"{job.id}  {job.parsed().describe()}  [{state}]  next {cron.describe_next_run(job)}",
+            f"  target: {job.deliver}",
+            f"  task: {job.prompt[:300]}",
+        ]
+        if job.last_status:
+            stamp = f"{cron.format_time(job.last_run)} " if job.last_run else ""
+            lines.append(f"  last run: {stamp}{job.last_status[:160]}")
+        if job.runs or job.failures or job.skips:
+            lines.append(f"  runs {job.runs}, failures {job.failures}, skipped {job.skips}")
+        return "\n".join(lines)
+
+    if verb == "list":
+        jobs = cron.list_jobs()
+        if not jobs:
+            return (
+                "No scheduled jobs. Create one with action='add', a schedule "
+                "('30m', 'every 2h', '09:00') and the prompt to run."
+            )
+        body = "\n".join(render(job) for job in jobs)
+        return (
+            f"{len(jobs)} scheduled job(s):\n{body}\n\n"
+            "Jobs only fire while the gateway process is running."
+        )
+
+    if verb == "add":
+        if not str(prompt or "").strip():
+            return (
+                "ERROR schedule_task: a job needs a prompt — the full instruction to "
+                "run later. Nobody will be watching, so make it self-contained."
+            )
+        target = (deliver or "").strip()
+        if not target:
+            # Report back to whoever asked for the job. A job created in a chat
+            # that silently wrote to disk would look like it never ran.
+            target = identity if identity.startswith("telegram:") else "local"
+        try:
+            job = cron.add_job(schedule, prompt, target)
+        except cron.CronError as exc:
+            return f"ERROR schedule_task: {exc}"
+        where = (
+            "results will be sent to this chat"
+            if job.deliver.startswith("telegram:")
+            else f"results are saved in {cron.output_dir()}"
+        )
+        return (
+            f"Created {job.id}: {job.parsed().describe()}, first run "
+            f"{cron.describe_next_run(job)} — {where}."
+        )
+
+    wanted = str(job_id or "").strip()
+    if not wanted:
+        return f"ERROR schedule_task: action '{verb}' needs a job_id. Use action='list' to see them."
+    job = cron.find_job(wanted)
+    if job is None:
+        known = ", ".join(item.id for item in cron.list_jobs()) or "none"
+        return f"ERROR schedule_task: no job '{wanted}'. Existing jobs: {known}."
+
+    if verb == "show":
+        return render(job)
+    if verb == "remove":
+        cron.remove_job(wanted)
+        return f"Removed {wanted}."
+    if verb in {"pause", "resume"}:
+        cron.set_enabled(wanted, verb == "resume")
+        refreshed = cron.find_job(wanted)
+        when = cron.describe_next_run(refreshed) if refreshed else "unknown"
+        if verb == "pause":
+            return f"Paused {wanted}. It will not run until resumed."
+        return f"Resumed {wanted}. Next run {when}."
+    # run
+    cron.run_now(wanted)
+    return (
+        f"Armed {wanted} to run on the next scheduler tick (within "
+        f"{int(cron.TICK_SECONDS)}s). Its result goes to {job.deliver}."
+    )
+
+
 def _send_file(path: str, workspace: Path, identity: str, caption: str = "") -> str:
     """Hand a file the agent produced to the operator through the active channel.
 
@@ -1525,6 +1639,57 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "schedule_task",
+        (
+            "Schedule work to run later, on a repeating schedule, without anyone "
+            "present. Use when the user asks for something recurring or timed: a "
+            "daily briefing, a reminder, a periodic check or poll. Actions: 'add' "
+            "(needs schedule + prompt), 'list', 'show', 'pause', 'resume', 'run' "
+            "(fire once now), 'remove'. The prompt runs as a fresh agent turn with "
+            "no memory of this conversation, so write it self-contained. Results are "
+            "sent back to this chat unless deliver='local'."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "list", "show", "pause", "resume", "run", "remove"],
+                    "description": "What to do. 'list' first if you need job ids.",
+                },
+                "schedule": {
+                    "type": "string",
+                    "description": (
+                        "For 'add': an interval ('30m', 'every 2h', '1d') or a daily "
+                        "wall-clock time in the user's own timezone ('09:00'). Minimum "
+                        "interval 1 minute."
+                    ),
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": (
+                        "For 'add': the complete instruction to run. Nobody can answer a "
+                        "question at run time, so include every detail it needs."
+                    ),
+                },
+                "job_id": {
+                    "type": "string",
+                    "description": "For show/pause/resume/run/remove: the job id from 'list'.",
+                },
+                "deliver": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Defaults to this chat. Use 'local' to only save the "
+                        "result to disk (right for jobs whose output is a file or a "
+                        "commit), or 'telegram:<chat_id>' for a different chat."
+                    ),
+                },
+            },
+            "required": ["action"],
+        },
+        frozenset({"full"}),
+    ),
+    ToolDef(
         "runtime_info",
         "Show Zeline runtime identity, model, provider, protocol, profile, and tools without leaking the API key or token.",
         {"type": "object", "properties": {}},
@@ -2013,6 +2178,9 @@ class ToolExecutor:
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
             "send_file": lambda path, caption="": _send_file(path, self.workspace, self.identity, caption),
+            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="": _schedule_task(
+                action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver
+            ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
             "code_intel": lambda action, path="", line=0, character=0: self._code_intel(
