@@ -2193,7 +2193,7 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "manage_skill",
-        "Author and maintain the operator's skills (procedural memory). action='create' writes a folder skill with SKILL.md; 'write_file' adds references/, templates/, scripts/ or assets/ files; 'patch' edits SKILL.md or any supporting file (a bundled skill is copied into private scope first, so the repair survives updates); 'delete' removes a private skill, passing absorbed_into=<other skill> when its content was merged there; 'list' shows every skill and its shape so you can patch a near-duplicate instead of saving a new one.",
+        "Author and maintain the operator's skills (procedural memory). action='create' writes a folder skill with SKILL.md; 'write_file' adds references/, templates/, scripts/ or assets/ files; 'patch' edits SKILL.md or any supporting file (a bundled skill is copied into private scope first, so the repair survives updates); existing files are checkpointed before patch/write/delete so reflection edits can be restored with zeline undo; 'delete' removes a private skill, passing absorbed_into=<other skill> when its content was merged there; 'list' shows every skill and its shape so you can patch a near-duplicate instead of saving a new one.",
         {
             "type": "object",
             "properties": {
