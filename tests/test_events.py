@@ -19,7 +19,6 @@ These tests pin an append-only event log that:
 """
 from __future__ import annotations
 
-import hashlib
 import importlib
 import os
 import stat
@@ -27,6 +26,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
@@ -80,20 +80,22 @@ class EventLogTests(unittest.TestCase):
         self.assertNotIn(b"telegram:100", raw)
 
     def test_recording_degrades_instead_of_raising(self):
-        log = self.events.EventLog(path=self.home / "nope" / "events.db")
-        # Point the store at a path made unwritable, then prove record() returns
-        # False rather than throwing — an audit row is expendable, the turn is not.
-        log.path.parent.mkdir(parents=True, exist_ok=True)
-        (log.path.parent).chmod(0o500)
-        try:
+        # A locked or unwritable DB must lose an audit row, never raise. Simulate
+        # it the portable way usage_stats does — mock _connect to fail — instead
+        # of chmod tricks that behave differently on Windows.
+        import sqlite3
+
+        log = self.events.EventLog()
+        with mock.patch.object(log, "_connect", side_effect=sqlite3.OperationalError("locked")):
             self.assertFalse(log.record("telegram:1", "write_file", "ok"))
-        finally:
-            (log.path.parent).chmod(0o700)
+            self.assertEqual(log.recent("telegram:1"), [])
 
     def test_db_file_is_owner_only(self):
         log = self.events.EventLog()
         log.record("telegram:1", "write_file", "ok")
-        self.assertEqual(stat.S_IMODE(log.path.stat().st_mode), 0o600)
+        # POSIX-only: Windows does not express file mode as 0o600.
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(log.path.stat().st_mode), 0o600)
 
     def test_counts_group_by_tool(self):
         log = self.events.EventLog()
