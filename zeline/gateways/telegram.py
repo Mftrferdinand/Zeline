@@ -339,6 +339,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         prompt = html.escape(str(arguments.get("prompt", ""))[:100], quote=False)
         return f"🎨 Generating image: {prompt}…" if prompt else "🎨 Generating image…"
     if name == "analyze_media":
+        target = str(arguments.get("path_or_url", "")).lower()
+        if any(target.endswith(ext) for ext in (
+            ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".flac", ".aac", ".amr",
+            ".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".3gp",
+        )):
+            return "🎧 Transcribing audio…"
         return "🖼 Looking at image…"
     if name == "send_file":
         target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
@@ -2423,14 +2429,27 @@ def _build_image_prompt(path: Path, caption: str = "") -> str:
 
 
 def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
-    """Prompt agen untuk audio/video: jelaskan jalur transkrip/ekstraksi frame."""
-    ask = caption.strip() or "(no caption)"
-    return (
-        f"User sent a {kind} via Telegram, saved at `{path}`. You can inspect it with "
-        f"the analyze_media tool (path_or_url=\"{path}\") which will explain the correct "
-        f"handling ({kind} needs transcription or frame extraction, not direct vision). "
-        f"Caption/request: {ask}"
-    )
+    """Prompt agen untuk audio/video masuk.
+
+    Sebelumnya prompt ini bilang analyze_media "akan menjelaskan penanganan yang
+    benar" — dan penanganan itu ternyata tidak ada. Sekarang analyze_media benar-
+    benar mentranskripsi, jadi prompt-nya menyuruh langsung.
+    """
+    ask = caption.strip()
+    if kind == "audio":
+        instruction = (
+            f"User sent a voice message via Telegram, saved at `{path}`. "
+            f"Call analyze_media(path_or_url=\"{path}\") to transcribe it, then treat the "
+            "transcript AS THE USER'S MESSAGE and act on it — do not just read it back."
+        )
+    else:
+        instruction = (
+            f"User sent a {kind} via Telegram, saved at `{path}`. "
+            f"Call analyze_media(path_or_url=\"{path}\") to transcribe its audio track. "
+            "That covers what was said, not what is on screen; if the picture matters, "
+            "extract key frames with ffmpeg and call analyze_media on those images."
+        )
+    return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
 def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> None:

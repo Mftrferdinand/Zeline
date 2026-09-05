@@ -40,6 +40,7 @@ from zeline import memory
 from zeline import offload
 from zeline import skills
 from zeline import tasks
+from zeline import transcribe
 from zeline import vcs
 from zeline import network_routes
 from zeline import interaction
@@ -776,6 +777,8 @@ def _format_size(num_bytes: int) -> str:
 # Batas ukuran media yang dikirim ke model vision (base64 membengkak ~33%).
 VISION_MAX_BYTES = 8 * 1024 * 1024
 _VISION_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+#: Video containers. Their audio track is transcribed; the picture needs frames.
+_VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".3gp"}
 
 
 def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
@@ -783,8 +786,9 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
 
     Menerima path file di workspace ATAU URL http/https gambar. Gambar dikirim ke
     endpoint chat/completions provider aktif sebagai konten image_url (data URI
-    untuk file lokal). Untuk audio/video, kembalikan pesan yang mengarahkan ke
-    jalur yang tepat (transkrip/ekstraksi frame) daripada mengarang isi.
+    untuk file lokal). Audio DITRANSKRIPKAN lewat zeline.transcribe — dulu tool ini
+    hanya menyarankan "pakai STT/Whisper" padahal tool itu tidak ada sama sekali,
+    jadi voice note selalu berakhir jadi permintaan maaf.
     """
     src = (path_or_url or "").strip()
     if not src:
@@ -814,18 +818,41 @@ def _analyze_media(path_or_url: str, question: str, workspace: Path) -> str:
             return f"ERROR: not a file or not found: {target}"
         ext = target.suffix.lower()
         if ext not in _VISION_IMAGE_EXT:
-            if ext in {".mp3", ".ogg", ".wav", ".m4a", ".flac", ".opus"}:
-                return (
-                    f"File `{target.name}` is audio. The vision model only sees images. "
-                    "To 'listen', transcribe first (e.g. an STT/Whisper tool) then process the text."
+            is_video = ext in _VIDEO_EXT
+            if is_video or ext in transcribe.NATIVE_FORMATS or ext in transcribe.CONVERTIBLE_FORMATS:
+                # Transcribe rather than explaining how someone else might: this
+                # used to point at an "STT/Whisper tool" that did not exist.
+                #
+                # Video is handled here too — `.mp4`/`.webm` are in both lists —
+                # because the audio track is usually the content. The reply says so
+                # explicitly, so the model does not report a transcript as though it
+                # had watched the picture.
+                try:
+                    text = transcribe.transcribe(target, prompt=question)
+                except transcribe.TranscribeError as exc:
+                    if is_video:
+                        return (
+                            f"ERROR transcribing the audio of {target.name}: {exc}\n"
+                            "For the visuals, extract key frames with ffmpeg and call "
+                            "analyze_media on those images."
+                        )
+                    return f"ERROR transcribing {target.name}: {exc}"
+                header = f"Transcript of `{target.name}`"
+                if is_video:
+                    header += " (AUDIO TRACK ONLY — nothing here describes the picture)"
+                if question:
+                    header += f" (asked: {question[:120]})"
+                footer = (
+                    "\n\nFor what is on screen, extract key frames with ffmpeg and "
+                    "call analyze_media on those images."
+                    if is_video
+                    else ""
                 )
-            if ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
-                return (
-                    f"File `{target.name}` is video. The vision model only sees still images. "
-                    "To 'watch', extract key frames to images (e.g. ffmpeg) then analyze "
-                    "the frames with analyze_media, and/or transcribe the audio."
-                )
-            return f"ERROR: extension `{ext}` is not an image. Vision supports PNG/JPG/WEBP/GIF."
+                return f"{header}:\n\n{text}{footer}"
+            return (
+                f"ERROR: extension `{ext}` is neither an image nor audio/video. "
+                "Vision supports PNG/JPG/WEBP/GIF; audio is transcribed."
+            )
         data = target.read_bytes()
         if len(data) > VISION_MAX_BYTES:
             return f"ERROR: image too large (limit {VISION_MAX_BYTES // (1024*1024)} MB)."
@@ -1878,12 +1905,20 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "analyze_media",
-        "Look at an image (PNG/JPG/WEBP/GIF) and answer a question about it using the vision model. Accepts a workspace file path OR an http/https URL. Use when the user sends/points to an image (screenshot, photo, diagram). For audio/video, this tool explains the correct step (transcript/frame extraction).",
+        (
+            "See an image or HEAR audio. For an image (PNG/JPG/WEBP/GIF) it answers a "
+            "question about it with the vision model; for audio or a video's soundtrack "
+            "(ogg/mp3/m4a/wav/opus/mp4/webm…) it returns a transcript. Accepts a "
+            "workspace file path or an http/https URL. Use it whenever the user sends a "
+            "voice message: transcribe, then act on what they said. A video transcript "
+            "covers the audio only — for what is on screen, extract frames with ffmpeg "
+            "and analyze those images."
+        ),
         {
             "type": "object",
             "properties": {
-                "path_or_url": {"type": "string", "description": "Image file path in the workspace or an http/https URL"},
-                "question": {"type": "string", "description": "Question/instruction about the image (optional)"},
+                "path_or_url": {"type": "string", "description": "Image or audio/video file path in the workspace, or an http/https image URL"},
+                "question": {"type": "string", "description": "For an image: the question about it. For audio: optional spelling/vocabulary hints (names, jargon) to help the transcription."},
             },
             "required": ["path_or_url"],
         },
