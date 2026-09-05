@@ -343,6 +343,24 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "send_file":
         target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
         return f"📤 Sending file <code>{target}</code>" if target else "📤 Sending a file…"
+    if name == "git":
+        verb = str(arguments.get("action", "")).strip().lower()
+        labels = {
+            "status": "🌿 Checking git status…",
+            "diff": "🔍 Reading the diff…",
+            "log": "📜 Reading commit history…",
+            "show": "🔎 Reading a commit…",
+            "branch": "🌿 Listing branches…",
+        }
+        if verb in labels:
+            return labels[verb]
+        if verb == "add":
+            target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
+            return f"➕ Staging <code>{target}</code>" if target else "➕ Staging changes…"
+        if verb == "commit":
+            subject = html.escape(str(arguments.get("message", "")).splitlines()[0][:60], quote=False) if arguments.get("message") else ""
+            return f"💾 Committing: {subject}" if subject else "💾 Committing…"
+        return "🌿 Running git…"
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":
