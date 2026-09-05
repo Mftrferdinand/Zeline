@@ -834,14 +834,15 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("analyze_media", {item["function"]["name"] for item in executor.all_schemas})
         # URL internal diblokir.
         self.assertIn("blocked", executor.run("analyze_media", {"path_or_url": "http://169.254.169.254/x.png"}))
-        # File audio → diarahkan ke transkrip, bukan mengarang isi.
+        # File audio → ditranskripsi (bukan mengarang isi). Tanpa provider,
+        # jalur transkrip tetap kelihatan lewat kata "transcrib".
         audio = ws / "clip.ogg"
         audio.write_bytes(b"fakeaudio")
-        self.assertIn("audio", executor.run("analyze_media", {"path_or_url": "clip.ogg"}).lower())
-        # File video → diarahkan ke ekstraksi frame.
+        self.assertIn("transcrib", executor.run("analyze_media", {"path_or_url": "clip.ogg"}).lower())
+        # File video → audio ditranskripsi, gambar diarahkan ke ekstraksi frame.
         vid = ws / "clip.mp4"
         vid.write_bytes(b"fakevideo")
-        self.assertIn("video", executor.run("analyze_media", {"path_or_url": "clip.mp4"}).lower())
+        self.assertIn("frames", executor.run("analyze_media", {"path_or_url": "clip.mp4"}).lower())
 
     def test_download_file_is_workspace_gated_and_ssrf_protected(self):
         safe = self.tools.ToolExecutor("telegram:100", profile="safe", workspace=self.home)
