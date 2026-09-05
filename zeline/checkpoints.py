@@ -62,6 +62,43 @@ def _normalize(path: str | Path) -> Path:
     return Path(path).expanduser().resolve(strict=False)
 
 
+def _within(target: Path, workspace: Path | None) -> bool:
+    """True when ``target`` sits inside ``workspace``. None = no restriction.
+
+    The store is deliberately global — one operator, one machine, every
+    workspace — so `zeline undo` can reach a file whatever directory the
+    operator is standing in. That is right for the operator at a shell and
+    WRONG for the agent: its file tools are confined to one workspace, so
+    letting it restore by id would hand it a write outside that boundary. Every
+    agent-facing entry point passes a workspace and this is the gate.
+    """
+    if workspace is None:
+        return True
+    root = _normalize(workspace)
+    return target == root or target.is_relative_to(root)
+
+
+def format_age(ts: float) -> str:
+    """Human age of a checkpoint: one spelling for the CLI, the tool, and chat.
+
+    Lives here rather than in each surface because a checkpoint's age is the
+    only thing an operator uses to recognise it ("the one from a minute ago"),
+    and three surfaces rendering it three ways would make the same snapshot
+    look like different snapshots.
+    """
+    try:
+        seconds = max(0, int(time.time() - float(ts or 0)))
+    except (TypeError, ValueError):
+        return "unknown age"
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
 def _root() -> Path:
     return config.DATA_DIR / "checkpoints"
 
@@ -162,11 +199,21 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
         return None
 
 
-def list_checkpoints(path: str | Path | None = None, limit: int = 50) -> list[dict[str, Any]]:
+def list_checkpoints(
+    path: str | Path | None = None,
+    limit: int = 50,
+    workspace: str | Path | None = None,
+) -> list[dict[str, Any]]:
     entries = _load_index()
     if path is not None:
         wanted = str(_normalize(path))
         entries = [item for item in entries if str(item.get("path")) == wanted]
+    if workspace is not None:
+        root = _normalize(workspace)
+        entries = [
+            item for item in entries
+            if _within(_normalize(str(item.get("path", ""))), root)
+        ]
     entries.sort(key=lambda item: float(item.get("ts", 0)), reverse=True)
     return entries[: max(1, limit)]
 
@@ -178,7 +225,7 @@ def find(checkpoint_id: str) -> dict[str, Any] | None:
     return None
 
 
-def restore(checkpoint_id: str) -> tuple[bool, str]:
+def restore(checkpoint_id: str, workspace: str | Path | None = None) -> tuple[bool, str]:
     """Put a snapshot's bytes back. Snapshots the current file first."""
     entry = find(checkpoint_id)
     if entry is None:
@@ -189,6 +236,10 @@ def restore(checkpoint_id: str) -> tuple[bool, str]:
     target = _normalize(str(entry.get("path", "")))
     if not str(entry.get("path", "")):
         return False, f"checkpoint {checkpoint_id} has no target path"
+    if not _within(target, None if workspace is None else _normalize(workspace)):
+        # Reported as "not found" on purpose: naming the outside path would let
+        # a caller enumerate files in other workspaces one id at a time.
+        return False, f"no checkpoint with id {checkpoint_id} in this workspace"
     # Make the undo undoable before touching anything.
     snapshot(target, reason="pre-restore")
     try:
@@ -219,7 +270,11 @@ def clear() -> int:
     return removed
 
 
-def diff_preview(checkpoint_id: str, max_lines: int = 40) -> str:
+def diff_preview(
+    checkpoint_id: str,
+    max_lines: int = 40,
+    workspace: str | Path | None = None,
+) -> str:
     """Unified diff between a checkpoint and the file's current content."""
     import difflib
 
@@ -228,6 +283,10 @@ def diff_preview(checkpoint_id: str, max_lines: int = 40) -> str:
         return f"no checkpoint with id {checkpoint_id}"
     blob = _root() / str(entry.get("blob", ""))
     target = _normalize(str(entry.get("path", "")))
+    if not _within(target, None if workspace is None else _normalize(workspace)):
+        # A diff is a read of two files. Refusing it keeps the tool from
+        # printing the contents of a file outside the agent's workspace.
+        return f"no checkpoint with id {checkpoint_id} in this workspace"
     try:
         old = blob.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     except OSError:

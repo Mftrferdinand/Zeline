@@ -1710,11 +1710,66 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["start", "model", "status", "repository", "deleterepository", "stop", "new", "version", "update"],
+            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "stop", "new", "version", "update"],
         )
         self.assertEqual(commands[0]["description"], "Start Zeline")
         by_name = {item["command"]: item["description"] for item in commands}
         self.assertIn("active turn", by_name["stop"].lower())
+
+    def test_telegram_owner_undo_lists_and_restores_a_workspace_checkpoint(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        checkpoints = importlib.import_module("zeline.checkpoints")
+        workspace = Path(self.temp.name) / "workspace"
+        workspace.mkdir()
+        target = workspace / "notes.md"
+        target.write_text("before\n", encoding="utf-8")
+        checkpoint_id = checkpoints.snapshot(target)
+        target.write_text("after\n", encoding="utf-8")
+
+        with mock.patch.object(telegram.config, "WORKSPACE", str(workspace)), mock.patch.object(telegram, "_api_call") as api:
+            handled = telegram._handle_command_update(
+                "bot-api", "/undo", object(), "telegram:42", 42,
+                stop_event=threading.Event(), tool_profile="full", allowed=[42],
+            )
+        self.assertTrue(handled)
+        self.assertIn(checkpoint_id, api.call_args.kwargs["text"])
+        self.assertIn("checkpoints", api.call_args.kwargs["text"])
+
+        with mock.patch.object(telegram.config, "WORKSPACE", str(workspace)), mock.patch.object(telegram, "_api_call") as api:
+            handled = telegram._handle_command_update(
+                "bot-api", f"/undo {checkpoint_id}", object(), "telegram:42", 42,
+                stop_event=threading.Event(), tool_profile="full", allowed=[42],
+            )
+        self.assertTrue(handled)
+        self.assertIn("restored", api.call_args.kwargs["text"])
+        self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
+
+    def test_telegram_undo_and_stats_are_owner_only(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        for command in ("/undo", "/stats"):
+            with self.subTest(command=command), mock.patch.object(telegram, "_api_call") as api:
+                handled = telegram._handle_command_update(
+                    "bot-api", command, object(), "telegram:42", 42,
+                    stop_event=threading.Event(), tool_profile="full", allowed=[99],
+                )
+            self.assertTrue(handled)
+            self.assertIn("owner", api.call_args.kwargs["text"].lower())
+
+    def test_telegram_stats_card_reports_real_usage_without_exposing_secrets(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        usage = importlib.import_module("zeline.usage_stats")
+        usage.UsageStore().record("test-model", 1200, 300, identity="telegram:42")
+        with mock.patch.object(telegram, "_api_call") as api:
+            handled = telegram._handle_command_update(
+                "bot-api", "/stats --days 7", object(), "telegram:42", 42,
+                stop_event=threading.Event(), tool_profile="full", allowed=[42],
+            )
+        self.assertTrue(handled)
+        text = api.call_args.kwargs["text"]
+        self.assertIn("Token usage", text)
+        self.assertIn("test-model", text)
+        self.assertIn("1.5k", text)
+        self.assertEqual(api.call_args.kwargs["parse_mode"], "HTML")
 
     def test_telegram_status_reports_zeline_style_runtime_and_coding_tools(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2583,6 +2638,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             "patch_file": {"path": "a.py"},
             "search_files": {"query": "q"},
             "download_file": {"url": "https://example.com/a.zip", "path": "a.zip"},
+            "undo_file": {"action": "list"},
             "update_task": {"task": "t", "status": "pending"},
             "manage_skill": {"action": "list"},
             "execute_code": {"code": "print(1)"},
