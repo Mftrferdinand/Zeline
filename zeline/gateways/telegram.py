@@ -121,6 +121,7 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "deleterepository", "description": "Delete a repository entry"},
         {"command": "undo", "description": "List or restore file checkpoints"},
         {"command": "stats", "description": "View token usage"},
+        {"command": "events", "description": "Recent file/skill/memory changes"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
         {"command": "version", "description": "Show version and check for updates"},
@@ -1490,6 +1491,46 @@ def _stats_card(args: str) -> str:
     return "\n".join(lines)
 
 
+def _events_card(identity: str) -> str:
+    """Recent MUTATING tool calls for this chat: what changed, and did it work.
+
+    This is the operator-facing view of the append-only audit log. It answers
+    the question the transcript can't after a failed turn — "what did the agent
+    actually change?" — because the event is recorded at tool time, not at the
+    end of a successful turn. Read-only calls are never logged, so this stays a
+    side-effect history, not an activity trace.
+    """
+    from zeline import events as events_module
+
+    rows = events_module.EventLog().recent(identity, limit=15)
+    if not rows:
+        return (
+            "🧾 No recorded changes yet. Every file write, skill edit, memory "
+            "write, or shell run in this chat is logged here — even if the turn "
+            "later fails."
+        )
+    lines = ["╭───────────────🧾", "├ <b>Recent changes</b> (newest first)"]
+    for row in rows:
+        mark = "✓" if row["status"] == "ok" else "✗"
+        tool = html.escape(str(row["tool"]))
+        detail = html.escape(str(row["detail"]).strip())
+        when = html.escape(_events_age(float(row["ts"])))
+        suffix = f" · {detail}" if detail else ""
+        lines.append(f"├ {mark} <code>{tool}</code> · {when}{suffix}")
+    lines.append("╰ These are side effects only; reads are not logged.")
+    return "\n".join(lines)
+
+
+def _events_age(ts: float) -> str:
+    """Compact age for an event row. Shares the checkpoint age vocabulary."""
+    from zeline import checkpoints
+
+    try:
+        return checkpoints.format_age(ts)
+    except Exception:
+        return ""
+
+
 #: Jendela di mana /stop berikutnya untuk identity yang sama dianggap dobel-tap
 #: dan tidak dibalas lagi. Cukup panjang untuk menutupi jeda polling + retry
 #: Telegram, cukup pendek supaya /stop iseng jam berikutnya tetap dijawab.
@@ -1556,6 +1597,7 @@ def _handle_command_update(
                 "/update — Update to the latest release\n"
                 "/undo — List or restore file checkpoints\n"
                 "/stats — View token usage\n"
+                "/events — Recent file/skill/memory changes\n"
                 "/stop — Stop the active turn\n"
                 "/new — Start a new session\n\n"
                 "Send a message to start a task"
@@ -1613,6 +1655,11 @@ def _handle_command_update(
     if command == "/stats":
         refusal = _owner_only_reply("/stats", chat_id, allowed)
         text = refusal if refusal is not None else _stats_card(args)
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        return True
+    if command == "/events":
+        refusal = _owner_only_reply("/events", chat_id, allowed)
+        text = refusal if refusal is not None else _events_card(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
         return True
     if command == "/model" and not args.strip():
@@ -2486,7 +2533,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
-        return "/status · /models · /model <id> · /undo · /stats · /version · /update · /new · /restart · /stop · /logs"
+        return "/status · /models · /model <id> · /undo · /stats · /events · /version · /update · /new · /restart · /stop · /logs"
     if command == "/status":
         return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":

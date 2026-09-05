@@ -48,6 +48,7 @@ from zeline import checkpoints, custom_tools, formatters, openapi_tools
 from zeline import plugins as plugin_bus
 from zeline import tool_index
 from zeline import mcp as mcp_module
+from zeline import events as events_module
 from zeline import _winproc
 
 ToolFunction = Callable[..., str]
@@ -2808,14 +2809,32 @@ class ToolExecutor:
 
         The hooks are deliberately outside _dispatch so that every kind of tool
         -- native, MCP and custom -- passes through the same governance point.
+        The same point records an audit event for every MUTATING call, so a side
+        effect is on record even if the turn later fails (session history is only
+        saved after a successful turn; the audit row is written at tool time).
         """
         if self.plugins is None:
-            return self._dispatch(name, args)
+            result = self._dispatch(name, args)
+            self._audit(name, args, result)
+            return result
         outcome = self.plugins.before(name, args)
         if outcome.blocked:
             return plugin_bus.denial_message(name, outcome)
         result = self._dispatch(name, outcome.args)
+        self._audit(name, outcome.args, result)
         return self.plugins.after(name, outcome.args, result)
+
+    def _audit(self, name: str, args: dict[str, Any], result: str) -> None:
+        """Record a mutating tool call to the append-only event log.
+
+        Best-effort and swallowed: an audit failure must never turn a successful
+        tool call into a failed one. Read-only tools are skipped inside
+        ``log_tool_call`` so this stays a side-effect index, not an activity log.
+        """
+        try:
+            events_module.log_tool_call(self.identity, name, args if isinstance(args, dict) else {}, result)
+        except Exception:
+            pass
 
     def _dispatch(self, name: str, args: dict[str, Any]) -> str:
         # tool_search is a discovery tool, not a capability: it only exists while

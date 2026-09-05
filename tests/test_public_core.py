@@ -1710,7 +1710,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "stop", "new", "version", "update"],
+            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "stop", "new", "version", "update"],
         )
         self.assertEqual(commands[0]["description"], "Start Zeline")
         by_name = {item["command"]: item["description"] for item in commands}
@@ -1746,7 +1746,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_undo_and_stats_are_owner_only(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        for command in ("/undo", "/stats"):
+        for command in ("/undo", "/stats", "/events"):
             with self.subTest(command=command), mock.patch.object(telegram, "_api_call") as api:
                 handled = telegram._handle_command_update(
                     "bot-api", command, object(), "telegram:42", 42,
@@ -1754,6 +1754,26 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 )
             self.assertTrue(handled)
             self.assertIn("owner", api.call_args.kwargs["text"].lower())
+
+    def test_telegram_events_card_shows_recorded_side_effects_only(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        events = importlib.import_module("zeline.events")
+        # A mutating call and a failed one are both recorded; a read is not.
+        events.log_tool_call("telegram:42", "write_file", {"path": "a.py"}, "OK, wrote 3 bytes")
+        events.log_tool_call("telegram:42", "edit_file", {"path": "b.py"}, "ERROR: not found")
+        events.log_tool_call("telegram:42", "read_file", {"path": "a.py"}, "line 1")
+        with mock.patch.object(telegram, "_api_call") as api:
+            handled = telegram._handle_command_update(
+                "bot-api", "/events", object(), "telegram:42", 42,
+                stop_event=threading.Event(), tool_profile="full", allowed=[42],
+            )
+        self.assertTrue(handled)
+        text = api.call_args.kwargs["text"]
+        self.assertIn("write_file", text)
+        self.assertIn("edit_file", text)
+        # The read-only call must not appear — this is a side-effect log.
+        self.assertNotIn("read_file", text)
+        self.assertEqual(api.call_args.kwargs["parse_mode"], "HTML")
 
     def test_telegram_stats_card_reports_real_usage_without_exposing_secrets(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
