@@ -1086,6 +1086,12 @@ class Zeline:
             }
         )
         actions: list[str] = []
+        # Anything the model saves to memory DURING reflection is an autonomous
+        # inference, not something the user stated. Tag it as source=reflection
+        # (lower confidence) so a later prune can tell self-writes from the
+        # user's own facts, without changing the fact-only tool schema.
+        previous_source = getattr(self.executor.memory, "default_source", "user")
+        self.executor.memory.default_source = "reflection"
         try:
             for _ in range(REFLECTION_TOOL_ROUNDS):
                 message = self._call_llm()
@@ -1120,6 +1126,8 @@ class Zeline:
         except ZelineError:
             actions = actions  # refleksi bersifat best-effort; error diabaikan
         finally:
+            # Kembalikan source default; instance memory dipakai lagi di sesi ini.
+            self.executor.memory.default_source = previous_source
             # Buang jejak refleksi dari history utama supaya tidak mengganggu
             # konteks percakapan berikutnya.
             self.messages = saved_messages

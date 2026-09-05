@@ -54,8 +54,23 @@ class SessionStore:
             self._persistence = None
 
     def _evict_if_needed(self) -> None:
+        # LRU eviction, but NEVER a session mid-turn. Evicting a running session
+        # orphans its worker: /stop and /steer can no longer find it, its
+        # history is not persisted, and a second turn for the same identity can
+        # start concurrently against the same mutable agent. So we walk from the
+        # oldest and evict the first IDLE one; a running session is skipped even
+        # if it is the least-recently-used.
         while len(self._sessions) >= self.max_sessions:
-            self._sessions.popitem(last=False)
+            victim = next(
+                (key for key, session in self._sessions.items() if not session.running),
+                None,
+            )
+            if victim is None:
+                # Every session is busy. Rejecting a new one here would drop the
+                # incoming message silently, so we allow a temporary overflow
+                # instead — the map shrinks back as soon as any turn finishes.
+                return
+            self._sessions.pop(victim)
 
     def get_or_create(
         self,
@@ -191,11 +206,13 @@ class SessionStore:
             pass
         return True
 
-    def reflect(self, identity: str, min_tool_calls: int = 4) -> str | None:
+    def reflect(self, identity: str, min_tool_calls: int = 5) -> str | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
 
         Dipanggil di akhir sesi penting. Aman: mengembalikan None bila sesi tidak
-        ada, terlalu ringan, atau tidak ada yang layak disimpan.
+        ada, terlalu ringan, atau tidak ada yang layak disimpan. Ambang default
+        disamakan dengan ``Zeline.reflect`` (5) supaya keputusan "sesi ini cukup
+        berbobot untuk direfleksikan" tidak berbeda tergantung pemanggil.
         """
         with self._lock:
             session = self._sessions.get(identity)

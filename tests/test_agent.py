@@ -672,6 +672,34 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("umbrella-flow/references/detail.md", summary)
         self.assertIn("absorbed into 'umbrella-flow'", summary)
 
+    def test_reflection_memory_writes_are_tagged_as_autonomous_inference(self):
+        """A fact the model saves DURING reflection is not user-stated.
+
+        The user never typed it this turn — the model inferred it while
+        reviewing. It must land with source='reflection' and below-1.0
+        confidence so a later prune can distinguish autonomous self-writes from
+        the user's own facts. The tool schema stays fact-only; the agent flips
+        the store's default source around the reflection window.
+        """
+        agent = self.agent_module.Zeline(identity="cli:reflect-mem", tool_profile="full")
+        agent.last_turn_tool_calls = 7
+        save = {"choices": [{"message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {
+                "name": "add_memory",
+                "arguments": '{"fact":"User often corrects card spacing"}'}}],
+        }}]}
+        done = {"choices": [{"message": {"role": "assistant", "content": "NO_ACTION"}}]}
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(save), FakeResponse(done)]):
+            agent.reflect(min_tool_calls=5)
+        records = agent.executor.memory.records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["source"], "reflection")
+        self.assertLess(records[0]["confidence"], 1.0)
+        # And the store is restored to user-sourced writes afterwards, so a
+        # normal turn on the same session does not keep tagging as reflection.
+        self.assertEqual(agent.executor.memory.default_source, "user")
+
     def test_web_search_uses_bing_serp_and_includes_urls(self):
         # web_search must try the Bing SERP engine first and return title+URL
         # lines (general daily-search results, not just news/wiki).
