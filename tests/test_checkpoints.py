@@ -262,6 +262,42 @@ class ToolIntegrationTests(CheckpointBase):
         self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
 
 
+class AgentUndoTests(CheckpointBase):
+    def test_agent_can_list_preview_and_restore_its_workspace_checkpoint(self):
+        target = self.file("a.py", "before\n")
+        executor = self.tools.ToolExecutor("telegram:owner", profile="workspace", workspace=str(self.work))
+        self.assertTrue(self.tools._write_file("a.py", "after\n", self.work).startswith("OK"))
+
+        listed = executor.run("undo_file", {"action": "list"})
+        self.assertIn("checkpoint(s)", listed)
+        checkpoint_id = self.checkpoints.list_checkpoints(workspace=self.work)[0]["id"]
+        preview = executor.run("undo_file", {"action": "diff", "checkpoint_id": checkpoint_id})
+        self.assertIn("before", preview)
+        restored = executor.run("undo_file", {"action": "restore", "checkpoint_id": checkpoint_id})
+        self.assertIn("restored", restored)
+        self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
+
+    def test_agent_undo_cannot_restore_a_checkpoint_outside_its_workspace(self):
+        outside = Path(self._tmp.name) / "outside"
+        outside.mkdir()
+        target = outside / "secret.py"
+        target.write_text("secret\n", encoding="utf-8")
+        checkpoint_id = self.checkpoints.snapshot(target)
+        target.write_text("changed\n", encoding="utf-8")
+        executor = self.tools.ToolExecutor("telegram:owner", profile="workspace", workspace=str(self.work))
+
+        listed = executor.run("undo_file", {"action": "list"})
+        self.assertIn("no checkpoints", listed)
+        denied = executor.run("undo_file", {"action": "restore", "checkpoint_id": checkpoint_id})
+        self.assertIn("no checkpoint", denied)
+        self.assertEqual(target.read_text(encoding="utf-8"), "changed\n")
+
+    def test_undo_file_is_not_exposed_to_the_public_safe_profile(self):
+        executor = self.tools.ToolExecutor("telegram:public", profile="safe", workspace=str(self.work))
+        denied = executor.run("undo_file", {"action": "list"})
+        self.assertIn("not allowed for profile", denied)
+
+
 class CliUndoTests(CheckpointBase):
     def test_undo_with_no_checkpoints_explains_itself(self):
         self.assertEqual(self.cli.cmd_undo(), 0)

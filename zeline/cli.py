@@ -1588,14 +1588,15 @@ def cmd_rules(directory: str | None = None) -> int:
 
 
 def _format_checkpoint_age(ts: float) -> str:
-    seconds = max(0, int(time.time() - ts))
-    if seconds < 60:
-        return f"{seconds}s ago"
-    if seconds < 3600:
-        return f"{seconds // 60}m ago"
-    if seconds < 86400:
-        return f"{seconds // 3600}h ago"
-    return f"{seconds // 86400}d ago"
+    """Kept as the CLI's name for the shared renderer in ``checkpoints``.
+
+    The tool and the Telegram card render the same ages, so the logic moved to
+    ``checkpoints.format_age``; duplicating it here once produced two spellings
+    of one snapshot's age.
+    """
+    from zeline import checkpoints
+
+    return checkpoints.format_age(ts)
 
 
 def cmd_undo(

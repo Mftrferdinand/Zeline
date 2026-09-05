@@ -223,6 +223,70 @@ def _patch_file(path: str, old_text: str, new_text: str, workspace: Path) -> str
     return result.replace("edited", "patched")
 
 
+_UNDO_ACTIONS = ("list", "diff", "restore")
+
+
+def _undo_file(action: str, workspace: Path, path: str = "", checkpoint_id: str = "") -> str:
+    """Revert a file to the bytes it had before a write in THIS workspace.
+
+    write_file/edit_file already snapshot the previous content, but until now
+    only the operator's `zeline undo` could reach those snapshots. So an agent
+    that clobbered a file it should not have had exactly one recovery move left:
+    retype the old content from memory — which is how a bad edit turns into a
+    fabricated "restore". The snapshots existed; the agent just could not see
+    them.
+
+    Every call passes ``workspace``, so the checkpoint store (deliberately
+    global, one operator/one machine) is filtered down to the files this
+    executor is already allowed to write. Without that the tool would be a
+    write primitive pointing anywhere on disk by id.
+    """
+    verb = (action or "").strip().lower()
+    if verb not in _UNDO_ACTIONS:
+        return f"ERROR undo: action must be one of {', '.join(_UNDO_ACTIONS)}."
+    if not checkpoints.enabled():
+        return (
+            "ERROR undo: checkpoints are disabled (tools.checkpoints = false), so no "
+            "previous content was recorded. Nothing can be restored."
+        )
+
+    target: Path | None = None
+    if path:
+        try:
+            target = _resolve_workspace_path(path, workspace)
+        except ValueError as exc:
+            return f"ERROR undo: {exc}"
+
+    if verb == "list":
+        entries = checkpoints.list_checkpoints(target, workspace=workspace)
+        if not entries:
+            where = f" for {target}" if target else " in this workspace"
+            return (
+                f"(no checkpoints{where}) — a checkpoint appears after write_file or "
+                "edit_file changes a file that already existed."
+            )
+        lines = [f"{len(entries)} checkpoint(s), newest first:"]
+        for entry in entries:
+            lines.append(
+                f"  {entry.get('id', '')}  {checkpoints.format_age(float(entry.get('ts', 0))):>9}  "
+                f"{str(entry.get('reason', '')):<12} {entry.get('path', '')}"
+            )
+        lines.append("Preview with action='diff', put it back with action='restore'.")
+        return "\n".join(lines)
+
+    if not checkpoint_id:
+        # Restoring "the newest" without naming it is how the wrong file gets
+        # overwritten when several are in flight, so an id is required.
+        return (
+            f"ERROR undo: action='{verb}' needs checkpoint_id. "
+            "Call action='list' first to see the ids."
+        )
+    if verb == "diff":
+        return checkpoints.diff_preview(checkpoint_id, workspace=workspace)
+    ok, message = checkpoints.restore(checkpoint_id, workspace=workspace)
+    return message if ok else f"ERROR undo: {message}"
+
+
 def _update_task(task: str, status: str, identity: str) -> str:
     """Record a task status on the identity's persistent board.
 
@@ -2080,6 +2144,40 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "undo_file",
+        (
+            "Put a workspace file back to the content it had before you wrote to "
+            "it. write_file and edit_file automatically snapshot the previous "
+            "bytes, and this reads those snapshots. Use it the moment you realise "
+            "an edit was wrong, damaged a file, or hit the wrong path — restoring "
+            "the recorded bytes is exact, whereas retyping what you think the file "
+            "used to contain is a guess. action='list' shows the checkpoints "
+            "(newest first, with ids and ages), 'diff' previews what a restore "
+            "would change, 'restore' performs it. A restore is itself snapshotted "
+            "first, so it can be undone too."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "diff", "restore"],
+                    "description": "'list' first — 'diff' and 'restore' need a checkpoint_id from it.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Optional for 'list': only checkpoints of this workspace file.",
+                },
+                "checkpoint_id": {
+                    "type": "string",
+                    "description": "Required for 'diff' and 'restore': the id shown by 'list'.",
+                },
+            },
+            "required": ["action"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "update_task",
         (
             "Track a multi-step plan on a persistent board. Call when a task starts, "
@@ -2340,6 +2438,9 @@ class ToolExecutor:
             "patch_file": lambda path, old_text, new_text: _patch_file(path, old_text, new_text, self.workspace),
             "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
+            "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
+                action, self.workspace, path=path, checkpoint_id=checkpoint_id
+            ),
             "update_task": lambda task, status: _update_task(task, status, self.identity),
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
                 action, name, content, old_text, new_text, file_path, category, absorbed_into

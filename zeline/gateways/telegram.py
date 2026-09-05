@@ -119,6 +119,8 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "status", "description": "View runtime status"},
         {"command": "repository", "description": "Download repository archive"},
         {"command": "deleterepository", "description": "Delete a repository entry"},
+        {"command": "undo", "description": "List or restore file checkpoints"},
+        {"command": "stats", "description": "View token usage"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
         {"command": "version", "description": "Show version and check for updates"},
@@ -324,6 +326,17 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
         task = html.escape(str(arguments.get("task", ""))[:120], quote=False)
         return f"📋 Updating tasks: {status} · {task}" if task else f"📋 Updating tasks: {status}"
+    if name == "undo_file":
+        action = str(arguments.get("action", "")).strip().lower()
+        if action == "list":
+            target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
+            return f"↩️ Listing checkpoints for <code>{target}</code>" if target else "↩️ Listing file checkpoints…"
+        cid = html.escape(str(arguments.get("checkpoint_id", ""))[:32], quote=False)
+        if action == "diff":
+            return f"🔍 Previewing undo <code>{cid}</code>" if cid else "🔍 Previewing an undo…"
+        if action == "restore":
+            return f"↩️ Restoring file from <code>{cid}</code>" if cid else "↩️ Restoring a file…"
+        return "↩️ Undoing a file change…"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
@@ -1365,6 +1378,118 @@ def _start_update_reply(chat_id: int, allowed: list[Any]) -> str:
     )
 
 
+def _owner_only_reply(command: str, chat_id: int, allowed: list[Any] | None) -> str | None:
+    """None = caller may proceed; a string = the refusal to send back.
+
+    /undo restores files and /stats reads a usage ledger — both are operator
+    surfaces, not something a guest in an open allowlist may reach. An empty
+    allowlist means the bot is public and has no owner to authorise them at all,
+    which is exactly when these must stay shut.
+    """
+    if not allowed:
+        return f"{command} is owner-only, and this bot has no owner allowlist. Set one with zeline setup."
+    if str(chat_id) != str(allowed[0]):
+        return f"Only the bot owner can use {command}."
+    return None
+
+
+def _undo_card(args: str) -> str:
+    """Render `zeline undo` for chat: list checkpoints, or restore one by id.
+
+    Reads the SAME workspace the agent writes in (config.WORKSPACE), so the ids
+    an operator sees here are the ids the agent's undo_file tool produced.
+    """
+    from zeline import checkpoints
+
+    if not checkpoints.enabled():
+        return "↩️ Checkpoints are disabled (tools.checkpoints = false), so there is nothing to undo."
+    workspace = config.WORKSPACE
+    target = args.strip()
+    lowered = target.lower()
+    if lowered.startswith("diff ") or lowered.startswith("--diff "):
+        checkpoint_id = target.split(None, 1)[1].strip()
+        preview = checkpoints.diff_preview(checkpoint_id, max_lines=18, workspace=workspace)
+        return "🔍 <b>Undo preview</b>\n<pre>" + html.escape(preview[:3200]) + "</pre>"
+    if not target or lowered == "list" or lowered == "--list":
+        entries = checkpoints.list_checkpoints(workspace=workspace)
+        if not entries:
+            return "↩️ No file checkpoints yet. One is recorded whenever the agent edits an existing file."
+        lines = ["╭───────────────↩️", "├ <b>File checkpoints</b> (newest first)"]
+        for entry in entries[:15]:
+            cid = html.escape(str(entry.get("id", "")))
+            age = html.escape(checkpoints.format_age(float(entry.get("ts", 0))))
+            name = html.escape(_short_path(str(entry.get("path", ""))))
+            lines.append(f"├ <code>{cid}</code> · {age} · {name}")
+        lines.append("╰ Restore one: <code>/undo &lt;id&gt;</code>")
+        return "\n".join(lines)
+    ok, message = checkpoints.restore(target, workspace=workspace)
+    return ("↩️ " if ok else "⚠️ ") + html.escape(message)
+
+
+def _stats_days(args: str) -> int | None:
+    """Parse `--days N` out of a /stats argument; None = all time."""
+    match = re.search(r"--days\s+(\d+)", args)
+    if match:
+        try:
+            return max(1, int(match.group(1)))
+        except ValueError:
+            return None
+    return None
+
+
+def _stats_card(args: str) -> str:
+    """Token usage for chat: totals + a per-model table, cost only when priced.
+
+    Mirrors `zeline stats` exactly — tokens always, money only for models the
+    operator configured a price for — and never prints the base URL or key.
+    """
+    from zeline import usage_stats
+
+    if not usage_stats.enabled():
+        return "📊 Usage tracking is disabled (agent.usage_tracking = false)."
+    days = _stats_days(args)
+    since = usage_stats.since_day_for(days)
+    window = f"last {days} day(s)" if since else "all time"
+    store = usage_stats.UsageStore()
+    totals = store.totals(since)
+    if not totals["calls"]:
+        return (
+            f"📊 <b>Token usage</b> — {html.escape(window)}\n"
+            "No usage recorded yet. It appears after the agent talks to a provider "
+            "(some OpenAI-compatible relays omit the usage block)."
+        )
+    lines = [
+        "╭───────────────📊",
+        f"├ <b>Token usage</b> — {html.escape(window)}",
+        (
+            f"├ {totals['calls']} call(s) · {totals['models']} model(s)\n"
+            f"├ {usage_stats.format_tokens(totals['total_tokens'])} tokens "
+            f"({usage_stats.format_tokens(totals['prompt_tokens'])} in / "
+            f"{usage_stats.format_tokens(totals['completion_tokens'])} out)"
+        ),
+    ]
+    any_priced = False
+    priced_total = 0.0
+    for row in store.by_model(since)[:12]:
+        cost = usage_stats.cost_for(row["bucket"], row["prompt_tokens"], row["completion_tokens"])
+        if cost is None:
+            cost_text = "—"
+        else:
+            any_priced = True
+            priced_total += cost
+            cost_text = f"{cost:,.4f}"
+        name = html.escape(str(row["bucket"])[:34])
+        lines.append(
+            f"├ <code>{name}</code> · {row['calls']}× · "
+            f"{usage_stats.format_tokens(row['total_tokens'])} · {cost_text}"
+        )
+    if any_priced:
+        lines.append(f"╰ Priced subtotal: {priced_total:,.4f} (configured unit; '—' = unpriced)")
+    else:
+        lines.append("╰ No prices configured, so no cost is shown (Zeline never guesses prices).")
+    return "\n".join(lines)
+
+
 #: Jendela di mana /stop berikutnya untuk identity yang sama dianggap dobel-tap
 #: dan tidak dibalas lagi. Cukup panjang untuk menutupi jeda polling + retry
 #: Telegram, cukup pendek supaya /stop iseng jam berikutnya tetap dijawab.
@@ -1429,6 +1554,8 @@ def _handle_command_update(
                 "/status — View runtime status\n"
                 "/version — Show version, check for updates\n"
                 "/update — Update to the latest release\n"
+                "/undo — List or restore file checkpoints\n"
+                "/stats — View token usage\n"
                 "/stop — Stop the active turn\n"
                 "/new — Start a new session\n\n"
                 "Send a message to start a task"
@@ -1477,6 +1604,16 @@ def _handle_command_update(
                 "ambiguous": "Multiple entries matched. Use a more specific project name or link.",
             }[result]
         _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
+        return True
+    if command == "/undo":
+        refusal = _owner_only_reply("/undo", chat_id, allowed)
+        text = refusal if refusal is not None else _undo_card(args)
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        return True
+    if command == "/stats":
+        refusal = _owner_only_reply("/stats", chat_id, allowed)
+        text = refusal if refusal is not None else _stats_card(args)
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
         return True
     if command == "/model" and not args.strip():
         providers = _configured_providers()
@@ -2349,7 +2486,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
-        return "/status · /models · /model <id> · /version · /update · /new · /restart · /stop · /logs"
+        return "/status · /models · /model <id> · /undo · /stats · /version · /update · /new · /restart · /stop · /logs"
     if command == "/status":
         return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":
