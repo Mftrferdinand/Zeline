@@ -65,6 +65,34 @@ DOCUMENTATION_EXAMPLES = {
 }
 
 
+def _usable_bash() -> str | None:
+    """Path to a bash that can actually syntax-check a file, or None.
+
+    Not merely `which("bash")`. On Windows runners the bash on PATH may be a WSL
+    stub or a Git-for-Windows build that cannot see a `D:\\a\\...` path the way
+    Python spells it — the observed failure was `bash -n` exiting non-zero with
+    *empty* stderr for seven scripts that are valid on Linux and macOS. A green
+    check that silently proves nothing is worse than an honest skip, so this probes
+    a known-good file and only returns bash if the probe passes.
+
+    Skipping the shell half there is correct: .sh syntax does not vary by host OS,
+    and the Linux/macOS jobs check it. The Python half still runs everywhere, which
+    the test asserts separately.
+    """
+    import shutil
+
+    found = shutil.which("bash")
+    if not found:
+        return None
+    probe = SKILLS / "p5js" / "scripts" / "serve.sh"
+    if not probe.is_file():
+        return found
+    result = subprocess.run(
+        [found, "-n", probe.as_posix()], capture_output=True, text=True, check=False
+    )
+    return found if result.returncode == 0 else None
+
+
 def _skill_root(md: Path) -> Path:
     """The directory a bare `scripts/...` reference is relative to.
 
@@ -113,9 +141,47 @@ class FlatToFolderUpgradeTests(unittest.TestCase):
     already seeded the flat copy would keep loading it forever and never see the
     companion files. `RETIRED_BUNDLED_SKILL_DIGESTS` must therefore list every
     content digest that shipped flat — while still preserving a copy the user edited.
+
+    The digests are hardcoded rather than read back out of git. Reading them from
+    `HEAD` passes locally before the commit and then fails in CI, because after the
+    commit those paths no longer exist at `HEAD` — the test would only ever work in
+    the working tree that created it. Hardcoding matches how
+    `test_zenith_cross_reference_update_map_covers_pre_fix_revisions` pins its own
+    revisions, and the mechanism itself is exercised separately below with content
+    this test owns.
     """
 
-    CONVERTED = ("excalidraw.md", "github-auth.md", "maps.md", "p5js.md")
+    # sha256(filename) → sha256 of the flat content that shipped (LF, then CRLF).
+    RETIRED = {
+        "excalidraw.md": (
+            "b08e844e4e9152e2b91023d056e103a5d90dcc8c6170a586dd8fd71bdc4298b0",
+            (
+                "7c7f3e08c6e399ff1b3fc2ce06f98e8c0a609e47696460cc58dca0ef672cee11",
+                "6f3be51527ca53b44d29d77c5790cf57925283598906eb9722674d63fda6b692",
+            ),
+        ),
+        "github-auth.md": (
+            "c5b8b21d138f859db534e8f6963749d1d0fdb3bb46f01a2df7e60225ed69675b",
+            (
+                "a99a9fb20d9669542aa8410b48993023ca5a40bbfdf9100e3ce92ec347f20d89",
+                "c279f2ebf85b8e5fd5db4f8abd96f651d8b44d2dfdac7406dcdb3c7bdf836546",
+            ),
+        ),
+        "maps.md": (
+            "46dbb8fc8f2f62f02d43f7be721f173eb9ee2308dd08b8c9e3162109f06062e3",
+            (
+                "cc1eb650625824695ddf7b058d9b0fc78d3c16f782277e2fabf3a46484048e34",
+                "c0e39bbe525ccbc25ba13e6e020b105432e7582dfcb57147c6cbcabb209c428f",
+            ),
+        ),
+        "p5js.md": (
+            "4e44193e36cedab0ffe2509872260c4b961eabac911b88b50900b5725d82cc34",
+            (
+                "fe4ac4983bc33a811b0ad3c221513ccd5dcd797ee0a6803c7e5734239fd6fec8",
+                "4281cb904dc78fe1a3f5769350a4921aee34bb72f24250c9cac2f9a82c724ac6",
+            ),
+        ),
+    }
 
     def setUp(self) -> None:
         import tempfile
@@ -128,15 +194,6 @@ class FlatToFolderUpgradeTests(unittest.TestCase):
         self.skills = importlib.import_module("zeline.skills")
         self.public = self.skills.PUBLIC_SKILLS_DIR
         self.public.mkdir(parents=True, exist_ok=True)
-        # The exact bytes a previous version seeded.
-        self.flat = {}
-        for name in self.CONVERTED:
-            self.flat[name] = subprocess.run(
-                ["git", "show", f"HEAD:zeline/skills/{name}"],
-                capture_output=True,
-                check=True,
-                cwd=Path(__file__).resolve().parents[1],
-            ).stdout
 
     def tearDown(self) -> None:
         import shutil
@@ -149,34 +206,63 @@ class FlatToFolderUpgradeTests(unittest.TestCase):
         for name in [n for n in list(sys.modules) if n == "zeline" or n.startswith("zeline.")]:
             sys.modules.pop(name, None)
 
-    def test_an_untouched_flat_copy_is_retired_and_replaced_by_the_folder(self):
-        for name, blob in self.flat.items():
-            (self.public / name).write_bytes(blob)
-        self.skills.seed_skills()
-        for name in self.CONVERTED:
-            with self.subTest(skill=name):
-                self.assertFalse(
-                    (self.public / name).exists(),
-                    f"{name} survived; the install keeps loading the flat version",
-                )
-                self.assertTrue((self.public / name.removesuffix(".md") / "SKILL.md").is_file())
+    def test_each_converted_skill_is_registered_for_retirement(self):
+        """Missing an entry means the stale flat copy wins forever, silently."""
+        import hashlib
 
-    def test_a_customized_flat_copy_is_never_deleted(self):
-        """Losing a user's edits to make room for a bundled update is unacceptable."""
-        edited = self.public / "maps.md"
-        edited.write_bytes(self.flat["maps.md"] + b"\n<!-- my own note -->\n")
+        table = self.skills.RETIRED_BUNDLED_SKILL_DIGESTS
+        for name, (filename_digest, content_digests) in self.RETIRED.items():
+            with self.subTest(skill=name):
+                self.assertEqual(hashlib.sha256(name.encode()).hexdigest(), filename_digest)
+                self.assertIn(filename_digest, table)
+                # Both line-ending revisions: the package ships LF, a Windows
+                # checkout of the repo can seed CRLF, and only listed digests are
+                # removed.
+                for digest in content_digests:
+                    self.assertIn(digest, table[filename_digest])
+
+    def test_each_converted_skill_now_seeds_as_a_folder(self):
         self.skills.seed_skills()
+        for name in self.RETIRED:
+            stem = name.removesuffix(".md")
+            with self.subTest(skill=stem):
+                self.assertTrue((self.public / stem / "SKILL.md").is_file())
+                self.assertFalse((self.public / name).exists())
+
+    def test_an_untouched_seeded_copy_is_retired_on_upgrade(self):
+        """The mechanism, exercised with content this test owns end to end."""
+        import hashlib
+        from unittest import mock
+
+        stale = self.public / "obsolete-skill.md"
+        body = b"# Obsolete\n\nSuperseded by a folder skill.\n"
+        stale.write_bytes(body)
+        filename_digest = hashlib.sha256(stale.name.encode()).hexdigest()
+        with mock.patch.dict(
+            self.skills.RETIRED_BUNDLED_SKILL_DIGESTS,
+            {filename_digest: (hashlib.sha256(body).hexdigest(),)},
+            clear=True,
+        ):
+            self.skills.seed_skills()
+        self.assertFalse(stale.exists(), "an untouched retired copy must be removed")
+
+    def test_a_customized_copy_is_never_deleted(self):
+        """Losing a user's edits to make room for a bundled update is unacceptable."""
+        import hashlib
+        from unittest import mock
+
+        edited = self.public / "obsolete-skill.md"
+        shipped = b"# Obsolete\n\nSuperseded by a folder skill.\n"
+        edited.write_bytes(shipped + b"\n<!-- my own note -->\n")
+        filename_digest = hashlib.sha256(edited.name.encode()).hexdigest()
+        with mock.patch.dict(
+            self.skills.RETIRED_BUNDLED_SKILL_DIGESTS,
+            {filename_digest: (hashlib.sha256(shipped).hexdigest(),)},
+            clear=True,
+        ):
+            self.skills.seed_skills()
         self.assertTrue(edited.is_file())
         self.assertIn("my own note", edited.read_text(encoding="utf-8"))
-
-    def test_crlf_revisions_are_retired_too(self):
-        """A Windows checkout seeds CRLF; that copy is just as stale."""
-        for name, blob in self.flat.items():
-            (self.public / name).write_bytes(blob.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
-        self.skills.seed_skills()
-        for name in self.CONVERTED:
-            with self.subTest(skill=name):
-                self.assertFalse((self.public / name).exists())
 
 
 class BundledSkillReferenceTests(unittest.TestCase):
@@ -227,6 +313,7 @@ class BundledSkillReferenceTests(unittest.TestCase):
     def test_every_shipped_script_parses(self):
         """A script that does not parse is worse than a missing one: it looks fine."""
         failures: list[str] = []
+        bash = _usable_bash()
         for script in sorted(SKILLS.rglob("scripts/*")):
             if not script.is_file():
                 continue
@@ -238,13 +325,16 @@ class BundledSkillReferenceTests(unittest.TestCase):
                     failures.append(f"{script.relative_to(SKILLS)}: {exc.msg.splitlines()[0][:90]}")
                 finally:
                     pyc.unlink(missing_ok=True)
-            elif script.suffix in {".sh", ".bash"}:
+            elif script.suffix in {".sh", ".bash"} and bash:
                 result = subprocess.run(
-                    ["bash", "-n", str(script)], capture_output=True, text=True, check=False
+                    [bash, "-n", script.as_posix()], capture_output=True, text=True, check=False
                 )
                 if result.returncode != 0:
                     failures.append(f"{script.relative_to(SKILLS)}: {result.stderr.strip()[:110]}")
         self.assertEqual(failures, [])
+        # The Python half must have run regardless, or a green result here would be
+        # meaningless on a runner without a shell.
+        self.assertTrue(any(p.suffix == ".py" for p in SKILLS.rglob("scripts/*")))
 
     def test_the_unresolved_reference_backlog_only_shrinks(self):
         """A ratchet, because the corpus is mid-migration.
