@@ -3146,7 +3146,10 @@ def _dispatch_update(
             #     sebagai turn baru duluan.
             #   • BIASA (pertanyaan santai) → sisipkan sebagai steer guidance;
             #     turn berjalan menyerapnya, tidak diinterupsi.
-            prog = sessions.progress(identity)
+            # getattr defensif: SessionStore nyata punya method ini; stub/test
+            # yang tidak, otomatis fall-through ke jalur reply normal.
+            _progress = getattr(sessions, "progress", None)
+            prog = _progress(identity) if callable(_progress) else None
             if prog is not None:
                 if sessions.classify_steer(text):
                     # Ingat task yang sedang dikerjakan (judul sesi = teks task
