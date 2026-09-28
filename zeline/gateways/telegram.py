@@ -2870,7 +2870,7 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
               timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
@@ -2958,6 +2958,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             identity=identity,
             text=text,
             tool_profile=tool_profile,
+            system_extra=system_extra,
             on_tool=on_tool,
             on_tool_result=on_tool_result,
             on_iteration=on_iteration,
@@ -3029,7 +3030,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
-def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> threading.Thread:
+def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> threading.Thread:
     """Jalankan turn di worker agar polling tetap menerima /stop dan /steer.
 
     Kirim 'typing…' SEKETIKA (sinkron, dari loop polling) sebelum worker dimulai.
@@ -3040,6 +3041,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
 
     ``reply_to_message_id`` dipakai agar bubble jawaban final nempel (quote) ke
     pesan user — jelas balasan untuk pertanyaan yang mana saat ada beberapa.
+    ``system_extra`` menyisipkan catatan runtime sekali-pakai (mis. pengingat
+    task tertunda setelah interupsi) ke turn ini tanpa mengubah history.
     """
     try:
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
@@ -3055,6 +3058,7 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
             "text": text,
             "tool_profile": tool_profile,
             "reply_to_message_id": reply_to_message_id,
+            "system_extra": system_extra,
         },
         name=f"zeline-telegram-{chat_id}",
         daemon=True,
@@ -3135,8 +3139,8 @@ def _dispatch_update(
             # deliberately checked first so /stop still escapes a question.
             if interaction.answer(identity, text):
                 return
-            # Pesan tiba saat turn LAIN masih berjalan → mid-turn steering, mirip
-            # Hermes. Klasifikasi:
+            # Pesan tiba saat turn LAIN masih berjalan → mid-turn steering.
+            # Klasifikasi:
             #   • MENDESAK (perintah/koreksi/urgensi) → interupsi task berjalan,
             #     tampilkan banner "⚡ Interrupting…", lalu jalankan pesan ini
             #     sebagai turn baru duluan.
@@ -3145,7 +3149,10 @@ def _dispatch_update(
             prog = sessions.progress(identity)
             if prog is not None:
                 if sessions.classify_steer(text):
-                    interrupted = sessions.interrupt(identity, text)
+                    # Ingat task yang sedang dikerjakan (judul sesi = teks task
+                    # yang lagi jalan) supaya Zeline bisa menawarkan lanjut nanti.
+                    held = sessions.session_title(identity)
+                    interrupted = sessions.interrupt(identity, text, held_task=held)
                     if interrupted is not None:
                         it, mx, elapsed = interrupted
                         mins = int(elapsed // 60)
@@ -3159,8 +3166,20 @@ def _dispatch_update(
                         )
                     # jalankan pesan mendesak sebagai turn baru (turn lama sudah
                     # dibatalkan; SessionStore.send serial via lock, jadi ia
-                    # menunggu turn lama benar-benar lepas lalu jalan).
-                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
+                    # menunggu turn lama benar-benar lepas lalu jalan). Sisipkan
+                    # pengingat task tertunda ke system_extra supaya Zeline INGAT
+                    # dan menawarkan melanjutkannya di akhir jawaban.
+                    held_now = sessions.held_task(identity)
+                    extra = ""
+                    if held_now:
+                        extra = (
+                            "\n\n[CATATAN RUNTIME — task tertunda]\n"
+                            f"Sebelum pesan mendesak ini, kamu sedang mengerjakan: \"{held_now}\".\n"
+                            "Task itu DIHOLD, belum selesai. Setelah menyelesaikan pesan "
+                            "sekarang, INGAT untuk menawarkan melanjutkannya kembali "
+                            "(mis. \"Mau lanjutin <task tertunda> yang tadi?\"). Jangan lupakan."
+                        )
+                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id, system_extra=extra)
                     return
                 # pesan biasa saat sibuk → steer (turn berjalan menyerapnya)
                 if sessions.steer(identity, text):

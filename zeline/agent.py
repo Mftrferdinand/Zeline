@@ -822,6 +822,7 @@ class Zeline:
         take_steer: Callable[[], str | None] | None = None,
         on_narration: Callable[[str], None] | None = None,
         on_stream_delta: Callable[[str], None] | None = None,
+        turn_extra: str = "",
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -837,7 +838,11 @@ class Zeline:
         self._drop_incomplete_tail()
         self._trim_history()
         self._should_stop = should_stop
-        self._turn_skill_context = ""
+        # ``turn_extra`` = catatan runtime sekali-pakai untuk turn ini saja (mis.
+        # pengingat task tertunda setelah interupsi). Ditaruh di skill-context
+        # ephemeral: masuk ke payload provider turn ini, TIDAK dipersist ke
+        # history — jadi tidak merusak cache percakapan lintas turn.
+        self._turn_skill_context = str(turn_extra or "").strip()
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []
         if _DAILY_CHECKIN_INTENT_RE.search(text):
@@ -856,7 +861,12 @@ class Zeline:
             )
             if not loaded.startswith("ERROR"):
                 loaded_contexts.append(f"## Auto-loaded skill: {skill_name}\n{loaded}")
-        self._turn_skill_context = "\n\n".join(loaded_contexts)
+        # Gabungkan skill auto-load dengan turn_extra (pengingat task tertunda,
+        # dll) yang sudah diset di atas — jangan sampai menimpanya.
+        _base_extra = self._turn_skill_context
+        self._turn_skill_context = "\n\n".join(
+            part for part in ([_base_extra] + loaded_contexts) if part
+        )
         self.messages.append({"role": "user", "content": text})
         self.last_turn_tool_calls = 0
         try:
