@@ -549,6 +549,19 @@ class Zeline:
             raise ZelineError("Provider returned no response choices.") from exc
         if not isinstance(message, dict):
             raise ZelineError("Provider returned an invalid message.")
+        # Last-resort fallback: a reasoning model can return content="" on the
+        # NON-stream endpoint too (the stream path already retries into here).
+        # When there is no content and no tool call but the model did emit
+        # reasoning_content/reasoning, surface that as the answer instead of the
+        # "(provider tidak mengirim jawaban teks)" placeholder — an empty bubble
+        # is strictly worse than the model's own words. Only used as a fallback;
+        # normal answers still come from `content`.
+        if not str(message.get("content") or "").strip() and not message.get("tool_calls"):
+            fallback = str(
+                message.get("reasoning_content") or message.get("reasoning") or ""
+            ).strip()
+            if fallback:
+                message["content"] = fallback
         return message
 
     def _record_usage(self, payload: Any) -> None:
