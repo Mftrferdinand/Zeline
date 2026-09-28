@@ -70,6 +70,14 @@ _MODELS_CACHE_TTL = 60.0  # detik — diperpendek agar recovery outage/perubahan
 # dan non-kritis; retry+sleep malah bikin heartbeat tersendat.
 _API_RETRIES = 3
 _RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
+# Flood control: saat Telegram balas 429 dengan `parameters.retry_after`, SELURUH
+# panggilan Bot API harus diam sampai jendela itu lewat. Tanpa ini, tiap tool
+# call baru menembak lagi ke bot yang sedang di-ban → Telegram memperpanjang ban
+# (spiral: retry_after bisa membengkak ke ribuan detik / berjam-jam). Variabel
+# modul menyimpan "sampai kapan harus diam"; semua _api_call menghormatinya.
+_flood_until: float = 0.0
+_flood_lock = threading.Lock()
+
 # Baris progres (bubble '⏰ Processing', edit feed tool) BUKAN hal kritis. Di
 # jaringan Termux yang sering drop, memanggilnya dengan timeout 65s + retry
 # akan MENAHAN loop agent tiap update → efek 'macet/lambat/cek-cek doang' dan
@@ -78,6 +86,13 @@ _RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
 # akhir (sendMessage biasa) yang tetap diretry supaya tidak pernah hilang.
 _PROGRESS_TIMEOUT = 6
 _PROGRESS_ATTEMPTS = 1
+# Throttle edit bubble progres: Telegram membatasi ~1 pesan/detik per chat.
+# Sesi dengan ribuan tool call (mis. 5000×) tadinya meng-edit bubble tiap tool
+# call → ribuan editMessageText beruntun → flood ban berjam-jam. Kita batasi
+# edit progres jadi maksimal sekali per interval ini; update yang datang lebih
+# rapat digabung (baris terbaru tetap tersimpan, dikirim saat interval lewat).
+_PROGRESS_MIN_INTERVAL = 3.0
+
 
 # Edit yang MERUPAKAN jawaban atas tap tombol (picker provider/model) HARUS
 # diretry. Dulu editMessageText selalu attempts=1, jadi satu ConnectionError
@@ -803,6 +818,7 @@ class _LiveStatus:
         self.iteration: int | None = None
         self.maximum: int | None = None
         self._last_text: str | None = None
+        self._last_edit_at: float = 0.0  # monotonic saat terakhir edit progres dikirim
         self._lock = threading.Lock()
 
     def _header(self) -> str:
@@ -866,7 +882,19 @@ class _LiveStatus:
             return
         if text == self._last_text and not force:
             return
+        # Throttle edit: batasi editMessageText jadi maks 1×/interval agar sesi
+        # dengan ribuan tool call tidak membanjiri Telegram (sumber flood ban).
+        # `force` (mis. finalize) selalu lewat. Pembuatan bubble pertama
+        # (message_id None) juga lewat — itu sekali saja per turn.
+        now = time.monotonic()
+        if (self.message_id is not None and not force
+                and now - self._last_edit_at < _PROGRESS_MIN_INTERVAL):
+            # simpan teks terbaru; heartbeat/tick berikutnya yang mengirim saat
+            # interval sudah lewat. Jangan set _last_text supaya update ini tidak
+            # dianggap "sudah terkirim".
+            return
         self._last_text = text
+        self._last_edit_at = now
         if self.message_id is None:
             payload = _api_call(
                 self.api, "sendMessage", chat_id=self.chat_id,
@@ -2406,6 +2434,14 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
     if attempts is None:
         attempts = max(1, _API_RETRIES) if method in _RETRYABLE_METHODS else 1
     attempts = max(1, attempts)
+    # Gerbang flood: kalau kita masih dalam jendela 429 (retry_after) dari
+    # panggilan sebelumnya, JANGAN menembak Telegram lagi — itu yang bikin ban
+    # memanjang. Lewati diam-diam (progress UI hilang tak apa; jawaban penting
+    # ditembak ulang setelah jendela lewat oleh pemanggil).
+    global _flood_until
+    now = time.monotonic()
+    if now < _flood_until:
+        return None
     for attempt in range(attempts):
         try:
             response = _HTTP.post(f"{api}/{method}", json=params, timeout=timeout)
@@ -2413,6 +2449,24 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
             if response.ok and payload.get("ok"):
                 return payload
             description = str(payload.get("description", "HTTP error"))[:160] if isinstance(payload, dict) else "HTTP error"
+            # 429 Too Many Requests → hormati parameters.retry_after. Setel gerbang
+            # flood global supaya SEMUA panggilan berikutnya diam sampai jendela
+            # lewat, lalu berhenti (jangan retry di sini — retry = menembak bot
+            # yang sedang di-ban = ban makin panjang).
+            if response.status_code == 429 or "too many requests" in description.lower():
+                retry_after = 0
+                if isinstance(payload, dict):
+                    params_obj = payload.get("parameters")
+                    if isinstance(params_obj, dict):
+                        retry_after = int(params_obj.get("retry_after", 0) or 0)
+                # clamp: hormati nilai server, tapi batasi ke 60s untuk UI non-kritis
+                # supaya bubble progres tidak menahan lama; jawaban akhir dikirim
+                # ulang oleh loop utama setelah jendela ini.
+                wait = max(1, retry_after)
+                with _flood_lock:
+                    _flood_until = time.monotonic() + wait
+                print(f"  [telegram] 429 flood — diam {wait}s (retry_after={retry_after})", flush=True)
+                return None
             # HTML parse error (mis. tag pre/code tak seimbang) → JANGAN sampai
             # menghilangkan pesan. Kirim ulang sekali sebagai teks polos (tanpa
             # parse_mode, entitas HTML di-escape) supaya isi tetap sampai ke user.
