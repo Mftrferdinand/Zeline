@@ -3135,6 +3135,36 @@ def _dispatch_update(
             # deliberately checked first so /stop still escapes a question.
             if interaction.answer(identity, text):
                 return
+            # Pesan tiba saat turn LAIN masih berjalan → mid-turn steering, mirip
+            # Hermes. Klasifikasi:
+            #   • MENDESAK (perintah/koreksi/urgensi) → interupsi task berjalan,
+            #     tampilkan banner "⚡ Interrupting…", lalu jalankan pesan ini
+            #     sebagai turn baru duluan.
+            #   • BIASA (pertanyaan santai) → sisipkan sebagai steer guidance;
+            #     turn berjalan menyerapnya, tidak diinterupsi.
+            prog = sessions.progress(identity)
+            if prog is not None:
+                if sessions.classify_steer(text):
+                    interrupted = sessions.interrupt(identity, text)
+                    if interrupted is not None:
+                        it, mx, elapsed = interrupted
+                        mins = int(elapsed // 60)
+                        secs = int(elapsed % 60)
+                        el = f"{mins}m {secs}s" if mins else f"{secs}s"
+                        iter_str = f", iteration {it}/{mx}" if mx else ""
+                        _api_call(
+                            api, "sendMessage", chat_id=chat_id_int,
+                            text=f"⚡ Menginterupsi task berjalan ({el} berlalu{iter_str}). "
+                                 "Aku kerjakan pesan ini dulu.",
+                        )
+                    # jalankan pesan mendesak sebagai turn baru (turn lama sudah
+                    # dibatalkan; SessionStore.send serial via lock, jadi ia
+                    # menunggu turn lama benar-benar lepas lalu jalan).
+                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
+                    return
+                # pesan biasa saat sibuk → steer (turn berjalan menyerapnya)
+                if sessions.steer(identity, text):
+                    return
             _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif document:
         filename = _document_filename(document)
