@@ -630,7 +630,7 @@ def _finalize_line(line: str) -> str:
     penanda generik 'data/other'. Baris file (📖 Reading <file>) dibiarkan apa
     adanya supaya SEMUA file yang dibaca tetap terlihat.
     """
-    prefixes = ("🌐 Searching", "🌐 Researching")
+    prefixes = ("🌐 Searching the web for", "🌐 Searching", "🌐 Researching")
     for prefix in prefixes:
         if line.startswith(prefix):
             # Ambil subjek setelah ikon+verb, buang elipsis/trailing.
