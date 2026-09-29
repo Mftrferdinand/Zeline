@@ -85,6 +85,13 @@ source tree and fails rather than publishing an install that is missing any of i
 No configuration changes are required. Existing installs can upgrade in place
 with `zeline update`, or `/update` from Telegram.
 
+### Security
+
+Publishing to PyPI goes through Trusted Publishing (OIDC), so no API token is
+stored in this repository. Provider API keys never appear in any response, and
+the progress feed prints a URL's host only — never the full URL or a proxy's
+credentials.
+
 ### Installation
 
 See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.5/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.5/CHANGELOG.md) for the full list of changes.

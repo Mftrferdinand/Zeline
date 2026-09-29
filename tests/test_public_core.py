@@ -2522,7 +2522,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         fetched = telegram._tool_progress_text("web_fetch", {"url": "https://ftmo.com/en/"})
         self.assertNotIn("ftmo.com", fetched)
         self.assertEqual(fetched, "")
-        # web_search menyebut subjek yang dicari (Hermes-style: "Searching the web for …").
+        # web_search menyebut subjek yang dicari ("Searching the web for …").
         search = telegram._tool_progress_text("web_search", {"query": "FundedNext prop trading firm evaluation challenge"})
         self.assertTrue(search.startswith("🌐 Searching the web for FundedNext"))
         # research menampilkan kueri lengkap (detail riset ada di sini).

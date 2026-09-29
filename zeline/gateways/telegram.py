@@ -376,7 +376,7 @@ def _short_host(url: str) -> str:
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     """Render one distinct HTML-safe progress message per real tool call.
 
-    Format mengikuti gaya Hermes: pendek, bersih, tanpa kata berlebih.
+    Format ringkas: pendek, bersih, tanpa kata berlebih.
     Verb langsung + preview singkat. Emoji dipertahankan.
     """
     if name == "load_skill":
@@ -3186,7 +3186,7 @@ def _dispatch_update(
     # sambil quote pesan lama), inject teks pesan yang di-quote ke awal prompt
     # supaya model tau "ini" merujuk ke pesan APA. Tanpa ini, model nebak dan
     # sering lanjutin task terakhir alih-alih yang dimaksud user. Pola sama
-    # persis seperti Hermes: [Replying to: "..."].
+    # format: [Replying to: "..."].
     reply_msg = message.get("reply_to_message") or {}
     reply_text = str(reply_msg.get("text") or reply_msg.get("caption") or "").strip()
     if reply_text and text and not text.startswith("/"):
@@ -3230,8 +3230,8 @@ def _dispatch_update(
             # deliberately checked first so /stop still escapes a question.
             if interaction.answer(identity, text):
                 return
-            # Message arrives while a turn is running → steer-first, like
-            # Hermes. Default behavior: inject the text into the running
+            # Message arrives while a turn is running → steer-first.
+            # Default behavior: inject the text into the running
             # turn via sessions.steer() so the model sees it after the next
             # tool call. NO interrupt, NO stop, NO new turn — the task
             # keeps running undisturbed. User must explicitly /stop to kill.

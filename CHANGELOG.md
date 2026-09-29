@@ -3,19 +3,19 @@
 
 ### Added
 - **`/steer <prompt>` command** (Telegram): steer the running task explicitly from the command menu; behaves like a normal message when no turn is running.
-- **Held-task memory across interruptions**: a task parked by an urgent message is remembered so Zeline can offer to resume it after the interruption is handled ([cf37e5f]).
+- **Held-task memory across interruptions**: a task parked by an urgent message is remembered so Zeline can offer to resume it after the interruption is handled.
 - **New bundled skills**: `voice-reply` (anime-female VN style, Indonesian) ([#275]), `file-converter` ([#271]), `video-downloader` ([#270]), `airdrop-manager` ([#269]).
 
 ### Changed
-- **Mid-turn steering is now steer-first**: a message sent while a turn is running is injected into the running turn (arrives after the next tool call) instead of aborting the task via a keyword heuristic. The turn keeps running; the user cancels explicitly with `/stop`. Busy-acks are terse, English-only, and debounced to one per 30s ([9802978]).
+- **Mid-turn steering is now steer-first**: a message sent while a turn is running is injected into the running turn (arrives after the next tool call) instead of aborting the task via a keyword heuristic. The turn keeps running; the user cancels explicitly with `/stop`. Busy-acks are terse, English-only, and debounced to one per 30s.
 - **Progress labels rewritten** to short action phrases (`Reading`, `Writing`, `Editing`, `Running code`, `Searching files for …`, `Searching the web for …`); trailing ellipses and filler words removed, emoji icons unchanged.
 - **Self-identity locked in**: Zeline consistently knows it is Zeline by Zerolinear, plus its configurable chat name; never answers "I don't know what Zeline/Zerolinear is".
 
 ### Fixed
 - **Web search no longer fails silently**: `r.jina.ai` reader proxy started rejecting browser User-Agents with HTTP 403, which collapsed Bing+DDG search to Google News + Wikipedia only ("web search failed on all sources"). The reader now uses a bot UA the proxy accepts; verified 0 → 7/9/6 results on representative queries.
-- **Telegram flood-ban handling**: honor `429 retry_after` and throttle progress-bubble edits so long tasks with rapid tool calls no longer trip a flood ban ([c65d98a]).
+- **Telegram flood-ban handling**: honor `429 retry_after` and throttle progress-bubble edits so long tasks with rapid tool calls no longer trip a flood ban.
 - **Reply-to context**: quoted-message text is injected as `[Replying to: "..."]` so the model resolves which message "this" refers to (distinguishes replying to the bot / own message / someone else).
-- **`sessions.progress()` guarded** for lightweight session stubs in the test suite ([b092594]).
+- **`sessions.progress()` guarded** for lightweight session stubs in the test suite.
 
 ## [0.3.4] — 2026-09-11
 
@@ -344,7 +344,8 @@ release's documented one-liner keeps working after a newer release ships.
 Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
-[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.4...main
+[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.5...main
+[0.3.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.4
 [0.3.3]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.3
 [0.3.2]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.2
@@ -354,6 +355,10 @@ Release notes for 0.2.5 and earlier are on the
 [0.2.8]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.8
 [0.2.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.7
 [0.2.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.6
+[#269]: https://github.com/Mftrferdinand/Zeline/pull/269
+[#270]: https://github.com/Mftrferdinand/Zeline/pull/270
+[#271]: https://github.com/Mftrferdinand/Zeline/pull/271
+[#275]: https://github.com/Mftrferdinand/Zeline/pull/275
 [#260]: https://github.com/Mftrferdinand/Zeline/pull/260
 [#261]: https://github.com/Mftrferdinand/Zeline/pull/261
 [#262]: https://github.com/Mftrferdinand/Zeline/pull/262
