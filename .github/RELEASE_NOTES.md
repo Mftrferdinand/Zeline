@@ -1,4 +1,4 @@
-## Zeline Release
+## Zeline v0.3.5
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
@@ -17,108 +17,73 @@ Then `zeline setup`.
 One line on every POSIX platform — Termux, Linux, macOS, iSH:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.4/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.5/install.sh && bash install.sh
 ```
 
 The installer downloads the versioned wheel and verifies it against
 `SHA256SUMS` itself, so there is nothing to check by hand.
 
-Every release carries the whole bundled surface — this one ships **255 skills**
-(109 of them the Zenith corpus) and **29 tools** — and the release workflow now
-diffs the built wheel against the source tree and fails rather than publishing an
-install that is missing any of it.
+Every release carries the whole bundled surface — this one ships **269 skills**
+and **34 tools** — and the release workflow diffs the built wheel against the
+source tree and fails rather than publishing an install that is missing any of it.
+
+### Bug fixes
+
+- **Web search no longer dies silently.** The `r.jina.ai` reader proxy — the
+  server-side renderer Zeline uses to reach Bing and DuckDuckGo from mobile /
+  Termux networks — started rejecting browser `User-Agent` strings with HTTP 403.
+  Because both primary search engines routed through it, every general query
+  quietly collapsed to only Google News RSS + Wikipedia, and users saw "web
+  search failed on all sources". The reader now uses a lightweight bot UA that
+  the proxy accepts. Verified end to end: representative queries went from 0
+  results to 7 / 9 / 6 results.
+- **Telegram flood-ban handling.** The gateway now honors Telegram's `429
+  retry_after` and throttles progress-bubble edits (minimum interval between
+  edits) so a long task with rapid tool calls no longer trips a flood ban and
+  stops updating.
+- **Reply-to context is understood.** When a user replies to a specific message
+  (e.g. "continue this" while quoting an older bubble), the quoted text is now
+  injected as `[Replying to: "..."]` so the model resolves *which* message
+  "this" refers to instead of guessing the last task. Three cases are
+  distinguished: replying to the bot, to the user's own earlier message, or to
+  someone else.
+- **Self-identity is locked in.** Zeline consistently knows it is Zeline (an
+  agentic AI framework) by Zerolinear, and its configurable chat name. It no
+  longer answers "I don't know what Zeline / Zerolinear is" when asked about
+  itself or its origin.
+- **`sessions.progress()` guarded for stub sessions** so the test suite's
+  lightweight session stubs don't crash the mid-turn path.
 
 ### Highlights
 
-- **The live Telegram feed names the work, not the function.** Eight of the
-  twenty-nine registered tools had no label and fell through to a catch-all that
-  printed the raw tool name: `🔧 recall history: lanjut`, `🔧 browser: open`,
-  `🔧 code intel: diagnostics`, `🔧 download file: <full URL>`. That is a debug
-  dump. `runtime_info` now reads as a runtime identity check, `browser` and
-  `code_intel` get a verb per action plus the page host or the file and line, and
-  `download_file` names the destination. URLs are reduced to their host, because a
-  raw URL can carry a query token or `user:pass@host` credentials. MCP tools were
-  also hitting the fallback, whose underscore substitution produced
-  `🔧 mcp  mem0  add memory`; they render as `🧩 add memory via mem0`.
-- **`/stop` lands in under 0.1 s**, down from up to 180 s. Cancellation used to be
-  a flag the agent could only notice between provider calls, so a stop issued
-  during a blocking request waited for that request to return. It now closes the
-  in-flight response and its socket, and checks cancellation before a request
-  goes out and inside the model-failover loop.
-- **A long task is no longer cut off at ten edit cycles.** `max_tool_rounds`
-  defaults to 150 (was 20) and `max_turn_seconds` to 4500 (was 1800). Twenty
-  rounds is about ten read-then-edit cycles, which a multi-file change exhausts
-  before it is done; the clock stays above `rounds × 30 s` so the round budget is
-  the real limit and the clock is a backstop for a genuinely stuck turn.
-- **The activity feed is one compact line per command.** A stack of tall code
-  cards with `COPY CODE` buttons is replaced by a single one-line card: no nested
-  language label, content flattened and capped, and the cut placed at the last
-  word boundary so a command reads as abbreviated rather than severed.
-- **Narration speaks for findings, not for every step.** The old prompt mandated
-  an opener plus a sentence per tool batch, which produced a running commentary of
-  trivial mechanical actions. Routine reads and greps now happen silently.
-- **`lanjut` resumes the session you are actually in.** Continuation resolved to
-  the newest turns sharing the newest *title*, so a fresh session whose title
-  matched an older bucket recalled the previous day's work as if it were still in
-  progress.
-- **Bundled skills work for whoever installed Zeline.** Several shipped with
-  hardcoded personal paths, accounts, and site names, so for every other user
-  they failed on the first command or pointed somewhere irrelevant.
-- **Model discovery no longer assumes one response shape.** `/models`,
-  `/v1/models`, and `/api/tags` are each tried, and `data`, `models`,
-  `data_list`, and bare list payloads all parse.
-- **A release no longer reports failure because PyPI has no Trusted Publisher.**
-  Publishing goes through Trusted Publishing (OIDC), so no API token is stored in
-  this repository — but a publisher lives in a PyPI account the workflow cannot
-  see, and the upload used to fail with `invalid-publisher` on every release and
-  paint the `pypi` deployment red for a release whose assets were built,
-  verified, attested, and published. The upload is now gated on a probe that asks
-  PyPI whether it accepts this workflow's identity, so the job is *skipped* with
-  setup instructions when no publisher exists and runs normally once one does. A
-  skipped job says "not configured"; a failed job says "broken". With the
-  publisher now registered, `pip install zeline` and `uv tool install zeline`
-  are supported from this release onward.
-- **`zeline update` restarts the gateways that were actually running.** It read
-  the selection after the stop had already deleted the state file, so an operator
-  who started only Telegram got every enabled gateway back.
+- **Mid-turn steering, Hermes-style.** A message sent while a turn is running is
+  now injected into the running turn (it arrives after the next tool call) rather
+  than aborting the task. The turn keeps running undisturbed; the user cancels
+  explicitly with `/stop`. This replaces the old keyword heuristic that would
+  interrupt and kill a task on words like "don't" or "change" — which repeatedly
+  stopped work mid-flight during a simple correction. Busy-acks are terse and in
+  English and debounced to at most one per 30 s.
+- **New `/steer <prompt>` command.** Steer the running task explicitly from the
+  command menu. When no turn is running it behaves like a normal message.
+- **Held-task memory across interruptions.** A task parked by an urgent message
+  is remembered so Zeline can offer to resume it once the interrupting message is
+  handled.
+- **Progress labels rewritten clean.** Tool progress bubbles now read like short
+  action phrases — `Reading`, `Writing`, `Editing`, `Running code`, `Searching
+  files for …`, `Searching the web for …` — with trailing ellipses and filler
+  words removed. Emoji icons are unchanged.
 
-### For contributors
+### New skills
 
-`CONTRIBUTING.md` now documents the fork-and-pull-request path. Its opening
-instruction used to be `git push -u origin <branch>` against this repository,
-which fails with 403 for anyone without push access, and the word "fork" appeared
-nowhere in it or in any README. `ZELINE.md` is this repository's project
-conventions — layout, real build and test commands, commit style, what not to
-commit — rather than a persona document, with every claim checked against the tree.
-
-### Removed
-
-The mobile-app HTTP surface has moved out of this repository. The framework ships
-the agent runtime and the messaging gateways that adapt it to a chat platform; the
-app's REST/SSE server, session store, JWT auth, and client event schema are a
-separate product with a separate release cycle, and keeping them here made a
-framework release gate on an app change. Nothing the CLI or the messaging gateways
-use is affected; a `gateways.zeline_app` entry left in an existing `config.json`
-is inert.
-
-### Security
-
-Custom tools, plugin hooks, and MCP stdio servers are arbitrary local Python in
-the agent's process and load only on the `workspace`/`full` profiles — a public
-gateway on `safe` never reaches them. Provider API keys never appear in any
-response, and the progress feed prints a URL's host only, never the full URL or a
-proxy's credentials.
+- **voice-reply** — anime-female visual-novel style voice replies (Indonesian).
+- **file-converter** — convert between common file formats.
+- **video-downloader** — download video from supported sources.
+- **airdrop-manager** — analyze and classify crypto airdrop links.
 
 ### Upgrade note
 
 No configuration changes are required. Existing installs can upgrade in place
-with `zeline update`, or `/update` from Telegram. If you had raised
-`agent.max_tool_rounds` yourself, your value is kept — the change is to the
-default for installs that never set it.
-
-### Installation
-
-See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.4/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.4/CHANGELOG.md) for the full list of changes with links to every pull request.
+with `zeline update`, or `/update` from Telegram.
 
 ### Assets
 

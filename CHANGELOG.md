@@ -1,4 +1,22 @@
 # Changelog
+## [0.3.5] — 2026-09-29
+
+### Added
+- **`/steer <prompt>` command** (Telegram): steer the running task explicitly from the command menu; behaves like a normal message when no turn is running.
+- **Held-task memory across interruptions**: a task parked by an urgent message is remembered so Zeline can offer to resume it after the interruption is handled ([cf37e5f]).
+- **New bundled skills**: `voice-reply` (anime-female VN style, Indonesian) ([#275]), `file-converter` ([#271]), `video-downloader` ([#270]), `airdrop-manager` ([#269]).
+
+### Changed
+- **Mid-turn steering is now steer-first (Hermes-style)**: a message sent while a turn is running is injected into the running turn (arrives after the next tool call) instead of aborting the task via a keyword heuristic. The turn keeps running; the user cancels explicitly with `/stop`. Busy-acks are terse, English-only, and debounced to one per 30s ([9802978]).
+- **Progress labels rewritten** to short action phrases (`Reading`, `Writing`, `Editing`, `Running code`, `Searching files for …`, `Searching the web for …`); trailing ellipses and filler words removed, emoji icons unchanged.
+- **Self-identity locked in**: Zeline consistently knows it is Zeline by Zerolinear, plus its configurable chat name; never answers "I don't know what Zeline/Zerolinear is".
+
+### Fixed
+- **Web search no longer fails silently**: `r.jina.ai` reader proxy started rejecting browser User-Agents with HTTP 403, which collapsed Bing+DDG search to Google News + Wikipedia only ("web search failed on all sources"). The reader now uses a bot UA the proxy accepts; verified 0 → 7/9/6 results on representative queries.
+- **Telegram flood-ban handling**: honor `429 retry_after` and throttle progress-bubble edits so long tasks with rapid tool calls no longer trip a flood ban ([c65d98a]).
+- **Reply-to context**: quoted-message text is injected as `[Replying to: "..."]` so the model resolves which message "this" refers to (distinguishes replying to the bot / own message / someone else).
+- **`sessions.progress()` guarded** for lightweight session stubs in the test suite ([b092594]).
+
 ## [0.3.4] — 2026-09-11
 
 ### Added
