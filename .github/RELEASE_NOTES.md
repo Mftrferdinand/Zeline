@@ -56,7 +56,7 @@ source tree and fails rather than publishing an install that is missing any of i
 
 ### Highlights
 
-- **Mid-turn steering, Hermes-style.** A message sent while a turn is running is
+- **Mid-turn steering, no more accidental cancels.** A message sent while a turn is running is
   now injected into the running turn (it arrives after the next tool call) rather
   than aborting the task. The turn keeps running undisturbed; the user cancels
   explicitly with `/stop`. This replaces the old keyword heuristic that would
@@ -84,6 +84,10 @@ source tree and fails rather than publishing an install that is missing any of i
 
 No configuration changes are required. Existing installs can upgrade in place
 with `zeline update`, or `/update` from Telegram.
+
+### Installation
+
+See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.5/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.5/CHANGELOG.md) for the full list of changes.
 
 ### Assets
 

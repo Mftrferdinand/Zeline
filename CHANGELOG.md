@@ -7,7 +7,7 @@
 - **New bundled skills**: `voice-reply` (anime-female VN style, Indonesian) ([#275]), `file-converter` ([#271]), `video-downloader` ([#270]), `airdrop-manager` ([#269]).
 
 ### Changed
-- **Mid-turn steering is now steer-first (Hermes-style)**: a message sent while a turn is running is injected into the running turn (arrives after the next tool call) instead of aborting the task via a keyword heuristic. The turn keeps running; the user cancels explicitly with `/stop`. Busy-acks are terse, English-only, and debounced to one per 30s ([9802978]).
+- **Mid-turn steering is now steer-first**: a message sent while a turn is running is injected into the running turn (arrives after the next tool call) instead of aborting the task via a keyword heuristic. The turn keeps running; the user cancels explicitly with `/stop`. Busy-acks are terse, English-only, and debounced to one per 30s ([9802978]).
 - **Progress labels rewritten** to short action phrases (`Reading`, `Writing`, `Editing`, `Running code`, `Searching files for …`, `Searching the web for …`); trailing ellipses and filler words removed, emoji icons unchanged.
 - **Self-identity locked in**: Zeline consistently knows it is Zeline by Zerolinear, plus its configurable chat name; never answers "I don't know what Zeline/Zerolinear is".
 

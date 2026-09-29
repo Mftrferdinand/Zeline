@@ -78,6 +78,13 @@ _RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
 _flood_until: float = 0.0
 _flood_lock = threading.Lock()
 
+# Debounce steer-ack: saat turn sedang jalan dan user kirim pesan (steer),
+# jangan spam bubble "⏩ Steered…" tiap pesan. Simpan timestamp ack terakhir
+# per-identity; ack berikut hanya dikirim setelah interval lewat. Module-level
+# supaya persist antar update (handler dipanggil ulang tiap pesan masuk).
+_steer_ack_ts: dict[str, float] = {}
+_STEER_ACK_INTERVAL = 30.0
+
 # Baris progres (bubble '⏰ Processing', edit feed tool) BUKAN hal kritis. Di
 # jaringan Termux yang sering drop, memanggilnya dengan timeout 65s + retry
 # akan MENAHAN loop agent tiap update → efek 'macet/lambat/cek-cek doang' dan
@@ -3237,9 +3244,8 @@ def _dispatch_update(
                 steered = sessions.steer(identity, text)
                 if steered:
                     # Debounce ack: don't spam user with ack on every steer
-                    _now = __import__("time").time()
-                    _last = getattr(_handle_update, "_steer_ack_ts", {})
-                    if _now - _last.get(identity, 0) >= 30:
+                    _now = time.monotonic()
+                    if _now - _steer_ack_ts.get(identity, 0.0) >= _STEER_ACK_INTERVAL:
                         it, mx, elapsed = prog
                         parts = []
                         mins = int(elapsed // 60)
@@ -3253,8 +3259,7 @@ def _dispatch_update(
                             text=f"⏩ Steered into current run{detail}. "
                                  "Your message arrives after the next tool call.",
                         )
-                        _last[identity] = _now
-                        _handle_update._steer_ack_ts = _last
+                        _steer_ack_ts[identity] = _now
                     return
             _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif document:
