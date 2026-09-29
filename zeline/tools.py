@@ -1259,6 +1259,10 @@ WEB_MAX_BYTES = 200_000
 WEB_MAX_RESULTS = 5
 DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB cap untuk download_file
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+# UA khusus untuk r.jina.ai: proxy ini MEMBLOKIR UA browser (Chrome/…) dengan
+# 403 tapi meloloskan UA bot ringan / curl / python-requests. Wajib beda dari
+# _UA di atas, kalau tidak seluruh SERP Bing+DDG mati dan search jadi "bego".
+_READER_UA = "curl/8.4.0"
 # Reader proxy: cepat & tahan blokir dari jaringan mobile/Termux (DuckDuckGo
 # langsung sering timeout/HTTP 000). Semua pencarian & fetch lewat sini dulu.
 _JINA_READER = "https://r.jina.ai/"
@@ -1394,13 +1398,19 @@ def _reader_get(target_url: str):
     Reader proxy (r.jina.ai) merender SERP server-side dan sesekali lambat pada
     percobaan pertama (cold), lalu sukses pada retry. Satu retry singkat menutup
     kasus 0-hasil-padahal-engine-hidup tanpa menggantung lama.
+
+    PENTING (bug 403): r.jina.ai kini MEMBLOKIR User-Agent browser (Chrome/…)
+    dengan 403, tapi meloloskan UA kosong / curl / python-requests. Mengirim
+    browser _UA di sini membuat SELURUH pencarian Bing+DDG (mesin utama untuk
+    hasil web relevan) mati diam-diam — hanya menyisakan Google News + Wikipedia
+    yang bego untuk kueri umum. Solusi: pakai UA bot ringan, BUKAN browser UA.
     """
     last_exc: Exception | None = None
     for attempt in range(2):
         try:
             resp = requests.get(
                 _JINA_READER + target_url,
-                headers={"User-Agent": _UA},
+                headers={"User-Agent": _READER_UA},
                 timeout=READER_SEARCH_TIMEOUT,
             )
             if resp.ok and resp.text.strip():
