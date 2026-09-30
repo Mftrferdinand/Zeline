@@ -243,6 +243,16 @@ zeline gateway log             Print gateway logs
 zeline gateway run             Run enabled gateways in the foreground
 zeline skills                  List installed skills
 zeline memory                  Print local CLI memory
+zeline memory consolidate      Remove duplicate and expired facts from local memory
+zeline proactive status        Show the proactive briefing job
+zeline proactive enable --chat telegram:<id> [--time 07:00]
+                               Daily self-initiated digest; silent when nothing is new
+zeline proactive disable       Remove the briefing job
+zeline curator scan            List installed skills, flagging stale or duplicated ones
+zeline curator prune [--days 90] [--yes]
+                               Dry-run (default) or archive stale skills with a ledger
+zeline curator archive <name>  Archive a skill (restorable)
+zeline curator restore <name>  Bring an archived skill back
 ```
 
 Pada peluncuran pertama, Zeline memerlukan satu gateway yang dipilih dari picker berbasis tombol panah:

@@ -96,6 +96,12 @@ _CONTINUATION_WORDS = {
 #: sesi yang berbeda hari.
 _CONTINUATION_STALE_AFTER = 6 * 3600
 
+#: Budget digest ``_recall_history``: maksimal karakter per thread dan total.
+#: Menjaga output recall tidak meledakkan context window walau archive besar.
+_RECALL_THREAD_BUDGET = 1500
+_RECALL_TOTAL_BUDGET = 6000
+_TRUNC_MARK = "…(truncated)"
+
 
 def _is_continuation_query(query: str) -> bool:
     """True bila query cuma bilang "lanjut" tanpa menyebut topik apa pun.
@@ -1907,6 +1913,14 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "consolidate_memory",
+        "Tidy this conversation's long-term memory: drop duplicate and expired "
+        "facts, keep the rest. Deterministic nudge (no LLM call) — safe to run "
+        "periodically via cron to stop memory bloat.",
+        {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "load_skill",
         "Read the full content of a skill/procedure by its skill file name.",
         {
@@ -2427,6 +2441,7 @@ class ToolExecutor:
             "add_memory": self.memory.add,
             "remove_memory": self.memory.remove,
             "list_memory": self.memory.formatted,
+            "consolidate_memory": lambda: self._consolidate_memory(),
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
@@ -2627,6 +2642,28 @@ class ToolExecutor:
         except lsp_module.LspError as exc:
             return f"ERROR code_intel: {exc}"
 
+    def _consolidate_memory(self) -> str:
+        """Rapikan memory jangka panjang: buang fakta duplikat & kedaluwarsa.
+
+        Nudge deterministik murni — tidak ada LLM call, jadi aman dipanggil
+        berkala via cron. Kontrak: ``MemoryStore.consolidate()`` mengembalikan
+        dict dengan key ``removed_duplicates``, ``removed_expired``, ``kept``.
+        """
+        try:
+            result = self.memory.consolidate()
+        except Exception as exc:  # noqa: BLE001 — tool tidak boleh meledak
+            return f"ERROR: consolidate_memory failed: {exc}"
+        try:
+            dup = int(result.get("removed_duplicates", 0))
+            exp = int(result.get("removed_expired", 0))
+            kept = int(result.get("kept", 0))
+        except (AttributeError, TypeError, ValueError):
+            return f"ERROR: consolidate_memory returned unexpected result: {result!r}"
+        return (
+            f"Consolidated memory: {dup} duplicates removed, "
+            f"{exp} expired removed, {kept} kept."
+        )
+
     def _recall_history(self, query: str = "") -> str:
         """Cari transkrip percakapan lama chat ini (archive permanen).
 
@@ -2681,14 +2718,58 @@ class ToolExecutor:
                     "instead of guessing from an older session."
                 )
             return f"No past conversation found matching '{q}'. This chat has no earlier transcript on that topic."
+        # Digest berkelompok dari FTS5 (tanpa LLM call tambahan):
+        # baris dikelompokkan per thread berdasar (title, tanggal) supaya model
+        # membaca konteks per topik, bukan tumpukan turn acak. Budget karakter
+        # menjaga output tidak meledakkan context window.
         lines = [header, ""]
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        order: list[tuple[str, str]] = []
         for r in rows:
-            who = "User" if r["role"] == "user" else "You"
-            snippet = r["content"].replace("\n", " ").strip()
-            if len(snippet) > 400:
-                snippet = snippet[:400] + "…"
-            lines.append(f"[{r['when']}] {who}: {snippet}")
-        return "\n".join(lines)
+            title = (r.get("title") or "").strip() or "(untitled)"
+            date = (r.get("when") or "")[:10] or "????-??-??"
+            key = (title, date)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(r)
+        used_total = 0
+        cut_total = False
+        for title, date in order:
+            if used_total >= _RECALL_TOTAL_BUDGET:
+                cut_total = True
+                break
+            lines.append(f"### {title} — {date}")
+            used_total += len(lines[-1]) + 1
+            used_thread = 0
+            for r in groups[(title, date)]:
+                who = "User" if r["role"] == "user" else "You"
+                snippet = r["content"].replace("\n", " ").strip()
+                if len(snippet) > 400:
+                    snippet = snippet[:400] + "…"
+                line = f"[{r['when']}] {who}: {snippet}"
+                if used_thread + len(line) + 1 > _RECALL_THREAD_BUDGET:
+                    keep = max(0, _RECALL_THREAD_BUDGET - used_thread - len(_TRUNC_MARK))
+                    line = line[:keep] + _TRUNC_MARK
+                    lines.append(line)
+                    used_total += len(line) + 1
+                    break  # thread ini dipotong; lanjut ke thread berikut
+                if used_total + len(line) + 1 > _RECALL_TOTAL_BUDGET:
+                    keep = max(0, _RECALL_TOTAL_BUDGET - used_total - len(_TRUNC_MARK))
+                    line = line[:keep] + _TRUNC_MARK
+                    lines.append(line)
+                    used_total += len(line) + 1
+                    cut_total = True
+                    break
+                lines.append(line)
+                used_total += len(line) + 1
+                used_thread += len(line) + 1
+            lines.append("")
+            if cut_total:
+                break
+        if cut_total:
+            lines.append(_TRUNC_MARK)
+        return "\n".join(lines).rstrip("\n")
 
     def _spawn_subagent(self, brief: str, system_extra: str, suffix: str) -> str:
         """Run one sub-agent to completion and return its final summary.

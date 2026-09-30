@@ -235,6 +235,16 @@ zeline gateway log             Print gateway logs
 zeline gateway run             Run enabled gateways in the foreground
 zeline skills                  List installed skills
 zeline memory                  Print local CLI memory
+zeline memory consolidate      删除本地记忆中的重复和过期条目
+zeline proactive status        查看主动简报任务
+zeline proactive enable --chat telegram:<id> [--time 07:00]
+                               每日主动摘要；无新内容时保持静默
+zeline proactive disable       删除简报任务
+zeline curator scan            列出已安装技能，标记长期未用或重复的技能
+zeline curator prune [--days 90] [--yes]
+                               默认为试运行；加 --yes 则归档并记录账本
+zeline curator archive <name>  归档技能（可恢复）
+zeline curator restore <name>  恢复已归档的技能
 ```
 
 首次启动时，Zeline 需要从方向键选择器中选定一个网关：

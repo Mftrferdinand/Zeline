@@ -1455,11 +1455,101 @@ def cmd_skills() -> int:
     return 0
 
 
-def cmd_memory() -> int:
+def cmd_memory(action: str | None = None) -> int:
     from zeline.memory import list_memory
 
+    if action == "consolidate":
+        # Nudge deterministik: bersihkan duplikat & record kedaluwarsa.
+        from zeline.memory import MemoryStore
+
+        result = MemoryStore("cli:local").consolidate()
+        print(
+            f"Consolidated: {result['removed_duplicates']} duplicates removed, "
+            f"{result['removed_expired']} expired removed, {result['kept']} kept."
+        )
+        return 0
     print(list_memory("cli:local"))
     return 0
+
+
+def cmd_proactive(action: str = "status", *, chat: str | None = None, time: str = "07:00") -> int:
+    """Kelola briefing proaktif: digest yang dikirim agen atas inisiatif sendiri."""
+    from zeline import proactive as proactive_module
+
+    if action == "enable":
+        if not chat or ":" not in chat:
+            print("Usage: zeline proactive enable --chat telegram:<chat_id> [--time 07:00]")
+            return 2
+        try:
+            job = proactive_module.enable(chat, time)
+        except Exception as exc:  # noqa: BLE001 — tampilkan alasan ke user
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"Proactive briefing enabled: {job.describe()}")
+        print("The agent sends a short digest only when there is something worth saying.")
+        print("Jobs run inside the gateway process: zeline gateway start")
+        return 0
+    if action == "disable":
+        print("Briefing disabled." if proactive_module.disable() else "No briefing job found.")
+        return 0
+    if action == "preview":
+        if not chat or ":" not in chat:
+            print("Usage: zeline proactive preview --chat telegram:<chat_id>")
+            return 2
+        print(proactive_module.preview(chat))
+        return 0
+    print(proactive_module.status())
+    return 0
+
+
+def cmd_curator(
+    action: str = "scan", *, name: str | None = None, days: int = 90, yes: bool = False
+) -> int:
+    """Rawat skill: pindai yang basi/duplikat, arsipkan, atau kembalikan."""
+    from zeline import curator as curator_module
+
+    if action == "scan":
+        skills = curator_module.scan(stale_days=days)
+        if not skills:
+            print("No skills found.")
+            return 0
+        for skill in skills:
+            flags = []
+            if skill["stale"]:
+                flags.append(f"stale ({skill['age_days']}d)")
+            if skill["possible_duplicates"]:
+                flags.append("possible dup: " + ", ".join(skill["possible_duplicates"]))
+            flag = " [" + "; ".join(flags) + "]" if flags else ""
+            print(f"  {skill['name']}{flag}")
+        return 0
+    if action in ("archive", "restore"):
+        if not name:
+            print(f"Usage: zeline curator {action} <name>")
+            return 2
+        try:
+            dst = (
+                curator_module.archive(name)
+                if action == "archive"
+                else curator_module.restore(name)
+            )
+        except curator_module.CuratorError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"{'Archived' if action == 'archive' else 'Restored'} '{name}' -> {dst}")
+        return 0
+    if action == "prune":
+        plan = curator_module.prune(stale_days=days, apply=yes)
+        if not plan:
+            print("Nothing stale enough to archive.")
+            return 0
+        for item in plan:
+            suffix = f" -> {item['archived_to']}" if yes else ""
+            print(f"  {item['name']} ({item['age_days']}d){suffix}")
+        if not yes:
+            print("Dry-run. Re-run with --yes to archive these skills.")
+        return 0
+    print("Usage: zeline curator [scan|archive <name>|restore <name>|prune [--days N] [--yes]]")
+    return 2
 
 
 def cmd_lessons() -> int:
@@ -2370,7 +2460,25 @@ def build_parser() -> argparse.ArgumentParser:
     fork_cmd.add_argument("target", help="new identity")
 
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
-    subparsers.add_parser("memory", help="view local CLI memory")
+    subparsers.add_parser("memory", help="view local CLI memory").add_argument(
+        "action", nargs="?", choices=["consolidate"], help="consolidate: remove duplicates and expired facts"
+    )
+    proactive_parser = subparsers.add_parser(
+        "proactive", help="proactive briefing the agent sends on its own"
+    )
+    proactive_parser.add_argument(
+        "action", nargs="?", choices=["enable", "disable", "status", "preview"],
+        default="status",
+    )
+    proactive_parser.add_argument("--chat", help="identity to brief, e.g. telegram:<chat_id>")
+    proactive_parser.add_argument("--time", default="07:00", help="daily time (default 07:00)")
+    curator_parser = subparsers.add_parser("curator", help="scan, archive, or prune installed skills")
+    curator_parser.add_argument(
+        "action", nargs="?", choices=["scan", "archive", "restore", "prune"], default="scan"
+    )
+    curator_parser.add_argument("name", nargs="?", help="skill name for archive/restore")
+    curator_parser.add_argument("--days", type=int, default=90, help="stale threshold in days")
+    curator_parser.add_argument("--yes", action="store_true", help="actually archive on prune")
     subparsers.add_parser("lessons", help="view lessons learned from tool failures")
 
 
@@ -2597,7 +2705,20 @@ def main(argv: list[str] | None = None) -> int:
             getattr(namespace, "n", None),
         )
     if command == "memory":
-        return cmd_memory()
+        return cmd_memory(getattr(namespace, "action", None))
+    if command == "proactive":
+        return cmd_proactive(
+            getattr(namespace, "action", None) or "status",
+            chat=getattr(namespace, "chat", None),
+            time=getattr(namespace, "time", None) or "07:00",
+        )
+    if command == "curator":
+        return cmd_curator(
+            getattr(namespace, "action", None) or "scan",
+            name=getattr(namespace, "name", None),
+            days=getattr(namespace, "days", None) or 90,
+            yes=bool(getattr(namespace, "yes", False)),
+        )
     if command == "lessons":
         return cmd_lessons()
     if command == "cron":
