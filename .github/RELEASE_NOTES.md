@@ -1,4 +1,4 @@
-## Zeline v0.3.5
+## Zeline v0.3.6
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
@@ -17,68 +17,70 @@ Then `zeline setup`.
 One line on every POSIX platform — Termux, Linux, macOS, iSH:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.5/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.6/install.sh && bash install.sh
 ```
 
 The installer downloads the versioned wheel and verifies it against
 `SHA256SUMS` itself, so there is nothing to check by hand.
 
-Every release carries the whole bundled surface — this one ships **269 skills**
-and **34 tools** — and the release workflow diffs the built wheel against the
-source tree and fails rather than publishing an install that is missing any of it.
-
-### Bug fixes
-
-- **Web search no longer dies silently.** The `r.jina.ai` reader proxy — the
-  server-side renderer Zeline uses to reach Bing and DuckDuckGo from mobile /
-  Termux networks — started rejecting browser `User-Agent` strings with HTTP 403.
-  Because both primary search engines routed through it, every general query
-  quietly collapsed to only Google News RSS + Wikipedia, and users saw "web
-  search failed on all sources". The reader now uses a lightweight bot UA that
-  the proxy accepts. Verified end to end: representative queries went from 0
-  results to 7 / 9 / 6 results.
-- **Telegram flood-ban handling.** The gateway now honors Telegram's `429
-  retry_after` and throttles progress-bubble edits (minimum interval between
-  edits) so a long task with rapid tool calls no longer trips a flood ban and
-  stops updating.
-- **Reply-to context is understood.** When a user replies to a specific message
-  (e.g. "continue this" while quoting an older bubble), the quoted text is now
-  injected as `[Replying to: "..."]` so the model resolves *which* message
-  "this" refers to instead of guessing the last task. Three cases are
-  distinguished: replying to the bot, to the user's own earlier message, or to
-  someone else.
-- **Self-identity is locked in.** Zeline consistently knows it is Zeline (an
-  agentic AI framework) by Zerolinear, and its configurable chat name. It no
-  longer answers "I don't know what Zeline / Zerolinear is" when asked about
-  itself or its origin.
-- **`sessions.progress()` guarded for stub sessions** so the test suite's
-  lightweight session stubs don't crash the mid-turn path.
+Every release carries the whole bundled surface — skills, tools, and now
+**external service connectors** — and the release workflow diffs the built
+wheel against the source tree and fails rather than publishing an install that
+is missing any of it.
 
 ### Highlights
 
-- **Mid-turn steering, no more accidental cancels.** A message sent while a turn is running is
-  now injected into the running turn (it arrives after the next tool call) rather
-  than aborting the task. The turn keeps running undisturbed; the user cancels
-  explicitly with `/stop`. This replaces the old keyword heuristic that would
-  interrupt and kill a task on words like "don't" or "change" — which repeatedly
-  stopped work mid-flight during a simple correction. Busy-acks are terse and in
-  English and debounced to at most one per 30 s.
-- **New `/steer <prompt>` command.** Steer the running task explicitly from the
-  command menu. When no turn is running it behaves like a normal message.
-- **Held-task memory across interruptions.** A task parked by an urgent message
-  is remembered so Zeline can offer to resume it once the interrupting message is
-  handled.
-- **Progress labels rewritten clean.** Tool progress bubbles now read like short
-  action phrases — `Reading`, `Writing`, `Editing`, `Running code`, `Searching
-  files for …`, `Searching the web for …` — with trailing ellipses and filler
-  words removed. Emoji icons are unchanged.
+- **Connectors.** A new `zeline.connectors` framework with a base class and
+  registry, plus three production connectors:
+  - **GitHub** — issues, pull requests, repositories.
+  - **Google** — Gmail, Calendar, Sheets, Drive.
+  - **WhatsApp** — Business Cloud API (`send_text`, `send_template`).
+- **Media tools.** `tts`, `qr_code`, `transcribe_audio`, `pdf_tool`, plus
+  `edit_image` (provider `/images/edits`), `edit_video` (ffmpeg CapCut-style
+  trim / crop / text / speed), and `generate_video` (Veo text-to-video).
+- **Parity batch.** Proactive briefings (scheduled, delivered to the owner),
+  memory consolidation nudges, a private-skill curator with a JSONL ledger, a
+  grouped recall digest, and a fix that lets the agent manage the operator's
+  own crypto wallets (signing/broadcasting still gated by confirmation).
+- **Provider API key pools.** Configure multiple keys per provider; Zeline
+  rotates automatically on rate-limit or failure.
+- **Mid-turn steering.** A message sent while a turn is running is classified:
+  an urgent correction interrupts the running task with a banner and runs
+  first; an ordinary message is injected into the running turn as steer
+  guidance (it arrives after the next tool call) without aborting the task.
+- **Task progress indicator.** `update_task` now renders as
+  `📋 Updating tasks X → status` in the live feed, and a board summary helper
+  reports `planning N task(s) — A completed, B remaining, C in progress`.
+- **Narration fallback.** Models that emit empty `content` alongside
+  `tool_calls` (some thinking-model variants) no longer go silent — the agent
+  narrates the first tool call (`Running: ls -la`, `Reading config.py…`) so
+  the user always sees what is happening.
 
-### New skills
+### Bug fixes
 
-- **voice-reply** — anime-female visual-novel style voice replies (Indonesian).
-- **file-converter** — convert between common file formats.
-- **video-downloader** — download video from supported sources.
-- **airdrop-manager** — analyze and classify crypto airdrop links.
+- **`/update` reliability.** The post-update gateway restart now retries 3
+  times with backoff and health-checks the result; a failed restart is
+  reported loudly instead of leaving the bot dead in silence.
+- **Reasoning-content fallback.** When a reasoning model returns an empty
+  `content` but fills `reasoning_content`, the non-stream path now surfaces
+  that text as the answer instead of the "(provider tidak mengirim jawaban
+  teks)" placeholder.
+- **Session amnesia after gateway restart.** The session now tracks the most
+  recent topic (`last_topic`) on every turn, so "lanjut" / "continue" after a
+  restart refers to the latest work — not the first message of the session.
+- **Steer classification is context-aware.** Urgency keywords are split into
+  always-urgent (stop, batal, cancel) and short-only (jangan, salah, bukan) —
+  a long refinement sentence like "jadi sl di 14-16$ jangan di 19$ okey" no
+  longer false-triggers an interrupt.
+- **/stop UX.** The confirmation is now a single terse line
+  (`❄️ Stopped — <title>`), the progress bubble is finalized rather than
+  deleted (so the user keeps context and can reply "lanjut"), the
+  stop-confirmation token is actually consumed (no double-send), and
+  narration is suppressed once a turn is cancelled.
+- **Telegram transport.** Honor `429 retry_after` with throttled progress
+  edits, and bust the egress-proxy cache on `getUpdates` polling.
+- **QR code tool.** The `qrcode[pil]` dependency is now declared, so the tool
+  and its tests work out of the box.
 
 ### Upgrade note
 
@@ -94,7 +96,7 @@ credentials.
 
 ### Installation
 
-See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.5/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.5/CHANGELOG.md) for the full list of changes.
+See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.6/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.6/CHANGELOG.md) for the full list of changes.
 
 ### Assets
 
