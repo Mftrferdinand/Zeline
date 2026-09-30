@@ -519,6 +519,8 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return "🪪 Checking runtime"
     if name == "list_memory":
         return "🧠 Reading memory"
+    if name == "consolidate_memory":
+        return "🧠 Consolidating memory"
     if name == "recall_history":
         query = html.escape(str(arguments.get("query", "")).strip()[:80], quote=False)
         return f"🕰 Searching past sessions for {query}" if query else "🕰 Searching past sessions"

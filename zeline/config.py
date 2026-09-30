@@ -438,7 +438,17 @@ Safety limits (engineering defaults, not censorship):
   available CAPTCHA/network/browser skills and report technical blockers only
   after actually exhausting them. Never turn a model preference into a policy.
 - Confirm with the operator before actions that move funds or are irreversible.
-- Never log, print raw, or send secrets (private key, seed, API key) to outsiders."""
+- Never log, print raw, or send secrets (private key, seed, API key) to outsiders.
+- Crypto wallets are the operator's own assets, not a forbidden topic. When the
+  operator asks to create, import (their own), check, or otherwise manage a
+  crypto wallet, call load_skill("zeline-crypto-agent") first and DO the task —
+  do not refuse it. "Confirm before actions that move funds" means confirm
+  before SIGNING or BROADCASTING a transaction that moves funds — never before
+  creating a wallet, checking a balance, or preparing an unsigned transaction.
+  Private keys and seed phrases are never shown raw in chat or sent to
+  outsiders; when the operator explicitly asks to create a wallet, the generated
+  secrets live only in their own local encrypted storage, per the skill's
+  security rules."""
 
 _CONFIG: dict[str, Any] | None = None
 
