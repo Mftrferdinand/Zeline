@@ -1087,6 +1087,156 @@ def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1
     return f"OK, generated image saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
 
 
+_VEO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_VEO_POLL_INTERVAL = 10
+_VEO_POLL_MAX_ATTEMPTS = 30  # ~5 minutes of polling
+_VEO_MAX_BYTES = 200 * 1024 * 1024
+_VEO_DURATIONS = (5, 8)
+_VEO_ASPECTS = ("16:9", "9:16")
+
+
+def _generate_video(
+    prompt: str,
+    path: str,
+    workspace: Path,
+    duration: int = 8,
+    aspect_ratio: str = "16:9",
+    operation: str = "",
+) -> str:
+    """Generate a short video clip from a text prompt via Google's Veo API.
+
+    The chat/text provider usually cannot render video, so this tool uses a
+    separate capability: a Gemini API key (``gemini_api_key`` in config, or
+    ``ZELINE_GEMINI_API_KEY``) plus a Veo video model (``video_model`` in
+    config, or ``ZELINE_VIDEO_MODEL``). Generation is a long-running
+    operation: the tool submits the job, polls for completion, downloads the
+    MP4 and writes it into the workspace. If the job is still running when
+    polling times out, the operation name is returned so a later call with
+    ``operation=<name>`` can resume instead of starting over.
+    """
+    prompt = (prompt or "").strip()
+    operation = (operation or "").strip()
+    if not prompt and not operation:
+        return "ERROR: need a text prompt describing the video to generate."
+    api_key = getattr(config, "GEMINI_API_KEY", "") or ""
+    video_model = getattr(config, "VIDEO_MODEL", "") or ""
+    if not api_key:
+        return (
+            "ERROR: video generation is not available — no Gemini API key is configured. "
+            "The owner can add one with `zeline setup` (Gemini API key for video) or the "
+            "ZELINE_GEMINI_API_KEY environment variable. A Gemini API key with Veo access "
+            "is required because the chat provider cannot render video itself."
+        )
+    if not video_model:
+        return (
+            "ERROR: no text-to-video model is configured. The owner can set one with "
+            "`zeline setup` (video model) or the ZELINE_VIDEO_MODEL environment variable, "
+            "e.g. veo-3.0-generate-001."
+        )
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".mp4":
+        return "ERROR: output path must end in .mp4."
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+
+    def _poll(op_name: str) -> dict | None:
+        url = f"{_VEO_API_BASE}/{op_name}"
+        for _ in range(_VEO_POLL_MAX_ATTEMPTS):
+            try:
+                resp = requests.get(url, headers={"x-goog-api-key": api_key}, timeout=30)
+            except requests.RequestException as exc:
+                return {"_error": f"network error while polling video job ({exc.__class__.__name__})"}
+            if not resp.ok:
+                return {"_error": f"video job poll HTTP {resp.status_code}"}
+            try:
+                data = resp.json()
+            except ValueError:
+                return {"_error": "video provider returned an unreadable poll response"}
+            if data.get("done"):
+                return data
+            time.sleep(_VEO_POLL_INTERVAL)
+        return None
+
+    if operation:
+        # Resume a previously submitted job.
+        result = _poll(operation)
+        op_name = operation
+    else:
+        try:
+            duration_int = int(duration)
+        except (TypeError, ValueError):
+            return f"ERROR: duration must be one of {', '.join(str(d) for d in _VEO_DURATIONS)} seconds."
+        if duration_int not in _VEO_DURATIONS:
+            return f"ERROR: unsupported duration '{duration}'. Allowed: {', '.join(str(d) for d in _VEO_DURATIONS)}."
+        aspect_ratio = (aspect_ratio or "16:9").strip()
+        if aspect_ratio not in _VEO_ASPECTS:
+            return f"ERROR: unsupported aspect ratio '{aspect_ratio}'. Allowed: {', '.join(_VEO_ASPECTS)}."
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"durationSeconds": duration_int, "aspectRatio": aspect_ratio},
+        }
+        try:
+            resp = requests.post(
+                f"{_VEO_API_BASE}/models/{video_model}:generateVideo",
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            return f"ERROR: could not reach the video provider ({exc.__class__.__name__}). Try again."
+        if not resp.ok:
+            hint = ""
+            if resp.status_code == 404:
+                hint = f" — the model '{video_model}' was not found. Check the video model name."
+            elif resp.status_code in (400, 403):
+                hint = " — the API key may lack Veo access or the request was rejected."
+            return f"ERROR: video provider HTTP {resp.status_code}{hint}"
+        try:
+            op_name = resp.json().get("name", "")
+        except ValueError:
+            return "ERROR: video provider returned an unreadable response."
+        if not op_name:
+            return "ERROR: video provider did not return a job id."
+        result = _poll(op_name)
+
+    if result is None:
+        return (
+            f"PENDING: video job '{op_name}' is still rendering after ~5 minutes. "
+            f"Call generate_video again with operation='{op_name}' (and the same path) to check it later."
+        )
+    if "_error" in result:
+        return f"ERROR: {result['_error']}"
+    try:
+        video_uri = result["response"]["generatedSamples"][0]["video"]["uri"]
+    except (KeyError, IndexError, TypeError):
+        err = result.get("error", {})
+        msg = err.get("message", "no video was produced") if isinstance(err, dict) else "no video was produced"
+        return f"ERROR: video generation failed: {msg}"
+    try:
+        with requests.get(video_uri, headers={"x-goog-api-key": api_key}, timeout=300, stream=True) as dl:
+            if not dl.ok:
+                return f"ERROR: could not download generated video (HTTP {dl.status_code})."
+            chunks = []
+            total = 0
+            for chunk in dl.iter_content(65536):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _VEO_MAX_BYTES:
+                    return f"ERROR: generated video exceeds the {_VEO_MAX_BYTES // (1024*1024)} MB limit."
+            raw = b"".join(chunks)
+    except requests.RequestException as exc:
+        return f"ERROR downloading generated video: {exc.__class__.__name__}"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+    except OSError as exc:
+        return f"ERROR writing video: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, generated video saved: {rel} ({_format_size(len(raw))}) using model {video_model}"
+
+
 def _schedule_task(
     action: str,
     identity: str,
@@ -1778,7 +1928,7 @@ TOOL_DEFS: list[ToolDef] = [
             "Send a file from the workspace to the user in this chat: an image, a "
             "PDF, a spreadsheet, an archive, anything you produced. Use this "
             "whenever you create a file the user should SEE — after generate_image, "
-            "after building a report/invoice/chart, after exporting data. Printing "
+            "after generate_video, after building a report/invoice/chart, after exporting data. Printing "
             "the file path alone is useless to someone on a phone; the file must be "
             "delivered. Images arrive as photos, audio as a voice/audio message, "
             "everything else as a document. Optional 'caption' is one short line of "
@@ -2005,6 +2155,22 @@ TOOL_DEFS: list[ToolDef] = [
                 "prompt": {"type": "string", "description": "Detailed description of the image to create"},
                 "path": {"type": "string", "description": "Output file path in the workspace, ending in .png/.jpg/.webp"},
                 "size": {"type": "string", "description": "Image size like 1024x1024, 1536x1024, or 1024x1536. Optional (default 1024x1024)."},
+            },
+            "required": ["prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "generate_video",
+        "Generate a short video clip from a text prompt (text-to-video) and save it into the workspace as MP4. Use when the user asks to create/render a video, animation, or clip. Requires a Gemini API key with Veo access (the chat/text model cannot render video itself) — if it is not configured, the tool says so plainly instead of faking it. Generation takes minutes; if the job is still rendering, the tool returns an operation id you can resume with the 'operation' parameter. Returns the saved file path — then call send_file with that path so the user actually SEES the video instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed description of the video to create"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .mp4"},
+                "duration": {"type": "integer", "description": "Clip length in seconds: 5 or 8. Optional (default 8)."},
+                "aspect_ratio": {"type": "string", "description": "16:9 or 9:16. Optional (default 16:9)."},
+                "operation": {"type": "string", "description": "Resume a previously submitted job by its operation id. Optional."},
             },
             "required": ["prompt", "path"],
         },
@@ -2449,6 +2615,9 @@ class ToolExecutor:
             "deep_research": lambda query: _deep_research(query),
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
+            "generate_video": lambda prompt, path, duration=8, aspect_ratio="16:9", operation="": _generate_video(
+                prompt, path, self.workspace, duration, aspect_ratio, operation
+            ),
             "send_file": lambda path, caption="": _send_file(path, self.workspace, self.identity, caption),
             "git": lambda action, path="", message="", ref="", staged=False, limit=10: _git(
                 action, self.workspace, path=path, message=message, ref=ref, staged=staged, limit=limit

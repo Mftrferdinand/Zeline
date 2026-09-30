@@ -23,6 +23,11 @@ from typing import Any
 # Default generik untuk OpenAI-compatible provider fresh install.
 # Pengguna tetap memilih model sendiri lewat `zeline setup`.
 DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_VIDEO_MODEL = "veo-3.0-generate-001"
+
+# Runtime-overridable media settings (set by _set_runtime_values on load).
+VIDEO_MODEL = ""
+GEMINI_API_KEY = ""
 DEFAULT_MAX_TOOL_ROUNDS = 150
 DEFAULT_MAX_SESSIONS = 100
 # Detik menunggu turn aktif selesai saat restart/update yang sopan sebelum
@@ -654,6 +659,8 @@ def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
         "model": "ZELINE_MODEL",
         "image_model": "ZELINE_IMAGE_MODEL",
         "audio_model": "ZELINE_AUDIO_MODEL",
+        "video_model": "ZELINE_VIDEO_MODEL",
+        "gemini_api_key": "ZELINE_GEMINI_API_KEY",
     }
     for field, env_name in mapping.items():
         value = os.environ.get(env_name)
@@ -763,7 +770,7 @@ def _provider_key_pool(provider: dict[str, Any]) -> list[str]:
 
 def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
-    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, API_KEYS, MODEL, IMAGE_MODEL, AUDIO_MODEL, GATEWAYS, NAME
+    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, API_KEYS, MODEL, IMAGE_MODEL, AUDIO_MODEL, VIDEO_MODEL, GEMINI_API_KEY, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global MAX_PARALLEL_SUBAGENTS
@@ -782,6 +789,8 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     MODEL = str(PROVIDER.get("model", DEFAULT_MODEL))
     IMAGE_MODEL = str(PROVIDER.get("image_model", ""))
     AUDIO_MODEL = str(PROVIDER.get("audio_model", ""))
+    VIDEO_MODEL = str(PROVIDER.get("video_model", "") or DEFAULT_VIDEO_MODEL)
+    GEMINI_API_KEY = str(PROVIDER.get("gemini_api_key", ""))
     GATEWAYS = cfg["gateways"]
     NAME = str(cfg.get("name", "Zeline"))
     GATEWAY_SETUP_COMPLETE = bool(cfg.get("gateway_setup_complete", False))
