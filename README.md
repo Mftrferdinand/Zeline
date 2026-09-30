@@ -250,7 +250,48 @@ zeline curator prune [--days 90] [--yes]
                                Dry-run (default) or archive stale skills with a ledger
 zeline curator archive <name>  Archive a skill (restorable)
 zeline curator restore <name>  Bring an archived skill back
+zeline connect <service>       Link an external service (e.g. github)
+zeline connectors              List connectors and their link status
+zeline disconnect <service>    Unlink an external service
 ```
+
+## Connectors
+
+Connectors link the agent to outside services so native tools can act on the
+operator's behalf. Credentials live in `~/.zeline/connectors/<id>.json`
+(mode 0600) and are never logged or exposed to the model.
+
+```text
+zeline connect github      # paste a personal access token (validated first)
+zeline connectors          # github: connected yes/no
+zeline disconnect github
+```
+
+Phase 1 ships the framework plus GitHub (list repos/issues/PRs, create issues,
+comment). Phase 2 adds Google (Gmail search/read/send, Calendar, Sheets,
+Drive) via the OAuth2 helpers in `zeline/connectors/oauth.py`. The five
+`github_*` and six `gmail_search`/`gmail_read`/`gmail_send`/`google_calendar`/
+`sheets_read`/`drive_list` native tools are owner-gated (`workspace`/`full` profiles).
+
+### Google connector setup
+
+`zeline connect google` uses Google OAuth2, so it needs a client ID + secret
+from your own Google Cloud project (one-time, ~5 minutes):
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create
+   (or pick) a project.
+2. **APIs & Services → Library**: enable *Gmail API*, *Google Calendar API*,
+   *Google Sheets API*, and *Google Drive API*.
+3. **APIs & Services → OAuth consent screen**: choose *External*, fill the
+   app name, add your Gmail as a test user.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**,
+   type *Desktop app*; copy the client ID and client secret.
+5. Run `zeline connect google`, paste the ID + secret, approve in the browser.
+   On a headless box, open the printed URL on another device, then re-run with
+   `zeline connect google --code <kode>`.
+
+Tokens (with a refresh token) are stored in
+`~/.zeline/connectors/google.json` (mode 0600) and refreshed automatically.
 
 On first launch, Zeline requires one gateway selected from an arrow-key picker:
 Telegram, WhatsApp, Webhook, or Cancel. It configures only the selected gateway,
