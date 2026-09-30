@@ -989,6 +989,45 @@ GENERATED_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_SIZE_ALLOWED = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1792x1024", "1024x1792", "auto"}
 
 
+def _save_image_item(item: Any, dest: Path, workspace: Path, image_model: str, label: str = "generated image") -> str:
+    """Decode a provider image item (b64_json or temporary URL) and write it into the workspace."""
+    # Providers return either inline base64 (b64_json) or a temporary URL.
+    raw: bytes
+    b64 = item.get("b64_json") if isinstance(item, dict) else None
+    if b64:
+        try:
+            raw = base64.b64decode(b64)
+        except (ValueError, TypeError):
+            return "ERROR: image provider returned invalid base64 data."
+    else:
+        img_url = item.get("url") if isinstance(item, dict) else None
+        if not img_url:
+            return "ERROR: image provider returned neither image data nor a URL."
+        try:
+            with requests.get(img_url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True) as img_resp:
+                if not img_resp.ok:
+                    return f"ERROR: could not download generated image (HTTP {img_resp.status_code})."
+                chunks = []
+                total = 0
+                for chunk in img_resp.iter_content(65536):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > GENERATED_IMAGE_MAX_BYTES:
+                        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+                raw = b"".join(chunks)
+        except requests.RequestException as exc:
+            return f"ERROR downloading generated image: {exc.__class__.__name__}: {exc}"
+    if len(raw) > GENERATED_IMAGE_MAX_BYTES:
+        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+    except OSError as exc:
+        return f"ERROR writing image: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, {label} saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
+
+
 def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1024") -> str:
     """Generate an image from a text prompt via the provider's images API.
 
@@ -1050,41 +1089,109 @@ def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1
         item = response.json()["data"][0]
     except (KeyError, IndexError, TypeError, ValueError):
         return "ERROR: image provider returned an unexpected response."
-    # Providers return either inline base64 (b64_json) or a temporary URL.
-    raw: bytes
-    b64 = item.get("b64_json") if isinstance(item, dict) else None
-    if b64:
-        try:
-            raw = base64.b64decode(b64)
-        except (ValueError, TypeError):
-            return "ERROR: image provider returned invalid base64 data."
-    else:
-        img_url = item.get("url") if isinstance(item, dict) else None
-        if not img_url:
-            return "ERROR: image provider returned neither image data nor a URL."
-        try:
-            with requests.get(img_url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True) as img_resp:
-                if not img_resp.ok:
-                    return f"ERROR: could not download generated image (HTTP {img_resp.status_code})."
-                chunks = []
-                total = 0
-                for chunk in img_resp.iter_content(65536):
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > GENERATED_IMAGE_MAX_BYTES:
-                        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
-                raw = b"".join(chunks)
-        except requests.RequestException as exc:
-            return f"ERROR downloading generated image: {exc.__class__.__name__}: {exc}"
-    if len(raw) > GENERATED_IMAGE_MAX_BYTES:
-        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+    return _save_image_item(item, dest, workspace, image_model)
+
+
+def _edit_image(
+    image_path: str,
+    prompt: str,
+    path: str,
+    workspace: Path,
+    mask_path: str = "",
+    size: str = "1024x1024",
+) -> str:
+    """Edit an existing image via the provider's OpenAI-compatible ``/images/edits`` endpoint.
+
+    Takes a source image from the workspace plus a text instruction describing
+    the change (e.g. "remove the people in the background") and writes the
+    edited result into the workspace. An optional mask image (white = area to
+    repaint) can steer the edit on providers that support it. Requires an
+    image model that supports edits (e.g. gpt-image-1); if the configured
+    ``image_model`` does not, the provider's error is surfaced honestly.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return "ERROR: need a text prompt describing the edit to make."
+    image_model = getattr(config, "IMAGE_MODEL", "") or ""
+    if not config.API_KEY or not config.BASE_URL:
+        return "ERROR: provider is not configured for image editing."
+    if not image_model:
+        return (
+            "ERROR: no image model is configured. The owner can set one with "
+            "`zeline setup` (image model) or the ZELINE_IMAGE_MODEL environment variable, "
+            "e.g. gpt-image-1 (which supports image edits)."
+        )
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(raw)
+        src = _resolve_workspace_path(image_path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if not src.is_file():
+        return f"ERROR: source image not found in the workspace: {image_path}"
+    if src.suffix.lower() not in _VISION_IMAGE_EXT:
+        return "ERROR: source image must be a .png/.jpg/.jpeg/.webp/.gif file."
+    mask_file = None
+    if mask_path:
+        try:
+            mask_file = _resolve_workspace_path(mask_path, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not mask_file.is_file():
+            return f"ERROR: mask image not found in the workspace: {mask_path}"
+        if mask_file.suffix.lower() not in _VISION_IMAGE_EXT:
+            return "ERROR: mask image must be a .png/.jpg/.jpeg/.webp/.gif file."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() not in _VISION_IMAGE_EXT:
+        return "ERROR: output path must end in .png/.jpg/.jpeg/.webp/.gif."
+    size = (size or "1024x1024").strip() or "1024x1024"
+    if size not in _IMAGE_SIZE_ALLOWED:
+        return f"ERROR: unsupported size '{size}'. Allowed: {', '.join(sorted(_IMAGE_SIZE_ALLOWED))}."
+    try:
+        image_bytes = src.read_bytes()
+        mask_bytes = mask_file.read_bytes() if mask_file else None
     except OSError as exc:
-        return f"ERROR writing image: {exc}"
-    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
-    return f"OK, generated image saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
+        return f"ERROR: could not read source image: {exc}"
+    files: dict[str, tuple[str, bytes, str]] = {"image": (src.name, image_bytes, "image/png")}
+    if mask_bytes is not None and mask_file is not None:
+        files["mask"] = (mask_file.name, mask_bytes, "image/png")
+    data = {"model": image_model, "prompt": prompt, "size": size, "n": "1"}
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/images/edits",
+            headers={"Authorization": f"Bearer {config.API_KEY}"},
+            files=files,
+            data=data,
+            timeout=180,
+        )
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout):
+        return (
+            f"ERROR: the image model '{image_model}' did not respond within 180s (timed out). "
+            "The model/route is likely overloaded — try again or switch the image model."
+        )
+    except requests.exceptions.ConnectionError:
+        return f"ERROR: could not connect to the image provider at {config.BASE_URL}. Check the router/proxy is running."
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the image provider ({exc.__class__.__name__}). Try again."
+    if not response.ok:
+        from zeline.agent import PROVIDER_STATUS_HINTS
+
+        if response.status_code == 404:
+            hint = (
+                f" — the model '{image_model}' or the /images/edits endpoint was not found on this provider. "
+                "Not every image model supports edits."
+            )
+        elif response.status_code in PROVIDER_STATUS_HINTS:
+            hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
+        else:
+            hint = ""
+        return f"ERROR: image provider HTTP {response.status_code}{hint}"
+    try:
+        item = response.json()["data"][0]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "ERROR: image provider returned an unexpected response."
+    return _save_image_item(item, dest, workspace, image_model, "edited image")
 
 
 _VEO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -1928,7 +2035,7 @@ TOOL_DEFS: list[ToolDef] = [
             "Send a file from the workspace to the user in this chat: an image, a "
             "PDF, a spreadsheet, an archive, anything you produced. Use this "
             "whenever you create a file the user should SEE — after generate_image, "
-            "after generate_video, after building a report/invoice/chart, after exporting data. Printing "
+            "after edit_image, after generate_video, after building a report/invoice/chart, after exporting data. Printing "
             "the file path alone is useless to someone on a phone; the file must be "
             "delivered. Images arrive as photos, audio as a voice/audio message, "
             "everything else as a document. Optional 'caption' is one short line of "
@@ -2173,6 +2280,22 @@ TOOL_DEFS: list[ToolDef] = [
                 "operation": {"type": "string", "description": "Resume a previously submitted job by its operation id. Optional."},
             },
             "required": ["prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "edit_image",
+        "Edit an existing image from the workspace with a text instruction (inpainting-style edit) and save the result as a new image file. Use when the user asks to change part of a picture — e.g. remove people or objects from the background, change colors, add/remove elements. Takes the source image path in the workspace plus a prompt describing the edit. Requires an image model that supports edits (e.g. gpt-image-1); the provider's error is surfaced honestly if it does not. Returns the saved file path — then call send_file with that path so the user actually SEES the edited image instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string", "description": "Source image path in the workspace (.png/.jpg/.jpeg/.webp/.gif)"},
+                "prompt": {"type": "string", "description": "Description of the edit to make, e.g. 'remove the people in the background'"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .png/.jpg/.webp"},
+                "mask": {"type": "string", "description": "Optional mask image path in the workspace (white = area to repaint). Best-effort; not all models use it."},
+                "size": {"type": "string", "description": "Output size like 1024x1024, 1536x1024, or 1024x1536. Optional (default 1024x1024)."},
+            },
+            "required": ["image", "prompt", "path"],
         },
         frozenset({"workspace", "full"}),
     ),
@@ -2615,6 +2738,9 @@ class ToolExecutor:
             "deep_research": lambda query: _deep_research(query),
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
+            "edit_image": lambda image, prompt, path, mask="", size="1024x1024": _edit_image(
+                image, prompt, path, self.workspace, mask, size
+            ),
             "generate_video": lambda prompt, path, duration=8, aspect_ratio="16:9", operation="": _generate_video(
                 prompt, path, self.workspace, duration, aspect_ratio, operation
             ),

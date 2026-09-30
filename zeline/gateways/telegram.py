@@ -524,6 +524,9 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "generate_video":
         prompt = html.escape(str(arguments.get("prompt", ""))[:80], quote=False)
         return f"🎬 Generating video {prompt}" if prompt else "🎬 Generating video"
+    if name == "edit_image":
+        prompt = html.escape(str(arguments.get("prompt", ""))[:80], quote=False)
+        return f"✏️ Editing image {prompt}" if prompt else "✏️ Editing image"
     if name == "recall_history":
         query = html.escape(str(arguments.get("query", "")).strip()[:80], quote=False)
         return f"🕰 Searching past sessions for {query}" if query else "🕰 Searching past sessions"
