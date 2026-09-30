@@ -250,27 +250,7 @@ zeline curator prune [--days 90] [--yes]
                                Dry-run (default) or archive stale skills with a ledger
 zeline curator archive <name>  Archive a skill (restorable)
 zeline curator restore <name>  Bring an archived skill back
-zeline connect <service>       Link an external service (e.g. github)
-zeline connectors              List connectors and their link status
-zeline disconnect <service>    Unlink an external service
 ```
-
-## Connectors
-
-Connectors link the agent to outside services so native tools can act on the
-operator's behalf. Credentials live in `~/.zeline/connectors/<id>.json`
-(mode 0600) and are never logged or exposed to the model.
-
-```text
-zeline connect github      # paste a personal access token (validated first)
-zeline connectors          # github: connected yes/no
-zeline disconnect github
-```
-
-Phase 1 ships the framework plus GitHub (list repos/issues/PRs, create issues,
-comment). OAuth2-based connectors (Google Workspace, ...) build on
-`zeline/connectors/oauth.py` and arrive in a later phase. The five
-`github_*` native tools are owner-gated (`workspace`/`full` profiles).
 
 On first launch, Zeline requires one gateway selected from an arrow-key picker:
 Telegram, WhatsApp, Webhook, or Cancel. It configures only the selected gateway,

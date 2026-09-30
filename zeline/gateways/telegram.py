@@ -492,22 +492,6 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             subject = html.escape(str(arguments.get("message", "")).splitlines()[0][:60], quote=False) if arguments.get("message") else ""
             return f"💾 Committing {subject}" if subject else "💾 Committing"
         return "🌿 Running git"
-    if name == "github_repos":
-        return "🐙 Listing GitHub repos"
-    if name == "github_issues":
-        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
-        return f"🐙 Listing issues in <code>{repo}</code>" if repo else "🐙 Listing GitHub issues"
-    if name == "github_create_issue":
-        title = html.escape(str(arguments.get("title", "")).strip()[:60], quote=False)
-        return f"🐙 Creating issue {title}" if title else "🐙 Creating GitHub issue"
-    if name == "github_issue_comment":
-        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
-        number = html.escape(str(arguments.get("number", "")).strip()[:12], quote=False)
-        where = f"<code>{repo}#{number}</code>" if repo and number else ""
-        return f"🐙 Commenting on {where}" if where else "🐙 Commenting on GitHub issue"
-    if name == "github_prs":
-        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
-        return f"🐙 Listing PRs in <code>{repo}</code>" if repo else "🐙 Listing GitHub PRs"
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":
@@ -3422,7 +3406,18 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                     # stop_event di-set, loop keluar dalam <=10s alih-alih menggantung
                     # sampai 25-35s (penyebab `gateway stop` sering nyangkut lalu
                     # butuh SIGKILL). Read-timeout diberi margin di atas long-poll.
-                    params={"offset": offset, "timeout": 10, "allowed_updates": json.dumps(["message", "callback_query"])},
+                    params={
+                        "offset": offset,
+                        "timeout": 10,
+                        "allowed_updates": json.dumps(["message", "callback_query"]),
+                        # Nonce anti-cache: beberapa egress proxy me-cache GET
+                        # secara agresif (terbukti di lapangan: respons getUpdates
+                        # basi disajikan ulang sehingga update yang sama diproses
+                        # berulang = bot spam). Param unik per request memaksa
+                        # respons segar; Telegram mengabaikan param tak dikenal.
+                        "_nc": f"{time.time_ns()}",
+                    },
+                    headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
                     timeout=20,
                 )
                 payload = response.json()

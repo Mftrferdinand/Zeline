@@ -3382,7 +3382,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         stop_event = threading.Event()
         calls = {"n": 0}
 
-        def flaky(url, params=None, timeout=None):
+        def flaky(url, params=None, timeout=None, headers=None):
             calls["n"] += 1
             # 25 kegagalan beruntun, lalu pulih, lalu hentikan loop.
             if calls["n"] <= 25:
