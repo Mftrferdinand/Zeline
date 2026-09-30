@@ -1480,6 +1480,55 @@ def cmd_skills() -> int:
     return 0
 
 
+
+def cmd_connect(service: str | None) -> int:
+    from zeline import connectors as connectors_pkg
+
+    if not service:
+        print(f"Usage: zeline connect <service>\nAvailable: {', '.join(connectors_pkg.all_ids()) or '(none)'}")
+        return 2
+    conn = connectors_pkg.get(service)
+    if conn is None:
+        print(f"Unknown connector '{service}'. Available: {', '.join(connectors_pkg.all_ids())}")
+        return 2
+    if conn.auth_kind == "pat":
+        import getpass
+
+        token = getpass.getpass(f"{conn.name} personal access token: ")
+        print(conn.connect(token=token))
+        return 0
+    print(conn.connect())
+    return 0
+
+
+def cmd_connectors() -> int:
+    from zeline import connectors as connectors_pkg
+
+    conns = connectors_pkg.all()
+    if not conns:
+        print("No connectors registered.")
+        return 0
+    for conn in conns:
+        state = conn.status()
+        mark = "yes" if state.get("connected") else "no"
+        print(f"  - {conn.id}: {conn.name} — connected: {mark} ({state.get('detail', '')})")
+    return 0
+
+
+def cmd_disconnect(service: str | None) -> int:
+    from zeline import connectors as connectors_pkg
+
+    if not service:
+        print("Usage: zeline disconnect <service>")
+        return 2
+    conn = connectors_pkg.get(service)
+    if conn is None:
+        print(f"Unknown connector '{service}'. Available: {', '.join(connectors_pkg.all_ids())}")
+        return 2
+    print(conn.disconnect())
+    return 0
+
+
 def cmd_memory(action: str | None = None) -> int:
     from zeline.memory import list_memory
 
@@ -2504,6 +2553,11 @@ def build_parser() -> argparse.ArgumentParser:
     curator_parser.add_argument("name", nargs="?", help="skill name for archive/restore")
     curator_parser.add_argument("--days", type=int, default=90, help="stale threshold in days")
     curator_parser.add_argument("--yes", action="store_true", help="actually archive on prune")
+    connect_parser = subparsers.add_parser("connect", help="link an external service (connector)")
+    connect_parser.add_argument("service", nargs="?", help="connector id, e.g. github")
+    subparsers.add_parser("connectors", help="list connectors and their link status")
+    disconnect_parser = subparsers.add_parser("disconnect", help="unlink an external service")
+    disconnect_parser.add_argument("service", nargs="?", help="connector id, e.g. github")
     subparsers.add_parser("lessons", help="view lessons learned from tool failures")
 
 
@@ -2729,6 +2783,12 @@ def main(argv: list[str] | None = None) -> int:
             getattr(namespace, "keys_command", None) or "list",
             getattr(namespace, "n", None),
         )
+    if command == "connect":
+        return cmd_connect(getattr(namespace, "service", None))
+    if command == "connectors":
+        return cmd_connectors()
+    if command == "disconnect":
+        return cmd_disconnect(getattr(namespace, "service", None))
     if command == "memory":
         return cmd_memory(getattr(namespace, "action", None))
     if command == "proactive":

@@ -492,6 +492,22 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             subject = html.escape(str(arguments.get("message", "")).splitlines()[0][:60], quote=False) if arguments.get("message") else ""
             return f"💾 Committing {subject}" if subject else "💾 Committing"
         return "🌿 Running git"
+    if name == "github_repos":
+        return "🐙 Listing GitHub repos"
+    if name == "github_issues":
+        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
+        return f"🐙 Listing issues in <code>{repo}</code>" if repo else "🐙 Listing GitHub issues"
+    if name == "github_create_issue":
+        title = html.escape(str(arguments.get("title", "")).strip()[:60], quote=False)
+        return f"🐙 Creating issue {title}" if title else "🐙 Creating GitHub issue"
+    if name == "github_issue_comment":
+        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
+        number = html.escape(str(arguments.get("number", "")).strip()[:12], quote=False)
+        where = f"<code>{repo}#{number}</code>" if repo and number else ""
+        return f"🐙 Commenting on {where}" if where else "🐙 Commenting on GitHub issue"
+    if name == "github_prs":
+        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
+        return f"🐙 Listing PRs in <code>{repo}</code>" if repo else "🐙 Listing GitHub PRs"
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":

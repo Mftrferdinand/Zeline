@@ -3162,7 +3162,114 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset(SAFE_PROFILES),
     ),
+    ToolDef(
+        "github_repos",
+        (
+            "List the operator's GitHub repositories (most recently updated first). "
+            "Requires the GitHub connector: the owner links it once with "
+            "`zeline connect github`."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many repos (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_issues",
+        (
+            "List issues of a GitHub repository. Pull requests are skipped. "
+            "Requires the GitHub connector (`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "state": {"type": "string", "description": "'open', 'closed', or 'all' (default 'open')."},
+                "limit": {"type": "integer", "description": "How many issues (default 10)."},
+            },
+            "required": ["owner", "repo"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_create_issue",
+        (
+            "Create a GitHub issue in a repository. Requires the GitHub connector "
+            "(`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "title": {"type": "string", "description": "Issue title."},
+                "body": {"type": "string", "description": "Optional issue body (Markdown)."},
+            },
+            "required": ["owner", "repo", "title"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_issue_comment",
+        (
+            "Post a comment on a GitHub issue (or pull request). Requires the GitHub "
+            "connector (`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "number": {"type": "integer", "description": "Issue/PR number."},
+                "body": {"type": "string", "description": "Comment body (Markdown)."},
+            },
+            "required": ["owner", "repo", "number", "body"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_prs",
+        (
+            "List pull requests of a GitHub repository. Requires the GitHub connector "
+            "(`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "state": {"type": "string", "description": "'open', 'closed', or 'all' (default 'open')."},
+                "limit": {"type": "integer", "description": "How many PRs (default 10)."},
+            },
+            "required": ["owner", "repo"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
 ]
+
+
+def _connector_tool(cid: str, method: str, **kwargs) -> str:
+    """Call a connector operation; the import stays lazy so startup stays light.
+
+    Returns a plain "ERROR: ..." string when the connector is unknown or not
+    linked, so the model knows to ask the owner to run `zeline connect <id>`.
+    """
+    from zeline import connectors as connectors_pkg
+
+    conn = connectors_pkg.get(cid)
+    label = conn.name if conn is not None else cid
+    if conn is None or not conn.is_connected():
+        return f"ERROR: {label} not connected. The owner can run `zeline connect {cid}` to link it."
+    try:
+        return str(getattr(conn, method)(**kwargs))
+    except RuntimeError as exc:
+        return str(exc)
+    except Exception as exc:  # never leak tracebacks to the model
+        return f"ERROR: {label} {method} failed ({exc})."
 
 
 class ToolExecutor:
@@ -3308,6 +3415,19 @@ class ToolExecutor:
             ),
             "recall_history": lambda query="": self._recall_history(query),
             "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
+            "github_repos": lambda limit=10: _connector_tool("github", "list_repos", limit=limit),
+            "github_issues": lambda owner, repo, state="open", limit=10: _connector_tool(
+                "github", "list_issues", owner=owner, repo=repo, state=state, limit=limit
+            ),
+            "github_create_issue": lambda owner, repo, title, body="": _connector_tool(
+                "github", "create_issue", owner=owner, repo=repo, title=title, body=body
+            ),
+            "github_issue_comment": lambda owner, repo, number, body: _connector_tool(
+                "github", "comment_issue", owner=owner, repo=repo, number=number, body=body
+            ),
+            "github_prs": lambda owner, repo, state="open", limit=10: _connector_tool(
+                "github", "list_prs", owner=owner, repo=repo, state=state, limit=limit
+            ),
         }
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
