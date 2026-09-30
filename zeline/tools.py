@@ -3345,6 +3345,40 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset({"workspace", "full"}),
     ),
+    ToolDef(
+        "whatsapp_send",
+        (
+            "Send a WhatsApp text message from the operator's business number. "
+            "Requires the WhatsApp connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "text": {"type": "string", "description": "Message text."},
+            },
+            "required": ["to", "text"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "whatsapp_template",
+        (
+            "Send an approved WhatsApp message template (needed for contacting "
+            "numbers outside the 24h conversation window). Requires the WhatsApp "
+            "connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "template": {"type": "string", "description": "Approved template name."},
+                "language": {"type": "string", "description": "Template language code (default en_US)."},
+            },
+            "required": ["to", "template"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
 ]
 
 
@@ -3541,6 +3575,12 @@ class ToolExecutor:
             ),
             "drive_list": lambda query="", limit=10: _connector_tool(
                 "google", "drive_list", query=query, limit=limit
+            ),
+            "whatsapp_send": lambda to, text: _connector_tool(
+                "whatsapp", "send_text", to=to, text=text
+            ),
+            "whatsapp_template": lambda to, template, language="en_US": _connector_tool(
+                "whatsapp", "send_template", to=to, template=template, language=language
             ),
         }
 

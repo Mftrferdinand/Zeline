@@ -521,6 +521,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return "📊 Reading sheet ..."
     if name == "drive_list":
         return "💾 Listing Drive files"
+    if name == "whatsapp_send":
+        to = html.escape(str(arguments.get("to", "")).strip()[:40], quote=False)
+        return f"💬 Sending WhatsApp to {to} ..." if to else "💬 Sending WhatsApp ..."
+    if name == "whatsapp_template":
+        template = html.escape(str(arguments.get("template", "")).strip()[:40], quote=False)
+        return f"💬 Sending WhatsApp template {template} ..." if template else "💬 Sending WhatsApp template ..."
 
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
