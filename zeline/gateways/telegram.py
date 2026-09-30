@@ -2474,9 +2474,10 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
                     params_obj = payload.get("parameters")
                     if isinstance(params_obj, dict):
                         retry_after = int(params_obj.get("retry_after", 0) or 0)
-                # clamp: hormati nilai server, tapi batasi ke 60s untuk UI non-kritis
-                # supaya bubble progres tidak menahan lama; jawaban akhir dikirim
-                # ulang oleh loop utama setelah jendela ini.
+                # Hormati retry_after server SEPENUHNYA (tanpa clamp): menembak
+                # lagi sebelum jendela habis justru memperpanjang ban (spiral
+                # 429 → retry_after membengkak ke ribuan detik). Minimal 1s
+                # supaya tidak busy-loop saat server tidak mengirim nilai.
                 wait = max(1, retry_after)
                 with _flood_lock:
                     _flood_until = time.monotonic() + wait
