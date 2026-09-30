@@ -533,6 +533,29 @@ def _parse(markdown: str) -> tuple[str, str]:
     return title, description
 
 
+def _parse_load_when(markdown: str) -> str:
+    """Ambil trigger keywords dari baris ``# Load when: ...``.
+
+    Dipakai di daftar skill system prompt supaya agent bisa matching
+    masalah user -> skill yang tepat (khususnya skill Zenith yang namanya
+    opaque seperti ``zeline-zenith-z17``). Referensi-diri seperti
+    ``# Load when: z0`` diabaikan karena tidak informatif.
+    """
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        content = stripped.lstrip("#").strip()
+        if not content.lower().startswith("load when:"):
+            continue
+        triggers = content.split(":", 1)[1].strip().strip("\"'")
+        triggers = " ".join(triggers.split())
+        if not triggers or re.fullmatch(r"z\d+", triggers):
+            return ""
+        return triggers
+    return ""
+
+
 def _iter_skill_units(directory: Path) -> list[tuple[str, Path]]:
     """Kembalikan ``(name, skill_md_path)`` untuk skill flat maupun folder."""
     units: list[tuple[str, Path]] = []
@@ -546,23 +569,25 @@ def _iter_skill_units(directory: Path) -> list[tuple[str, Path]]:
     return units
 
 
-def list_skill_entries(include_private: bool = True) -> list[tuple[str, str, str, str]]:
-    """Return ``(scope, name, title, description)`` entries."""
+def list_skill_entries(include_private: bool = True) -> list[tuple[str, str, str, str, str]]:
+    """Return ``(scope, name, title, description, load_when)`` entries."""
     _ensure_dirs()
-    result: list[tuple[str, str, str, str]] = []
+    result: list[tuple[str, str, str, str, str]] = []
     locations: list[tuple[str, Path]] = [("public", PUBLIC_SKILLS_DIR)]
     if include_private:
         locations.append(("private", PRIVATE_SKILLS_DIR))
     for scope, directory in locations:
         for name, skill_md in _iter_skill_units(directory):
-            title, description = _parse(skill_md.read_text(encoding="utf-8", errors="replace"))
-            result.append((scope, name, title or name, description or "(tanpa deskripsi)"))
+            text = skill_md.read_text(encoding="utf-8", errors="replace")
+            title, description = _parse(text)
+            load_when = _parse_load_when(text)
+            result.append((scope, name, title or name, description or "(tanpa deskripsi)", load_when))
     return result
 
 
 def list_skills(include_private: bool = True) -> list[tuple[str, str, str]]:
     """Compatibility helper: list name/title/description without scope."""
-    return [(name, title, description) for _scope, name, title, description in list_skill_entries(include_private)]
+    return [(name, title, description) for _scope, name, title, description, _lw in list_skill_entries(include_private)]
 
 
 def _find_skill(name: str, include_private: bool) -> Path | None | str:
@@ -905,10 +930,10 @@ def _inventory() -> str:
     if not entries:
         return "No skills yet."
     lines = []
-    for scope, unit, _title, description in entries:
+    for scope, unit, _title, description, load_when in entries:
         located = _locate_unit(unit)
         shape = "folder" if located and located[1].is_dir() else "flat"
-        lines.append(f"- {unit} [{scope}/{shape}]: {_short_desc(description)}")
+        lines.append(f"- {unit} [{scope}/{shape}]: {_short_desc(description)}{_trigger_suffix(load_when)}")
     return f"{len(lines)} skills:\n" + "\n".join(lines)
 
 
@@ -985,13 +1010,27 @@ def _short_desc(description: str, limit: int = 90) -> str:
     return text[:limit].rstrip(" ,.—-") + ("…" if len(text) > limit else "")
 
 
+def _trigger_suffix(load_when: str, limit: int = 80) -> str:
+    """Suffix ``| trigger: ...`` untuk daftar skill; kosong bila tidak ada.
+
+    Token-bounded: daftar skill di-inject setiap turn, jadi keywords
+    dipotong di ~80 char.
+    """
+    triggers = " ".join(str(load_when).split())
+    if not triggers:
+        return ""
+    if len(triggers) > limit:
+        triggers = triggers[:limit].rstrip(" ,.—-") + "…"
+    return f" | trigger: {triggers}"
+
+
 def skills_block(include_private: bool = False) -> str:
     """Daftar token-cheap untuk system prompt sesuai otorisasi session."""
     available = list_skill_entries(include_private=include_private)
     if not available:
         return ""
     lines = "\n".join(
-        f"- {name}: {_short_desc(description)}" if scope == "public" else f"- {name} [private]: {_short_desc(description)}"
-        for scope, name, _title, description in available
+        f"- {name}: {_short_desc(description)}{_trigger_suffix(load_when)}" if scope == "public" else f"- {name} [private]: {_short_desc(description)}{_trigger_suffix(load_when)}"
+        for scope, name, _title, description, load_when in available
     )
     return "\n\n## Available skills (call load_skill for full content):\n" + lines

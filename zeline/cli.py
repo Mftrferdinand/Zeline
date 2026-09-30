@@ -1365,8 +1365,8 @@ def cmd_skills() -> int:
     if not available:
         print("No skills yet. Run `zeline setup` to copy the built-in skills.")
         return 0
-    for scope, name, _title, description in available:
-        print(f"  - {name} [{scope}]: {description}")
+    for scope, name, _title, description, load_when in available:
+        print(f"  - {name} [{scope}]: {description}{skills._trigger_suffix(load_when)}")
     return 0
 
 
