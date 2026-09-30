@@ -466,6 +466,11 @@ def _defaults() -> dict[str, Any]:
             "model_verified": False,
             "base_url": "https://api.openai.com/v1",
             "api_key": "",
+            # Key pool: beberapa API key untuk provider yang sama.
+            # Diputar otomatis saat satu key kena 401/403 (mati) atau 429
+            # (rate limit). Urutan = prioritas. Tetap kompatibel: api_key
+            # tunggal lama dipakai sebagai key pertama bila api_keys kosong.
+            "api_keys": [],
             "model": DEFAULT_MODEL,
             # Optional dedicated text-to-image model for the generate_image tool
             # (e.g. "gpt-image-1", "dall-e-3", or a router alias). Empty = the
@@ -644,6 +649,16 @@ def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
         value = os.environ.get(env_name)
         if value:
             cfg["provider"][field] = value
+    # ZELINE_API_KEYS (comma-separated) menimpa seluruh pool bila di-set —
+    # berguna bila key disimpan di secret manager, bukan config.json.
+    # api_key tunggal ikut dikosongkan supaya tidak ada key basi yang
+    # terkirim diam-diam di luar daftar yang dideklarasikan eksplisit.
+    multi = os.environ.get("ZELINE_API_KEYS", "")
+    if multi.strip():
+        cfg["provider"]["api_key"] = ""
+        cfg["provider"]["api_keys"] = [
+            part.strip() for part in multi.split(",") if part.strip()
+        ]
     name = os.environ.get("ZELINE_NAME")
     if name:
         cfg["name"] = name
@@ -716,9 +731,29 @@ def new_webhook_token() -> str:
     return secrets.token_urlsafe(24)
 
 
+def _provider_key_pool(provider: dict[str, Any]) -> list[str]:
+    """Pool API key terurut-prioritas: api_key tunggal dulu, lalu api_keys.
+
+    Menjaga kompatibilitas: konfigurasi lama yang hanya punya ``api_key``
+    menghasilkan pool satu key sehingga perilaku runtime tidak berubah.
+    Duplikat dibuang, urutan pertama dipertahankan.
+    """
+    pool: list[str] = []
+    single = str(provider.get("api_key", "") or "").strip()
+    if single:
+        pool.append(single)
+    raw = provider.get("api_keys", [])
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            key = str(item or "").strip()
+            if key and key not in pool:
+                pool.append(key)
+    return pool
+
+
 def _set_runtime_values(cfg: dict[str, Any]) -> None:
     """Jaga API lama modul internal: config.BASE_URL, config.GATEWAYS, dsb."""
-    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, MODEL, IMAGE_MODEL, AUDIO_MODEL, GATEWAYS, NAME
+    global PROVIDER, PROTOCOL, BASE_URL, API_KEY, API_KEYS, MODEL, IMAGE_MODEL, AUDIO_MODEL, GATEWAYS, NAME
     global MAX_TOOL_ROUNDS, MAX_SESSIONS, WORKSPACE, CLI_TOOL_PROFILE, SYSTEM_PROMPT, SETUP_COMPLETE, GATEWAY_SETUP_COMPLETE
     global MCP_SERVERS, PERSIST_SESSIONS, STREAM_RESPONSES, DISABLED_TOOLS, MAX_SUBAGENT_DEPTH, FALLBACK_MODEL, FALLBACK_MODELS
     global MAX_PARALLEL_SUBAGENTS
@@ -731,6 +766,9 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
     API_KEY = str(PROVIDER.get("api_key", ""))
+    # Pool key penuh (urutan = prioritas). Runtime memutarnya otomatis saat
+    # satu key gagal auth/rate-limit; API_KEY tetap key pertama untuk kompat.
+    API_KEYS = _provider_key_pool(PROVIDER)
     MODEL = str(PROVIDER.get("model", DEFAULT_MODEL))
     IMAGE_MODEL = str(PROVIDER.get("image_model", ""))
     AUDIO_MODEL = str(PROVIDER.get("audio_model", ""))

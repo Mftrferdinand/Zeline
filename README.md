@@ -27,6 +27,7 @@ Run it locally for development or deploy it to your own server or cloud, and con
 
 - **Agent core** — an OpenAI-compatible agent loop with tool calling, plus an interactive CLI and one-shot queries
 - **Model-agnostic** — works with OpenAI, OpenRouter, vLLM, Ollama, and any OpenAI- or Anthropic-compatible API; swap model or provider without rebuilding
+- **API key pools** — register several keys per provider (`zeline keys add`); a key that hits 401/403 is retired and a rate-limited (429) key is rested while requests automatically rotate to the next healthy key
 - **Persistent memory** — long-term memory isolated per platform identity
 - **Session persistence** — conversation history stored in SQLite (`~/.zeline/sessions.db`), so it survives gateway restarts
 - **Skills** — reusable Markdown procedures loaded on demand; see the [Zenith skill index](zeline/skills/ZENITH_INDEX.md) for the full bundled catalog
@@ -217,6 +218,7 @@ zeline chat -q "..."           Send one query after gateway + model setup
 zeline setup                   First run: gateway picker; later: setup center
 zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline keys                    Manage provider API key pool (auto-rotates on 401/403/429)
 zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions

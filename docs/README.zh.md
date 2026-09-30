@@ -27,6 +27,7 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 
 - **智能体核心** —— 一个支持工具调用的 OpenAI 兼容智能体循环，外加交互式 CLI 和一次性查询
 - **模型无关** —— 兼容 OpenAI、OpenRouter、vLLM、Ollama，以及任何 OpenAI 或 Anthropic 兼容的 API；无需重建即可切换模型或提供商
+- **API 密钥池** —— 为每个提供商注册多个密钥（`zeline keys add`）；遇到 401/403 的密钥会被停用，遇到限流（429）的密钥会被暂时休息，请求会自动轮换到下一个健康的密钥
 - **持久化记忆** —— 按平台身份隔离的长期记忆
 - **会话持久化** —— 对话历史存储在 SQLite 中（`~/.zeline/sessions.db`），因此可在网关重启后依然保留
 - **技能** —— 按需加载的可复用 Markdown 流程；完整的内置技能目录见 [Zenith 技能索引](../zeline/skills/ZENITH_INDEX.md)
@@ -212,6 +213,7 @@ zeline chat -q "..."           Send one query after gateway + model setup
 zeline setup                   First run: gateway picker; later: setup center
 zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline keys                    Manage provider API key pool (auto-rotates on 401/403/429)
 zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions

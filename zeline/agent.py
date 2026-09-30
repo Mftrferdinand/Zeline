@@ -9,6 +9,7 @@ import contextlib
 import copy
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
@@ -171,6 +172,122 @@ def _parse_response(text: str) -> dict[str, Any]:
     return value
 
 
+#: Key yang kena 401/403 dianggap mati selama ini (cukup lama untuk menandai
+#: key yang dicabut, cukup singkat untuk pulih bila relay yang flapping).
+_KEY_BAD_TTL = 600.0
+#: Key yang kena 429 diistirahatkan selama ini sebelum boleh dipakai lagi.
+_KEY_LIMITED_TTL = 60.0
+
+
+def _pool_from_config() -> list[str]:
+    """Bangun pool key dari config; api_key tunggal selalu jadi prioritas #1.
+
+    Menjamin kode/test yang menyetel ``config.API_KEY`` langsung tetap
+    berfungsi seperti dulu: key itu yang dikirim pertama.
+    """
+    keys = list(getattr(config, "API_KEYS", ()))
+    single = str(getattr(config, "API_KEY", "") or "")
+    if single and single not in keys:
+        keys.insert(0, single)
+    return keys
+
+
+class KeyPool:
+    """Pool API key dengan rotasi otomatis (credential pools).
+
+    Urutan key = prioritas (config ``api_key`` dulu, lalu ``api_keys``).
+    - 401/403 → key ditandai *bad* selama ``_KEY_BAD_TTL`` dan dilewati.
+    - 429 → key diistirahatkan selama ``_KEY_LIMITED_TTL``; request lanjut
+      ke key berikut alih-alih membakar retry pada key yang sama.
+    - Key yang sukses jadi *sticky* (dipakai pertama pada call berikutnya).
+    Thread-safe: satu gateway process bisa melayani banyak chat paralel.
+    """
+
+    def __init__(self, keys: list[str] | tuple[str, ...] = ()) -> None:
+        self._lock = threading.Lock()
+        self._keys: list[str] = [k for k in keys if k]
+        self._bad_until: dict[str, float] = {}
+        self._limited_until: dict[str, float] = {}
+        self._preferred: str | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def rebuild(self, keys: list[str] | tuple[str, ...]) -> None:
+        """Ganti seluruh pool (dipakai ``reload_provider``); state hangus."""
+        with self._lock:
+            self._keys = [k for k in keys if k]
+            self._bad_until.clear()
+            self._limited_until.clear()
+            self._preferred = None
+
+    def _live(self, now: float) -> list[str]:
+        ordered = list(self._keys)
+        if self._preferred in ordered:
+            ordered.remove(self._preferred)
+            ordered.insert(0, self._preferred)
+        return [
+            k
+            for k in ordered
+            if self._bad_until.get(k, 0) <= now and self._limited_until.get(k, 0) <= now
+        ]
+
+    def live_keys(self) -> list[str]:
+        """Key yang boleh dipakai sekarang, urutan prioritas."""
+        with self._lock:
+            return self._live(time.time())
+
+    def plan(self) -> list[tuple[str, bool]]:
+        """Urutan coba per model: (key, rotate_on_429).
+
+        Key sehat dicoba dulu sesuai prioritas. Entri terakhir adalah
+        *last-ditch* (key pertama yang tidak dicoret-mati): 429 di situ
+        diperlakukan seperti dulu — backoff retry pada key yang sama —
+        sehingga perilaku single-key tidak berubah.
+        """
+        with self._lock:
+            now = time.time()
+            live = self._live(now)
+            rotate = len(live) > 1
+            seq = [(k, rotate) for k in live]
+            first = next(
+                (k for k in self._keys if self._bad_until.get(k, 0) <= now),
+                None,
+            )
+            if first is not None and all(k != first for k, _ in seq):
+                seq.append((first, False))
+            return seq
+
+    def is_bad(self, key: str) -> bool:
+        """True bila key sedang dicoret karena 401/403."""
+        with self._lock:
+            return self._bad_until.get(key, 0) > time.time()
+
+    def all_keys(self) -> list[str]:
+        with self._lock:
+            return list(self._keys)
+
+    def mark_bad(self, key: str) -> None:
+        with self._lock:
+            self._bad_until[key] = time.time() + _KEY_BAD_TTL
+            if self._preferred == key:
+                self._preferred = None
+
+    def mark_limited(self, key: str) -> None:
+        with self._lock:
+            self._limited_until[key] = time.time() + _KEY_LIMITED_TTL
+            if self._preferred == key:
+                self._preferred = None
+
+    def mark_good(self, key: str) -> None:
+        with self._lock:
+            if key in self._keys:
+                self._preferred = key
+
+
 class Zeline:
     """Satu sesi agent untuk satu user/chat.
 
@@ -190,7 +307,11 @@ class Zeline:
     ):
         self.identity = identity or "cli:local"
         self.base_url = config.BASE_URL
-        self.api_key = config.API_KEY
+        # Pool key untuk rotasi otomatis antar beberapa credential.
+        # _pool_from_config defensif terhadap config yang di-patch manual.
+        # `api_key` tetap tersedia sebagai property (key prioritas #1) agar
+        # kode lama yang assign/read langsung tetap berfungsi.
+        self._key_pool = KeyPool(_pool_from_config())
         self.model = config.MODEL
         self.protocol = config.PROTOCOL
         self.depth = int(depth)
@@ -291,6 +412,17 @@ class Zeline:
         if self.messages and self.messages[0].get("role") == "system":
             self.messages[0]["content"] = self._build_system_prompt()
 
+    @property
+    def api_key(self) -> str:
+        """Key prioritas #1 dari pool (kompat: pola lama ``agent.api_key``)."""
+        keys = self._key_pool.live_keys() or self._key_pool.all_keys()
+        return keys[0] if keys else ""
+
+    @api_key.setter
+    def api_key(self, value: str) -> None:
+        # Assign langsung = ganti pool jadi single key (perilaku lama).
+        self._key_pool.rebuild([value] if value else [])
+
     def reload_provider(self) -> None:
         """Adopsi provider aktif (model/base_url/key/protocol) TANPA menghapus
 
@@ -299,7 +431,7 @@ class Zeline:
         info model akurat, tapi seluruh pesan user/assistant sebelumnya dijaga.
         """
         self.base_url = config.BASE_URL
-        self.api_key = config.API_KEY
+        self._key_pool.rebuild(_pool_from_config())
         self.model = config.MODEL
         self.protocol = config.PROTOCOL
         self._refresh_system_prompt()
@@ -367,23 +499,33 @@ class Zeline:
         """
         self.messages = tool_protocol.repair(self.messages)
 
+    def _auth_headers(self, key: str) -> dict[str, str]:
+        """Header auth per key — dipanggil tiap rotasi pool."""
+        if self.protocol == "anthropic":
+            return {
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+                "User-Agent": f"zeline/{__version__}",
+            }
+        return {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": f"zeline/{__version__}",
+        }
+
     def _call_llm(
         self,
         use_tools: bool = True,
         on_stream_delta: Callable[[str], None] | None = None,
         force_stream: bool | None = None,
     ) -> dict[str, Any]:
-        if not self.api_key:
+        if not self._key_pool:
             raise ZelineError("API key not configured. Run `zeline setup`.")
         if not self.base_url or not self.model:
             raise ZelineError("Provider not fully configured. Run `zeline setup`.")
 
         endpoint = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": f"zeline/{__version__}",
-        }
         outbound_messages = copy.deepcopy(self.messages)
         if self._turn_skill_context:
             for item in reversed(outbound_messages):
@@ -424,12 +566,6 @@ class Zeline:
 
         if self.protocol == "anthropic":
             endpoint = f"{self.base_url}/messages"
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-                "User-Agent": f"zeline/{__version__}",
-            }
             messages: list[dict[str, Any]] = []
             for item in outbound_messages[1:]:
                 role = str(item.get("role", "user"))
@@ -472,31 +608,68 @@ class Zeline:
 
             response = None
             retryable = {400, 408, 409, 429, 500, 502, 503, 504, 529}
+            auth_failures = 0
+            done = False
             for model_index, candidate in enumerate(candidates):
                 if self._cancelled():
                     raise _TurnCancelled()
                 payload["model"] = candidate
-                for attempt in range(2):
+                # Rotasi credential pool: key sehat sesuai prioritas, lalu
+                # satu last-ditch (429 = backoff retry ala single-key lama).
+                for key, rotate_on_429 in self._key_pool.plan():
                     if self._cancelled():
                         raise _TurnCancelled()
-                    response = requests.post(
-                        endpoint,
-                        headers=headers,
-                        json=copy.deepcopy(payload),
-                        timeout=180,
-                        stream=stream,
-                    )
-                    self._active_response = response
-                    if response.status_code not in retryable:
-                        break
-                    close_response = getattr(response, "close", None)
-                    if callable(close_response):
-                        close_response()
-                    # Small bounded backoff: enough for a router connection to
-                    # rotate/recover without making Telegram wait for minutes.
-                    time.sleep(0.5 + 0.5 * attempt + 0.25 * model_index)
-                if response is not None and response.status_code not in retryable:
+                    if not rotate_on_429 and self._key_pool.is_bad(key):
+                        continue  # last-ditch hanya untuk key yang tidak dicoret-mati
+                    headers = self._auth_headers(key)
+                    for attempt in range(2):
+                        if self._cancelled():
+                            raise _TurnCancelled()
+                        response = requests.post(
+                            endpoint,
+                            headers=headers,
+                            json=copy.deepcopy(payload),
+                            timeout=180,
+                            stream=stream,
+                        )
+                        self._active_response = response
+                        status = response.status_code
+                        if status in (401, 403):
+                            # Key mati/dicabut — coret dari pool, lanjut key berikut.
+                            self._key_pool.mark_bad(key)
+                            auth_failures += 1
+                            break
+                        if status == 429 and rotate_on_429:
+                            # Kuota key ini habis — putar ke key berikut, jangan
+                            # bakar retry pada key yang sama.
+                            self._key_pool.mark_limited(key)
+                            break
+                        if status not in retryable:
+                            break
+                        close_response = getattr(response, "close", None)
+                        if callable(close_response):
+                            close_response()
+                        # Small bounded backoff: enough for a router connection to
+                        # rotate/recover without making Telegram wait for minutes.
+                        time.sleep(0.5 + 0.5 * attempt + 0.25 * model_index)
+                    if response is not None:
+                        if response.ok:
+                            self._key_pool.mark_good(key)
+                            done = True
+                            break
+                        if response.status_code in (401, 403):
+                            continue  # key berikut; gagal total hanya bila semua mati
+                        if response.status_code not in retryable:
+                            done = True
+                            break
+                if done:
                     break
+            pool_size = len(self._key_pool)
+            if pool_size > 1 and auth_failures >= pool_size:
+                raise ZelineError(
+                    "All API keys in the pool were rejected (401/403). "
+                    "Check `zeline keys list` and replace the dead keys."
+                )
             if response is None:
                 raise ZelineError("Provider failover chain produced no response.")
         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout) as exc:

@@ -228,6 +228,7 @@ def _configure_provider(provider: dict[str, Any]) -> None:
     provider.update({
         "base_url": base_url,
         "api_key": api_key,
+        "api_keys": list(provider.get("api_keys") or []),
         "model": _choose_model(models, str(provider.get("model", ""))),
         "image_model": str(provider.get("image_model", "")),
         "audio_model": str(provider.get("audio_model", "")),
@@ -808,6 +809,90 @@ def cmd_model() -> int:
         elif choice == idx_view:
             _model_view_provider(cfg)
         cfg = config.stored_config_copy()
+
+
+def _keys_pool_from_cfg(cfg: dict) -> list:
+    """Pool efektif dari stored config: [api_key] + api_keys, tanpa duplikat."""
+    pool: list = []
+    single = str(cfg.get("provider", {}).get("api_key", "") or "")
+    if single:
+        pool.append(single)
+    for item in cfg.get("provider", {}).get("api_keys", []) or []:
+        key = str(item or "")
+        if key and key not in pool:
+            pool.append(key)
+    return pool
+
+
+def _keys_write_pool(cfg: dict, pool: list) -> None:
+    """Tulis balik pool ternormalisasi: api_key = prioritas #1."""
+    cfg["provider"]["api_key"] = pool[0] if pool else ""
+    cfg["provider"]["api_keys"] = pool[1:]
+
+
+def cmd_keys(action: str = "list", n: int | None = None) -> int:
+    """Kelola API key pool: rotasi otomatis saat satu key kena 401/403/429."""
+    import getpass
+
+    if not config.GATEWAY_SETUP_COMPLETE:
+        print("[!] Choose and set up a gateway first. Run: zeline")
+        return 2
+    if os.environ.get("ZELINE_API_KEYS", "").strip():
+        print("[!] ZELINE_API_KEYS is set: the file pool below is OVERRIDDEN at runtime.")
+    cfg = config.stored_config_copy()
+    pool = _keys_pool_from_cfg(cfg)
+
+    if action == "list":
+        if not pool:
+            print("No API keys configured. Run `zeline setup` or `zeline keys add`.")
+            return 0
+        print(f"Key pool ({len(pool)} key{'s' if len(pool) > 1 else ''}, auto-rotates on 401/403/429):")
+        for i, key in enumerate(pool, 1):
+            tag = " ← first priority" if i == 1 else ""
+            print(f"  [{i}] {config.mask_secret(key)}{tag}")
+        return 0
+
+    if action == "add":
+        try:
+            new_key = getpass.getpass("Paste API key (hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return 1
+        if not new_key:
+            print("Empty key — nothing added.")
+            return 1
+        if new_key in pool:
+            print("Key already in the pool — nothing added.")
+            return 1
+        pool.append(new_key)
+        _keys_write_pool(cfg, pool)
+        config.save_config(cfg)
+        print(f"Added as key #{len(pool)}. Restart the gateway (or send /model) to apply.")
+        return 0
+
+    if action in {"remove", "use"}:
+        if n is None or n < 1 or n > len(pool):
+            print(f"Usage: zeline keys {action} <n>  (see `zeline keys list`, n = 1..{len(pool)})")
+            return 2
+        if action == "remove":
+            if len(pool) == 1:
+                print("Refusing to remove the last key. Add a replacement first.")
+                return 1
+            removed = pool.pop(n - 1)
+            _keys_write_pool(cfg, pool)
+            config.save_config(cfg)
+            print(f"Removed key #{n} ({config.mask_secret(removed)}). Restart the gateway (or send /model) to apply.")
+            return 0
+        # use → promote to first priority
+        key = pool.pop(n - 1)
+        pool.insert(0, key)
+        _keys_write_pool(cfg, pool)
+        config.save_config(cfg)
+        print(f"Key #{n} is now first priority. Restart the gateway (or send /model) to apply.")
+        return 0
+
+    print(f"Unknown keys action: {action}")
+    return 2
 
 
 def _run_reflection(sessions: "SessionStore") -> None:
@@ -2198,6 +2283,14 @@ def build_parser() -> argparse.ArgumentParser:
     chat = subparsers.add_parser("chat", help="chat in the terminal")
     chat.add_argument("-q", "--query", help="single query, no interactive mode")
     subparsers.add_parser("model", help="change provider/model without re-running gateway setup")
+    keys = subparsers.add_parser("keys", help="manage provider API key pool (auto-rotates on 401/403/429)")
+    keys_sub = keys.add_subparsers(dest="keys_command")
+    keys_sub.add_parser("list", help="show key pool (masked)")
+    keys_sub.add_parser("add", help="add a key to the pool")
+    keys_rm = keys_sub.add_parser("remove", help="remove a key from the pool")
+    keys_rm.add_argument("n", type=int, help="key number from `zeline keys list`")
+    keys_use = keys_sub.add_parser("use", help="make key #n the first-priority key")
+    keys_use.add_argument("n", type=int, help="key number from `zeline keys list`")
 
     gateway = subparsers.add_parser("gateway", help="manage messaging platforms")
     gateway_sub = gateway.add_subparsers(dest="gateway_command")
@@ -2498,6 +2591,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     if command in {"skills", "skill"}:
         return cmd_skills()
+    if command == "keys":
+        return cmd_keys(
+            getattr(namespace, "keys_command", None) or "list",
+            getattr(namespace, "n", None),
+        )
     if command == "memory":
         return cmd_memory()
     if command == "lessons":
