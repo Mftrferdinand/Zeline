@@ -22,6 +22,7 @@ import mimetypes
 import os
 import re
 import signal
+import shutil
 import socket
 import subprocess
 import threading
@@ -1194,6 +1195,207 @@ def _edit_image(
     return _save_image_item(item, dest, workspace, image_model, "edited image")
 
 
+_EDIT_VIDEO_ACTIONS = ("trim", "concat", "text", "audio", "speed")
+_EDIT_VIDEO_TIMEOUT = 600
+_EDIT_VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi")
+_EDIT_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
+_FFMPEG_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+
+def _ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def _atempo_chain(factor: float) -> str:
+    """Split a speed factor into chained atempo filters (each must stay within 0.5-2.0)."""
+    parts = []
+    rest = factor
+    while rest > 2.0:
+        parts.append("atempo=2.0")
+        rest /= 2.0
+    while rest < 0.5:
+        parts.append("atempo=0.5")
+        rest /= 0.5
+    parts.append(f"atempo={rest:.4f}")
+    return ",".join(parts)
+
+
+def _drawtext_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+
+
+def _edit_video(
+    action: str,
+    video: str,
+    path: str,
+    workspace: Path,
+    videos: str = "",
+    start: str = "",
+    duration: str = "",
+    text: str = "",
+    fontsize: int = 48,
+    fontcolor: str = "white",
+    position: str = "bottom",
+    audio: str = "",
+    volume: float = 1.0,
+    factor: float = 1.0,
+) -> str:
+    """Edit video files with ffmpeg (CapCut-style operations, no GUI app needed).
+
+    Actions:
+      trim   — cut a segment (``start``/``duration`` in seconds).
+      concat — join clips (``videos`` = comma-separated workspace paths).
+      text   — overlay a title/caption (``text``, ``fontsize``, ``fontcolor``,
+               ``position`` = top/center/bottom, optional ``start``/``duration`` timing).
+      audio  — add or replace the audio track (``audio`` = workspace audio file,
+               ``volume`` multiplier).
+      speed  — change playback speed (``factor`` 0.25-4.0).
+
+    All inputs must live in the workspace; output is always MP4.
+    """
+    action = (action or "").strip().lower()
+    if action not in _EDIT_VIDEO_ACTIONS:
+        return f"ERROR: unknown action '{action}'. Allowed: {', '.join(_EDIT_VIDEO_ACTIONS)}."
+    if not shutil.which("ffmpeg"):
+        return "ERROR: ffmpeg is not installed on this machine, video editing is unavailable."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".mp4":
+        return "ERROR: output path must end in .mp4."
+
+    def _resolve_video(p: str) -> Path | str:
+        try:
+            src = _resolve_workspace_path(p, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not src.is_file():
+            return f"ERROR: video not found in the workspace: {p}"
+        if src.suffix.lower() not in _EDIT_VIDEO_EXTS:
+            return f"ERROR: unsupported video format '{src.suffix}'. Allowed: {', '.join(_EDIT_VIDEO_EXTS)}."
+        return src
+
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    tmp_list = None
+    if action == "concat":
+        parts = [p.strip() for p in (videos or "").split(",") if p.strip()]
+        if len(parts) < 2:
+            return "ERROR: concat needs at least 2 videos (comma-separated in 'videos')."
+        srcs = []
+        for p in parts:
+            r = _resolve_video(p)
+            if isinstance(r, str):
+                return r
+            srcs.append(r)
+        tmp_list = workspace / f".concat_{os.getpid()}.txt"
+        try:
+            tmp_list.write_text("".join(f"file '{s}'\n" for s in srcs))
+        except OSError as exc:
+            return f"ERROR: could not write concat list: {exc}"
+        cmd += ["-f", "concat", "-safe", "0", "-i", str(tmp_list),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
+    else:
+        r = _resolve_video(video)
+        if isinstance(r, str):
+            return r
+        src = r
+        if action == "trim":
+            cmd += ["-i", str(src)]
+            if (start or "").strip():
+                try:
+                    float(start)
+                except ValueError:
+                    return "ERROR: start must be a number of seconds."
+                cmd += ["-ss", start.strip()]
+            if (duration or "").strip():
+                try:
+                    d = float(duration)
+                except ValueError:
+                    return "ERROR: duration must be a number of seconds."
+                if d <= 0:
+                    return "ERROR: duration must be positive."
+                cmd += ["-t", duration.strip()]
+            cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
+        elif action == "text":
+            overlay = (text or "").strip()
+            if not overlay:
+                return "ERROR: text action needs the 'text' to overlay."
+            try:
+                fs = int(fontsize)
+            except (TypeError, ValueError):
+                return "ERROR: fontsize must be an integer."
+            if not 8 <= fs <= 200:
+                return "ERROR: fontsize must be between 8 and 200."
+            pos = (position or "bottom").strip().lower()
+            coords = {
+                "top": "x=(w-text_w)/2:y=60",
+                "center": "x=(w-text_w)/2:y=(h-text_h)/2",
+                "bottom": "x=(w-text_w)/2:y=h-text_h-60",
+            }
+            if pos not in coords:
+                return f"ERROR: unknown position '{position}'. Allowed: top, center, bottom."
+            filt = f"drawtext={coords[pos]}:fontsize={fs}:fontcolor={fontcolor}:text='{_drawtext_escape(overlay)}'"
+            if os.path.exists(_FFMPEG_FONT):
+                filt = f"drawtext=fontfile={_FFMPEG_FONT}:{coords[pos]}:fontsize={fs}:fontcolor={fontcolor}:text='{_drawtext_escape(overlay)}'"
+            timing = ""
+            if (start or "").strip() or (duration or "").strip():
+                try:
+                    s = float(start or 0)
+                    e = s + float(duration) if (duration or "").strip() else 1e9
+                except ValueError:
+                    return "ERROR: start/duration must be numbers of seconds."
+                timing = f":enable='between(t,{s},{e})'"
+            cmd += ["-i", str(src), "-vf", filt + timing,
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
+        elif action == "audio":
+            try:
+                a = _resolve_workspace_path(audio, workspace)
+            except ValueError as exc:
+                return f"ERROR: {exc}"
+            if not a.is_file():
+                return f"ERROR: audio not found in the workspace: {audio}"
+            if a.suffix.lower() not in _EDIT_AUDIO_EXTS:
+                return f"ERROR: unsupported audio format '{a.suffix}'. Allowed: {', '.join(_EDIT_AUDIO_EXTS)}."
+            try:
+                vol = float(volume)
+            except (TypeError, ValueError):
+                return "ERROR: volume must be a number."
+            if not 0 <= vol <= 5:
+                return "ERROR: volume must be between 0 and 5."
+            cmd += ["-i", str(src), "-i", str(a), "-c:v", "copy",
+                    "-filter:a", f"volume={vol}", "-c:a", "aac", "-shortest", str(dest)]
+        elif action == "speed":
+            try:
+                f = float(factor)
+            except (TypeError, ValueError):
+                return "ERROR: factor must be a number."
+            if not 0.25 <= f <= 4.0:
+                return "ERROR: factor must be between 0.25 and 4.0."
+            cmd += ["-i", str(src), "-vf", f"setpts=PTS/{f}", "-af", _atempo_chain(f),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_EDIT_VIDEO_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return f"ERROR: ffmpeg took longer than {_EDIT_VIDEO_TIMEOUT}s — video may be too large."
+    except OSError as exc:
+        return f"ERROR: could not run ffmpeg: {exc}"
+    finally:
+        if tmp_list is not None:
+            try:
+                tmp_list.unlink()
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip().splitlines()
+        tail = " ".join(err[-3:])[:400] if err else "unknown ffmpeg error"
+        return f"ERROR: ffmpeg failed: {tail}"
+    if not dest.is_file() or dest.stat().st_size == 0:
+        return "ERROR: ffmpeg produced no output file."
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, edited video saved: {rel} ({_format_size(dest.stat().st_size)}) [action={action}]"
+
+
 _VEO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _VEO_POLL_INTERVAL = 10
 _VEO_POLL_MAX_ATTEMPTS = 30  # ~5 minutes of polling
@@ -2035,7 +2237,7 @@ TOOL_DEFS: list[ToolDef] = [
             "Send a file from the workspace to the user in this chat: an image, a "
             "PDF, a spreadsheet, an archive, anything you produced. Use this "
             "whenever you create a file the user should SEE — after generate_image, "
-            "after edit_image, after generate_video, after building a report/invoice/chart, after exporting data. Printing "
+            "after edit_image, after generate_video, after edit_video, after building a report/invoice/chart, after exporting data. Printing "
             "the file path alone is useless to someone on a phone; the file must be "
             "delivered. Images arrive as photos, audio as a voice/audio message, "
             "everything else as a document. Optional 'caption' is one short line of "
@@ -2296,6 +2498,30 @@ TOOL_DEFS: list[ToolDef] = [
                 "size": {"type": "string", "description": "Output size like 1024x1024, 1536x1024, or 1024x1536. Optional (default 1024x1024)."},
             },
             "required": ["image", "prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "edit_video",
+        "Edit a video file with CapCut-style operations (no phone app needed; runs ffmpeg on the server) and save the result as MP4 in the workspace. Actions: trim (cut a segment with start/duration in seconds), concat (join 2+ clips via comma-separated 'videos'), text (overlay a title/caption with font size/color/position and optional timing), audio (add or replace the soundtrack from an audio file, with volume), speed (change playback speed with 'factor' 0.25-4.0). Use when the user asks to cut, merge, caption, mute/replace audio, or speed up/slow down a video. Returns the saved file path — then call send_file with that path so the user actually SEES the video instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "trim, concat, text, audio, or speed"},
+                "video": {"type": "string", "description": "Source video path in the workspace (not needed for concat)"},
+                "videos": {"type": "string", "description": "Comma-separated video paths in the workspace, for concat"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .mp4"},
+                "start": {"type": "string", "description": "Start time in seconds (trim, text timing)"},
+                "duration": {"type": "string", "description": "Duration in seconds (trim, text timing)"},
+                "text": {"type": "string", "description": "Text to overlay (text action)"},
+                "fontsize": {"type": "integer", "description": "Overlay font size 8-200 (default 48)"},
+                "fontcolor": {"type": "string", "description": "Overlay font color name (default white)"},
+                "position": {"type": "string", "description": "top, center, or bottom (default bottom)"},
+                "audio": {"type": "string", "description": "Audio file path in the workspace (audio action)"},
+                "volume": {"type": "number", "description": "Audio volume multiplier 0-5 (default 1.0)"},
+                "factor": {"type": "number", "description": "Speed factor 0.25-4.0 (default 1.0)"},
+            },
+            "required": ["action", "path"],
         },
         frozenset({"workspace", "full"}),
     ),
@@ -2740,6 +2966,9 @@ class ToolExecutor:
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
             "edit_image": lambda image, prompt, path, mask="", size="1024x1024": _edit_image(
                 image, prompt, path, self.workspace, mask, size
+            ),
+            "edit_video": lambda action, path, video="", videos="", start="", duration="", text="", fontsize=48, fontcolor="white", position="bottom", audio="", volume=1.0, factor=1.0: _edit_video(
+                action, video, path, self.workspace, videos, start, duration, text, fontsize, fontcolor, position, audio, volume, factor
             ),
             "generate_video": lambda prompt, path, duration=8, aspect_ratio="16:9", operation="": _generate_video(
                 prompt, path, self.workspace, duration, aspect_ratio, operation
