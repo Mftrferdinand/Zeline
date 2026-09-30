@@ -445,7 +445,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         (refs / "extra.md").write_text("Detail tambahan.\n", encoding="utf-8")
 
         skill_system.seed_skills(source=source_root)
-        names = [name for _scope, name, _title, _desc in skill_system.list_skill_entries()]
+        names = [name for _scope, name, _title, _desc, _lw in skill_system.list_skill_entries()]
         self.assertIn("folder-demo-skill", names)
         content = skill_system.load_skill("folder-demo-skill")
         self.assertIn("Langkah utama di sini", content)
@@ -570,7 +570,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         entries = skills.list_skill_entries(include_private=False)
         self.assertNotIn(
             ("public", "tmdb-media-web-maintenance"),
-            {(scope, name) for scope, name, _title, _description in entries},
+            {(scope, name) for scope, name, _title, _description, _lw in entries},
         )
 
     def test_nba_betting_skill_is_not_bundled_and_has_upgrade_cleanup(self):
@@ -1351,6 +1351,39 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(skills._short_desc(long_desc), "First short sentence")
         self.assertLessEqual(len(skills._short_desc("y" * 400)), 92)
 
+    def test_parse_load_when_extracts_trigger_keywords(self):
+        skills = importlib.import_module("zeline.skills")
+        md = "# Judul\n# Load when: audit, exploit, security\n> desc\n"
+        self.assertEqual(skills._parse_load_when(md), "audit, exploit, security")
+        # Self-reference codes are not informative — skip them.
+        self.assertEqual(skills._parse_load_when("# T\n# Load when: z0\n> d\n"), "")
+        self.assertEqual(skills._parse_load_when("# T\n> d\n"), "")
+
+    def test_skills_block_surfaces_load_when_triggers(self):
+        # Zenith skills have opaque names; the agent matches user problems via
+        # the trigger keywords parsed from "# Load when:".
+        skills = importlib.import_module("zeline.skills")
+        public_dir = skills.PUBLIC_SKILLS_DIR
+        public_dir.mkdir(parents=True, exist_ok=True)
+        (public_dir / "demo-trigger-skill.md").write_text(
+            "# Demo Trigger\n# Load when: audit, exploit, security\n> Demo desc.\n",
+            encoding="utf-8",
+        )
+        block = skills.skills_block(include_private=False)
+        self.assertIn("demo-trigger-skill", block)
+        self.assertIn("| trigger: audit, exploit, security", block)
+        # Triggers stay token-bounded in the per-turn listing.
+        for line in block.splitlines():
+            if "| trigger:" in line:
+                suffix = line.split("| trigger:", 1)[1]
+                self.assertLessEqual(len(suffix), 85)
+
+    def test_trigger_suffix_empty_when_no_triggers(self):
+        skills = importlib.import_module("zeline.skills")
+        self.assertEqual(skills._trigger_suffix(""), "")
+        self.assertEqual(skills._trigger_suffix("   "), "")
+        self.assertTrue(skills._trigger_suffix("audit, security").startswith(" | trigger:"))
+
     def test_dispatch_update_routes_text_to_agent(self):
         # _dispatch_update memproses satu update: pesan teks biasa → jalur agent.
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2128,7 +2161,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         promoted = skills.PRIVATE_SKILLS_DIR / "legacy-flat" / "SKILL.md"
         self.assertIn("langkah baru", promoted.read_text(encoding="utf-8"))
         # Exactly one catalogue entry — not one flat plus one folder.
-        names = [name for _scope, name, _title, _desc in skills.list_skill_entries(include_private=True)]
+        names = [name for _scope, name, _title, _desc, _lw in skills.list_skill_entries(include_private=True)]
         self.assertEqual(names.count("legacy-flat"), 1)
 
     def test_shell_timeout_is_raisable_so_real_installs_do_not_fail_at_60s(self):
