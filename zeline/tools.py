@@ -1396,6 +1396,233 @@ def _edit_video(
     return f"OK, edited video saved: {rel} ({_format_size(dest.stat().st_size)}) [action={action}]"
 
 
+_TTS_MAX_CHARS = 4000
+
+
+def _text_to_speech(text: str, path: str, workspace: Path, voice: str = "alloy", model: str = "tts-1") -> str:
+    """Convert text to spoken audio via the provider's OpenAI-compatible ``/audio/speech`` endpoint.
+
+    Saves an MP3 voice note into the workspace — use when the user asks the bot
+    to reply with voice, read something aloud, or make an audio version of text.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "ERROR: need the text to speak."
+    if len(text) > _TTS_MAX_CHARS:
+        return f"ERROR: text is too long ({len(text)} chars, max {_TTS_MAX_CHARS}). Split it and call again."
+    if not config.API_KEY or not config.BASE_URL:
+        return "ERROR: provider is not configured for text-to-speech."
+    model = (model or "tts-1").strip() or "tts-1"
+    voice = (voice or "alloy").strip() or "alloy"
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".mp3":
+        return "ERROR: output path must end in .mp3."
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/audio/speech",
+            headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
+            json={"model": model, "input": text, "voice": voice, "response_format": "mp3"},
+            timeout=180,
+        )
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the speech provider ({exc.__class__.__name__}). Try again."
+    if not response.ok:
+        from zeline.agent import PROVIDER_STATUS_HINTS
+
+        if response.status_code == 404:
+            hint = f" — the model '{model}' or the /audio/speech endpoint was not found on this provider."
+        elif response.status_code in PROVIDER_STATUS_HINTS:
+            hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
+        else:
+            hint = ""
+        return f"ERROR: speech provider HTTP {response.status_code}{hint}"
+    raw = response.content or b""
+    if len(raw) < 1024:
+        return "ERROR: speech provider returned suspiciously little audio data."
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+    except OSError as exc:
+        return f"ERROR writing audio: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, speech saved: {rel} ({_format_size(len(raw))}) using model {model}"
+
+
+def _qr_code(text: str, path: str, workspace: Path, size: int = 10) -> str:
+    """Generate a QR code image (PNG) from text — links, WiFi credentials, plain text.
+
+    Runs fully offline. Use when the user asks for a QR code / barcode image.
+    """
+    try:
+        import qrcode
+    except ImportError:
+        return "ERROR: the 'qrcode' package is not installed on this machine (pip install 'qrcode[pil]')."
+    data = (text or "").strip()
+    if not data:
+        return "ERROR: need the text/data to encode in the QR code."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".png":
+        return "ERROR: output path must end in .png."
+    try:
+        box = int(size)
+    except (TypeError, ValueError):
+        return "ERROR: size must be an integer."
+    box = max(2, min(20, box))
+    try:
+        qr = qrcode.QRCode(box_size=box, border=4)
+        qr.add_data(data)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        img.save(str(dest))
+    except Exception as exc:
+        return f"ERROR generating QR code: {exc.__class__.__name__}: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, QR code saved: {rel}"
+
+
+def _transcribe_audio(audio: str, workspace: Path, language: str = "", prompt: str = "") -> str:
+    """Transcribe a voice note / audio file in the workspace to text.
+
+    Uses the provider's ``/audio/transcriptions`` endpoint (same engine behind
+    analyze_media). Use when the user sends a voice message and wants the words,
+    without a full media analysis.
+    """
+    from zeline import transcribe as _stt
+
+    try:
+        src = _resolve_workspace_path(audio, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if not src.is_file():
+        return f"ERROR: audio not found in the workspace: {audio}"
+    try:
+        text = _stt.transcribe(src, language=(language or "").strip(), prompt=(prompt or "").strip())
+    except _stt.TranscribeError as exc:
+        return f"ERROR: {exc}"
+    text = (text or "").strip()
+    if not text:
+        return "ERROR: transcription came back empty — the audio may be silent."
+    return f"OK, transcription of {src.name}:\n{text}"
+
+
+_PDF_ACTIONS = ("merge", "split", "info")
+
+
+def _parse_pdf_pages(spec: str, total: int) -> list[int] | str:
+    """Parse '1-3,5' (1-based) into 0-based page indexes. Returns an error string on failure."""
+    idx: list[int] = []
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                a, b = part.split("-", 1)
+                lo, hi = int(a), int(b)
+            except ValueError:
+                return f"ERROR: bad page range '{part}'. Use like 1-3,5."
+            if lo < 1 or hi > total or lo > hi:
+                return f"ERROR: page range '{part}' out of bounds (document has {total} pages)."
+            idx.extend(range(lo - 1, hi))
+        else:
+            try:
+                n = int(part)
+            except ValueError:
+                return f"ERROR: bad page '{part}'. Use like 1-3,5."
+            if n < 1 or n > total:
+                return f"ERROR: page {n} out of bounds (document has {total} pages)."
+            idx.append(n - 1)
+    if not idx:
+        return "ERROR: no pages selected. Use like 1-3,5."
+    return idx
+
+
+def _pdf_tool(action: str, path: str, workspace: Path, pdfs: str = "", pages: str = "") -> str:
+    """Work with PDF files. Actions:
+
+    - merge: join PDFs (``pdfs`` = comma-separated workspace paths) into one.
+    - split: extract pages (``pages`` like "1-3,5") from one PDF (``pdfs`` = single path).
+    - info: report page count (``pdfs`` = single path; no output file needed).
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        return "ERROR: the 'pypdf' package is not installed on this machine (pip install pypdf)."
+    action = (action or "").strip().lower()
+    if action not in _PDF_ACTIONS:
+        return f"ERROR: unknown action '{action}'. Allowed: {', '.join(_PDF_ACTIONS)}."
+
+    def _resolve_pdf(p: str):
+        try:
+            src = _resolve_workspace_path(p, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not src.is_file():
+            return f"ERROR: PDF not found in the workspace: {p}"
+        if src.suffix.lower() != ".pdf":
+            return f"ERROR: not a PDF file: {p}"
+        return src
+
+    parts = [p.strip() for p in (pdfs or "").split(",") if p.strip()]
+    if not parts:
+        return "ERROR: need at least one PDF path in 'pdfs'."
+    srcs = []
+    for p in parts:
+        r = _resolve_pdf(p)
+        if isinstance(r, str):
+            return r
+        srcs.append(r)
+
+    if action == "info":
+        try:
+            reader = PdfReader(str(srcs[0]))
+            n = len(reader.pages)
+        except Exception as exc:
+            return f"ERROR reading PDF: {exc.__class__.__name__}: {exc}"
+        return f"OK, {srcs[0].name}: {n} page(s)."
+
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".pdf":
+        return "ERROR: output path must end in .pdf."
+    try:
+        writer = PdfWriter()
+        if action == "merge":
+            total = 0
+            for src in srcs:
+                reader = PdfReader(str(src))
+                for page in reader.pages:
+                    writer.add_page(page)
+                    total += 1
+            if total == 0:
+                return "ERROR: the PDFs contain no pages."
+        else:  # split
+            if len(srcs) != 1:
+                return "ERROR: split takes exactly one PDF in 'pdfs'."
+            reader = PdfReader(str(srcs[0]))
+            sel = _parse_pdf_pages(pages, len(reader.pages))
+            if isinstance(sel, str):
+                return sel
+            for i in sel:
+                writer.add_page(reader.pages[i])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as fh:
+            writer.write(fh)
+    except Exception as exc:
+        return f"ERROR working with PDF: {exc.__class__.__name__}: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, PDF saved: {rel} [action={action}]"
+
+
 _VEO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _VEO_POLL_INTERVAL = 10
 _VEO_POLL_MAX_ATTEMPTS = 30  # ~5 minutes of polling
@@ -2237,7 +2464,8 @@ TOOL_DEFS: list[ToolDef] = [
             "Send a file from the workspace to the user in this chat: an image, a "
             "PDF, a spreadsheet, an archive, anything you produced. Use this "
             "whenever you create a file the user should SEE — after generate_image, "
-            "after edit_image, after generate_video, after edit_video, after building a report/invoice/chart, after exporting data. Printing "
+            "after edit_image, after generate_video, after edit_video, after text_to_speech, "
+            "after qr_code, after pdf_tool, after building a report/invoice/chart, after exporting data. Printing "
             "the file path alone is useless to someone on a phone; the file must be "
             "delivered. Images arrive as photos, audio as a voice/audio message, "
             "everything else as a document. Optional 'caption' is one short line of "
@@ -2522,6 +2750,64 @@ TOOL_DEFS: list[ToolDef] = [
                 "factor": {"type": "number", "description": "Speed factor 0.25-4.0 (default 1.0)"},
             },
             "required": ["action", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "text_to_speech",
+        "Convert text into spoken audio (a voice note) via the provider's /audio/speech endpoint and save it as MP3 in the workspace. Use when the user asks the bot to speak, read text aloud, or make an audio version of something. Returns the saved file path — then call send_file with that path so the user actually HEARS the audio instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to speak (max 4000 chars)"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .mp3"},
+                "voice": {"type": "string", "description": "Voice name, e.g. alloy, echo, fable, onyx, nova, shimmer. Optional (default alloy)."},
+                "model": {"type": "string", "description": "Speech model. Optional (default tts-1)."},
+            },
+            "required": ["text", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "qr_code",
+        "Generate a QR code image (PNG) from any text — a link, WiFi credentials, or plain text. Runs fully offline. Returns the saved file path — then call send_file with that path so the user actually SEES the QR code instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text/data to encode in the QR code"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .png"},
+                "size": {"type": "integer", "description": "Module size 2-20, bigger = larger image. Optional (default 10)."},
+            },
+            "required": ["text", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "transcribe_audio",
+        "Transcribe a voice note or audio file from the workspace into text, via the provider's /audio/transcriptions endpoint. Use when the user sends a voice message and just wants the words written out. Returns the transcript directly — no file is created.",
+        {
+            "type": "object",
+            "properties": {
+                "audio": {"type": "string", "description": "Audio file path in the workspace (.ogg/.mp3/.m4a/.wav/...)"},
+                "language": {"type": "string", "description": "Optional ISO language code hint, e.g. id, en."},
+                "prompt": {"type": "string", "description": "Optional hint: names or jargon likely spoken in the audio."},
+            },
+            "required": ["audio"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "pdf_tool",
+        "Work with PDF files in the workspace: merge (join several PDFs into one), split (extract pages like '1-3,5' from one PDF), info (report page count). Returns the saved file path for merge/split — then call send_file with that path so the user actually GETS the PDF instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "merge, split, or info"},
+                "pdfs": {"type": "string", "description": "Comma-separated PDF paths in the workspace (one for split/info, several for merge)"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .pdf (merge/split)"},
+                "pages": {"type": "string", "description": "Pages to extract for split, e.g. '1-3,5'"},
+            },
+            "required": ["action", "pdfs"],
         },
         frozenset({"workspace", "full"}),
     ),
@@ -2969,6 +3255,16 @@ class ToolExecutor:
             ),
             "edit_video": lambda action, path, video="", videos="", start="", duration="", text="", fontsize=48, fontcolor="white", position="bottom", audio="", volume=1.0, factor=1.0: _edit_video(
                 action, video, path, self.workspace, videos, start, duration, text, fontsize, fontcolor, position, audio, volume, factor
+            ),
+            "text_to_speech": lambda text, path, voice="alloy", model="tts-1": _text_to_speech(
+                text, path, self.workspace, voice, model
+            ),
+            "qr_code": lambda text, path, size=10: _qr_code(text, path, self.workspace, size),
+            "transcribe_audio": lambda audio, language="", prompt="": _transcribe_audio(
+                audio, self.workspace, language, prompt
+            ),
+            "pdf_tool": lambda action, pdfs, path="", pages="": _pdf_tool(
+                action, path, self.workspace, pdfs, pages
             ),
             "generate_video": lambda prompt, path, duration=8, aspect_ratio="16:9", operation="": _generate_video(
                 prompt, path, self.workspace, duration, aspect_ratio, operation

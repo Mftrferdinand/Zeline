@@ -530,6 +530,15 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "edit_video":
         action = html.escape(str(arguments.get("action", "")), quote=False)
         return f"🎞️ Editing video ({action})" if action else "🎞️ Editing video"
+    if name == "text_to_speech":
+        return "🔊 Speaking"
+    if name == "qr_code":
+        return "🔳 Making QR code"
+    if name == "transcribe_audio":
+        return "🎙️ Transcribing audio"
+    if name == "pdf_tool":
+        action = html.escape(str(arguments.get("action", "")), quote=False)
+        return f"📄 PDF {action}" if action else "📄 Working with PDF"
     if name == "recall_history":
         query = html.escape(str(arguments.get("query", "")).strip()[:80], quote=False)
         return f"🕰 Searching past sessions for {query}" if query else "🕰 Searching past sessions"
