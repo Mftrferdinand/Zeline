@@ -13,11 +13,14 @@ User data under `~/.zeline` is never touched.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -86,10 +89,69 @@ def _https_get(url: str, *, accept: str = "") -> bytes:
         return response.read()
 
 
+# A dropped connection mid-download must not fail the whole update. On mobile
+# data (Termux is a first-class install target) the connection regularly dies
+# halfway through the installer, and `/update` drains the gateway first -- so a
+# user who "just tries again" pays a second full drain. Retry the *transfer* a
+# few times with backoff instead. Anything that is not a transient network
+# failure (checksum mismatch, invalid tag, non-HTTPS URL) still fails fast.
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_RETRY_BASE_DELAY = 2.0  # seconds; waits are 2s, 4s, 8s
+
+# HTTP statuses worth a second chance: rate-limited, overloaded, or a proxy
+# hiccup in front of the release assets.
+_RETRYABLE_HTTP_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+_TRANSIENT_NETWORK_ERRORS = (
+    http.client.RemoteDisconnected,
+    http.client.IncompleteRead,
+    http.client.BadStatusLine,
+    ConnectionError,  # reset / aborted / refused mid-transfer
+    TimeoutError,  # includes socket.timeout on 3.10+
+)
+
+
+def _is_transient_download_error(exc: BaseException) -> bool:
+    """True when re-issuing the GET has a chance of succeeding."""
+    # HTTPError is a URLError subclass, so it must be classified first: a 404
+    # means the asset is genuinely missing and retrying is pointless.
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUS
+    # ValueError (e.g. a non-HTTPS URL) is a programming error: never retry.
+    return isinstance(exc, _TRANSIENT_NETWORK_ERRORS + (urllib.error.URLError,))
+
+
+def _https_get_retry(url: str, *, accept: str = "") -> bytes:
+    """GET with retries for transient network failures.
+
+    Every download in the update path goes through this: the release metadata,
+    the checksums, and the installer itself are all equally exposed to a
+    connection dying halfway.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            return _https_get(url, accept=accept)
+        except Exception as exc:  # noqa: BLE001 — classified by _is_transient_download_error
+            if not _is_transient_download_error(exc):
+                raise
+            last_error = exc
+            if attempt < DOWNLOAD_ATTEMPTS:
+                delay = DOWNLOAD_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                print(
+                    f"  download interrupted ({exc.__class__.__name__}: {exc}), "
+                    f"retrying in {delay:.0f}s (attempt {attempt + 1}/{DOWNLOAD_ATTEMPTS})…"
+                )
+                time.sleep(delay)
+    # Reached only after DOWNLOAD_ATTEMPTS consecutive transient failures.
+    assert last_error is not None
+    raise last_error
+
+
 def _latest_tag() -> str:
     import json
 
-    data = json.loads(_https_get(LATEST_API, accept="application/vnd.github+json").decode("utf-8"))
+    data = json.loads(_https_get_retry(LATEST_API, accept="application/vnd.github+json").decode("utf-8"))
     tag = str(data.get("tag_name", "")).strip()
     if not _TAG_RE.match(tag):
         raise ValueError(f"release tag looks invalid: {tag!r}")
@@ -194,10 +256,13 @@ def update() -> int:
         tmp = Path(raw)
         installer = tmp / installer_name
         try:
-            sums_text = _https_get(f"{base}/SHA256SUMS").decode("utf-8")
-            installer_bytes = _https_get(f"{base}/{installer_name}")
+            sums_text = _https_get_retry(f"{base}/SHA256SUMS").decode("utf-8")
+            installer_bytes = _https_get_retry(f"{base}/{installer_name}")
         except Exception as exc:  # noqa: BLE001 — updater must report, never crash
-            print(f"  ERROR: download failed ({exc.__class__.__name__}: {exc}).")
+            print(
+                f"  ERROR: download failed after {DOWNLOAD_ATTEMPTS} attempts "
+                f"({exc.__class__.__name__}: {exc})."
+            )
             if resume_only is not None:
                 _resume_gateway_after_update(resume_only)
             return 1

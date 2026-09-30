@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import importlib
+import io
 import sys
 import types
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -200,6 +203,14 @@ class UpdaterCrossPlatformTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.updater = importlib.import_module("zeline.updater")
+        # Two tests in this class call update(); without the stub the real
+        # gateway_service would drain and kill the operator's actual gateway
+        # whenever the suite runs on a machine that has one running.
+        patcher = mock.patch.dict(
+            sys.modules, {"zeline.gateway_service": _stub_gateway_service(active=False)}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_posix_uses_bash_install_sh(self):
         installer = Path("/tmp/install.sh")
@@ -285,6 +296,87 @@ class UpdateDocumentationTests(unittest.TestCase):
         for platform in ("Termux", "Linux", "macOS", "Windows"):
             self.assertIn(platform, page)
         self.assertIn("~/.zeline", page)
+
+
+class DownloadRetryTests(unittest.TestCase):
+    """A flaky connection must not fail `/update`: the updater retries the GET.
+
+    The failure this pins: a single ``RemoteDisconnected`` halfway through the
+    installer download used to abort the whole update with exit 1, forcing the
+    owner to drain the gateway and run `/update` again by hand.
+    """
+
+    def setUp(self) -> None:
+        self.updater = importlib.import_module("zeline.updater")
+
+    def _retry(self, effects):
+        """Run ``_https_get_retry`` with a scripted ``_https_get`` and no real sleeps."""
+        with mock.patch.object(self.updater, "_https_get", side_effect=effects) as get, \
+             mock.patch("time.sleep") as sleep:
+            try:
+                outcome = self.updater._https_get_retry("https://example.com/install.sh")
+            except Exception as exc:  # noqa: BLE001 — the tests assert on the raised error
+                outcome = exc
+        return get, sleep, outcome
+
+    def test_a_dropped_connection_is_retried_until_it_succeeds(self):
+        get, sleep, outcome = self._retry(
+            [
+                http.client.RemoteDisconnected("closed"),
+                http.client.RemoteDisconnected("closed"),
+                b"installer-bytes",
+            ]
+        )
+        self.assertEqual(outcome, b"installer-bytes")
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(2.0), mock.call(4.0)])
+
+    def test_it_gives_up_after_all_attempts(self):
+        get, sleep, outcome = self._retry(http.client.RemoteDisconnected("closed"))
+        self.assertIsInstance(outcome, http.client.RemoteDisconnected)
+        self.assertEqual(get.call_count, self.updater.DOWNLOAD_ATTEMPTS)
+        self.assertEqual(sleep.call_count, self.updater.DOWNLOAD_ATTEMPTS - 1)
+
+    def test_a_404_is_not_retried(self):
+        """A missing asset will not appear on the second try."""
+        error = urllib.error.HTTPError(
+            "https://example.com/install.sh", 404, "Not Found", {}, io.BytesIO(b"")
+        )
+        get, sleep, outcome = self._retry(error)
+        self.assertIs(outcome, error)
+        self.assertEqual(get.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_a_503_is_retried(self):
+        error = urllib.error.HTTPError(
+            "https://example.com/install.sh", 503, "Service Unavailable", {}, io.BytesIO(b"")
+        )
+        get, _sleep, outcome = self._retry([error, b"installer-bytes"])
+        self.assertEqual(outcome, b"installer-bytes")
+        self.assertEqual(get.call_count, 2)
+
+    def test_a_programming_error_is_never_retried(self):
+        get, sleep, outcome = self._retry(ValueError("refusing non-HTTPS URL"))
+        self.assertIsInstance(outcome, ValueError)
+        self.assertEqual(get.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_update_reports_the_attempt_count_when_the_download_keeps_failing(self):
+        """The owner reading the log should see that it retried, not just failed."""
+        module = _stub_gateway_service(active=False)
+        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+             mock.patch.object(self.updater, "_checkout_root", return_value=None), \
+             mock.patch.object(self.updater, "_latest_tag", return_value="v9.9.9"), \
+             mock.patch.object(
+                 self.updater, "_https_get", side_effect=http.client.RemoteDisconnected("closed")
+             ), \
+             mock.patch("time.sleep"), \
+             mock.patch("builtins.print") as say:
+            code = self.updater.update()
+        self.assertEqual(code, 1)
+        lines = " ".join(call.args[0] for call in say.call_args_list)
+        self.assertIn(f"after {self.updater.DOWNLOAD_ATTEMPTS} attempts", lines)
+        self.assertIn("RemoteDisconnected", lines)
 
 
 if __name__ == "__main__":
