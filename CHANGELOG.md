@@ -1,4 +1,10 @@
 # Changelog
+## [0.3.7] — 2026-10-01
+
+### Added
+- **Muse-style reasoning engine (optional example)** — `examples/muse-reasoning-engine/`: OpenAI-compatible bridge with `tool_calls` passthrough, standalone poller for any OpenAI-compatible LLM, model-agnostic system prompt, one-command installer, and a watchdog timer with auto-restart ([#295]).
+- **Examples bundled in sdist** — `MANIFEST.in` now ships `examples/` in the source archive ([#295]).
+
 ## [0.3.6] — 2026-09-30
 
 ### Added
@@ -378,6 +384,7 @@ Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
 [Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.6...main
+[0.3.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.7
 [0.3.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.6
 [0.3.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.4
@@ -408,6 +415,7 @@ Release notes for 0.2.5 and earlier are on the
 [#289]: https://github.com/Mftrferdinand/Zeline/pull/289
 [#290]: https://github.com/Mftrferdinand/Zeline/pull/290
 [#291]: https://github.com/Mftrferdinand/Zeline/pull/291
+[#295]: https://github.com/Mftrferdinand/Zeline/pull/295
 [#260]: https://github.com/Mftrferdinand/Zeline/pull/260
 [#261]: https://github.com/Mftrferdinand/Zeline/pull/261
 [#262]: https://github.com/Mftrferdinand/Zeline/pull/262

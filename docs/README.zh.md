@@ -69,7 +69,7 @@ uv tool install zeline
 只需一行，而且不需要任何现成的 Python 工具链——它会为你准备一个私有环境：
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.6/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.sh && bash install.sh
 ```
 
 然后运行 `zeline setup`。安装脚本会自行下载带版本号的 wheel，并在安装前对照
@@ -81,7 +81,7 @@ curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/r
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.6/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 然后运行 `zeline setup`。
