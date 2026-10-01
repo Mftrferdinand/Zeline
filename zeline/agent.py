@@ -812,8 +812,37 @@ class Zeline:
         usage_chunk: dict[str, Any] | None = None
         reasoning_seen = False
         finish_reason: str | None = None
+        # Inactivity watchdog: kalau provider berhenti mengirim byte di tengah
+        # stream (hang, proxy diam, upstream mati tanpa penutup), iter_lines()
+        # bisa menunggu sampai timeout TCP/OS — menit ke jam. Thread ini menutup
+        # respons setelah jeda yang wajar sehingga iterasi berhenti dan turn
+        # gagal cepat dengan pesan yang jelas, bukan bot yang diam.
+        last_activity = time.monotonic()
+        stalled = threading.Event()
+        stop_watchdog = threading.Event()
+
+        def _watchdog() -> None:
+            limit = float(getattr(config, "STREAM_INACTIVITY_SECONDS", 120.0) or 0.0)
+            if limit <= 0:
+                return  # fitur dimatikan operator
+            # Cek beberapa kali per menit; interval dibatasi agar tidak sibuk.
+            poll = max(0.25, min(1.0, limit / 4.0))
+            while not stop_watchdog.wait(poll):
+                if time.monotonic() - last_activity > limit:
+                    stalled.set()
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                    return
+
+        watchdog = threading.Thread(
+            target=_watchdog, name="zeline-stream-watchdog", daemon=True
+        )
+        watchdog.start()
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
+                last_activity = time.monotonic()
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
                 if self._cancelled():
                     raise _TurnCancelled()
@@ -867,11 +896,27 @@ class Zeline:
                     if function.get("arguments"):
                         slot["function"]["arguments"] += str(function["arguments"])
         except (requests.exceptions.RequestException,) as exc:
+            if stalled.is_set():
+                raise ZelineError(
+                    f"The stream from '{self.model}' went silent (no data for "
+                    f"{int(float(getattr(config, 'STREAM_INACTIVITY_SECONDS', 120.0) or 120.0))}s). "
+                    "The provider likely stalled mid-response. Please try again."
+                ) from exc
             raise ZelineError(
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
         finally:
+            stop_watchdog.set()
             response.close()
+
+        # Provider yang koneksinya ditutup watchdog bisa berakhir tanpa exception
+        # (iterator berhenti normal). Perlakukan sama: gagal cepat dengan pesan
+        # yang jelas alih-alih memakai isi parsial seolah jawaban utuh.
+        if stalled.is_set():
+            raise ZelineError(
+                f"The stream from '{self.model}' went silent mid-response. "
+                "The provider likely stalled. Please try again."
+            )
 
         if usage_chunk is not None:
             self._record_usage(usage_chunk)
