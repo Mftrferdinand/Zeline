@@ -228,6 +228,7 @@ def _configure_provider(provider: dict[str, Any]) -> None:
     provider.update({
         "base_url": base_url,
         "api_key": api_key,
+        "api_keys": list(provider.get("api_keys") or []),
         "model": _choose_model(models, str(provider.get("model", ""))),
         "image_model": str(provider.get("image_model", "")),
         "audio_model": str(provider.get("audio_model", "")),
@@ -661,13 +662,17 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
         shown_model = str(provider.get("model", "?"))
         shown_image_model = str(provider.get("image_model", "")) or "(none)"
         shown_audio_model = str(provider.get("audio_model", "")) or "(none)"
+        shown_video_model = str(provider.get("video_model", "")) or "(none)"
         masked_key = config.mask_secret(str(provider.get("api_key", "")))
+        masked_gemini_key = config.mask_secret(str(provider.get("gemini_api_key", "")))
         print(f"\n  Provider: {name}")
         print(f"  Base URL: {shown_base_url}")
         print(f"  Model   : {shown_model}")
         print(f"  Image model: {shown_image_model}")
         print(f"  Audio (speech-to-text) model: {shown_audio_model}")
+        print(f"  Video model: {shown_video_model}")
         print(f"  API key : {masked_key}")
+        print(f"  Gemini API key (video): {masked_gemini_key}")
         action = _arrow_menu(
             "Aksi provider:",
             [
@@ -675,11 +680,13 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
                 "Change model",
                 "Change image model",
                 "Change audio model",
+                "Change video model",
+                "Set Gemini API key (video)",
                 "Change API key",
                 "Cancel",
             ],
         )
-        if action == -1 or action == 5:
+        if action == -1 or action == 7:
             return
         if action == 0:  # Set as active
             provider["model_verified"] = True
@@ -727,7 +734,26 @@ def _model_view_provider(cfg: dict[str, Any]) -> None:
                 cfg["provider"] = copy.deepcopy(provider)
             config.save_config(cfg)
             print(f"  Audio model updated: {new_audio_model or '(none)'}")
-        elif action == 4:  # Change API key
+        elif action == 4:  # Change video model
+            new_video_model = _ask(
+                "Video (text-to-video) model, blank to disable",
+                str(provider.get("video_model", "")),
+            ).strip()
+            provider["video_model"] = new_video_model
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            if slug == _active_slug(cfg):
+                cfg["provider"] = copy.deepcopy(provider)
+            config.save_config(cfg)
+            print(f"  Video model updated: {new_video_model or '(none)'}")
+        elif action == 5:  # Set Gemini API key (video)
+            new_key = _ask("Gemini API key (for Veo video generation)", str(provider.get("gemini_api_key", "")), secret=True)
+            provider["gemini_api_key"] = new_key
+            cfg["providers"][slug] = copy.deepcopy(provider)
+            if slug == _active_slug(cfg):
+                cfg["provider"] = copy.deepcopy(provider)
+            config.save_config(cfg)
+            print("  Gemini API key updated.")
+        elif action == 6:  # Change API key
             new_key = _ask("API key", str(provider.get("api_key", "")), secret=True)
             provider["api_key"] = new_key
             cfg["providers"][slug] = copy.deepcopy(provider)
@@ -808,6 +834,90 @@ def cmd_model() -> int:
         elif choice == idx_view:
             _model_view_provider(cfg)
         cfg = config.stored_config_copy()
+
+
+def _keys_pool_from_cfg(cfg: dict) -> list:
+    """Pool efektif dari stored config: [api_key] + api_keys, tanpa duplikat."""
+    pool: list = []
+    single = str(cfg.get("provider", {}).get("api_key", "") or "")
+    if single:
+        pool.append(single)
+    for item in cfg.get("provider", {}).get("api_keys", []) or []:
+        key = str(item or "")
+        if key and key not in pool:
+            pool.append(key)
+    return pool
+
+
+def _keys_write_pool(cfg: dict, pool: list) -> None:
+    """Tulis balik pool ternormalisasi: api_key = prioritas #1."""
+    cfg["provider"]["api_key"] = pool[0] if pool else ""
+    cfg["provider"]["api_keys"] = pool[1:]
+
+
+def cmd_keys(action: str = "list", n: int | None = None) -> int:
+    """Kelola API key pool: rotasi otomatis saat satu key kena 401/403/429."""
+    import getpass
+
+    if not config.GATEWAY_SETUP_COMPLETE:
+        print("[!] Choose and set up a gateway first. Run: zeline")
+        return 2
+    if os.environ.get("ZELINE_API_KEYS", "").strip():
+        print("[!] ZELINE_API_KEYS is set: the file pool below is OVERRIDDEN at runtime.")
+    cfg = config.stored_config_copy()
+    pool = _keys_pool_from_cfg(cfg)
+
+    if action == "list":
+        if not pool:
+            print("No API keys configured. Run `zeline setup` or `zeline keys add`.")
+            return 0
+        print(f"Key pool ({len(pool)} key{'s' if len(pool) > 1 else ''}, auto-rotates on 401/403/429):")
+        for i, key in enumerate(pool, 1):
+            tag = " ← first priority" if i == 1 else ""
+            print(f"  [{i}] {config.mask_secret(key)}{tag}")
+        return 0
+
+    if action == "add":
+        try:
+            new_key = getpass.getpass("Paste API key (hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return 1
+        if not new_key:
+            print("Empty key — nothing added.")
+            return 1
+        if new_key in pool:
+            print("Key already in the pool — nothing added.")
+            return 1
+        pool.append(new_key)
+        _keys_write_pool(cfg, pool)
+        config.save_config(cfg)
+        print(f"Added as key #{len(pool)}. Restart the gateway (or send /model) to apply.")
+        return 0
+
+    if action in {"remove", "use"}:
+        if n is None or n < 1 or n > len(pool):
+            print(f"Usage: zeline keys {action} <n>  (see `zeline keys list`, n = 1..{len(pool)})")
+            return 2
+        if action == "remove":
+            if len(pool) == 1:
+                print("Refusing to remove the last key. Add a replacement first.")
+                return 1
+            removed = pool.pop(n - 1)
+            _keys_write_pool(cfg, pool)
+            config.save_config(cfg)
+            print(f"Removed key #{n} ({config.mask_secret(removed)}). Restart the gateway (or send /model) to apply.")
+            return 0
+        # use → promote to first priority
+        key = pool.pop(n - 1)
+        pool.insert(0, key)
+        _keys_write_pool(cfg, pool)
+        config.save_config(cfg)
+        print(f"Key #{n} is now first priority. Restart the gateway (or send /model) to apply.")
+        return 0
+
+    print(f"Unknown keys action: {action}")
+    return 2
 
 
 def _run_reflection(sessions: "SessionStore") -> None:
@@ -1365,15 +1475,207 @@ def cmd_skills() -> int:
     if not available:
         print("No skills yet. Run `zeline setup` to copy the built-in skills.")
         return 0
-    for scope, name, _title, description in available:
-        print(f"  - {name} [{scope}]: {description}")
+    for scope, name, _title, description, load_when in available:
+        print(f"  - {name} [{scope}]: {description}{skills._trigger_suffix(load_when)}")
     return 0
 
 
-def cmd_memory() -> int:
+
+def cmd_connect(service: str | None, code: str = "") -> int:
+    from zeline import connectors as connectors_pkg
+
+    if not service:
+        print(f"Usage: zeline connect <service>\nAvailable: {', '.join(connectors_pkg.all_ids()) or '(none)'}")
+        return 2
+    conn = connectors_pkg.get(service)
+    if conn is None:
+        print(f"Unknown connector '{service}'. Available: {', '.join(connectors_pkg.all_ids())}")
+        return 2
+    if conn.auth_kind == "pat":
+        import getpass
+
+        token = getpass.getpass(f"{conn.name} personal access token: ")
+        print(conn.connect(token=token))
+        return 0
+    if service == "google":
+        import getpass
+
+        client_id = input("Google OAuth client ID: ").strip()
+        client_secret = getpass.getpass("Google OAuth client secret: ").strip()
+        print(conn.connect(client_id=client_id, client_secret=client_secret, code=code or ""))
+        return 0
+    if service == "whatsapp":
+        import getpass
+
+        access_token = getpass.getpass("WhatsApp Cloud API access token: ").strip()
+        phone_number_id = input("Phone number ID: ").strip()
+        business_account_id = input("Business account ID (optional): ").strip()
+        print(conn.connect(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            business_account_id=business_account_id,
+        ))
+        return 0
+    print(conn.connect())
+    return 0
+
+
+def cmd_connectors() -> int:
+    from zeline import connectors as connectors_pkg
+
+    conns = connectors_pkg.all()
+    if not conns:
+        print("No connectors registered.")
+        return 0
+    for conn in conns:
+        state = conn.status()
+        mark = "yes" if state.get("connected") else "no"
+        print(f"  - {conn.id}: {conn.name} — connected: {mark} ({state.get('detail', '')})")
+    return 0
+
+
+def cmd_disconnect(service: str | None) -> int:
+    from zeline import connectors as connectors_pkg
+
+    if not service:
+        print("Usage: zeline disconnect <service>")
+        return 2
+    conn = connectors_pkg.get(service)
+    if conn is None:
+        print(f"Unknown connector '{service}'. Available: {', '.join(connectors_pkg.all_ids())}")
+        return 2
+    print(conn.disconnect())
+    return 0
+
+
+def cmd_memory(action: str | None = None) -> int:
     from zeline.memory import list_memory
 
+    if action == "consolidate":
+        # Nudge deterministik: bersihkan duplikat & record kedaluwarsa.
+        from zeline.memory import MemoryStore
+
+        result = MemoryStore("cli:local").consolidate()
+        print(
+            f"Consolidated: {result['removed_duplicates']} duplicates removed, "
+            f"{result['removed_expired']} expired removed, {result['kept']} kept."
+        )
+        return 0
     print(list_memory("cli:local"))
+    return 0
+
+
+def cmd_proactive(action: str = "status", *, chat: str | None = None, time: str = "07:00") -> int:
+    """Kelola briefing proaktif: digest yang dikirim agen atas inisiatif sendiri."""
+    from zeline import proactive as proactive_module
+
+    if action == "enable":
+        if not chat or ":" not in chat:
+            print("Usage: zeline proactive enable --chat telegram:<chat_id> [--time 07:00]")
+            return 2
+        try:
+            job = proactive_module.enable(chat, time)
+        except Exception as exc:  # noqa: BLE001 — tampilkan alasan ke user
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"Proactive briefing enabled: {job.describe()}")
+        print("The agent sends a short digest only when there is something worth saying.")
+        print("Jobs run inside the gateway process: zeline gateway start")
+        return 0
+    if action == "disable":
+        print("Briefing disabled." if proactive_module.disable() else "No briefing job found.")
+        return 0
+    if action == "preview":
+        if not chat or ":" not in chat:
+            print("Usage: zeline proactive preview --chat telegram:<chat_id>")
+            return 2
+        print(proactive_module.preview(chat))
+        return 0
+    print(proactive_module.status())
+    return 0
+
+
+def cmd_curator(
+    action: str = "scan", *, name: str | None = None, days: int = 90, yes: bool = False
+) -> int:
+    """Rawat skill: pindai yang basi/duplikat, arsipkan, atau kembalikan."""
+    from zeline import curator as curator_module
+
+    if action == "scan":
+        skills = curator_module.scan(stale_days=days)
+        if not skills:
+            print("No skills found.")
+            return 0
+        for skill in skills:
+            flags = []
+            if skill["stale"]:
+                flags.append(f"stale ({skill['age_days']}d)")
+            if skill["possible_duplicates"]:
+                flags.append("possible dup: " + ", ".join(skill["possible_duplicates"]))
+            flag = " [" + "; ".join(flags) + "]" if flags else ""
+            print(f"  {skill['name']}{flag}")
+        return 0
+    if action in ("archive", "restore"):
+        if not name:
+            print(f"Usage: zeline curator {action} <name>")
+            return 2
+        try:
+            dst = (
+                curator_module.archive(name)
+                if action == "archive"
+                else curator_module.restore(name)
+            )
+        except curator_module.CuratorError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"{'Archived' if action == 'archive' else 'Restored'} '{name}' -> {dst}")
+        return 0
+    if action == "prune":
+        plan = curator_module.prune(stale_days=days, apply=yes)
+        if not plan:
+            print("Nothing stale enough to archive.")
+            return 0
+        for item in plan:
+            suffix = f" -> {item['archived_to']}" if yes else ""
+            print(f"  {item['name']} ({item['age_days']}d){suffix}")
+        if not yes:
+            print("Dry-run. Re-run with --yes to archive these skills.")
+        return 0
+    print("Usage: zeline curator [scan|archive <name>|restore <name>|prune [--days N] [--yes]]")
+    return 2
+
+
+def cmd_lessons() -> int:
+    """Show lessons learned from tool failures — the self-improvement store."""
+    from zeline import lessons as lessons_module
+
+    counts = lessons_module.lessons_summary("cli:local")
+    resolved = lessons_module.resolved_lessons("cli:local", limit=10)
+    unresolved = lessons_module.unresolved_lessons("cli:local", limit=5)
+    total_resolved = counts.get("resolved", 0)
+    total_unresolved = counts.get("unresolved", 0)
+
+    if not total_resolved and not total_unresolved:
+        print("No lessons yet. When a tool fails and the agent retries")
+        print("successfully, the lesson is captured here and injected into")
+        print("the next session's system prompt automatically.")
+        return 0
+
+    print(f"Lessons: {total_resolved} resolved, {total_unresolved} unresolved\n")
+    if resolved:
+        print("Resolved (injected into system prompt):")
+        for r in resolved:
+            tool = r.get("tool", "")
+            err = str(r.get("error", ""))[:80]
+            fix = str(r.get("fix", ""))[:80]
+            print(f"  [DO] {tool}: DON'T \"{err}\" → DO: {fix}")
+        print()
+    if unresolved:
+        print("Unresolved (failure recorded, no fix yet):")
+        for u in unresolved:
+            tool = u.get("tool", "")
+            err = str(u.get("error", ""))[:80]
+            print(f"  [--] {tool}: {err}")
     return 0
 
 
@@ -2164,6 +2466,14 @@ def build_parser() -> argparse.ArgumentParser:
     chat = subparsers.add_parser("chat", help="chat in the terminal")
     chat.add_argument("-q", "--query", help="single query, no interactive mode")
     subparsers.add_parser("model", help="change provider/model without re-running gateway setup")
+    keys = subparsers.add_parser("keys", help="manage provider API key pool (auto-rotates on 401/403/429)")
+    keys_sub = keys.add_subparsers(dest="keys_command")
+    keys_sub.add_parser("list", help="show key pool (masked)")
+    keys_sub.add_parser("add", help="add a key to the pool")
+    keys_rm = keys_sub.add_parser("remove", help="remove a key from the pool")
+    keys_rm.add_argument("n", type=int, help="key number from `zeline keys list`")
+    keys_use = keys_sub.add_parser("use", help="make key #n the first-priority key")
+    keys_use.add_argument("n", type=int, help="key number from `zeline keys list`")
 
     gateway = subparsers.add_parser("gateway", help="manage messaging platforms")
     gateway_sub = gateway.add_subparsers(dest="gateway_command")
@@ -2243,7 +2553,34 @@ def build_parser() -> argparse.ArgumentParser:
     fork_cmd.add_argument("target", help="new identity")
 
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
-    subparsers.add_parser("memory", help="view local CLI memory")
+    subparsers.add_parser("memory", help="view local CLI memory").add_argument(
+        "action", nargs="?", choices=["consolidate"], help="consolidate: remove duplicates and expired facts"
+    )
+    proactive_parser = subparsers.add_parser(
+        "proactive", help="proactive briefing the agent sends on its own"
+    )
+    proactive_parser.add_argument(
+        "action", nargs="?", choices=["enable", "disable", "status", "preview"],
+        default="status",
+    )
+    proactive_parser.add_argument("--chat", help="identity to brief, e.g. telegram:<chat_id>")
+    proactive_parser.add_argument("--time", default="07:00", help="daily time (default 07:00)")
+    curator_parser = subparsers.add_parser("curator", help="scan, archive, or prune installed skills")
+    curator_parser.add_argument(
+        "action", nargs="?", choices=["scan", "archive", "restore", "prune"], default="scan"
+    )
+    curator_parser.add_argument("name", nargs="?", help="skill name for archive/restore")
+    curator_parser.add_argument("--days", type=int, default=90, help="stale threshold in days")
+    curator_parser.add_argument("--yes", action="store_true", help="actually archive on prune")
+    connect_parser = subparsers.add_parser("connect", help="link an external service (connector)")
+    connect_parser.add_argument("service", nargs="?", help="connector id, e.g. github")
+    connect_parser.add_argument("--code", default="", help="OAuth authorization code (for headless connect)")
+    subparsers.add_parser("connectors", help="list connectors and their link status")
+    disconnect_parser = subparsers.add_parser("disconnect", help="unlink an external service")
+    disconnect_parser.add_argument("service", nargs="?", help="connector id, e.g. github")
+    subparsers.add_parser("lessons", help="view lessons learned from tool failures")
+
+
 
     tools_parser = subparsers.add_parser("tools", help="inspect and configure native tools")
     tools_sub = tools_parser.add_subparsers(dest="tools_command")
@@ -2461,8 +2798,34 @@ def main(argv: list[str] | None = None) -> int:
         )
     if command in {"skills", "skill"}:
         return cmd_skills()
+    if command == "keys":
+        return cmd_keys(
+            getattr(namespace, "keys_command", None) or "list",
+            getattr(namespace, "n", None),
+        )
+    if command == "connect":
+        return cmd_connect(getattr(namespace, "service", None), getattr(namespace, "code", "") or "")
+    if command == "connectors":
+        return cmd_connectors()
+    if command == "disconnect":
+        return cmd_disconnect(getattr(namespace, "service", None))
     if command == "memory":
-        return cmd_memory()
+        return cmd_memory(getattr(namespace, "action", None))
+    if command == "proactive":
+        return cmd_proactive(
+            getattr(namespace, "action", None) or "status",
+            chat=getattr(namespace, "chat", None),
+            time=getattr(namespace, "time", None) or "07:00",
+        )
+    if command == "curator":
+        return cmd_curator(
+            getattr(namespace, "action", None) or "scan",
+            name=getattr(namespace, "name", None),
+            days=getattr(namespace, "days", None) or 90,
+            yes=bool(getattr(namespace, "yes", False)),
+        )
+    if command == "lessons":
+        return cmd_lessons()
     if command == "cron":
         return cmd_cron(
             getattr(namespace, "cron_action", None) or "list",

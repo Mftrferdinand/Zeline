@@ -27,6 +27,7 @@ Run it locally for development or deploy it to your own server or cloud, and con
 
 - **Agent core** — an OpenAI-compatible agent loop with tool calling, plus an interactive CLI and one-shot queries
 - **Model-agnostic** — works with OpenAI, OpenRouter, vLLM, Ollama, and any OpenAI- or Anthropic-compatible API; swap model or provider without rebuilding
+- **API key pools** — register several keys per provider (`zeline keys add`); a key that hits 401/403 is retired and a rate-limited (429) key is rested while requests automatically rotate to the next healthy key
 - **Persistent memory** — long-term memory isolated per platform identity
 - **Session persistence** — conversation history stored in SQLite (`~/.zeline/sessions.db`), so it survives gateway restarts
 - **Skills** — reusable Markdown procedures loaded on demand; see the [Zenith skill index](zeline/skills/ZENITH_INDEX.md) for the full bundled catalog
@@ -54,13 +55,24 @@ Run it locally for development or deploy it to your own server or cloud, and con
 platforms use a private Python environment; Windows uses a per-user package
 install. Neither requires root/Administrator access.
 
+### PyPI (recommended)
+
+```sh
+pip install zeline
+# or, in an isolated tool environment:
+uv tool install zeline
+```
+
+Then `zeline setup`. Zeline is on PyPI via Trusted Publishing (OIDC) — no API
+token stored in the repository, same verified artifacts as the release.
+
 ### Termux, Linux, macOS, and iSH
 
 One line, and it needs no existing Python tooling — it provisions a private
 environment for you:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.sh && bash install.sh
 ```
 
 Then `zeline setup`. The installer downloads the versioned wheel and verifies it
@@ -70,7 +82,7 @@ hand. On iSH, run `apk add bash curl python3` first.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Then `zeline setup`.
@@ -221,6 +233,7 @@ zeline chat -q "..."           Send one query after gateway + model setup
 zeline setup                   First run: gateway picker; later: setup center
 zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline keys                    Manage provider API key pool (auto-rotates on 401/403/429)
 zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions
@@ -242,7 +255,82 @@ zeline gateway log             Print gateway logs
 zeline gateway run             Run enabled gateways in the foreground
 zeline skills                  List installed skills (catalog: zeline/skills/ZENITH_INDEX.md)
 zeline memory                  Print local CLI memory
+zeline memory consolidate      Remove duplicate and expired facts from local memory
+zeline proactive status        Show the proactive briefing job
+zeline proactive enable --chat telegram:<id> [--time 07:00]
+                               Daily self-initiated digest; silent when nothing is new
+zeline proactive disable       Remove the briefing job
+zeline curator scan            List installed skills, flagging stale or duplicated ones
+zeline curator prune [--days 90] [--yes]
+                               Dry-run (default) or archive stale skills with a ledger
+zeline curator archive <name>  Archive a skill (restorable)
+zeline curator restore <name>  Bring an archived skill back
+zeline connect <service>       Link an external service (e.g. github)
+zeline connectors              List connectors and their link status
+zeline disconnect <service>    Unlink an external service
 ```
+
+## Connectors
+
+Connectors link the agent to outside services so native tools can act on the
+operator's behalf. Credentials live in `~/.zeline/connectors/<id>.json`
+(mode 0600) and are never logged or exposed to the model.
+
+```text
+zeline connect github      # paste a personal access token (validated first)
+zeline connectors          # github: connected yes/no
+zeline disconnect github
+```
+
+Phase 1 ships the framework plus GitHub (list repos/issues/PRs, create issues,
+comment). Phase 2 adds Google (Gmail search/read/send, Calendar, Sheets,
+Drive) via the OAuth2 helpers in `zeline/connectors/oauth.py`. Phase 3 adds
+WhatsApp (send text/template messages) via the Business Cloud API. The five
+`github_*`, six `gmail_search`/`gmail_read`/`gmail_send`/`google_calendar`/
+`sheets_read`/`drive_list`, and two `whatsapp_send`/`whatsapp_template` native
+tools are owner-gated (`workspace`/`full` profiles).
+
+### Google connector setup
+
+`zeline connect google` uses Google OAuth2, so it needs a client ID + secret
+from your own Google Cloud project (one-time, ~5 minutes):
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create
+   (or pick) a project.
+2. **APIs & Services → Library**: enable *Gmail API*, *Google Calendar API*,
+   *Google Sheets API*, and *Google Drive API*.
+3. **APIs & Services → OAuth consent screen**: choose *External*, fill the
+   app name, add your Gmail as a test user.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**,
+   type *Desktop app*; copy the client ID and client secret.
+5. Run `zeline connect google`, paste the ID + secret, approve in the browser.
+   On a headless box, open the printed URL on another device, then re-run with
+   `zeline connect google --code <kode>`.
+
+Tokens (with a refresh token) are stored in
+`~/.zeline/connectors/google.json` (mode 0600) and refreshed automatically.
+
+### WhatsApp connector setup
+
+`zeline connect whatsapp` needs a WhatsApp Business Cloud API access token
+plus the phone number ID from your own Meta Developer app (one-time,
+~10 minutes):
+
+1. Go to [Meta for Developers](https://developers.facebook.com/) and create
+   an app (type *Business*).
+2. Add the **WhatsApp** product to the app from the dashboard.
+3. Under **WhatsApp → API Setup**, copy the **Phone number ID** and generate
+   a temporary access token (or create a permanent system-user token under
+   **Business settings** for long-term use).
+4. Run `zeline connect whatsapp`, paste the token + phone number ID. The
+   number is validated before anything is stored.
+5. Send a test message with the `whatsapp_send` tool (or `zeline` chat).
+
+Note: the free test number can only message the test recipient numbers you
+register. Messaging any other number requires either an approved message
+template (`whatsapp_template`) or a verified business number inside the
+24-hour conversation window. The token lives in
+`~/.zeline/connectors/whatsapp.json` (mode 0600) and is never logged.
 
 On first launch, Zeline requires one gateway selected from an arrow-key picker:
 Telegram, WhatsApp, Webhook, or Cancel. It configures only the selected gateway,

@@ -48,6 +48,7 @@ MUTATING_TOOLS = frozenset({
     "add_memory",
     "remove_memory",
     "manage_skill",
+    "resolve_lesson",
     "update_task",
     "generate_image",
     "run_shell",
@@ -88,6 +89,8 @@ def detail_for(tool: str, args: dict[str, Any]) -> str:
         return f"{action} {path}".strip() if action else path
     if tool == "manage_skill":
         return f"{str(args.get('action', '')).strip()} {str(args.get('name', '')).strip()}".strip()
+    if tool == "resolve_lesson":
+        return f"{str(args.get('tool', '')).strip()} {str(args.get('args_sig_contains', '')).strip()}".strip()
     if tool == "update_task":
         return f"{str(args.get('status', '')).strip()} {str(args.get('task', '')).strip()}".strip()
     if tool == "schedule_task":

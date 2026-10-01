@@ -327,7 +327,7 @@ class PyPiAvailabilityClaimTests(unittest.TestCase):
     pages cannot disagree with reality, and they cannot disagree with each other.
     """
 
-    PYPI_PUBLISHED = False
+    PYPI_PUBLISHED = True
 
     PAGES = (
         "README.md",

@@ -38,16 +38,16 @@ SKILLS = Path(__file__).resolve().parents[1] / "zeline" / "skills"
 
 COMPANION = re.compile(
     r"(?:zeline/)?skills/(?:public/)?[\w\-.]+/(?:scripts|references|templates|assets)/[\w\-./]+"
-    r"|(?<![\w/])(?:scripts|references|templates|assets)/[\w\-./]+\.(?:py|sh|bash|json|md|html|css|js|yaml|yml|txt)"
+    r"|(?<![\w/])(?:scripts|references|templates|assets)/[\w\-./]+\.(?:py|sh|bash|json|md|html|css|jsx?|tsx?|yaml|yml|txt)(?![\w.])"
 )
 SCRIPT_SUFFIXES = {".py", ".sh", ".bash"}
 
 # Highest number of unresolved companion references allowed. Measured with the
 # resolver below, and only ever lowered: raising it means a change made the corpus
-# less usable. 265 total, of which 156 are inlined appendices (content present) and
-# 47 name a script (25 with content nowhere at all — the dangerous residue).
-MAX_UNRESOLVED_REFERENCES = 265
-MAX_UNRESOLVED_SCRIPTS = 47
+# less usable. Current ceiling: 258 references, including 42 script paths.
+# This remains a legacy backlog, not a claim that every bundled skill is runnable.
+MAX_UNRESOLVED_REFERENCES = 258
+MAX_UNRESOLVED_SCRIPTS = 42
 
 # Prose examples, not runnable paths: a skill about auditing OTHER repositories
 # quotes their layouts. Per-reference, not per-skill, so a real break in the same

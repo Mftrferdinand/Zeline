@@ -10,6 +10,7 @@ dist/
 .test-final.log
 .pytest_cache/
 .coverage
+.ruff_cache/
 
 # Local secrets and Zeline user state
 .env
@@ -36,11 +37,3 @@ ENV/
 # Android / Termux transient files
 *.tmp
 *.bak
-
-# Generated package artifacts
-build/
-dist/
-*.egg-info/
-
-# Local Zeline state
-.zeline/

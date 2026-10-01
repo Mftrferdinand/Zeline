@@ -24,7 +24,27 @@ This is educational cinema. Every frame teaches. Every animation reveals structu
 
 ## Prerequisites
 
-Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition v0.20+ (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg. Reference docs tested against Manim CE v0.20.1.
+No setup helper is bundled. Check the active Python environment and installed
+commands directly before rendering:
+
+```bash
+python --version
+python -m manim --version
+ffmpeg -version
+# Required only for scenes using Tex/MathTex:
+latex --version
+dvisvgm --version
+```
+
+Requires Python 3.10+ and Manim Community Edition v0.20+
+(`python -m pip install manim` in the chosen environment). Reference docs were
+tested against Manim CE v0.20.1. Missing native Cairo/Pango dependencies need
+platform-specific installation; consult https://docs.manim.community/en/stable/installation.html
+instead of assuming pip alone is sufficient. Install ffmpeg for the stitching
+commands below. Install LaTeX and dvisvgm for Tex/MathTex scenes (not plain Text
+or geometry). Do not install a full multi-GB TeX distribution without checking
+disk space and obtaining approval. On Android/Termux, verify native dependency
+support first or render on a supported desktop/server.
 
 ## Modes
 

@@ -1,4 +1,86 @@
 # Changelog
+## [0.3.7] — 2026-10-01
+
+### Added
+- **Muse-style reasoning engine (optional example)** — `examples/muse-reasoning-engine/`: OpenAI-compatible bridge with `tool_calls` passthrough, standalone poller for any OpenAI-compatible LLM, model-agnostic system prompt, one-command installer, and a watchdog timer with auto-restart ([#295]).
+- **Examples bundled in sdist** — `MANIFEST.in` now ships `examples/` in the source archive ([#295]).
+
+## [0.3.6] — 2026-09-30
+
+### Added
+- **Connectors framework** — base class + registry for external services ([#286]).
+- **GitHub connector** — issues, PRs, repos via API ([#286]).
+- **Google connector** — Gmail, Calendar, Sheets, Drive ([#288]).
+- **WhatsApp connector** — Business Cloud API (send_text, send_template) ([#289]).
+- **Media tools batch** — `tts`, `qr_code`, `transcribe_audio`, `pdf_tool` ([#285]).
+- **Edit video tool** — ffmpeg CapCut-style operations (trim, crop, text, speed) ([#284]).
+- **Edit image tool** — provider `/images/edits` ([#283]).
+- **Generate video tool** — Veo text-to-video ([#282]).
+- **Parity batch** — proactive briefing, memory nudges, skill curator, recall digest, crypto wallet fix ([#281]).
+- **Provider API key pools** — multiple keys with automatic rotation ([#280]).
+
+### Changed
+- **Mid-turn steering**: urgent message interrupts running task with banner; ordinary message injected as steer guidance ([#273], [#290]).
+- **Task progress indicator**: `📋 Updating tasks X → status` in the live feed ([#290]).
+- **Narration fallback**: silent models now narrate before executing tools ([#290]).
+- **/stop behavior**: progress bubble finalized (not deleted) so user can still see context ([#290]).
+- **/update reliability**: retry 3x with backoff + health-check after gateway restart ([#291]).
+- **Reasoning-content fallback**: thinking models no longer return empty replies ([#276]).
+
+### Fixed
+- **Telegram flood-ban**: honor `429 retry_after`, throttle progress edits ([#272]).
+- **Telegram cache-bust**: egress-proxy cache on getUpdates polling ([#287]).
+- **QR code dependency**: `qrcode[pil]` declared ([#285]).
+- **Session amnesia**: `last_topic` tracking — "lanjut" refers to most recent topic, not session start ([#290]).
+- **Steer ack icon**: ⏩ → ✈️ ([#290]).
+- **Stop message**: `❄️ Stopped — <title>` only, no extra description ([#290]).
+- **classify_steer**: context-aware (HARD vs SHORT patterns) — "jangan" in long refinement no longer triggers false interrupt ([#290]).
+- **_consume_stop**: actually consumes entry so next turn not blocked ([#290]).
+- **on_narration guard**: skip send if cancel_event set ([#290]).
+
+## [0.3.5] — 2026-09-29
+
+### Added
+- **`/steer <prompt>` command** (Telegram): steer the running task explicitly from the command menu; behaves like a normal message when no turn is running.
+- **Held-task memory across interruptions**: a task parked by an urgent message is remembered so Zeline can offer to resume it after the interruption is handled.
+- **New bundled skills**: `voice-reply` (anime-female VN style, Indonesian) ([#275]), `file-converter` ([#271]), `video-downloader` ([#270]), `airdrop-manager` ([#269]).
+
+### Changed
+- **Mid-turn steering is now steer-first**: a message sent while a turn is running is injected into the running turn (arrives after the next tool call) instead of aborting the task via a keyword heuristic. The turn keeps running; the user cancels explicitly with `/stop`. Busy-acks are terse, English-only, and debounced to one per 30s.
+- **Progress labels rewritten** to short action phrases (`Reading`, `Writing`, `Editing`, `Running code`, `Searching files for …`, `Searching the web for …`); trailing ellipses and filler words removed, emoji icons unchanged.
+- **Self-identity locked in**: Zeline consistently knows it is Zeline by Zerolinear, plus its configurable chat name; never answers "I don't know what Zeline/Zerolinear is".
+
+### Fixed
+- **Web search no longer fails silently**: `r.jina.ai` reader proxy started rejecting browser User-Agents with HTTP 403, which collapsed Bing+DDG search to Google News + Wikipedia only ("web search failed on all sources"). The reader now uses a bot UA the proxy accepts; verified 0 → 7/9/6 results on representative queries.
+- **Telegram flood-ban handling**: honor `429 retry_after` and throttle progress-bubble edits so long tasks with rapid tool calls no longer trip a flood ban.
+- **Reply-to context**: quoted-message text is injected as `[Replying to: "..."]` so the model resolves which message "this" refers to (distinguishes replying to the bot / own message / someone else).
+- **`sessions.progress()` guarded** for lightweight session stubs in the test suite.
+
+## [0.3.4] — 2026-09-11
+
+### Added
+- **Nested Model & Route Picker**: Hierarchical Telegram `/model` selector (`router → route → model`) with compact single-column layout and safe 64-byte callbacks ([#260], [#261], [#262], [#263]).
+- **Essential Skills Corpus**: Shipped 10 new bundled skills including `material-design-icons` ([#263], [#265], [#266]).
+- **Live Catalog Refresh**: `/model` triggers live catalog rediscovery (`force_refresh=True`) and shortened cache TTL (60s) so provider outage recoveries show up immediately.
+
+### Fixed
+- **SSE Non-Stream Retry**: Automatically fallback to non-stream request when provider SSE stream finishes with reasoning-only tokens ([#267]).
+- **Bundled Skills & Picker Resilience**: Fixed bundled skill companion folder paths and hardened picker parsing ([#264]).
+
+## [0.3.3] — 2026-09-06
+
+### Added
+- Self-learning lessons wired into runtime: auto-capture tool failures, auto-resolve on retry success
+- `resolve_lesson` tool (model-callable, full profile) for explicit lesson resolution
+- Reflection prompt updated to mention lessons + `resolve_lesson`
+- `/lessons` command (Telegram, owner-only) + `zeline lessons` CLI command
+- Credential redaction in lessons (`_redact_text`, `_safe_arg_value`, `_escape_prompt_text`)
+- Cumulative reflection counter (`_tool_calls_since_reflection`) + `_refresh_system_prompt()`
+
+### Fixed
+- **HIGH**: Prompt injection hardening — strip XML-like tags from untrusted error/fix text before system prompt injection
+- **MEDIUM**: File handle leak on background `Popen` failure (tools.py)
+- **LOW**: Remove dead code `_parse_ddg_html`
 
 Every entry links to the pull request that made the change. Versions follow
 [Semantic Versioning](https://semver.org/); the `0.x` line means the public
@@ -9,6 +91,62 @@ The install commands for each release are pinned to its tag, so an older
 release's documented one-liner keeps working after a newer release ships.
 
 ## [Unreleased]
+
+## [0.3.2] — 2026-09-06
+
+### Changed
+
+- Removed the `npm install -g zeline` route and its wrapper package
+  (`bin/install.js`, `bin/zeline.js`, `package.json`, `README.npm.md`,
+  `.npmignore`). The npm wrapper added a third install path whose complexity
+  was not justified — `pip install zeline` (PyPI) and `curl install.sh` /
+  `iwr install.ps1` cover every platform. The `Node.js 18+` requirement in
+  the docs now refers only to the WhatsApp gateway, not to the Zeline install.
+  Documentation across README, installation guide, and both localized readmes
+  was simplified to three routes: PyPI (recommended), curl/iwr (fallback).
+
+### Added
+
+- Windows Defender / antivirus troubleshooting section in the installation
+  guide. ML-based antivirus engines commonly flag freshly-created Python
+  runtime directories; the new section explains why this is a false positive,
+  how to whitelist the Zeline folders, and where to find upstream context.
+
+## [0.3.1] — 2026-09-06
+
+### Added
+
+- Zeline is now on PyPI via Trusted Publishing (OIDC). `pip install zeline`
+  and `uv tool install zeline` are now supported install routes on every
+  platform, documented across the README, installation guide, and both
+  localized readmes. The release workflow's `publish-pypi` job uploads the
+  same verified wheel and sdist that passed the release gate — no API token
+  stored in the repository. `PYPI_PUBLISHED` flipped to `True` in
+  `test_community_docs.py`, which now *requires* the PyPI route to be
+  documented (previously it forbade it).
+
+## [0.3.0] — 2026-09-06
+
+### Added
+
+- `npm install -g zeline` is now an install route on every platform with
+  Node.js ≥ 18. The wrapper is a thin distribution shim — it does not
+  reimplement Zeline in JavaScript. It detects Python 3.10+ on your `PATH`,
+  downloads the same versioned wheel and `SHA256SUMS` from the matching
+  GitHub release, verifies the SHA-256 checksum (same trust path as
+  `install.sh` and `install.ps1`), and installs into the same private
+  runtime at `~/.local/share/zeline`. The `zeline` bin shim then launches
+  `python -m zeline.cli` against that runtime. `curl` and `iwr` remain
+  available for machines without Node.js — npm is a parallel route, not a
+  replacement. ([#253](https://github.com/Mftrferdinand/Zeline/pull/253),
+  [#254](https://github.com/Mftrferdinand/Zeline/pull/254))
+
+### Changed
+
+- The npm wrapper prefers `py -3` on Windows and rejects the Microsoft
+  Store `python.exe` stub by checking `sys.executable` for `WindowsApps` —
+  the same guard `install.ps1` uses — so a machine without real Python
+  gets a clear error instead of a Store popup.
 
 ## [0.2.9] — 2026-09-04
 
@@ -245,11 +383,47 @@ release's documented one-liner keeps working after a newer release ships.
 Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
-[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.2.9...main
+[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.6...main
+[0.3.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.7
+[0.3.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.6
+[0.3.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.5
+[0.3.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.4
+[0.3.3]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.3
+[0.3.2]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.2
+[0.3.1]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.1
+[0.3.0]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.0
 [0.2.9]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.9
 [0.2.8]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.8
 [0.2.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.7
 [0.2.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.6
+[#269]: https://github.com/Mftrferdinand/Zeline/pull/269
+[#270]: https://github.com/Mftrferdinand/Zeline/pull/270
+[#271]: https://github.com/Mftrferdinand/Zeline/pull/271
+[#272]: https://github.com/Mftrferdinand/Zeline/pull/272
+[#273]: https://github.com/Mftrferdinand/Zeline/pull/273
+[#275]: https://github.com/Mftrferdinand/Zeline/pull/275
+[#276]: https://github.com/Mftrferdinand/Zeline/pull/276
+[#280]: https://github.com/Mftrferdinand/Zeline/pull/280
+[#281]: https://github.com/Mftrferdinand/Zeline/pull/281
+[#282]: https://github.com/Mftrferdinand/Zeline/pull/282
+[#283]: https://github.com/Mftrferdinand/Zeline/pull/283
+[#284]: https://github.com/Mftrferdinand/Zeline/pull/284
+[#285]: https://github.com/Mftrferdinand/Zeline/pull/285
+[#286]: https://github.com/Mftrferdinand/Zeline/pull/286
+[#287]: https://github.com/Mftrferdinand/Zeline/pull/287
+[#288]: https://github.com/Mftrferdinand/Zeline/pull/288
+[#289]: https://github.com/Mftrferdinand/Zeline/pull/289
+[#290]: https://github.com/Mftrferdinand/Zeline/pull/290
+[#291]: https://github.com/Mftrferdinand/Zeline/pull/291
+[#295]: https://github.com/Mftrferdinand/Zeline/pull/295
+[#260]: https://github.com/Mftrferdinand/Zeline/pull/260
+[#261]: https://github.com/Mftrferdinand/Zeline/pull/261
+[#262]: https://github.com/Mftrferdinand/Zeline/pull/262
+[#263]: https://github.com/Mftrferdinand/Zeline/pull/263
+[#264]: https://github.com/Mftrferdinand/Zeline/pull/264
+[#265]: https://github.com/Mftrferdinand/Zeline/pull/265
+[#266]: https://github.com/Mftrferdinand/Zeline/pull/266
+[#267]: https://github.com/Mftrferdinand/Zeline/pull/267
 [#181]: https://github.com/Mftrferdinand/Zeline/pull/181
 [#182]: https://github.com/Mftrferdinand/Zeline/pull/182
 [#183]: https://github.com/Mftrferdinand/Zeline/pull/183

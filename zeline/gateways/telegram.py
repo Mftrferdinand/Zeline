@@ -60,7 +60,7 @@ _URL_RE = re.compile(r"https?://[^\s<>\])}]+")
 # terasa "nggak ngapa-ngapain" lalu harus ditap 2x).
 _MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
 _MODEL_META_CACHE: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
-_MODELS_CACHE_TTL = 300.0  # detik
+_MODELS_CACHE_TTL = 60.0  # detik — diperpendek agar recovery outage/perubahan 9Router live cepat tercermin di picker
 
 # Retry untuk error jaringan sementara. Method yang MENGIRIM hasil ke user
 # diretry supaya reply tidak hilang saat koneksi Termux drop; getUpdates &
@@ -70,6 +70,66 @@ _MODELS_CACHE_TTL = 300.0  # detik
 # dan non-kritis; retry+sleep malah bikin heartbeat tersendat.
 _API_RETRIES = 3
 _RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
+# Flood control: saat Telegram balas 429 dengan `parameters.retry_after`, SELURUH
+# panggilan Bot API harus diam sampai jendela itu lewat. Tanpa ini, tiap tool
+# call baru menembak lagi ke bot yang sedang di-ban → Telegram memperpanjang ban
+# (spiral: retry_after bisa membengkak ke ribuan detik / berjam-jam). Variabel
+# modul menyimpan "sampai kapan harus diam"; semua _api_call menghormatinya.
+_flood_until: float = 0.0
+_flood_lock = threading.Lock()
+
+# Debounce steer-ack: saat turn sedang jalan dan user kirim pesan (steer),
+# jangan spam bubble "⏩ Steered…" tiap pesan. Simpan timestamp ack terakhir
+# per-identity; ack berikut hanya dikirim setelah interval lewat. Module-level
+# supaya persist antar update (handler dipanggil ulang tiap pesan masuk).
+_steer_ack_ts: dict[str, float] = {}
+_STEER_ACK_INTERVAL = 30.0
+
+# Konsolidasi narasi: bubble narasi TERAKHIR per identity, supaya narasi yang
+# berulang (model mengulangi langkah yang sama) di-EDIT alih-alih dikirim ulang
+# sebagai pesan baru — persis yang bikin chat "Running: …" berulang terlihat
+# berantakan. Hanya narasi yang hampir sama DALAM window ini yang digabung;
+# narasi yang berbeda (langkah baru) tetap jadi bubble sendiri.
+_last_narration: dict[str, dict[str, Any]] = {}
+_NARRATION_MERGE_WINDOW = 60.0
+
+
+def _similar_narration(a: str, b: str) -> bool:
+    """True bila dua narasi "langkah yang sama" — cocok untuk digabung.
+
+    Model sering mengulang rencana identik ("Running: curl …") di iterasi
+    beruntun. Dua teks dianggap mirip bila kata-katanya tumpang tindih banyak
+    (rasio Jaccard >= 0.6) ATAU salah satu prefix yang lain.
+    """
+    a_n = " ".join(a.lower().split())
+    b_n = " ".join(b.lower().split())
+    if not a_n or not b_n:
+        return False
+    if a_n == b_n:
+        return True
+    if a_n.startswith(b_n) or b_n.startswith(a_n):
+        return True
+    a_words = set(re.findall(r"[a-z0-9]+", a_n))
+    b_words = set(re.findall(r"[a-z0-9]+", b_n))
+    if not a_words or not b_words:
+        return False
+    overlap = len(a_words & b_words) / len(a_words | b_words)
+    # 0.5 (bukan 0.6): langkah yang sama dengan filter berbeda
+    # ("| head -n 30" vs "| grep") hanya punya ~0.55 tumpang tindih, dan masih
+    # harus digabung — kalau tidak, tiap variasi kecil jadi bubble baru lagi.
+    return overlap >= 0.5
+
+
+def _merge_narration(old: str, new: str) -> str:
+    """Gabung narasi yang mirip: ambil yang lebih informatif (lebih panjang).
+
+    Versi terbaru biasanya membawa detail tambahan ("… | head -n 30"). Kalau
+    sama persis, kembalikan yang lama (tidak perlu di-edit).
+    """
+    if old == new:
+        return old
+    return new if len(new) >= len(old) else old
+
 # Baris progres (bubble '⏰ Processing', edit feed tool) BUKAN hal kritis. Di
 # jaringan Termux yang sering drop, memanggilnya dengan timeout 65s + retry
 # akan MENAHAN loop agent tiap update → efek 'macet/lambat/cek-cek doang' dan
@@ -78,6 +138,13 @@ _RETRYABLE_METHODS = frozenset({"sendMessage", "sendDocument"})
 # akhir (sendMessage biasa) yang tetap diretry supaya tidak pernah hilang.
 _PROGRESS_TIMEOUT = 6
 _PROGRESS_ATTEMPTS = 1
+# Throttle edit bubble progres: Telegram membatasi ~1 pesan/detik per chat.
+# Sesi dengan ribuan tool call (mis. 5000×) tadinya meng-edit bubble tiap tool
+# call → ribuan editMessageText beruntun → flood ban berjam-jam. Kita batasi
+# edit progres jadi maksimal sekali per interval ini; update yang datang lebih
+# rapat digabung (baris terbaru tetap tersimpan, dikirim saat interval lewat).
+_PROGRESS_MIN_INTERVAL = 3.0
+
 
 # Edit yang MERUPAKAN jawaban atas tap tombol (picker provider/model) HARUS
 # diretry. Dulu editMessageText selalu attempts=1, jadi satu ConnectionError
@@ -105,10 +172,107 @@ _VENDOR_LABELS = {
     "gr": "GoRouter",
     "tabi": "TabiToken",
     "cx": "Codex",
+    "cb": "Codebuddy",
+    "cbai": "Codebuddy",
+    "codebuddy": "Codebuddy",
+    "ag": "Antigravity",
+    "antigravity": "Antigravity",
     "nvidia": "NVIDIA",
     "oc": "OpenModel",
     "bai": "B.ai",
 }
+
+# ── Tile provider biru dengan logo ───────────────────────────────────────────
+# Bot API menampilkan custom emoji sebagai logo di kiri tombol. ID logo dibaca
+# dari config gateway dan dari ~/.zeline/provider_logos_map.json (map yang dibuat
+# saat setup logo bot). Tidak ada fallback badge huruf: bila prefix rute belum
+# dikenal, ia memakai logo router sebagai logo rute generik.
+_PROVIDER_BRANDS: tuple[tuple[str, frozenset, tuple], ...] = (
+    ("9router", frozenset({"9router", "ninerouter", "9r"}), ("9router", "9 router", "nine router")),
+    ("codebuddy", frozenset({"cb", "cbai", "codebuddy"}), ("codebuddy",)),
+    ("codex", frozenset({"cx", "codex"}), ("codex",)),
+    ("antigravity", frozenset({"ag", "antigravity"}), ("antigravity",)),
+    ("openai", frozenset({"openai"}), ("openai", "chatgpt")),
+    ("anthropic", frozenset({"anthropic", "claude"}), ("anthropic", "claude")),
+    ("google", frozenset({"google", "gemini", "goog"}), ("google", "gemini")),
+    ("nvidia", frozenset({"nvidia", "nim"}), ("nvidia",)),
+    ("openrouter", frozenset({"openrouter"}), ("openrouter",)),
+    ("tabi", frozenset({"tabi", "tabitoken"}), ("tabi",)),
+    ("gorouter", frozenset({"gr", "gorouter"}), ("gorouter", "go router", "go-router")),
+)
+
+# brand → icon_custom_emoji_id. Kosong = tile pakai badge huruf saja.
+_PROVIDER_CUSTOM_EMOJI: dict[str, str] = {}
+
+
+def _provider_brand(key: str, label: str) -> str:
+    slug = (key or "").casefold()
+    text = (label or "").casefold()
+    for brand, slugs, words in _PROVIDER_BRANDS:
+        if slug and slug in slugs:
+            return brand
+        if any(word in text for word in words):
+            return brand
+    return ""
+
+
+def _model_button_logos() -> dict[str, str]:
+    """Override logo dari config (gateways.telegram.model_button_logos)."""
+    cfg = config.stored_config_copy()
+    raw = ((cfg.get("gateways") or {}).get("telegram") or {}).get("model_button_logos") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k).casefold(): str(v) for k, v in raw.items() if v}
+
+
+def _provider_identity(key: str, label: str, logos: dict[str, str] | None = None) -> tuple[str, str]:
+    """(badge, icon_custom_emoji_id|"") untuk satu tile provider.
+
+    Badge = karakter alfanumerik pertama dari nama tampilan (dikapital bila
+    ASCII), jadi provider asing mana pun tetap tampil rapi tanpa edit kode.
+    Logo custom-emoji dipakai bila brand-nya sudah dipetakan ke sebuah ID.
+    """
+    text = (label or key or "").strip()
+    badge = next((ch for ch in text if ch.isalnum()), "?")
+    if badge.isascii() and badge.isalpha():
+        badge = badge.upper()
+    brand = _provider_brand(key, label)
+    emoji = ({**_PROVIDER_CUSTOM_EMOJI, **(logos or {})}.get(brand, "") if brand else "")
+    return badge, emoji
+
+
+def _provider_tile_button(
+    key: str,
+    label: str,
+    callback: str,
+    *,
+    current: bool = False,
+    count: int = 0,
+    logos: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Satu tombol tile provider: biru native + nama (+ jumlah) (+ ✓ aktif).
+
+    Tidak ada lagi badge huruf — logo custom-emoji hanya dipakai bila brand
+    terpetakan ke ID (entitlement Premium/Fragment di sisi client).
+    """
+    _badge, emoji = _provider_identity(key, label, logos)
+    suffix = f" ({count})" if count > 0 else ""
+    text = f"{'✓ ' if current else ''}{label}{suffix}"
+    button: dict[str, Any] = {"text": text[:60], "callback_data": callback, "style": "primary"}
+    if emoji:
+        button["icon_custom_emoji_id"] = emoji
+    return button
+
+
+def _nav_back_button(callback: str, label: str = "« Back") -> dict[str, Any]:
+    # Telegram hanya punya primary/success/danger — tidak ada hitam. Tanpa
+    # `style`, client memakai warna netral bawaan (paling dekat hitam/abu).
+    return {"text": label, "callback_data": callback}
+
+
+def _nav_cancel_button() -> dict[str, Any]:
+    # Netral (tanpa style) seperti Back — hanya opsi/provider/model yang biru.
+    return {"text": "✗ Cancel", "callback_data": "model:cancel"}
 
 
 def _telegram_commands() -> list[dict[str, str]]:
@@ -122,6 +286,8 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "undo", "description": "List or restore file checkpoints"},
         {"command": "stats", "description": "View token usage"},
         {"command": "events", "description": "Recent file/skill/memory changes"},
+        {"command": "lessons", "description": "View self-learning lessons"},
+        {"command": "steer", "description": "Steer the running task mid-turn"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
         {"command": "version", "description": "Show version and check for updates"},
@@ -255,203 +421,251 @@ def _short_host(url: str) -> str:
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     """Render one distinct HTML-safe progress message per real tool call.
 
-    Ikon & label (English) mengikuti preferensi operator. Web search & deep
-    research di-collapse jadi satu baris; aksi file (read/write/edit) selalu
-    tampil per pemanggilan supaya user lihat SEMUA yang dikerjakan.
+    Format ringkas: pendek, bersih, tanpa kata berlebih.
+    Verb langsung + preview singkat. Emoji dipertahankan.
     """
     if name == "load_skill":
-        return f"📚 Reading skill: {html.escape(str(arguments.get('name', ''))[:100])}"
+        return f"📚 Reading skill {html.escape(str(arguments.get('name', ''))[:60])}"
     if name == "run_shell":
         command = str(arguments.get("command", ""))
         line = _terminal_progress(command, search=_is_search_command(command))
         if arguments.get("background"):
-            return f"🚀 Starting background process {line}" if line else "🚀 Starting background process…"
+            return f"🚀 Starting background process {line}" if line else "🚀 Starting background process"
         return line
     if name == "process_control":
         action = str(arguments.get("action", "")).strip().lower()
         job = html.escape(str(arguments.get("job_id", ""))[:40], quote=False)
         labels = {
-            "list": "📋 Listing background processes…",
-            "poll": f"⏱ Checking background process <code>{job}</code>…" if job else "⏱ Checking background process…",
-            "log": f"📜 Reading process log <code>{job}</code>" if job else "📜 Reading process log…",
-            "kill": f"🛑 Stopping background process <code>{job}</code>" if job else "🛑 Stopping background process…",
+            "list": "📋 Listing background processes",
+            "poll": f"⏱ Checking process <code>{job}</code>" if job else "⏱ Checking process",
+            "log": f"📜 Reading process log <code>{job}</code>" if job else "📜 Reading process log",
+            "kill": f"🛑 Stopping process <code>{job}</code>" if job else "🛑 Stopping process",
         }
-        return labels.get(action, "⚙️ Managing background process…")
+        return labels.get(action, "⚙️ Managing process")
     if name == "execute_code":
-        code = str(arguments.get("code", "")).strip()
-        first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
-        return f"🐍 Running code: <code>{first}</code>…"
+        return "🐍 Running code"
     if name == "manage_skill":
-        skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
+        skill_name = html.escape(str(arguments.get("name", ""))[:60], quote=False)
         action = str(arguments.get("action", "")).strip().lower()
-        file_path = html.escape(str(arguments.get("file_path", ""))[:120], quote=False)
+        file_path = html.escape(str(arguments.get("file_path", ""))[:80], quote=False)
         if action in {"list", "inventory"}:
-            return "🗂 Reviewing saved skills…"
+            return "🗂 Listing skills"
         if action == "create":
-            return f"💡 Saving skill: <code>{skill_name}</code>"
+            return f"💡 Saving skill <code>{skill_name}</code>"
         if action == "write_file":
-            return f"📄 Writing <code>{file_path or 'file'}</code> in skill <code>{skill_name}</code>"
+            return f"📄 Writing <code>{file_path or 'file'}</code> in <code>{skill_name}</code>"
         if action == "delete":
-            merged = html.escape(str(arguments.get("absorbed_into", ""))[:100], quote=False)
-            if merged:
-                return f"🧹 Merging skill <code>{skill_name}</code> into <code>{merged}</code>"
-            return f"🗑 Removing skill: <code>{skill_name}</code>"
+            return f"🗑 Removing skill <code>{skill_name}</code>"
         target = f" <code>{file_path}</code>" if file_path else ""
-        return f"📝 Updating skill: <code>{skill_name}</code>{target}"
+        return f"📝 Updating skill <code>{skill_name}</code>{target}"
+    if name == "resolve_lesson":
+        tool = html.escape(str(arguments.get("tool", ""))[:60], quote=False)
+        return f"📒 Resolving lesson <code>{tool}</code>" if tool else "📒 Resolving lesson"
     if name == "add_memory":
-        return "🧠 Saving to memory…"
+        return "🧠 Updating memory"
     if name == "remove_memory":
-        # Verb harus jujur: dulu penghapusan ikut dilabeli "Saving to memory".
-        return "🧠 Removing from memory…"
+        return "🧠 Updating memory"
     if name == "system_env":
-        return "🧰 Checking system environment…"
+        return "🧰 Checking system environment"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
     if name == "read_file":
-        # Zeline read_file membaca seluruh file (tanpa offset/limit); rentang
-        # baris hanya ditampilkan bila argumen offset/limit memang dikirim.
         if "offset" in arguments or "limit" in arguments:
             offset = max(1, int(arguments.get("offset", 1) or 1))
             limit = max(1, int(arguments.get("limit", 500) or 500))
-            return f"📖 Reading file <code>{path}</code> L{offset}-{offset + limit - 1}"
-        return f"📖 Reading file <code>{path}</code>"
+            return f"📖 Reading <code>{path}</code> L{offset}-{offset + limit - 1}"
+        return f"📖 Reading <code>{path}</code>"
     if name == "write_file":
-        return f"📝 Writing file <code>{path}</code>"
+        return f"📝 Writing <code>{path}</code>"
     if name == "edit_file":
-        return f"🎬 Editing file <code>{path}</code>"
+        return f"🎬 Editing <code>{path}</code>"
     if name == "patch_file":
-        return f"🎬 Editing file <code>{path}</code>"
+        return f"🎬 Editing <code>{path}</code>"
     if name == "search_files":
-        query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
-        return f"🔎 Searching files: {query}" if query else "🔎 Searching files…"
+        query = html.escape(str(arguments.get("query", ""))[:120], quote=False)
+        return f"🔎 Searching files for {query}" if query else "🔎 Searching files"
     if name == "update_task":
-        status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
-        task = html.escape(str(arguments.get("task", ""))[:120], quote=False)
-        return f"📋 Updating tasks: {status} · {task}" if task else f"📋 Updating tasks: {status}"
+        # Tampilkan task + status dari arguments. Progress board nyata
+        # (completed/remaining) tidak bisa dihitung di sini karena identity
+        # tidak tersedia — itu dipanggil terpisah via task_progress_summary.
+        task_desc = html.escape(str(arguments.get("task", ""))[:80], quote=False)
+        status = str(arguments.get("status", "")).strip()
+        if task_desc and status:
+            return f"📋 Updating tasks <code>{task_desc}</code> → {status}"
+        return "📋 Updating tasks"
     if name == "undo_file":
         action = str(arguments.get("action", "")).strip().lower()
         if action == "list":
             target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
-            return f"↩️ Listing checkpoints for <code>{target}</code>" if target else "↩️ Listing file checkpoints…"
+            return f"↩️ Listing checkpoints for <code>{target}</code>" if target else "↩️ Listing checkpoints"
         cid = html.escape(str(arguments.get("checkpoint_id", ""))[:32], quote=False)
         if action == "diff":
-            return f"🔍 Previewing undo <code>{cid}</code>" if cid else "🔍 Previewing an undo…"
+            return f"🔍 Previewing undo <code>{cid}</code>" if cid else "🔍 Previewing undo"
         if action == "restore":
-            return f"↩️ Restoring file from <code>{cid}</code>" if cid else "↩️ Restoring a file…"
-        return "↩️ Undoing a file change…"
+            return f"↩️ Restoring <code>{cid}</code>" if cid else "↩️ Restoring file"
+        return "↩️ Undoing file change"
     if name == "web_search":
-        # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
-        subject = html.escape((query.split() or [""])[0][:40], quote=False)
-        return f"🌐 Searching web: {subject}…" if subject else "🌐 Searching web…"
+        subject = html.escape(query[:40], quote=False)
+        return f"🌐 Searching the web for {subject}" if subject else "🌐 Searching the web"
     if name == "web_fetch":
-        # Baca sumber web tidak ditampilkan sebagai baris terpisah (biar bersih).
         return ""
     if name == "deep_research":
-        query = html.escape(str(arguments.get('query', ''))[:100], quote=False)
-        return f"🌐 Researching: {query}…" if query else "🌐 Researching…"
+        query = html.escape(str(arguments.get('query', ''))[:80], quote=False)
+        return f"🌐 Researching {query}" if query else "🌐 Researching"
     if name == "generate_image":
-        prompt = html.escape(str(arguments.get("prompt", ""))[:100], quote=False)
-        return f"🎨 Generating image: {prompt}…" if prompt else "🎨 Generating image…"
+        prompt = html.escape(str(arguments.get("prompt", ""))[:80], quote=False)
+        return f"🎨 Generating image {prompt}" if prompt else "🎨 Generating image"
     if name == "analyze_media":
         target = str(arguments.get("path_or_url", "")).lower()
         if any(target.endswith(ext) for ext in (
             ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".flac", ".aac", ".amr",
             ".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".3gp",
         )):
-            return "🎧 Transcribing audio…"
-        return "🖼 Looking at image…"
+            return "🎧 Transcribing audio"
+        return "🖼 Looking at image"
     if name == "send_file":
         target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
-        return f"📤 Sending file <code>{target}</code>" if target else "📤 Sending a file…"
+        return f"📤 Sending <code>{target}</code>" if target else "📤 Sending file"
     if name == "git":
         verb = str(arguments.get("action", "")).strip().lower()
         labels = {
-            "status": "🌿 Checking git status…",
-            "diff": "🔍 Reading the diff…",
-            "log": "📜 Reading commit history…",
-            "show": "🔎 Reading a commit…",
-            "branch": "🌿 Listing branches…",
+            "status": "🌿 Checking git status",
+            "diff": "🔍 Reading diff",
+            "log": "📜 Reading commit history",
+            "show": "🔎 Reading commit",
+            "branch": "🌿 Listing branches",
         }
         if verb in labels:
             return labels[verb]
         if verb == "add":
             target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
-            return f"➕ Staging <code>{target}</code>" if target else "➕ Staging changes…"
+            return f"➕ Staging <code>{target}</code>" if target else "➕ Staging changes"
         if verb == "commit":
             subject = html.escape(str(arguments.get("message", "")).splitlines()[0][:60], quote=False) if arguments.get("message") else ""
-            return f"💾 Committing: {subject}" if subject else "💾 Committing…"
-        return "🌿 Running git…"
+            return f"💾 Committing {subject}" if subject else "💾 Committing"
+        return "🌿 Running git"
+    if name == "github_repos":
+        return "🐙 Listing GitHub repos"
+    if name == "github_issues":
+        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
+        return f"🐙 Listing issues in <code>{repo}</code>" if repo else "🐙 Listing GitHub issues"
+    if name == "github_create_issue":
+        title = html.escape(str(arguments.get("title", "")).strip()[:60], quote=False)
+        return f"🐙 Creating issue {title}" if title else "🐙 Creating GitHub issue"
+    if name == "github_issue_comment":
+        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
+        number = html.escape(str(arguments.get("number", "")).strip()[:12], quote=False)
+        where = f"<code>{repo}#{number}</code>" if repo and number else ""
+        return f"🐙 Commenting on {where}" if where else "🐙 Commenting on GitHub issue"
+    if name == "github_prs":
+        repo = html.escape(str(arguments.get("repo", "")).strip()[:60], quote=False)
+        return f"🐙 Listing PRs in <code>{repo}</code>" if repo else "🐙 Listing GitHub PRs"
+    if name == "gmail_search":
+        return "📧 Searching Gmail ..."
+    if name == "gmail_read":
+        return "📧 Reading email"
+    if name == "gmail_send":
+        to = html.escape(str(arguments.get("to", "")).strip()[:60], quote=False)
+        return f"📧 Sending email to {to} ..." if to else "📧 Sending email ..."
+    if name == "google_calendar":
+        return "📅 Reading calendar"
+    if name == "sheets_read":
+        return "📊 Reading sheet ..."
+    if name == "drive_list":
+        return "💾 Listing Drive files"
+    if name == "whatsapp_send":
+        to = html.escape(str(arguments.get("to", "")).strip()[:40], quote=False)
+        return f"💬 Sending WhatsApp to {to} ..." if to else "💬 Sending WhatsApp ..."
+    if name == "whatsapp_template":
+        template = html.escape(str(arguments.get("template", "")).strip()[:40], quote=False)
+        return f"💬 Sending WhatsApp template {template} ..." if template else "💬 Sending WhatsApp template ..."
+
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":
             when = html.escape(str(arguments.get("schedule", ""))[:40], quote=False)
-            return f"⏰ Scheduling a job: {when}" if when else "⏰ Scheduling a job…"
+            return f"⏰ Scheduling {when}" if when else "⏰ Scheduling"
         if verb == "list":
-            return "⏰ Checking scheduled jobs…"
+            return "⏰ Checking scheduled jobs"
         job = html.escape(str(arguments.get("job_id", ""))[:32], quote=False)
         labels = {
             "show": "⏰ Reading scheduled job",
             "pause": "⏸ Pausing scheduled job",
             "resume": "▶️ Resuming scheduled job",
-            "run": "⚡ Running scheduled job now",
+            "run": "⚡ Running scheduled job",
             "remove": "🗑 Removing scheduled job",
         }
         label = labels.get(verb, "⏰ Managing scheduled jobs")
-        return f"{label} {job}".strip() if job else f"{label}…"
+        return f"{label} {job}".strip()
     if name == "http_request":
-        url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
-        return f"🔗 Calling API: {url}" if url else "🔗 Calling API…"
+        url = html.escape(str(arguments.get("url", ""))[:80], quote=False)
+        return f"🔗 Calling API {url}" if url else "🔗 Calling API"
     if name == "delegate_task":
-        goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
-        return f"🤝 Delegating: {goal}…" if goal else "🤝 Delegating subtask…"
+        goal = html.escape(str(arguments.get("goal", ""))[:80], quote=False)
+        return f"🤝 Delegating {goal}" if goal else "🤝 Delegating"
     if name == "runtime_info":
-        # Bukan "runtime info": yang dibaca adalah identitas runtime aktif —
-        # model, provider, protokol, profil tool.
-        return "🪪 Checking runtime: model &amp; provider…"
+        return "🪪 Checking runtime"
     if name == "list_memory":
-        # Ikon 🧠 dipakai satu keluarga untuk memory; VERB-nya yang membedakan
-        # baca / simpan / hapus, jadi feed tetap terbaca sebagai satu domain.
-        return "🧠 Reading saved memory…"
+        return "🧠 Reading memory"
+    if name == "consolidate_memory":
+        return "🧠 Consolidating memory"
+    if name == "generate_video":
+        prompt = html.escape(str(arguments.get("prompt", ""))[:80], quote=False)
+        return f"🎬 Generating video {prompt}" if prompt else "🎬 Generating video"
+    if name == "edit_image":
+        prompt = html.escape(str(arguments.get("prompt", ""))[:80], quote=False)
+        return f"✏️ Editing image {prompt}" if prompt else "✏️ Editing image"
+    if name == "edit_video":
+        action = html.escape(str(arguments.get("action", "")), quote=False)
+        return f"🎞️ Editing video ({action})" if action else "🎞️ Editing video"
+    if name == "text_to_speech":
+        return "🔊 Speaking"
+    if name == "qr_code":
+        return "🔳 Making QR code"
+    if name == "transcribe_audio":
+        return "🎙️ Transcribing audio"
+    if name == "pdf_tool":
+        action = html.escape(str(arguments.get("action", "")), quote=False)
+        return f"📄 PDF {action}" if action else "📄 Working with PDF"
     if name == "recall_history":
-        query = html.escape(str(arguments.get("query", "")).strip()[:100], quote=False)
-        return f"🕰 Recalling past chat: {query}" if query else "🕰 Recalling recent conversation…"
+        query = html.escape(str(arguments.get("query", "")).strip()[:80], quote=False)
+        return f"🕰 Searching past sessions for {query}" if query else "🕰 Searching past sessions"
     if name == "ask_user":
-        question = html.escape(str(arguments.get("question", "")).strip()[:80], quote=False)
-        return f"🙋 Asking you: {question}" if question else "🙋 Asking you a question…"
+        question = html.escape(str(arguments.get("question", "")).strip()[:60], quote=False)
+        return f"🙋 Asking {question}" if question else "🙋 Asking"
     if name == "network_route":
         action = str(arguments.get("action", "")).strip().lower()
-        # proxy_url TIDAK pernah ditampilkan: isinya bisa user:pass@host.
         label = html.escape(str(arguments.get("label", ""))[:60], quote=False)
-        target = f": <code>{label}</code>" if label else ""
+        target = f" <code>{label}</code>" if label else ""
         labels = {
-            "list": "🛰 Listing network routes…",
-            "add": f"🛰 Adding network route{target}",
-            "remove": f"🛰 Removing network route{target}",
-            "test": f"🛰 Testing network route{target}",
+            "list": "🛰 Listing network routes",
+            "add": f"🛰 Adding route{target}",
+            "remove": f"🛰 Removing route{target}",
+            "test": f"🛰 Testing route{target}",
         }
-        return labels.get(action, "🛰 Managing network routes…")
+        return labels.get(action, "🛰 Managing routes")
     if name == "browser":
         action = str(arguments.get("action", "")).strip().lower()
         host = html.escape(_short_host(str(arguments.get("url", "")))[:80], quote=False)
         selector = html.escape(str(arguments.get("selector", ""))[:60], quote=False)
         where = f" <code>{selector}</code>" if selector else ""
         if action == "open":
-            return f"🌍 Opening page: {host}" if host else "🌍 Opening browser page…"
+            return f"🌍 Browsing {host}" if host else "🌍 Browsing"
         if action == "text":
-            return f"🌍 Reading page text{where}"
+            return f"🌍 Reading page{where}"
         if action == "click":
-            return f"🖱 Clicking{where}" if selector else "🖱 Clicking on the page…"
+            return f"🖱 Clicking{where}" if selector else "🖱 Clicking"
         if action == "type":
-            return f"⌨️ Typing into{where}" if selector else "⌨️ Typing on the page…"
+            return f"⌨️ Typing{where}" if selector else "⌨️ Typing"
         if action == "screenshot":
-            return f"📸 Capturing screenshot <code>{path}</code>" if path else "📸 Capturing page screenshot…"
+            return f"📸 Screenshot <code>{path}</code>" if path else "📸 Screenshot"
         if action == "links":
-            return "🌍 Listing page links…"
+            return "🌍 Listing links"
         if action == "eval":
-            return "🧪 Running JavaScript on the page…"
+            return "🧪 Running JavaScript"
         if action == "close":
-            return "🌍 Closing the browser…"
-        return "🌍 Driving the browser…"
+            return "🌍 Closing browser"
+        return "🌍 Browsing"
     if name == "code_intel":
         action = str(arguments.get("action", "")).strip().lower()
         where = f" <code>{path}</code>" if path else ""
@@ -461,39 +675,36 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             line_no = 0
         at = f"{where} L{line_no}" if (where and line_no > 0) else where
         if action == "diagnostics":
-            return f"🩺 Checking code diagnostics{where}" if where else "🩺 Checking code diagnostics…"
+            return f"🩺 Checking diagnostics{where}" if where else "🩺 Checking diagnostics"
         if action == "definition":
-            return f"🧭 Finding definition{at}" if at else "🧭 Finding the definition…"
+            return f"🧭 Finding definition{at}" if at else "🧭 Finding definition"
         if action == "references":
-            return f"🧭 Finding references{at}" if at else "🧭 Finding references…"
+            return f"🧭 Finding references{at}" if at else "🧭 Finding references"
         if action == "hover":
-            return f"💬 Inspecting type &amp; docs{at}" if at else "💬 Inspecting type &amp; docs…"
+            return f"💬 Inspecting type{at}" if at else "💬 Inspecting type"
         if action == "symbols":
-            return f"🗺 Mapping symbols{where}" if where else "🗺 Mapping file symbols…"
+            return f"🗺 Mapping symbols{where}" if where else "🗺 Mapping symbols"
         if action == "servers":
-            return "🩺 Checking language servers…"
-        return f"🧭 Asking the language server{where}"
+            return "🩺 Checking language servers"
+        return f"🧭 Asking language server{where}"
     if name == "download_file":
-        # URL mentah tidak ditampilkan (sama seperti web_fetch): host saja.
         host = html.escape(_short_host(str(arguments.get("url", "")))[:80], quote=False)
         if path and host:
             return f"📥 Downloading <code>{path}</code> from {host}"
         if path:
             return f"📥 Downloading <code>{path}</code>"
-        return f"📥 Downloading a file from {host}" if host else "📥 Downloading a file…"
+        return f"📥 Downloading from {host}" if host else "📥 Downloading"
     if name.startswith(mcp_module.MCP_TOOL_PREFIX):
-        # mcp__<server>__<tool>: jangan biarkan fallback mengubah underscore
-        # ganda jadi spasi ganda ("mcp  mem0  add memory").
         parts = name[len(mcp_module.MCP_TOOL_PREFIX):].split("__", 1)
         server = html.escape(parts[0].replace("_", " ")[:40], quote=False)
         remote = html.escape((parts[1] if len(parts) > 1 else "tool").replace("_", " ")[:60], quote=False)
         return f"🧩 {remote} via {server}"
-    # Fallback: satu baris, argumen pertama saja, TANPA newline.
+    # Fallback: verb + first arg preview, clean.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
-        first_val = html.escape(str(next(iter(arguments.values())))[:80], quote=False)
+        first_val = html.escape(str(next(iter(arguments.values())))[:60], quote=False)
     label = html.escape(name.replace("_", " "), quote=False)
-    return f"🔧 {label}: {first_val}" if first_val else f"🔧 {label}"
+    return f"🔧 {label} {first_val}".strip() if first_val else f"🔧 {label}"
 
 
 def _progress_category(line: str) -> str | None:
@@ -534,7 +745,7 @@ def _finalize_line(line: str) -> str:
     penanda generik 'data/other'. Baris file (📖 Reading <file>) dibiarkan apa
     adanya supaya SEMUA file yang dibaca tetap terlihat.
     """
-    prefixes = ("🌐 Searching", "🌐 Researching")
+    prefixes = ("🌐 Searching the web for", "🌐 Searching", "🌐 Researching")
     for prefix in prefixes:
         if line.startswith(prefix):
             # Ambil subjek setelah ikon+verb, buang elipsis/trailing.
@@ -702,6 +913,7 @@ class _LiveStatus:
         self.iteration: int | None = None
         self.maximum: int | None = None
         self._last_text: str | None = None
+        self._last_edit_at: float = 0.0  # monotonic saat terakhir edit progres dikirim
         self._lock = threading.Lock()
 
     def _header(self) -> str:
@@ -765,7 +977,19 @@ class _LiveStatus:
             return
         if text == self._last_text and not force:
             return
+        # Throttle edit: batasi editMessageText jadi maks 1×/interval agar sesi
+        # dengan ribuan tool call tidak membanjiri Telegram (sumber flood ban).
+        # `force` (mis. finalize) selalu lewat. Pembuatan bubble pertama
+        # (message_id None) juga lewat — itu sekali saja per turn.
+        now = time.monotonic()
+        if (self.message_id is not None and not force
+                and now - self._last_edit_at < _PROGRESS_MIN_INTERVAL):
+            # simpan teks terbaru; heartbeat/tick berikutnya yang mengirim saat
+            # interval sudah lewat. Jangan set _last_text supaya update ini tidak
+            # dianggap "sudah terkirim".
+            return
         self._last_text = text
+        self._last_edit_at = now
         if self.message_id is None:
             payload = _api_call(
                 self.api, "sendMessage", chat_id=self.chat_id,
@@ -962,22 +1186,19 @@ def _model_picker_payload(
     current_model: str,
     provider_index: int | None = None,
     provider_name: str = "",
-    group_index: int = 0,
 ) -> tuple[str, dict[str, Any]]:
     """Bangun inline picker dengan callback pendek agar aman di batas 64 byte.
 
     Bila katalog provider berisi beberapa rute (mis. 9Router menyajikan Gr,
-    tabi, dan cx sekaligus), model dipecah PER RUTE dan ditampilkan satu
-    halaman per rute dengan tombol Next/Prev. Satu daftar 22 model campur
-    membuat aes harus scroll jauh dan label harus memakai ID penuh supaya tidak
-    ambigu; dipisah per rute, labelnya cukup nama modelnya saja dan nama rute
-    naik ke teks status di atas tombol.
+    tabi, dan cb sekaligus), pemilihannya bertingkat: halaman provider membuka
+    halaman RUTE (`_route_picker_payload`), lalu rute yang di-tap membuka
+    halaman model rute itu. Halaman ini menampilkan satu rute saja — tanpa
+    Next/Prev — supaya pilihan fokus dan label cukup nama modelnya saja.
     """
     groups = _model_vendor_groups(models) if provider_index is not None else []
     if len(groups) > 1:
-        return _grouped_model_picker_payload(
-            models, current_model, provider_index, provider_name, groups, group_index
-        )
+        # Router: buka daftar rute dulu, model per-rute di halaman berikutnya.
+        return _route_picker_payload(provider_index, provider_name, groups, current_model)
     buttons = []
     # Deteksi label yang bakal tabrakan bila hanya diambil segmen terakhir.
     # Di router seperti 9Router, ID model berprefix rute (mis. `Gr/claude-opus-4-8`
@@ -986,25 +1207,57 @@ def _model_picker_payload(
     # provider/rute mana yang dipilih.
     tails = [model.rsplit("/", 1)[-1] for model in models]
     ambiguous = {tail for tail in tails if tails.count(tail) > 1}
+    entries = []
     for index, model in enumerate(models):
         tail = model.rsplit("/", 1)[-1]
         # Tampilkan ID penuh bila segmen terakhir tidak unik (biar prefix rute
         # terlihat); selain itu segmen terakhir sudah cukup ringkas.
         label = model if tail in ambiguous else tail
+        entries.append((label.casefold(), index, model, label))
+    for _, index, model, label in sorted(entries):
         if model == current_model:
             label = f"✓ {label}"
         callback = f"model:{index}" if provider_index is None else f"model:{provider_index}:{index}"
-        buttons.append({"text": label[:60], "callback_data": callback})
-    # Model dengan label panjang (ID penuh) lebih enak dibaca satu per baris.
-    per_row = 1 if ambiguous else 2
-    rows = [buttons[index:index + per_row] for index in range(0, len(buttons), per_row)]
+        buttons.append({"text": label[:60], "callback_data": callback, "style": "primary"})
+    rows = [[button] for button in buttons]
     if provider_index is not None:
-        rows.append([{"text": "« Back", "callback_data": "provider:back"}])
-    rows.append([{"text": "✗ Cancel", "callback_data": "model:cancel"}])
-    return (
-        (f"Select a model\n{provider_name} • {len(models)} models\nCurrent: {current_model or 'unknown'}" if provider_name else f"Select a model\nCurrent: {current_model or 'unknown'}"),
-        {"inline_keyboard": rows},
+        rows.append([_nav_back_button("provider:back")])
+    rows.append([_nav_cancel_button()])
+    text = f"Select a model\n{provider_name} • {len(models)} models" if provider_name else "Select a model"
+    return text, {"inline_keyboard": rows}
+
+
+def _route_picker_payload(
+    provider_index: int,
+    provider_name: str,
+    groups: list[tuple[str, list[int]]],
+    current_model: str,
+) -> tuple[str, dict[str, Any]]:
+    """Satu halaman = daftar rute. Tap rute → halaman model rute itu.
+
+    Callback pendek `route:<provider_index>:<group_index>` aman di batas 64 byte
+    dan tanpa state proses, jadi tombol tetap hidup setelah gateway restart.
+    """
+    indexed_groups = sorted(
+        enumerate(groups),
+        key=lambda item: (_vendor_label(item[1][0]).casefold(), item[0]),
     )
+    logos = _model_button_logos()
+    buttons = []
+    for group_index, (key, indices) in indexed_groups:
+        label = _vendor_label(key)
+        # Tandai provider/rute yang memuat model aktif tanpa memengaruhi urutan.
+        current = bool(current_model and current_model.split("/", 1)[0] == key)
+        buttons.append(_provider_tile_button(
+            key, label, f"route:{provider_index}:{group_index}",
+            current=current, count=len(indices), logos=logos,
+        ))
+    rows = [[button] for button in buttons]
+    rows.append([_nav_back_button("provider:back")])
+    rows.append([_nav_cancel_button()])
+    header = f"{provider_name} › {len(groups)} provider" if provider_name else f"{len(groups)} provider"
+    text = f"Select a Provider\n{header}"
+    return text, {"inline_keyboard": rows}
 
 
 def _grouped_model_picker_payload(
@@ -1015,38 +1268,30 @@ def _grouped_model_picker_payload(
     groups: list[tuple[str, list[int]]],
     group_index: int,
 ) -> tuple[str, dict[str, Any]]:
-    """Satu halaman picker = satu rute. Next/Prev berputar antar rute."""
-    total = len(groups)
-    page = group_index % total  # berputar: Next di halaman terakhir kembali ke awal
+    """Satu halaman picker = model milik SATU rute. Kembali ke daftar rute."""
+    page = group_index % len(groups)
     key, indices = groups[page]
     label_name = _vendor_label(key)
 
+    entries = sorted(
+        ((models[index].rsplit("/", 1)[-1].casefold(), index) for index in indices),
+        key=lambda item: (item[0], item[1]),
+    )
     buttons = []
-    for index in indices:
+    for _, index in entries:
         model = models[index]
-        # Dalam satu rute prefix-nya sama, jadi nama model saja sudah jelas.
+        # Dalam satu provider/rute prefix-nya sama, jadi nama model saja sudah jelas.
         label = model.rsplit("/", 1)[-1]
         if model == current_model:
             label = f"✓ {label}"
-        buttons.append({"text": label[:60], "callback_data": f"model:{provider_index}:{index}"})
-    per_row = 2 if all(len(button["text"]) <= 22 for button in buttons) else 1
-    rows = [buttons[index:index + per_row] for index in range(0, len(buttons), per_row)]
-
-    navigation = []
-    if total > 2:
-        navigation.append({"text": "‹ Prev", "callback_data": f"grp:{provider_index}:{(page - 1) % total}"})
-    navigation.append({"text": "Next ›", "callback_data": f"grp:{provider_index}:{(page + 1) % total}"})
-    rows.append(navigation)
-    rows.append([{"text": "« Back", "callback_data": "provider:back"}])
-    rows.append([{"text": "✗ Cancel", "callback_data": "model:cancel"}])
+        buttons.append({"text": label[:60], "callback_data": f"model:{provider_index}:{index}", "style": "primary"})
+    rows = [[button] for button in buttons]
+    rows.append([_nav_back_button(f"routes:{provider_index}", "« Providers")])
+    rows.append([_nav_back_button("provider:back")])
+    rows.append([_nav_cancel_button()])
 
     header = f"{provider_name} › {label_name}" if provider_name else label_name
-    next_label = _vendor_label(groups[(page + 1) % total][0])
-    text = (
-        f"Select a model ({page + 1}/{total})\n"
-        f"{header} • {len(indices)} models\n"
-        f"Current: {current_model or 'unknown'}"
-    )
+    text = f"Select a model\n{header} • {len(indices)} models"
     return text, {"inline_keyboard": rows}
 
 
@@ -1082,18 +1327,43 @@ def _active_provider_slug(providers: list[dict[str, str]]) -> str:
 
 
 def _provider_picker_payload(providers: list[dict[str, str]], current_slug: str) -> tuple[str, dict[str, Any]]:
+    indexed = sorted(
+        enumerate(providers),
+        key=lambda item: (str(item[1].get("name") or item[1]["slug"]).casefold(), item[0]),
+    )
+    logos = _model_button_logos()
     buttons = []
-    for index, provider in enumerate(providers):
+    for index, provider in indexed:
         label = provider.get("name") or provider["slug"]
-        if provider["slug"] == current_slug:
-            label = f"✓ {label}"
-        buttons.append({"text": label[:48], "callback_data": f"provider:{index}"})
-    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
-    rows.append([{"text": "✗ Cancel", "callback_data": "model:cancel"}])
-    return "Select a provider", {"inline_keyboard": rows}
+        # Root/back navigation must never wait on every provider's network.
+        # Counts are cosmetic: reuse even stale catalog IDs, and discover live
+        # models only when the user opens that provider.
+        base = str(provider.get("base_url") or "").rstrip("/")
+        cached = _MODELS_CACHE.get(base)
+        models = cached[1] if cached else []
+        groups = _model_vendor_groups(models)
+        route_count = len(groups) if len(groups) > 1 else (1 if models else 0)
+        buttons.append(_provider_tile_button(
+            provider["slug"], label, f"provider:{index}",
+            current=provider["slug"] == current_slug, count=route_count, logos=logos,
+        ))
+    rows = [[button] for button in buttons]
+    rows.append([_nav_cancel_button()])
+    current_model = next(
+        (provider.get("model", "") for provider in providers if provider["slug"] == current_slug),
+        "",
+    )
+    text = f"Current: {current_model or 'unknown'}\nSelect a router/provider"
+    return text, {"inline_keyboard": rows}
 
 
-def _fetch_models_catalog(base_url: str, api_key: str, *, timeout: int = 12) -> tuple[list[str], dict[str, dict[str, Any]]]:
+def _fetch_models_catalog(
+    base_url: str,
+    api_key: str,
+    *,
+    timeout: int = 12,
+    force_refresh: bool = False,
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
     """Ambil /models SEKALI lalu isi kedua cache (id list + metadata per id).
 
     Mendukung berbagai format (OpenAI, Anthropic, Ollama, vLLM) dan endpoint
@@ -1105,7 +1375,7 @@ def _fetch_models_catalog(base_url: str, api_key: str, *, timeout: int = 12) -> 
     now = time.monotonic()
     cached_ids = _MODELS_CACHE.get(base)
     cached_meta = _MODEL_META_CACHE.get(base)
-    if cached_ids and cached_meta and now - cached_ids[0] < _MODELS_CACHE_TTL:
+    if not force_refresh and cached_ids and cached_meta and now - cached_ids[0] < _MODELS_CACHE_TTL:
         return cached_ids[1], cached_meta[1]
 
     endpoints = [f"{base}/models"]
@@ -1161,14 +1431,18 @@ def _fetch_models_catalog(base_url: str, api_key: str, *, timeout: int = 12) -> 
     return ids, meta
 
 
-def _discover_provider_models(provider: dict[str, str]) -> list[str]:
-    ids, _ = _fetch_models_catalog(provider.get("base_url", ""), provider.get("api_key", ""))
+def _discover_provider_models(provider: dict[str, str], *, force_refresh: bool = False) -> list[str]:
+    ids, _ = _fetch_models_catalog(
+        provider.get("base_url", ""),
+        provider.get("api_key", ""),
+        force_refresh=force_refresh,
+    )
     return ids or ([provider.get("model", "")] if provider.get("model") else [])
 
 
-def _discover_models() -> list[str]:
+def _discover_models(*, force_refresh: bool = False) -> list[str]:
     """Ambil katalog model live dari provider OpenAI-compatible."""
-    ids, _ = _fetch_models_catalog(config.BASE_URL, config.API_KEY, timeout=20)
+    ids, _ = _fetch_models_catalog(config.BASE_URL, config.API_KEY, timeout=20, force_refresh=force_refresh)
     return ids or ([config.MODEL] if config.MODEL else [])
 
 
@@ -1521,6 +1795,46 @@ def _events_card(identity: str) -> str:
     return "\n".join(lines)
 
 
+def _lessons_card(identity: str) -> str:
+    """Lessons learned from tool failures — the agent's self-improvement store.
+
+    This is the operator-facing view of the lessons DB. It shows what the
+    agent learned from its mistakes: unresolved failures (still open) and
+    resolved lessons (fix found, injected into the system prompt).
+    """
+    from zeline import lessons as lessons_module
+
+    counts = lessons_module.lessons_summary(identity)
+    resolved = lessons_module.resolved_lessons(identity, limit=8)
+    unresolved = lessons_module.unresolved_lessons(identity, limit=5)
+    total_resolved = counts.get("resolved", 0)
+    total_unresolved = counts.get("unresolved", 0)
+
+    if not total_resolved and not total_unresolved:
+        return (
+            "📒 No lessons yet. When a tool fails and the agent retries "
+            "successfully, the lesson is captured here and injected into "
+            "the next session's system prompt automatically."
+        )
+
+    lines = ["╭───────────────📒", f"├ <b>Lessons</b> ({total_resolved} resolved, {total_unresolved} unresolved)"]
+    if resolved:
+        lines.append("├─ <b>Resolved</b> (injected into system prompt):")
+        for r in resolved:
+            tool = html.escape(str(r.get("tool", "")))
+            err = html.escape(str(r.get("error", ""))[:60])
+            fix = html.escape(str(r.get("fix", ""))[:60])
+            lines.append(f"├ ✓ <code>{tool}</code>: DON'T \"{err}\" → DO: {fix}")
+    if unresolved:
+        lines.append("├─ <b>Unresolved</b> (failure recorded, no fix yet):")
+        for u in unresolved:
+            tool = html.escape(str(u.get("tool", "")))
+            err = html.escape(str(u.get("error", ""))[:60])
+            lines.append(f"├ ✗ <code>{tool}</code>: {err}")
+    lines.append("╰ Auto-captured from tool failures. Resolved lessons guide future sessions.")
+    return "\n".join(lines)
+
+
 def _events_age(ts: float) -> str:
     """Compact age for an event row. Shares the checkpoint age vocabulary."""
     from zeline import checkpoints
@@ -1558,15 +1872,19 @@ def _stopped_recently(identity: str) -> bool:
 
 
 def _consume_stop(identity: str) -> bool:
-    """True bila turn ini yang dibatalkan oleh /stop — dan tandai sudah dipakai.
+    """True bila turn ini yang dibatalkan oleh /stop — dan hapus tanda nya.
 
     Dipakai worker turn untuk tahu bahwa pembatalan SUDAH dilaporkan oleh
     handler /stop, sehingga ia tidak mengirim "Stopped." sebagai pesan kedua.
+    Entry dihapus setelah dikonsumsi agar stop satu kali tidak memblokir
+    turn berikutnya secara permanen.
     """
     with _recent_stops_lock:
         when = _recent_stops.get(identity)
         if when is None or (time.monotonic() - when) > _STOP_ECHO_SECONDS:
             return False
+        # Consume: hapus entry sehingga turn berikutnya tidak ikut terblokir.
+        _recent_stops.pop(identity, None)
         return True
 
 
@@ -1598,6 +1916,8 @@ def _handle_command_update(
                 "/undo — List or restore file checkpoints\n"
                 "/stats — View token usage\n"
                 "/events — Recent file/skill/memory changes\n"
+                "/lessons — View self-learning lessons\n"
+                "/steer <prompt> — Steer the running task\n"
                 "/stop — Stop the active turn\n"
                 "/new — Start a new session\n\n"
                 "Send a message to start a task"
@@ -1662,10 +1982,48 @@ def _handle_command_update(
         text = refusal if refusal is not None else _events_card(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
         return True
+    if command == "/lessons":
+        refusal = _owner_only_reply("/lessons", chat_id, allowed)
+        text = refusal if refusal is not None else _lessons_card(identity)
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        return True
     if command == "/model" and not args.strip():
         providers = _configured_providers()
+        # Saat /model dibuka ulang secara eksplisit, refresh katalog provider aktif
+        # agar model yang baru online / pulih langsung muncul tanpa perlu restart gateway.
+        for item in providers:
+            base_url = item.get("base_url")
+            if base_url:
+                _fetch_models_catalog(base_url, item.get("api_key", ""), force_refresh=True)
         picker_text, markup = _provider_picker_payload(providers, _active_provider_slug(providers))
         _api_call(api, "sendMessage", chat_id=chat_id, text=picker_text, reply_markup=markup)
+        return True
+    if command == "/steer":
+        steer_text = args.strip()
+        if not steer_text:
+            _api_call(api, "sendMessage", chat_id=chat_id, text="Usage: /steer <prompt>")
+            return True
+        # Cek apakah ada turn berjalan
+        _progress = getattr(sessions, "progress", None)
+        prog = _progress(identity) if callable(_progress) else None
+        if prog is not None:
+            # Turn sedang jalan → inject sebagai steer (mid-turn, tanpa interrupt)
+            steered = sessions.steer(identity, steer_text)
+            if steered:
+                preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
+                _api_call(
+                    api, "sendMessage", chat_id=chat_id,
+                    text=f"✈️ Steer queued — arrives after the next tool call: '{html.escape(preview, quote=False)}'",
+                )
+            else:
+                _api_call(api, "sendMessage", chat_id=chat_id, text="⚠️ Steer rejected (empty payload).")
+        else:
+            # Tidak ada turn berjalan → kirim sebagai pesan biasa (turn baru)
+            _start_agent_reply(
+                api, sessions, chat_id=chat_id, identity=identity,
+                text=steer_text, tool_profile=tool_profile,
+                reply_to_message_id=message_id or None,
+            )
         return True
     if command == "/stop":
         status = sessions.status(identity)
@@ -1676,10 +2034,9 @@ def _handle_command_update(
             # SATU pesan saja. Turn yang dibatalkan TIDAK ikut mengirim
             # "Stopped." (lihat _send_agent_reply) dan refleksi dilewati, jadi
             # inilah satu-satunya balasan untuk /stop.
-            reply = (
-                f"❄️ Stopped — {title}\n"
-                "The running step was force-killed. Session and history are intact."
-            )
+            # User hanya butuh konteks apa yang dihentikan — tanpa deskripsi
+            # tambahan agar chat tetap bersih.
+            reply = f"❄️ Stopped — {title}"
         elif _stopped_recently(identity):
             # /stop kedua (dobel-tap, atau update yang sama dikirim ulang
             # Telegram) tiba setelah turn benar-benar berhenti. Membalas
@@ -1867,15 +2224,26 @@ def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> 
 
 
 def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
-    """Send the question bubble for a pending ask_user entry."""
+    """Send the question bubble for a pending ask_user entry.
+
+    Dengan opsi: tiap pilihan jadi tombol yang bisa DIKLIK, bernomor (1., 2., …)
+    supaya cocok dengan balasan teks ("2") maupun tap tombol. Tanpa opsi: hint
+    bebas supaya user tahu bisa mengetik jawabannya. Dua jalur (klik & ketik)
+    selalu hidup, jadi user tidak pernah terjebak kalau tombolnya tidak nyaman.
+    """
     text = f"❓ {entry.question}"
     if entry.options:
         rows = [
-            [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index)}]
+            # Nomor di depan label: tampilannya sama seperti daftar pilihan,
+            # dan user yang mengetik "2" mendapat opsi yang sama dengan tap.
+            [{"text": f"{index + 1}. {option}"[:64],
+              "callback_data": _ask_callback_data(chat_id, index)}]
             for index, option in enumerate(entry.options)
         ]
         _api_call(
-            api, "sendMessage", chat_id=chat_id, text=text,
+            api, "sendMessage", chat_id=chat_id,
+            text=f"{text}\n\n<i>Tap a choice, or type your own answer.</i>",
+            parse_mode="HTML",
             reply_markup={"inline_keyboard": rows},
         )
     else:
@@ -1910,9 +2278,35 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
         picker_text, markup = _provider_picker_payload(providers, _active_provider_slug(providers))
         _edit_interactive(api, chat_id, message_id, picker_text, reply_markup=markup)
         return
-    if data.startswith("grp:"):
-        # Pindah halaman rute pada picker model. Indeks halaman ikut di callback
-        # (bukan state proses) supaya tombol tetap hidup setelah gateway restart.
+    # Validate the complete payload before Python indexing or live discovery.
+    # Negative indices select the last item, and extra fields must not fall
+    # through to the legacy model callback format.
+    kind = data.split(":", 1)[0]
+    patterns = {
+        "provider": r"provider:[0-9]+",
+        "routes": r"routes:[0-9]+",
+        "route": r"route:[0-9]+:[0-9]+",
+        "model": r"model:[0-9]+(?::[0-9]+)?",
+    }
+    if kind in patterns and not re.fullmatch(patterns[kind], data):
+        _edit_interactive(api, chat_id, message_id, "Model selection expired. Run /model again.")
+        return
+    if data.startswith("routes:"):
+        # Kembali ke daftar rute milik satu provider (router seperti 9Router).
+        try:
+            provider_index = int(data.split(":", 1)[1])
+            provider = providers[provider_index]
+        except (ValueError, IndexError):
+            _edit_interactive(api, chat_id, message_id, "Model selection expired. Run /model again.")
+            return
+        models = _discover_provider_models(provider)
+        picker_text, markup = _model_picker_payload(
+            models, provider.get("model", ""), provider_index, provider.get("name", provider["slug"])
+        )
+        _edit_interactive(api, chat_id, message_id, picker_text, reply_markup=markup)
+        return
+    if data.startswith("route:"):
+        # Buka halaman model untuk SATU rute: route:<provider>:<group>.
         parts = data.split(":")
         try:
             provider_index = int(parts[1])
@@ -1922,11 +2316,16 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
             _edit_interactive(api, chat_id, message_id, "Model selection expired. Run /model again.")
             return
         models = _discover_provider_models(provider)
-        picker_text, markup = _model_picker_payload(
+        groups = _model_vendor_groups(models)
+        if not groups:
+            _edit_interactive(api, chat_id, message_id, "No models found. Run /model again.")
+            return
+        picker_text, markup = _grouped_model_picker_payload(
             models,
             provider.get("model", ""),
             provider_index,
             provider.get("name", provider["slug"]),
+            groups,
             group_index,
         )
         _edit_interactive(api, chat_id, message_id, picker_text, reply_markup=markup)
@@ -2172,6 +2571,14 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
     if attempts is None:
         attempts = max(1, _API_RETRIES) if method in _RETRYABLE_METHODS else 1
     attempts = max(1, attempts)
+    # Gerbang flood: kalau kita masih dalam jendela 429 (retry_after) dari
+    # panggilan sebelumnya, JANGAN menembak Telegram lagi — itu yang bikin ban
+    # memanjang. Lewati diam-diam (progress UI hilang tak apa; jawaban penting
+    # ditembak ulang setelah jendela lewat oleh pemanggil).
+    global _flood_until
+    now = time.monotonic()
+    if now < _flood_until:
+        return None
     for attempt in range(attempts):
         try:
             response = _HTTP.post(f"{api}/{method}", json=params, timeout=timeout)
@@ -2179,6 +2586,25 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
             if response.ok and payload.get("ok"):
                 return payload
             description = str(payload.get("description", "HTTP error"))[:160] if isinstance(payload, dict) else "HTTP error"
+            # 429 Too Many Requests → hormati parameters.retry_after. Setel gerbang
+            # flood global supaya SEMUA panggilan berikutnya diam sampai jendela
+            # lewat, lalu berhenti (jangan retry di sini — retry = menembak bot
+            # yang sedang di-ban = ban makin panjang).
+            if response.status_code == 429 or "too many requests" in description.lower():
+                retry_after = 0
+                if isinstance(payload, dict):
+                    params_obj = payload.get("parameters")
+                    if isinstance(params_obj, dict):
+                        retry_after = int(params_obj.get("retry_after", 0) or 0)
+                # Hormati retry_after server SEPENUHNYA (tanpa clamp): menembak
+                # lagi sebelum jendela habis justru memperpanjang ban (spiral
+                # 429 → retry_after membengkak ke ribuan detik). Minimal 1s
+                # supaya tidak busy-loop saat server tidak mengirim nilai.
+                wait = max(1, retry_after)
+                with _flood_lock:
+                    _flood_until = time.monotonic() + wait
+                print(f"  [telegram] 429 flood — diam {wait}s (retry_after={retry_after})", flush=True)
+                return None
             # HTML parse error (mis. tag pre/code tak seimbang) → JANGAN sampai
             # menghilangkan pesan. Kirim ulang sekali sebagai teks polos (tanpa
             # parse_mode, entitas HTML di-escape) supaya isi tetap sampai ke user.
@@ -2533,7 +2959,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
-        return "/status · /models · /model <id> · /undo · /stats · /events · /version · /update · /new · /restart · /stop · /logs"
+        return "/status · /models · /model <id> · /undo · /stats · /events · /lessons · /version · /update · /new · /restart · /stop · /logs"
     if command == "/status":
         return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":
@@ -2636,7 +3062,7 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
               timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
@@ -2687,21 +3113,64 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_narration(sentence: str):
-        # Kalimat rencana/temuan model yang menyertai tool call → dikirim
-        # sebagai bubble chat UTUH tersendiri SEBELUM tool jalan. Ini yang
-        # bikin alur kebaca hidup & "satset": [penjelasan] → [tool feed] →
-        # [penjelasan] → [jawaban], tiap pesan rapi dan dikirim sekali (bukan
-        # di-edit live). Selesaikan dulu bubble progres berjalan biar narasi
-        # baru tampil di bawah aktivitas tool sebelumnya, bukan menimpanya.
+        # Kalimat rencana/temuan model yang menyertai tool call. Supaya chat
+        # tidak banjir pesan berulang ("Running: …", "Running: …", "Running: …"),
+        # narasi yang SANGAT MIRIP narasi sebelumnya (model mengulang langkah yang
+        # sama) digabung ke bubble narasi yang SUDAH ADA via edit — bukan pesan
+        # baru. Narasi yang berbeda (langkah baru yang beneran beda) tetap jadi
+        # bubble sendiri, jadi alur [penjelasan] → [tool feed] → [penjelasan]
+        # tetap kebaca.
+        #
+        # Guard: jangan kirim narasi kalau turn sudah di-stop. Kalau cancel
+        # sudah di-set tapi agent masih sempat fire on_narration sebelum
+        # benar-benar berhenti, narasi itu bocor ke chat — padahal user sudah
+        # /stop dan tidak mau lagi menerima output dari task itu.
         sentence = sentence.strip()
         if not sentence:
             return
+        # Cek apakah turn ini sudah dibatalkan via /stop
+        session_obj = getattr(sessions, "_sessions", {}).get(identity)
+        if session_obj is not None and session_obj.cancel_event.is_set():
+            return
         live.detach()
+        # Konsolidasi: bila narasi ini hampir sama dengan yang barusan (model
+        # mengulangi langkahnya), edit bubble narasi lama alih-alih mengirim
+        # duplikat. Ini persis yang membedakan chat yang rapi dari chat yang
+        # penuh "Running …" berulang.
+        now = time.monotonic()
+        prev = _last_narration.get(identity)
+        if (
+            prev
+            and prev.get("message_id")
+            and (now - prev["ts"]) < _NARRATION_MERGE_WINDOW
+            and _similar_narration(prev["text"], sentence)
+        ):
+            merged = _merge_narration(prev["text"], sentence)
+            if merged != prev["text"]:
+                _api_call(
+                    api, "editMessageText", chat_id=chat_id,
+                    message_id=prev["message_id"],
+                    text=_markdown_to_telegram_html(merged), parse_mode="HTML",
+                )
+                _last_narration[identity] = {
+                    "message_id": prev["message_id"], "text": merged, "ts": now,
+                }
+            else:
+                _last_narration[identity]["ts"] = now
+            _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                      timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+            return
+        first_message_id = None
         for part in _split_message(sentence):
-            _api_call(
+            response = _api_call(
                 api, "sendMessage", chat_id=chat_id,
                 text=_markdown_to_telegram_html(part), parse_mode="HTML",
             )
+            if first_message_id is None:
+                first_message_id = ((response or {}).get("result") or {}).get("message_id")
+        _last_narration[identity] = {
+            "message_id": first_message_id, "text": sentence, "ts": now,
+        }
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
@@ -2724,6 +3193,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             identity=identity,
             text=text,
             tool_profile=tool_profile,
+            system_extra=system_extra,
             on_tool=on_tool,
             on_tool_result=on_tool_result,
             on_iteration=on_iteration,
@@ -2739,19 +3209,35 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         done.set()
         heartbeat.join(timeout=0.2)
         delivery.unregister_channel(identity)
-        if ok:
-            # Kunci bubble progres sebagai catatan alur (tidak dihapus), lalu
-            # kirim jawaban final sebagai pesan baru terpisah.
-            live.finalize()
-        else:
-            live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
+        # JANGAN hapus bubble progress saat error/batal — user masih butuh
+        # melihat apa yang sedang dikerjakan sebelum /stop. Finalize mengubah
+        # bubble menjadi catatan alur yang tetap terlihat di chat, bukan
+        # menghapusnya. Menghapus = kehilangan konteks, dan user tidak bisa
+        # reply "lanjut" karena bubble-nya sudah hilang.
+        live.finalize()
     # /stop sudah mengirim SATU konfirmasi sendiri ("❄️ Stopped — <judul>").
     # Agent mengembalikan sentinel "Stopped." untuk turn yang sama, jadi
     # mengirimnya berarti dua pesan untuk satu pembatalan — dan refleksi di
     # bawah bisa menambah pesan ketiga. Turn yang dibatalkan berhenti di sini:
-    # tidak ada balasan, tidak ada refleksi, tidak ada bubble sisa.
+    # tidak ada balasan, tidak ada refleksi. Bubble progress SUDAH di-finalize
+    # di finally block di atas — jangan clear lagi di sini.
     if isinstance(reply, str) and reply.strip() == _CANCELLED_SENTINEL and _consume_stop(identity):
-        live.clear()
+        return
+    # Guard anti-senyap: provider yang mengembalikan teks kosong/whitespace
+    # (mis. model reasoning yang menaruh semua output di reasoning_content lalu
+    # kehabisan token sebelum menulis jawaban) dulu berakhir sebagai
+    # `_split_message("")` → satu part kosong → sendMessage tanpa isi → Telegram
+    # menolak → user melihat Zeline DIAM tanpa error. Kehilangan balasan terlihat
+    # seperti bot yang rusak. Lebih baik jujur: kirim satu pesan yang menyatakan
+    # tidak ada teks yang dihasilkan, supaya user tahu turn-nya selesai.
+    if not isinstance(reply, str) or not reply.strip():
+        _api_call(
+            api, "sendMessage", chat_id=chat_id,
+            text="(no text returned — the provider finished without a message. "
+                 "Try again, or switch model with /model.)",
+        )
+        if ok:
+            _maybe_reflect_bg(api, sessions, chat_id, identity)
         return
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
@@ -2761,6 +3247,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # (biar rantai jawaban tidak menumpuk quote berulang).
     first_part = True
     for part in _split_message(reply):
+        if not part.strip():
+            continue
         extra: dict[str, Any] = {}
         if first_part and reply_to_message_id:
             extra["reply_to_message_id"] = reply_to_message_id
@@ -2781,21 +3269,30 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # menyimpan/memperbaiki skill — jadi ini yang bikin Zeline "sering
     # Self-improvement" seperti diminta, tanpa nyampah di sesi ringan.
     if ok:
-        def _reflect_bg():
-            try:
-                summary = sessions.reflect(identity)
-            except Exception:
-                summary = None
-            if summary:
-                _api_call(
-                    api, "sendMessage", chat_id=chat_id,
-                    text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
-                    parse_mode="HTML",
-                )
-        threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
+        _maybe_reflect_bg(api, sessions, chat_id, identity)
 
 
-def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> threading.Thread:
+def _maybe_reflect_bg(api: str, sessions, chat_id: int, identity: str) -> None:
+    """Jalankan refleksi self-improvement di background (best-effort).
+
+    Dipisah dari `_send_agent_reply` supaya jalur balasan yang berbeda — pesan
+    normal maupun jalur 'tidak ada teks' — memakai perilaku refleksi yang SAMA.
+    """
+    def _reflect_bg():
+        try:
+            summary = sessions.reflect(identity)
+        except Exception:
+            summary = None
+        if summary:
+            _api_call(
+                api, "sendMessage", chat_id=chat_id,
+                text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
+                parse_mode="HTML",
+            )
+    threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
+
+
+def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> threading.Thread:
     """Jalankan turn di worker agar polling tetap menerima /stop dan /steer.
 
     Kirim 'typing…' SEKETIKA (sinkron, dari loop polling) sebelum worker dimulai.
@@ -2806,22 +3303,41 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
 
     ``reply_to_message_id`` dipakai agar bubble jawaban final nempel (quote) ke
     pesan user — jelas balasan untuk pertanyaan yang mana saat ada beberapa.
+    ``system_extra`` menyisipkan catatan runtime sekali-pakai (mis. pengingat
+    task tertunda setelah interupsi) ke turn ini tanpa mengubah history.
     """
     try:
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
     except Exception:
         pass
+    def _worker() -> None:
+        # Jaring pengaman terluar: _send_agent_reply punya try/except sendiri di
+        # sekitar pemanggilan agent, tetapi crash SEBELUM itu (mis. inisialisasi
+        # _LiveStatus atau heartbeat gagal) dulu membunuh worker tanpa jejak —
+        # user tidak melihat apa pun, seperti bot mati. Apa pun yang lolos harus
+        # tetap memberi tahu user alih-alih hilang di thread.
+        try:
+            _send_agent_reply(
+                api=api, sessions=sessions, chat_id=chat_id, identity=identity,
+                text=text, tool_profile=tool_profile,
+                reply_to_message_id=reply_to_message_id, system_extra=system_extra,
+            )
+        except Exception as exc:
+            print(
+                f"  [telegram] agent worker crashed: {exc.__class__.__name__}: {exc}",
+                flush=True,
+            )
+            try:
+                _api_call(
+                    api, "sendMessage", chat_id=chat_id,
+                    text="🪫 Zeline hit an internal problem handling that message. "
+                         "Please try again in a moment.",
+                )
+            except Exception:
+                pass
+
     worker = threading.Thread(
-        target=_send_agent_reply,
-        kwargs={
-            "api": api,
-            "sessions": sessions,
-            "chat_id": chat_id,
-            "identity": identity,
-            "text": text,
-            "tool_profile": tool_profile,
-            "reply_to_message_id": reply_to_message_id,
-        },
+        target=_worker,
         name=f"zeline-telegram-{chat_id}",
         daemon=True,
     )
@@ -2855,9 +3371,20 @@ def _dispatch_update(
             # SEMUA proses callback (termasuk answerCallbackQuery) dijalankan di
             # thread terpisah supaya loop polling TIDAK PERNAH ter-blok oleh
             # round-trip HTTP ke Telegram (yang bisa lambat dari Termux).
+            # Dibungkus: callback yang error dulu membunuh thread-nya tanpa
+            # jejak — tombol tampak "ditekan tapi tidak terjadi apa-apa".
+            def _run_callback() -> None:
+                try:
+                    _handle_callback(api, dict(callback), sessions)
+                except Exception as exc:
+                    print(
+                        f"  [telegram] callback failed: {exc.__class__.__name__}: {exc}",
+                        flush=True,
+                    )
+                    _notify_callback_failure(api, callback)
+
             threading.Thread(
-                target=_handle_callback,
-                args=(api, dict(callback), sessions),
+                target=_run_callback,
                 daemon=True,
                 name="zeline-callback",
             ).start()
@@ -2874,6 +3401,28 @@ def _dispatch_update(
     photos = message.get("photo") or []
     voice = message.get("voice") or message.get("audio") or {}
     video = message.get("video") or message.get("video_note") or {}
+
+    # Reply-to context: ketika user reply ke pesan tertentu (mis. "lanjutin ini"
+    # sambil quote pesan lama), inject teks pesan yang di-quote ke awal prompt
+    # supaya model tau "ini" merujuk ke pesan APA. Tanpa ini, model nebak dan
+    # sering lanjutin task terakhir alih-alih yang dimaksud user. Pola sama
+    # format: [Replying to: "..."].
+    reply_msg = message.get("reply_to_message") or {}
+    reply_text = str(reply_msg.get("text") or reply_msg.get("caption") or "").strip()
+    if reply_text and text and not text.startswith("/"):
+        reply_snippet = reply_text[:500]
+        reply_from = reply_msg.get("from") or {}
+        sender_id = reply_from.get("id")
+        user_id = (message.get("from") or {}).get("id")
+        if reply_from.get("is_bot"):
+            # User reply ke pesan Zeline (bot)
+            text = f'[Replying to your previous message: "{reply_snippet}"]\n\n{text}'
+        elif sender_id and user_id and sender_id == user_id:
+            # User reply ke pesan SENDIRI
+            text = f'[Replying to your own earlier message: "{reply_snippet}"]\n\n{text}'
+        else:
+            # User reply ke pesan orang lain
+            text = f'[Replying to: "{reply_snippet}"]\n\n{text}'
 
     if chat_id is None:
         return
@@ -2901,6 +3450,71 @@ def _dispatch_update(
             # deliberately checked first so /stop still escapes a question.
             if interaction.answer(identity, text):
                 return
+            # Pesan tiba saat turn LAIN masih berjalan → mid-turn steering.
+            # Klasifikasi:
+            #   • MENDESAK (perintah/koreksi/urgensi) → interupsi task berjalan,
+            #     tampilkan banner "⚡ Interrupting…", lalu jalankan pesan ini
+            #     sebagai turn baru duluan.
+            #   • BIASA (pertanyaan santai) → sisipkan sebagai steer guidance;
+            #     turn berjalan menyerapnya, tidak diinterupsi.
+            # getattr defensif: SessionStore nyata punya method ini; stub/test
+            # yang tidak, otomatis fall-through ke jalur reply normal.
+            _progress = getattr(sessions, "progress", None)
+            prog = _progress(identity) if callable(_progress) else None
+            if prog is not None:
+                if sessions.classify_steer(text):
+                    # Ingat task yang sedang dikerjakan (judul sesi = teks task
+                    # yang lagi jalan) supaya Zeline bisa menawarkan lanjut nanti.
+                    held = sessions.session_title(identity)
+                    interrupted = sessions.interrupt(identity, text, held_task=held)
+                    if interrupted is not None:
+                        it, mx, elapsed = interrupted
+                        mins = int(elapsed // 60)
+                        secs = int(elapsed % 60)
+                        el = f"{mins}m {secs}s" if mins else f"{secs}s"
+                        iter_str = f", iteration {it}/{mx}" if mx else ""
+                        _api_call(
+                            api, "sendMessage", chat_id=chat_id_int,
+                            text=f"⚡ Interrupting current task ({el} elapsed{iter_str}). "
+                                 "Working on your message now.",
+                        )
+                    # jalankan pesan mendesak sebagai turn baru (turn lama sudah
+                    # dibatalkan; SessionStore.send serial via lock, jadi ia
+                    # menunggu turn lama benar-benar lepas lalu jalan). Sisipkan
+                    # pengingat task tertunda ke system_extra supaya Zeline INGAT
+                    # dan menawarkan melanjutkannya di akhir jawaban.
+                    held_now = sessions.held_task(identity)
+                    extra = ""
+                    if held_now:
+                        extra = (
+                            "\n\n[CATATAN RUNTIME — task tertunda]\n"
+                            f"Sebelum pesan mendesak ini, kamu sedang mengerjakan: \"{held_now}\".\n"
+                            "Task itu DIHOLD, belum selesai. Setelah menyelesaikan pesan "
+                            "sekarang, INGAT untuk menawarkan melanjutkannya kembali "
+                            "(mis. \"Mau lanjutin <task tertunda> yang tadi?\"). Jangan lupakan."
+                        )
+                    _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id, system_extra=extra)
+                    return
+                # pesan biasa saat sibuk → steer (turn berjalan menyerapnya)
+                if sessions.steer(identity, text):
+                    # Debounce ack: don't spam user with ack on every steer
+                    _now = time.monotonic()
+                    if _now - _steer_ack_ts.get(identity, 0.0) >= _STEER_ACK_INTERVAL:
+                        it, mx, elapsed = prog
+                        parts = []
+                        mins = int(elapsed // 60)
+                        if mins > 0:
+                            parts.append(f"{mins} min elapsed")
+                        if mx:
+                            parts.append(f"iteration {it}/{mx}")
+                        detail = f" ({', '.join(parts)})" if parts else ""
+                        _api_call(
+                            api, "sendMessage", chat_id=chat_id_int,
+                            text=f"✈️ Steered into current run{detail}. "
+                                 "Your message arrives after the next tool call.",
+                        )
+                        _steer_ack_ts[identity] = _now
+                    return
             _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif document:
         filename = _document_filename(document)
@@ -2985,6 +3599,57 @@ def _verify_token(api: str) -> tuple[str | None, str]:
     return None, last_error
 
 
+def _notify_callback_failure(api: str, callback: dict[str, Any]) -> None:
+    """Beri tahu user kalau tombol yang ditekan gagal diproses.
+
+    Callback berjalan di thread sendiri; tanpa ini, error-nya hilang begitu saja
+    dan tombol terasa "mati". Dipakai setelah pemeriksaan izin sudah lewat, jadi
+    hanya menjawab chat milik pemilik bot.
+    """
+    message = callback.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if chat_id is None:
+        return
+    try:
+        chat_id_int = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    _api_call(
+        api, "sendMessage", chat_id=chat_id_int,
+        text="⚠️ That button press could not be processed. Please try the "
+             "command again (/model, /status, …).",
+    )
+
+
+def _notify_dispatch_failure(api: str, update: dict[str, Any], *, allowed: list[Any]) -> None:
+    """Beri tahu user bahwa pemrosesan pesannya gagal — jangan biarkan senyap.
+
+    Dipanggil HANYA setelah update lolos pemeriksaan izin (kalau tidak, kita
+    akan membalas pemilik chat asing). Tujuannya memastikan tidak ada pesan yang
+    hilang tanpa jejak di sisi user: error internal apa pun terlihat seperti bot
+    yang mati.
+    """
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
+        # callback_query yang gagal sudah punya jawaban alert di jalur izin;
+        # tidak ada chat untuk dikirimi pesan biasa.
+        return
+    try:
+        chat_id_int = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    if not _allowed(chat_id_int, allowed):
+        return
+    _api_call(
+        api, "sendMessage", chat_id=chat_id_int,
+        text="⚠️ Something went wrong processing that message and no reply was "
+             "produced. It was skipped so the bot stays healthy — please send it "
+             "again, or rephrase if it keeps failing.",
+    )
+
+
 def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     token = str(cfg["token"]).strip()
     api = API_TEMPLATE.format(token=token)
@@ -3025,7 +3690,18 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                     # stop_event di-set, loop keluar dalam <=10s alih-alih menggantung
                     # sampai 25-35s (penyebab `gateway stop` sering nyangkut lalu
                     # butuh SIGKILL). Read-timeout diberi margin di atas long-poll.
-                    params={"offset": offset, "timeout": 10, "allowed_updates": json.dumps(["message", "callback_query"])},
+                    params={
+                        "offset": offset,
+                        "timeout": 10,
+                        "allowed_updates": json.dumps(["message", "callback_query"]),
+                        # Nonce anti-cache: beberapa egress proxy me-cache GET
+                        # secara agresif (terbukti di lapangan: respons getUpdates
+                        # basi disajikan ulang sehingga update yang sama diproses
+                        # berulang = bot spam). Param unik per request memaksa
+                        # respons segar; Telegram mengabaikan param tak dikenal.
+                        "_nc": f"{time.time_ns()}",
+                    },
+                    headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
                     timeout=20,
                 )
                 payload = response.json()
@@ -3108,6 +3784,14 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 _dispatch_update(api, token, sessions, update, allowed=allowed, tool_profile=tool_profile, stop_event=stop_event)
             except Exception as exc:
                 print(f"  [telegram] update {update_id} skipped: {exc.__class__.__name__}: {exc}", flush=True)
+                # Jangan senyap: kalau pemrosesan pesan gagal SETELAH melewati
+                # pemeriksaan izin, user berhak tahu bahwa pesannya tidak
+                # menghasilkan balasan. Dulu ini hanya dicetak ke log, jadi dari
+                # sisi user bot-nya terlihat mati — padahal ada error nyata.
+                # Update tetap di-skip (offset maju) supaya satu pesan rusak
+                # tidak mengulang tanpa henti; yang berubah hanya: user diberi
+                # tahu dan diminta mencoba lagi.
+                _notify_dispatch_failure(api, update, allowed=allowed)
             finally:
                 offset = max(offset, update_id + 1)
                 _save_offset(offset)

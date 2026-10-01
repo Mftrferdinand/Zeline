@@ -27,6 +27,7 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 
 - **Inti agen** — loop agen yang kompatibel dengan OpenAI beserta pemanggilan tool, ditambah CLI interaktif dan kueri sekali jalan
 - **Model-agnostic** — bekerja dengan OpenAI, OpenRouter, vLLM, Ollama, dan API apa pun yang kompatibel dengan OpenAI atau Anthropic; tukar model atau penyedia tanpa membangun ulang
+- **Pool API key** — daftarkan beberapa key per provider (`zeline keys add`); key yang kena 401/403 dipensiunkan dan key yang kena rate-limit (429) diistirahatkan sementara request otomatis berputar ke key sehat berikutnya
 - **Memori persisten** — memori jangka panjang yang terisolasi per identitas platform
 - **Persistensi sesi** — riwayat percakapan disimpan di SQLite (`~/.zeline/sessions.db`), sehingga tetap ada setelah gateway di-restart
 - **Skills** — prosedur Markdown yang dapat digunakan ulang dan dimuat sesuai kebutuhan; lihat [indeks skill Zenith](../zeline/skills/ZENITH_INDEX.md) untuk katalog lengkap bawaan
@@ -52,13 +53,24 @@ Jalankan secara lokal untuk pengembangan atau deploy ke server maupun cloud Anda
 Di platform POSIX, Zeline memakai environment Python privat; di Windows paket
 dipasang hanya untuk akun pengguna. Tidak perlu root atau Administrator.
 
+### PyPI (direkomendasikan)
+
+```sh
+pip install zeline
+# atau, di environment tool terisolasi:
+uv tool install zeline
+```
+
+Lalu `zeline setup`. Zeline ada di PyPI lewat Trusted Publishing (OIDC) —
+tanpa API token di repo, artifact terverifikasi yang sama dengan rilis.
+
 ### Termux, Linux, macOS, dan iSH
 
 Satu baris, dan tidak butuh Python tooling apa pun — dia menyiapkan environment
 privat untukmu:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.sh && bash install.sh
 ```
 
 Lalu `zeline setup`. Installer-nya mengunduh wheel bertag dan memverifikasinya
@@ -71,7 +83,7 @@ gateway saat iSH tidak berada di foreground.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Lalu `zeline setup`.
@@ -224,6 +236,7 @@ zeline chat -q "..."           Send one query after gateway + model setup
 zeline setup                   First run: gateway picker; later: setup center
 zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline keys                    Kelola pool API key provider (rotasi otomatis saat 401/403/429)
 zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions
@@ -245,6 +258,16 @@ zeline gateway log             Print gateway logs
 zeline gateway run             Run enabled gateways in the foreground
 zeline skills                  List installed skills
 zeline memory                  Print local CLI memory
+zeline memory consolidate      Remove duplicate and expired facts from local memory
+zeline proactive status        Show the proactive briefing job
+zeline proactive enable --chat telegram:<id> [--time 07:00]
+                               Daily self-initiated digest; silent when nothing is new
+zeline proactive disable       Remove the briefing job
+zeline curator scan            List installed skills, flagging stale or duplicated ones
+zeline curator prune [--days 90] [--yes]
+                               Dry-run (default) or archive stale skills with a ledger
+zeline curator archive <name>  Archive a skill (restorable)
+zeline curator restore <name>  Bring an archived skill back
 ```
 
 Pada peluncuran pertama, Zeline memerlukan satu gateway yang dipilih dari picker berbasis tombol panah:

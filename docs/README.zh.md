@@ -27,6 +27,7 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 
 - **智能体核心** —— 一个支持工具调用的 OpenAI 兼容智能体循环，外加交互式 CLI 和一次性查询
 - **模型无关** —— 兼容 OpenAI、OpenRouter、vLLM、Ollama，以及任何 OpenAI 或 Anthropic 兼容的 API；无需重建即可切换模型或提供商
+- **API 密钥池** —— 为每个提供商注册多个密钥（`zeline keys add`）；遇到 401/403 的密钥会被停用，遇到限流（429）的密钥会被暂时休息，请求会自动轮换到下一个健康的密钥
 - **持久化记忆** —— 按平台身份隔离的长期记忆
 - **会话持久化** —— 对话历史存储在 SQLite 中（`~/.zeline/sessions.db`），因此可在网关重启后依然保留
 - **技能** —— 按需加载的可复用 Markdown 流程；完整的内置技能目录见 [Zenith 技能索引](../zeline/skills/ZENITH_INDEX.md)
@@ -52,12 +53,23 @@ Zeline 并不绑定于单一的模型、提供商或基础设施，而是围绕�
 平台上，Zeline 使用私有 Python 环境；Windows 只为当前用户安装。无需 root
 或管理员权限。
 
+### PyPI（推荐）
+
+```sh
+pip install zeline
+# 或在隔离的工具环境中：
+uv tool install zeline
+```
+
+然后运行 `zeline setup`。Zeline 通过 Trusted Publishing（OIDC）发布到 PyPI
+——仓库中不存储 API token，上传的是与发布相同的已校验构件。
+
 ### Termux、Linux、macOS 和 iSH
 
 只需一行，而且不需要任何现成的 Python 工具链——它会为你准备一个私有环境：
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.sh && bash install.sh
 ```
 
 然后运行 `zeline setup`。安装脚本会自行下载带版本号的 wheel，并在安装前对照
@@ -69,7 +81,7 @@ curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/r
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.2.9/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 然后运行 `zeline setup`。
@@ -216,6 +228,7 @@ zeline chat -q "..."           Send one query after gateway + model setup
 zeline setup                   First run: gateway picker; later: setup center
 zeline setup <section>         Configure gateway|model|tools|integrations|agent
 zeline model                   Detect protocol, fetch models, and choose one
+zeline keys                    Manage provider API key pool (auto-rotates on 401/403/429)
 zeline tools list              List native tools, profiles, and enabled state
 zeline tools profile <name>    Set safe|workspace|full for the local CLI
 zeline tools enable|disable T  Toggle one native tool for new sessions
@@ -237,6 +250,16 @@ zeline gateway log             Print gateway logs
 zeline gateway run             Run enabled gateways in the foreground
 zeline skills                  List installed skills
 zeline memory                  Print local CLI memory
+zeline memory consolidate      删除本地记忆中的重复和过期条目
+zeline proactive status        查看主动简报任务
+zeline proactive enable --chat telegram:<id> [--time 07:00]
+                               每日主动摘要；无新内容时保持静默
+zeline proactive disable       删除简报任务
+zeline curator scan            列出已安装技能，标记长期未用或重复的技能
+zeline curator prune [--days 90] [--yes]
+                               默认为试运行；加 --yes 则归档并记录账本
+zeline curator archive <name>  归档技能（可恢复）
+zeline curator restore <name>  恢复已归档的技能
 ```
 
 首次启动时，Zeline 需要从方向键选择器中选定一个网关：

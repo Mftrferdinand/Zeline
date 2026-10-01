@@ -51,6 +51,15 @@ LEGACY_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
 # shipped under it. This preserves safe upgrades without retaining old product
 # branding in source or deleting user-modified copies.
 RETIRED_BUNDLED_SKILL_DIGESTS: dict[str, tuple[str, ...]] = {
+    # Legacy shell helpers now ship as folders; preserve user-edited flat copies.
+    "fc8ca61d7ee9288203bdec2029ee964e4f1355b54dd8c0c0fc87e23874e838d2": (
+        "63ebd390fbbcd4c0c077420357206e393c85646ab666ce1276f5d49ecc60344d",
+        "29cf2e4001d7fdfac7405a2e39ad373f653a3d2f191d87fcf3bb003d0a8fb4bc",
+    ),
+    "ae5364fd8b2e5bcffe44e5c07e56374349312c7efecbb36a64f3e7adf0e36d7d": (
+        "53a585326838c47d8a501143c94963853a1d91d04a53cf9123a1b5ef833a68d7",
+        "f9a99c0c6f30fd4d5844e3f862d7a0dd03fa2d2c2a788b78fd3ad95d2fadfb61",
+    ),
     # Four flat skills became folder skills so their companion files could ship.
     # Without these entries an existing install keeps loading the stale flat copy
     # forever: _find_skill() checks `<name>.md` before `<name>/SKILL.md`, so the
@@ -288,6 +297,43 @@ BUNDLED_SKILL_UPDATE_DIGESTS: dict[str, tuple[str, ...]] = {
         # same content with CRLF (Windows checkout)
         "3bc375a999d48666cf809245298864710879ba4a6a799a617595ddec06114b78",
     ),
+    # PR #263 shipped these skills before their runtime and security fixes.
+    "documentation-site/SKILL.md": (
+        "b40ffb22f84ed44e345b2e6aa8ee70ed26c48096878faa50bb209d70119677de",
+        "f26c4fea39cc62d4405244db3eea23ae73ea19a60d6193eebb3d6c342e4c8d61",
+    ),
+    "documentation-site/references/content-scraping.md": (
+        "8719e6663602cc2a5f2ba8cf17e986ff27b851178e78961aa5e9ad17fa3c9777",
+        "487de585dc9e6b0f1470b27404e04a11b38f13484214f7a2a68267bf21311f70",
+    ),
+    "documentation-site/references/custom-static-site.md": (
+        "411957dc6e54f28b2dc692ee4088eac242dd4c285243ab53934982b5a5aad1e6",
+        "6d6a7e145c5b4e978d74c5e4d6f2dddb8e7ffa4deea69e246b3c43a13a32ec85",
+    ),
+    "fork-and-rebrand-webapp/SKILL.md": (
+        "4d06b5c09800de0a88030ea4b2cc7f8c79b46090e591cec4c06bbba1e1c12fd8",
+        "a9e69de9392f696c59d6f7c7371fe7c5029a30c11b6f9ea1355ecf85bf10d984",
+    ),
+    "manim-video.md": (
+        "5cefd9f3ff98ca78f033e4b3c4bd6279af57c58d9e3e427ee9ff4959b9a7b587",
+        "1fb34d63736ceccca7f70a26d7c87ed194e1adef8db93992a87f9701f5a89e06",
+    ),
+    "riset-airdrop/scripts/fetch-latest-airdrops.py": (
+        "d70d54d9bf6a74411e3a5249bb0cfa3e01b5a93a2a304f247b19b31922579b32",
+        "1c0a42d66c3ad9edb16b3c570a960afaf7e43b48967731aa4458c6c38ac373cf",
+    ),
+    "telegram-commerce-bot/SKILL.md": (
+        "e00249d65c1aa78a12296f9e4507bb2e522022858c189c4517cd49e6af2e2406",
+        "b79be31e7cc5ccbbbe346b42f8f55637447f6bb2178f072cf9b58efad9827082",
+    ),
+    "telegram-commerce-bot/templates/bot-template.py": (
+        "941cd66a3f144ea81f7fa7da284456d743de03d667fa233992b8d4a309141cee",
+        "0c1d365e6f13b3c58481dd8d82f390998f560742b86287c0957b6c2a01da8eff",
+    ),
+    "telegram-commerce-bot/templates/tripay-gateway.py": (
+        "87a77f4ab5d4dc3ac0b2f1aa15ff6d9a7223e22d02b0d09864d5fe384a57fc05",
+        "57a049acf9bd10f3647ad42e86723ac6d9357e3fbe0e28a9dd419d264b6f7812",
+    ),
 }
 
 
@@ -386,11 +432,14 @@ def _refresh_known_bundled_revisions(source: Path) -> int:
             continue
         try:
             resolved = path.resolve(strict=False)
-            if not resolved.parent.samefile(public_root):
+            if not resolved.is_relative_to(public_root):
                 continue
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             if digest in expected_digests:
-                path.unlink()
+                # Nested folders already exist, so seed_skills will not recopy
+                # them. Refresh only the exact known old file in place.
+                path.write_bytes((source / name).read_bytes())
+                _chmod_private(path, 0o600)
                 removed += 1
         except OSError:
             pass
@@ -484,6 +533,29 @@ def _parse(markdown: str) -> tuple[str, str]:
     return title, description
 
 
+def _parse_load_when(markdown: str) -> str:
+    """Ambil trigger keywords dari baris ``# Load when: ...``.
+
+    Dipakai di daftar skill system prompt supaya agent bisa matching
+    masalah user -> skill yang tepat (khususnya skill Zenith yang namanya
+    opaque seperti ``zeline-zenith-z17``). Referensi-diri seperti
+    ``# Load when: z0`` diabaikan karena tidak informatif.
+    """
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        content = stripped.lstrip("#").strip()
+        if not content.lower().startswith("load when:"):
+            continue
+        triggers = content.split(":", 1)[1].strip().strip("\"'")
+        triggers = " ".join(triggers.split())
+        if not triggers or re.fullmatch(r"z\d+", triggers):
+            return ""
+        return triggers
+    return ""
+
+
 def _iter_skill_units(directory: Path) -> list[tuple[str, Path]]:
     """Kembalikan ``(name, skill_md_path)`` untuk skill flat maupun folder."""
     units: list[tuple[str, Path]] = []
@@ -497,23 +569,25 @@ def _iter_skill_units(directory: Path) -> list[tuple[str, Path]]:
     return units
 
 
-def list_skill_entries(include_private: bool = True) -> list[tuple[str, str, str, str]]:
-    """Return ``(scope, name, title, description)`` entries."""
+def list_skill_entries(include_private: bool = True) -> list[tuple[str, str, str, str, str]]:
+    """Return ``(scope, name, title, description, load_when)`` entries."""
     _ensure_dirs()
-    result: list[tuple[str, str, str, str]] = []
+    result: list[tuple[str, str, str, str, str]] = []
     locations: list[tuple[str, Path]] = [("public", PUBLIC_SKILLS_DIR)]
     if include_private:
         locations.append(("private", PRIVATE_SKILLS_DIR))
     for scope, directory in locations:
         for name, skill_md in _iter_skill_units(directory):
-            title, description = _parse(skill_md.read_text(encoding="utf-8", errors="replace"))
-            result.append((scope, name, title or name, description or "(tanpa deskripsi)"))
+            text = skill_md.read_text(encoding="utf-8", errors="replace")
+            title, description = _parse(text)
+            load_when = _parse_load_when(text)
+            result.append((scope, name, title or name, description or "(tanpa deskripsi)", load_when))
     return result
 
 
 def list_skills(include_private: bool = True) -> list[tuple[str, str, str]]:
     """Compatibility helper: list name/title/description without scope."""
-    return [(name, title, description) for _scope, name, title, description in list_skill_entries(include_private)]
+    return [(name, title, description) for _scope, name, title, description, _lw in list_skill_entries(include_private)]
 
 
 def _find_skill(name: str, include_private: bool) -> Path | None | str:
@@ -856,10 +930,10 @@ def _inventory() -> str:
     if not entries:
         return "No skills yet."
     lines = []
-    for scope, unit, _title, description in entries:
+    for scope, unit, _title, description, load_when in entries:
         located = _locate_unit(unit)
         shape = "folder" if located and located[1].is_dir() else "flat"
-        lines.append(f"- {unit} [{scope}/{shape}]: {_short_desc(description)}")
+        lines.append(f"- {unit} [{scope}/{shape}]: {_short_desc(description)}{_trigger_suffix(load_when)}")
     return f"{len(lines)} skills:\n" + "\n".join(lines)
 
 
@@ -936,13 +1010,27 @@ def _short_desc(description: str, limit: int = 90) -> str:
     return text[:limit].rstrip(" ,.—-") + ("…" if len(text) > limit else "")
 
 
+def _trigger_suffix(load_when: str, limit: int = 80) -> str:
+    """Suffix ``| trigger: ...`` untuk daftar skill; kosong bila tidak ada.
+
+    Token-bounded: daftar skill di-inject setiap turn, jadi keywords
+    dipotong di ~80 char.
+    """
+    triggers = " ".join(str(load_when).split())
+    if not triggers:
+        return ""
+    if len(triggers) > limit:
+        triggers = triggers[:limit].rstrip(" ,.—-") + "…"
+    return f" | trigger: {triggers}"
+
+
 def skills_block(include_private: bool = False) -> str:
     """Daftar token-cheap untuk system prompt sesuai otorisasi session."""
     available = list_skill_entries(include_private=include_private)
     if not available:
         return ""
     lines = "\n".join(
-        f"- {name}: {_short_desc(description)}" if scope == "public" else f"- {name} [private]: {_short_desc(description)}"
-        for scope, name, _title, description in available
+        f"- {name}: {_short_desc(description)}{_trigger_suffix(load_when)}" if scope == "public" else f"- {name} [private]: {_short_desc(description)}{_trigger_suffix(load_when)}"
+        for scope, name, _title, description, load_when in available
     )
     return "\n\n## Available skills (call load_skill for full content):\n" + lines

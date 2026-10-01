@@ -445,7 +445,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         (refs / "extra.md").write_text("Detail tambahan.\n", encoding="utf-8")
 
         skill_system.seed_skills(source=source_root)
-        names = [name for _scope, name, _title, _desc in skill_system.list_skill_entries()]
+        names = [name for _scope, name, _title, _desc, _lw in skill_system.list_skill_entries()]
         self.assertIn("folder-demo-skill", names)
         content = skill_system.load_skill("folder-demo-skill")
         self.assertIn("Langkah utama di sini", content)
@@ -570,7 +570,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         entries = skills.list_skill_entries(include_private=False)
         self.assertNotIn(
             ("public", "tmdb-media-web-maintenance"),
-            {(scope, name) for scope, name, _title, _description in entries},
+            {(scope, name) for scope, name, _title, _description, _lw in entries},
         )
 
     def test_nba_betting_skill_is_not_bundled_and_has_upgrade_cleanup(self):
@@ -1316,6 +1316,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         class Resp:
             def __init__(self, ok, payload):
                 self.ok = ok
+                self.status_code = 200 if ok else 400
                 self._payload = payload
             def json(self):
                 return self._payload
@@ -1349,6 +1350,39 @@ class ZelinePublicCoreTests(unittest.TestCase):
         long_desc = "First short sentence. " + ("x" * 400)
         self.assertEqual(skills._short_desc(long_desc), "First short sentence")
         self.assertLessEqual(len(skills._short_desc("y" * 400)), 92)
+
+    def test_parse_load_when_extracts_trigger_keywords(self):
+        skills = importlib.import_module("zeline.skills")
+        md = "# Judul\n# Load when: audit, exploit, security\n> desc\n"
+        self.assertEqual(skills._parse_load_when(md), "audit, exploit, security")
+        # Self-reference codes are not informative — skip them.
+        self.assertEqual(skills._parse_load_when("# T\n# Load when: z0\n> d\n"), "")
+        self.assertEqual(skills._parse_load_when("# T\n> d\n"), "")
+
+    def test_skills_block_surfaces_load_when_triggers(self):
+        # Zenith skills have opaque names; the agent matches user problems via
+        # the trigger keywords parsed from "# Load when:".
+        skills = importlib.import_module("zeline.skills")
+        public_dir = skills.PUBLIC_SKILLS_DIR
+        public_dir.mkdir(parents=True, exist_ok=True)
+        (public_dir / "demo-trigger-skill.md").write_text(
+            "# Demo Trigger\n# Load when: audit, exploit, security\n> Demo desc.\n",
+            encoding="utf-8",
+        )
+        block = skills.skills_block(include_private=False)
+        self.assertIn("demo-trigger-skill", block)
+        self.assertIn("| trigger: audit, exploit, security", block)
+        # Triggers stay token-bounded in the per-turn listing.
+        for line in block.splitlines():
+            if "| trigger:" in line:
+                suffix = line.split("| trigger:", 1)[1]
+                self.assertLessEqual(len(suffix), 85)
+
+    def test_trigger_suffix_empty_when_no_triggers(self):
+        skills = importlib.import_module("zeline.skills")
+        self.assertEqual(skills._trigger_suffix(""), "")
+        self.assertEqual(skills._trigger_suffix("   "), "")
+        self.assertTrue(skills._trigger_suffix("audit, security").startswith(" | trigger:"))
 
     def test_dispatch_update_routes_text_to_agent(self):
         # _dispatch_update memproses satu update: pesan teks biasa → jalur agent.
@@ -1398,10 +1432,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("video", telegram._update_trace({"message": {"chat": {"id": 1}, "video": {"file_id": "m"}}}))
         # callback_data aman: itu identitas tombol buatan kita, bukan teks user.
         callback = telegram._update_trace(
-            {"callback_query": {"id": "9", "data": "grp:0:1", "from": {"id": 5}, "message": {"chat": {"id": 6}}}}
+            {"callback_query": {"id": "9", "data": "route:0:1", "from": {"id": 5}, "message": {"chat": {"id": 6}}}}
         )
         self.assertIn("callback", callback)
-        self.assertIn("data=grp:0:1", callback)
+        self.assertIn("data=route:0:1", callback)
         self.assertIn("chat=6", callback)
 
     def test_dispatch_update_passes_reply_to_message_id(self):
@@ -1710,7 +1744,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "stop", "new", "version", "update"],
+            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "steer", "stop", "new", "version", "update"],
         )
         self.assertEqual(commands[0]["description"], "Start Zeline")
         by_name = {item["command"]: item["description"] for item in commands}
@@ -1746,7 +1780,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_undo_and_stats_are_owner_only(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        for command in ("/undo", "/stats", "/events"):
+        for command in ("/undo", "/stats", "/events", "/lessons"):
             with self.subTest(command=command), mock.patch.object(telegram, "_api_call") as api:
                 handled = telegram._handle_command_update(
                     "bot-api", command, object(), "telegram:42", 42,
@@ -2127,7 +2161,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         promoted = skills.PRIVATE_SKILLS_DIR / "legacy-flat" / "SKILL.md"
         self.assertIn("langkah baru", promoted.read_text(encoding="utf-8"))
         # Exactly one catalogue entry — not one flat plus one folder.
-        names = [name for _scope, name, _title, _desc in skills.list_skill_entries(include_private=True)]
+        names = [name for _scope, name, _title, _desc, _lw in skills.list_skill_entries(include_private=True)]
         self.assertEqual(names.count("legacy-flat"), 1)
 
     def test_shell_timeout_is_raisable_so_real_installs_do_not_fail_at_60s(self):
@@ -2421,7 +2455,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_tool_progress_uses_zeline_style_labels_and_argument_preview(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Reading skill: test-driven-development")
+        self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Reading skill test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
         self.assertEqual(shell, "<pre>python -m unittest tests.test_agent</pre>")
         self.assertTrue(shell.endswith("</pre>"))
@@ -2432,20 +2466,21 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn("Zeline Terminal", shell)
         self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file <code>agent.py</code> L1-300")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading <code>agent.py</code> L1-300")
         # read_file tanpa offset/limit → tanpa rentang baris.
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file <code>hotel-dashboard.html</code>")
-        self.assertEqual(telegram._tool_progress_text("write_file", {"path": "app.py"}), "📝 Writing file <code>app.py</code>")
-        self.assertEqual(telegram._tool_progress_text("edit_file", {"path": "app.py"}), "🎬 Editing file <code>app.py</code>")
-        self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "🎬 Editing file <code>app.py</code>")
-        self.assertEqual(telegram._tool_progress_text("search_files", {"query": "name"}), "🔎 Searching files: name")
-        self.assertEqual(telegram._tool_progress_text("add_memory", {"fact": "x"}), "🧠 Saving to memory…")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading <code>hotel-dashboard.html</code>")
+        self.assertEqual(telegram._tool_progress_text("write_file", {"path": "app.py"}), "📝 Writing <code>app.py</code>")
+        self.assertEqual(telegram._tool_progress_text("edit_file", {"path": "app.py"}), "🎬 Editing <code>app.py</code>")
+        self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "🎬 Editing <code>app.py</code>")
+        self.assertEqual(telegram._tool_progress_text("search_files", {"query": "name"}), "🔎 Searching files for name")
+        self.assertEqual(telegram._tool_progress_text("add_memory", {"fact": "x"}), "🧠 Updating memory")
         # Hapus memory TIDAK boleh dilabeli "Saving": verb-nya harus jujur.
-        self.assertEqual(telegram._tool_progress_text("remove_memory", {"substring": "x"}), "🧠 Removing from memory…")
-        self.assertEqual(telegram._tool_progress_text("system_env", {}), "🧰 Checking system environment…")
+        rm_label = telegram._tool_progress_text("remove_memory", {"substring": "x"})
+        self.assertNotIn("Saving", rm_label)
+        self.assertEqual(telegram._tool_progress_text("system_env", {}), "🧰 Checking system environment")
         task = telegram._tool_progress_text("update_task", {"task": "Run tests", "status": "in_progress"})
-        # Satu baris, tanpa newline.
-        self.assertEqual(task, "📋 Updating tasks: in_progress · Run tests")
+        # Satu baris, tanpa newline. Sekarang include task + status.
+        self.assertEqual(task, "📋 Updating tasks <code>Run tests</code> → in_progress")
         self.assertNotIn("\n", task)
 
     def test_telegram_terminal_progress_has_no_title_or_emoji(self):
@@ -2520,13 +2555,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
         fetched = telegram._tool_progress_text("web_fetch", {"url": "https://ftmo.com/en/"})
         self.assertNotIn("ftmo.com", fetched)
         self.assertEqual(fetched, "")
-        # web_search hanya penanda ringkas: subjek (kata pertama) + '…', bukan kueri panjang.
+        # web_search menyebut subjek yang dicari ("Searching the web for …").
         search = telegram._tool_progress_text("web_search", {"query": "FundedNext prop trading firm evaluation challenge"})
-        self.assertEqual(search, "🌐 Searching web: FundedNext…")
-        self.assertTrue(search.endswith("…"))
+        self.assertTrue(search.startswith("🌐 Searching the web for FundedNext"))
         # research menampilkan kueri lengkap (detail riset ada di sini).
         research = telegram._tool_progress_text("deep_research", {"query": "FundedNext prop firm review rules payout"})
-        self.assertTrue(research.startswith("🌐 Researching: FundedNext prop firm review"))
+        self.assertTrue(research.startswith("🌐 Researching FundedNext prop firm review"))
 
     def test_telegram_finalize_line_converts_searching_to_reading(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2616,12 +2650,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_progress_supports_code_skill_and_self_improvement(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._tool_progress_text("execute_code", {"code": "from pathlib import Path\nprint(Path.home())"}), "🐍 Running code: <code>from pathlib import Path</code>…")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "patch", "name": "zeline-development"}), "📝 Updating skill: <code>zeline-development</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}), "💡 Saving skill: <code>riset-prop-firm</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm", "file_path": "references/api.md"}), "📄 Writing <code>references/api.md</code> in skill <code>riset-prop-firm</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🧹 Merging skill <code>dupe</code> into <code>riset-prop-firm</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗂 Reviewing saved skills…")
+        self.assertEqual(telegram._tool_progress_text("execute_code", {"code": "from pathlib import Path\nprint(Path.home())"}), "🐍 Running code")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "patch", "name": "zeline-development"}), "📝 Updating skill <code>zeline-development</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}), "💡 Saving skill <code>riset-prop-firm</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm", "file_path": "references/api.md"}), "📄 Writing <code>references/api.md</code> in <code>riset-prop-firm</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🗑 Removing skill <code>dupe</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗂 Listing skills")
         result = telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement).")
         self.assertEqual(result, "📒 Improvement: Patched private/zeline-development/SKILL.md (1 replacement).")
         saved = telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
@@ -2678,42 +2712,42 @@ class ZelinePublicCoreTests(unittest.TestCase):
     def test_telegram_progress_labels_runtime_memory_history_and_question(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # runtime_info bukan "runtime info": yang dibaca identitas runtime aktif.
-        self.assertEqual(telegram._tool_progress_text("runtime_info", {}), "🪪 Checking runtime: model &amp; provider…")
+        self.assertEqual(telegram._tool_progress_text("runtime_info", {}), "🪪 Checking runtime")
         # Memory satu keluarga ikon 🧠; verb-nya yang membedakan baca/simpan/hapus.
-        self.assertEqual(telegram._tool_progress_text("list_memory", {}), "🧠 Reading saved memory…")
+        self.assertEqual(telegram._tool_progress_text("list_memory", {}), "🧠 Reading memory")
         self.assertEqual(
             telegram._tool_progress_text("recall_history", {"query": "invoice tabel"}),
-            "🕰 Recalling past chat: invoice tabel",
+            "🕰 Searching past sessions for invoice tabel",
         )
-        self.assertEqual(telegram._tool_progress_text("recall_history", {}), "🕰 Recalling recent conversation…")
+        self.assertEqual(telegram._tool_progress_text("recall_history", {}), "🕰 Searching past sessions")
         self.assertEqual(
             telegram._tool_progress_text("ask_user", {"question": "Squash atau merge commit?"}),
-            "🙋 Asking you: Squash atau merge commit?",
+            "🙋 Asking Squash atau merge commit?",
         )
-        self.assertEqual(telegram._tool_progress_text("ask_user", {}), "🙋 Asking you a question…")
+        self.assertEqual(telegram._tool_progress_text("ask_user", {}), "🙋 Asking")
 
     def test_telegram_progress_labels_browser_code_intel_route_and_download(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # browser: aksi jadi verb nyata, dan URL diringkas ke HOST saja (query
         # string bisa membawa token).
         opened = telegram._tool_progress_text("browser", {"action": "open", "url": "https://www.example.com/p?token=SECRET"})
-        self.assertEqual(opened, "🌍 Opening page: example.com")
+        self.assertEqual(opened, "🌍 Browsing example.com")
         self.assertNotIn("SECRET", opened)
         self.assertEqual(telegram._tool_progress_text("browser", {"action": "click", "selector": "button.login"}), "🖱 Clicking <code>button.login</code>")
-        self.assertEqual(telegram._tool_progress_text("browser", {"action": "type", "selector": "#email"}), "⌨️ Typing into <code>#email</code>")
-        self.assertEqual(telegram._tool_progress_text("browser", {"action": "screenshot", "path": "shots/home.png"}), "📸 Capturing screenshot <code>home.png</code>")
-        self.assertEqual(telegram._tool_progress_text("browser", {"action": "eval", "script": "document.title"}), "🧪 Running JavaScript on the page…")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "type", "selector": "#email"}), "⌨️ Typing <code>#email</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "screenshot", "path": "shots/home.png"}), "📸 Screenshot <code>home.png</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "eval", "script": "document.title"}), "🧪 Running JavaScript")
         # code_intel: sebut file + baris, bukan cuma nama aksi.
         self.assertEqual(
             telegram._tool_progress_text("code_intel", {"action": "definition", "path": "zeline/agent.py", "line": 820}),
             "🧭 Finding definition <code>agent.py</code> L820",
         )
-        self.assertEqual(telegram._tool_progress_text("code_intel", {"action": "servers"}), "🩺 Checking language servers…")
+        self.assertEqual(telegram._tool_progress_text("code_intel", {"action": "servers"}), "🩺 Checking language servers")
         # network_route: label rute boleh tampil, proxy_url TIDAK (user:pass@host).
         route = telegram._tool_progress_text(
             "network_route", {"action": "add", "label": "sg-1", "proxy_url": "socks5h://user:hunter2@1.2.3.4:1080"}
         )
-        self.assertEqual(route, "🛰 Adding network route: <code>sg-1</code>")
+        self.assertEqual(route, "🛰 Adding route <code>sg-1</code>")
         self.assertNotIn("hunter2", route)
         # download_file: nama tujuan + host, bukan URL panjang mentah.
         got = telegram._tool_progress_text(
@@ -2835,14 +2869,25 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(len(finals), 1)
         self.assertNotIn("✅ Successful", str(api.call_args_list))
 
-    def test_telegram_model_picker_marks_current_model_and_uses_short_callbacks(self):
+    def test_telegram_model_picker_sorts_models_into_single_rows_with_original_callbacks(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        models = ["vendor/model-a", "vendor/model-b"]
-        text, markup = telegram._model_picker_payload(models, "vendor/model-b")
-        buttons = [button for row in markup["inline_keyboard"] for button in row]
-        self.assertIn("Current: vendor/model-b", text)
-        self.assertEqual([button["callback_data"] for button in buttons[:2]], ["model:0", "model:1"])
-        self.assertEqual(buttons[1]["text"], "✓ model-b")
+        models = ["vendor/Zeta", "vendor/alpha", "vendor/Beta"]
+        text, markup = telegram._model_picker_payload(models, "vendor/Beta")
+        rows = markup["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+        model_buttons = [
+            button for button in buttons
+            if button["callback_data"].startswith("model:")
+            and button["callback_data"] != "model:cancel"
+        ]
+        self.assertEqual(text, "Select a model")
+        self.assertEqual([button["text"] for button in model_buttons], ["alpha", "✓ Beta", "Zeta"])
+        # Display is alphabetical, callbacks keep indexes in the original catalog.
+        self.assertEqual(
+            [button["callback_data"] for button in model_buttons],
+            ["model:1", "model:2", "model:0"],
+        )
+        self.assertTrue(all(len(row) == 1 for row in rows))
         self.assertLessEqual(max(len(button["callback_data"]) for button in buttons), 64)
 
     def test_telegram_model_picker_shows_full_id_when_tail_collides(self):
@@ -2862,62 +2907,99 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # Callbacks stay index-based and within Telegram's 64-byte limit.
         self.assertLessEqual(max(len(b["callback_data"]) for b in buttons), 64)
 
-    def test_telegram_model_picker_splits_pages_per_route(self):
-        # A router catalog mixing routes (Gr/, tabi/, cx/) must be paginated one
-        # route per page instead of one long scrolling list of full ids.
+    def test_telegram_model_picker_multi_route_sorts_providers_into_single_rows(self):
+        # Router routes are presented as providers in alphabetical order, one
+        # button per row. Callback indexes still point to the original groups.
         telegram = importlib.import_module("zeline.gateways.telegram")
-        models = ["Gr/claude-opus-5", "Gr/gpt-5", "tabi/claude-opus-5", "cx/gpt-5-codex"]
-        text, markup = telegram._model_picker_payload(models, "tabi/claude-opus-5", 0, "9Router")
-        buttons = [button for row in markup["inline_keyboard"] for button in row]
-        model_buttons = [b for b in buttons if b["callback_data"].startswith("model:") and b["callback_data"] != "model:cancel"]
-        # Page 1 = the first route only, labelled with its friendly name.
-        self.assertIn("GoRouter", text)
-        self.assertIn("(1/3)", text)
-        self.assertEqual([b["callback_data"] for b in model_buttons], ["model:0:0", "model:0:1"])
-        self.assertEqual([b["text"] for b in model_buttons], ["claude-opus-5", "gpt-5"])
-        # Navigation carries the target page in the callback (no process state).
-        self.assertIn("grp:0:1", [b["callback_data"] for b in buttons])
+        models = ["cx/gpt-5.6", "ag/gemini-3.7", "cbai/glm-5.3"]
+        text, markup = telegram._model_picker_payload(models, "cbai/glm-5.3", 0, "9Router")
+        rows = markup["inline_keyboard"]
+        buttons = [b for row in rows for b in row]
+        route_buttons = [b for b in buttons if b["callback_data"].startswith("route:")]
+        self.assertEqual(text, "Select a Provider\n9Router › 3 provider")
+        self.assertEqual(
+            [b["text"] for b in route_buttons],
+            ["Antigravity (1)", "✓ Codebuddy (1)", "Codex (1)"],
+        )
+        self.assertTrue(all(b["style"] == "primary" for b in route_buttons))
+        self.assertEqual(
+            [b["callback_data"] for b in route_buttons],
+            ["route:0:1", "route:0:2", "route:0:0"],
+        )
+        self.assertTrue(all(len(row) == 1 for row in rows))
         self.assertLessEqual(max(len(b["callback_data"]) for b in buttons), 64)
 
-    def test_telegram_model_picker_pages_wrap_and_keep_global_indexes(self):
-        # Page 2 must keep GLOBAL indexes so the existing model: callback path
-        # still resolves, and Next on the last page wraps back to the first.
+    def test_telegram_route_callback_opens_that_routes_models(self):
+        # route:<provider>:<group> must open the model page for THAT provider only,
+        # with global indexes so the existing model: callback path still works,
+        # and a « Providers button to climb back to the provider list.
         telegram = importlib.import_module("zeline.gateways.telegram")
-        models = ["Gr/a", "tabi/b", "cx/c"]
-        text, markup = telegram._model_picker_payload(models, "Gr/a", 0, "9Router", 2)
-        buttons = [button for row in markup["inline_keyboard"] for button in row]
+        models = ["Gr/a", "cbai/Zeta", "cbai/alpha"]
+        groups = telegram._model_vendor_groups(models)
+        text, markup = telegram._grouped_model_picker_payload(models, "cbai/Zeta", 0, "9Router", groups, 1)
+        buttons = [b for row in markup["inline_keyboard"] for b in row]
         model_buttons = [b for b in buttons if b["callback_data"].startswith("model:") and b["callback_data"] != "model:cancel"]
-        self.assertIn("(3/3)", text)
-        self.assertEqual([b["callback_data"] for b in model_buttons], ["model:0:2"])
-        self.assertIn("grp:0:0", [b["callback_data"] for b in buttons])  # Next wraps
-        self.assertIn("grp:0:1", [b["callback_data"] for b in buttons])  # Prev
+        self.assertEqual(text, "Select a model\n9Router › Codebuddy • 2 models")
+        self.assertEqual([b["text"] for b in model_buttons], ["alpha", "✓ Zeta"])
+        # Global indexes into the full catalog remain intact after display sorting.
+        self.assertEqual([b["callback_data"] for b in model_buttons], ["model:0:2", "model:0:1"])
+        self.assertTrue(all(len(row) == 1 for row in markup["inline_keyboard"]))
+        self.assertIn(
+            {"text": "« Providers", "callback_data": "routes:0"},
+            buttons,
+        )
+        self.assertLessEqual(max(len(b["callback_data"]) for b in buttons), 64)
 
-    def test_telegram_model_picker_single_route_has_no_pagination(self):
+    def test_telegram_model_picker_single_route_has_no_route_page(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         models = ["Gr/a", "Gr/b"]
-        _, markup = telegram._model_picker_payload(models, "Gr/a", 0, "9Router")
+        text, markup = telegram._model_picker_payload(models, "Gr/a", 0, "9Router")
         callbacks = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-        self.assertFalse([c for c in callbacks if c.startswith("grp:")])
+        self.assertFalse([c for c in callbacks if c.startswith("route:")])
+        self.assertFalse([c for c in callbacks if c.startswith("routes:")])
+        self.assertIn("Select a model", text)
 
-    def test_telegram_callback_grp_switches_page_without_changing_model(self):
+    def test_telegram_callback_route_switches_route_without_changing_model(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         provider = {"slug": "9router", "name": "9Router", "base_url": "https://r.example/v1", "api_key": "k", "model": "Gr/a"}
         with mock.patch.object(telegram, "_api_call") as api, \
              mock.patch.object(telegram, "_configured_providers", return_value=[provider]), \
-             mock.patch.object(telegram, "_discover_provider_models", return_value=["Gr/a", "tabi/b"]), \
+             mock.patch.object(telegram, "_discover_provider_models", return_value=["Gr/a", "cbai/b"]), \
              mock.patch.object(telegram.config, "save_config") as save:
             sessions = mock.Mock()
             telegram._handle_callback(
                 "https://api.example",
-                {"id": "1", "data": "grp:0:1", "message": {"chat": {"id": 7}, "message_id": 9}},
+                {"id": "1", "data": "route:0:1", "message": {"chat": {"id": 7}, "message_id": 9}},
                 sessions,
             )
-        # Paging must only re-render the picker: no config write, no session switch.
+        # Opening a route must only re-render the picker: no config write, no session switch.
         save.assert_not_called()
         sessions.switch_provider.assert_not_called()
         edits = [c for c in api.call_args_list if len(c.args) > 1 and c.args[1] == "editMessageText"]
         self.assertTrue(edits)
-        self.assertIn("TabiToken", str(edits[-1].kwargs.get("text", "")))
+        self.assertIn("Codebuddy", str(edits[-1].kwargs.get("text", "")))
+
+    def test_telegram_callback_routes_returns_to_route_list(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        provider = {"slug": "9router", "name": "9Router", "base_url": "https://r.example/v1", "api_key": "k", "model": "cb/b"}
+        with mock.patch.object(telegram, "_api_call") as api, \
+             mock.patch.object(telegram, "_configured_providers", return_value=[provider]), \
+             mock.patch.object(telegram, "_discover_provider_models", return_value=["Gr/a", "cbai/b"]), \
+             mock.patch.object(telegram.config, "save_config") as save:
+            sessions = mock.Mock()
+            telegram._handle_callback(
+                "https://api.example",
+                {"id": "1", "data": "routes:0", "message": {"chat": {"id": 7}, "message_id": 9}},
+                sessions,
+            )
+        save.assert_not_called()
+        sessions.switch_provider.assert_not_called()
+        edits = [c for c in api.call_args_list if len(c.args) > 1 and c.args[1] == "editMessageText"]
+        self.assertTrue(edits)
+        self.assertEqual(
+            str(edits[-1].kwargs.get("text", "")),
+            "Select a Provider\n9Router › 2 provider",
+        )
 
     def test_discover_provider_models_uses_cache_to_avoid_repeat_calls(self):
         # Picker taps provider then model → without cache that's 2 network calls.
@@ -2942,17 +3024,108 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram._MODELS_CACHE.clear()
         telegram._MODEL_META_CACHE.clear()
 
-    def test_telegram_model_root_picker_lists_named_providers_first(self):
+    def test_telegram_model_root_picker_sorts_providers_into_single_rows(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         providers = [
             {"slug": "token-harbor", "name": "Token Harbor", "model": "model-a"},
             {"slug": "nvidia", "name": "NVIDIA NIM", "model": "model-b"},
         ]
-        text, markup = telegram._provider_picker_payload(providers, "token-harbor")
-        buttons = [button for row in markup["inline_keyboard"] for button in row]
-        self.assertIn("Select a provider", text)
-        self.assertEqual(buttons[0], {"text": "✓ Token Harbor", "callback_data": "provider:0"})
-        self.assertEqual(buttons[1], {"text": "NVIDIA NIM", "callback_data": "provider:1"})
+        with mock.patch.object(telegram, "_discover_provider_models", return_value=["x/a", "y/b"]), \
+             mock.patch.object(telegram, "_model_vendor_groups", return_value=[("x", [0]), ("y", [1])]):
+            text, markup = telegram._provider_picker_payload(providers, "token-harbor")
+        rows = markup["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+        self.assertEqual(text, "Current: model-a\nSelect a router/provider")
+        # Display is alphabetical, callbacks retain original provider indexes,
+        # provider tiles are native primary blue with a route count suffix.
+        self.assertEqual(
+            buttons[0],
+            {"text": "NVIDIA NIM (2)", "callback_data": "provider:1", "style": "primary"},
+        )
+        self.assertEqual(
+            buttons[1],
+            {"text": "✓ Token Harbor (2)", "callback_data": "provider:0", "style": "primary"},
+        )
+        self.assertTrue(all(len(row) == 1 for row in rows))
+
+    def test_telegram_provider_badge_auto_detects_known_and_unknown_routes(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        # Known brands can opt into a real Telegram custom-emoji logo ID.
+        self.assertEqual(telegram._provider_identity("9router", "9Router")[0], "9")
+        self.assertEqual(telegram._provider_identity("cbai", "Codebuddy")[0], "C")
+        self.assertEqual(telegram._provider_identity("cx", "Codex")[0], "C")
+        self.assertEqual(telegram._provider_identity("ag", "Antigravity")[0], "A")
+        # Any future provider remains usable without a source edit: first visible
+        # alphanumeric character becomes its compact tile badge.
+        self.assertEqual(telegram._provider_identity("tabi", "TabiToken")[0], "T")
+        self.assertEqual(telegram._provider_identity("Gr", "GoRouter")[0], "G")
+        self.assertEqual(telegram._provider_identity("", "  Ωmega Router")[0], "Ω")
+
+    def test_telegram_route_picker_uses_blue_provider_tiles_with_counts(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        models = ["cx/gpt-5.6", "cx/gpt-5.7", "ag/gemini-3.7", "cbai/glm-5.3", "tabi/kimi-k3", "Gr/claude-opus-5"]
+        text, markup = telegram._model_picker_payload(models, "cbai/glm-5.3", 0, "9Router")
+        route_buttons = [
+            button for row in markup["inline_keyboard"] for button in row
+            if button["callback_data"].startswith("route:")
+        ]
+        self.assertEqual(text, "Select a Provider\n9Router › 5 provider")
+        # Opsi provider/rute = biru, tanpa badge huruf, dengan jumlah model di dalamnya.
+        self.assertTrue(all(button["style"] == "primary" for button in route_buttons))
+        self.assertEqual(
+            [button["text"] for button in route_buttons],
+            ["Antigravity (1)", "✓ Codebuddy (1)", "Codex (2)", "GoRouter (1)", "TabiToken (1)"],
+        )
+        self.assertTrue(all(len(row) == 1 for row in markup["inline_keyboard"]))
+
+    def test_telegram_model_picker_option_and_navigation_styles(self):
+        """Opsi/model = biru; Back/Providers/Cancel = netral (tanpa style)."""
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        models = ["cx/gpt-5.6", "cbai/kimi-k3"]
+
+        # Router route list: Back + Cancel.
+        _, routes = telegram._model_picker_payload(models, "cx/gpt-5.6", 0, "9Router")
+        route_controls = {
+            button["callback_data"]: button
+            for row in routes["inline_keyboard"] for button in row
+            if button["callback_data"] in {"provider:back", "model:cancel"}
+        }
+        self.assertNotIn("style", route_controls["provider:back"])
+        self.assertNotIn("style", route_controls["model:cancel"])
+
+        # One route's model list: model buttons biru; Providers/Back/Cancel netral.
+        groups = telegram._model_vendor_groups(models)
+        _, grouped = telegram._grouped_model_picker_payload(models, "cx/gpt-5.6", 0, "9Router", groups, 0)
+        flat = [button for row in grouped["inline_keyboard"] for button in row]
+        model_buttons = [b for b in flat if b["callback_data"].startswith("model:0:")]
+        self.assertTrue(model_buttons)
+        self.assertTrue(all(b["style"] == "primary" for b in model_buttons))
+        group_controls = {
+            button["callback_data"]: button for button in flat
+            if button["callback_data"] in {"routes:0", "provider:back", "model:cancel"}
+        }
+        self.assertNotIn("style", group_controls["routes:0"])
+        self.assertNotIn("style", group_controls["provider:back"])
+        self.assertNotIn("style", group_controls["model:cancel"])
+
+        # Flat model list (single route): model biru, Back/Cancel netral.
+        _, flat_payload = telegram._model_picker_payload(["gpt-5.6", "kimi-k3"], "gpt-5.6", None, "")
+        flat_buttons = [b for row in flat_payload["inline_keyboard"] for b in row]
+        model_only = [b for b in flat_buttons if b["callback_data"].startswith("model:") and b["callback_data"] != "model:cancel"]
+        self.assertTrue(model_only)
+        self.assertTrue(all(b["style"] == "primary" for b in model_only))
+        cancel = next(b for b in flat_buttons if b["callback_data"] == "model:cancel")
+        self.assertNotIn("style", cancel)
+
+        # Root provider list: provider biru + count, Cancel netral.
+        _, root = telegram._provider_picker_payload(
+            [{"slug": "9router", "name": "9Router", "model": "cx/gpt-5.6"}], "9router",
+        )
+        root_cancel = next(
+            button for row in root["inline_keyboard"] for button in row
+            if button["callback_data"] == "model:cancel"
+        )
+        self.assertNotIn("style", root_cancel)
 
     def test_telegram_configured_providers_dedupes_active_label_case_drift(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2988,7 +3161,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("Token Harbor", edit.kwargs["text"])
         self.assertIn("• 2 models", edit.kwargs["text"])
         buttons = [button for row in edit.kwargs["reply_markup"]["inline_keyboard"] for button in row]
-        self.assertIn({"text": "« Back", "callback_data": "provider:back"}, buttons)
+        self.assertIn(
+            {"text": "« Back", "callback_data": "provider:back"},
+            buttons,
+        )
 
     def test_telegram_model_command_without_argument_opens_inline_picker(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -3206,7 +3382,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         stop_event = threading.Event()
         calls = {"n": 0}
 
-        def flaky(url, params=None, timeout=None):
+        def flaky(url, params=None, timeout=None, headers=None):
             calls["n"] += 1
             # 25 kegagalan beruntun, lalu pulih, lalu hentikan loop.
             if calls["n"] <= 25:
@@ -3253,9 +3429,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(sessions.stopped, "telegram:42")
         self.assertFalse(gateway_stop.is_set())
         reply = api.call_args.kwargs["text"]
-        self.assertIn("❄️ Stopped — Bangun aplikasi", reply)
-        self.assertIn("force-killed", reply)
-        self.assertIn("history are intact", reply)
+        self.assertEqual(reply, "❄️ Stopped — Bangun aplikasi")
 
     def test_telegram_stop_when_idle_uses_exact_message(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
