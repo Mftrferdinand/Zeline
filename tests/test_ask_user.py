@@ -295,5 +295,48 @@ class SessionIntegrationTests(AskUserBase):
                 cancel.assert_called_once_with("telegram:5")
 
 
+class NumberedChoiceReplyTests(AskUserBase):
+    """Ketik nomor = tap tombol. Picker harus jalan di dua jalur."""
+
+    def _ask_with_options(self, options):
+        entry = self.interaction.PendingQuestion(
+            identity="telegram:9", question="pilih", options=tuple(options)
+        )
+        self.interaction._PENDING["telegram:9"] = entry
+        return entry
+
+    def test_number_reply_selects_the_option_text(self):
+        self._ask_with_options(("Gas", "Cek dulu", "Cukup"))
+        self.interaction.answer("telegram:9", "2")
+        self.assertEqual(self.interaction._PENDING["telegram:9"].answer, "Cek dulu")
+
+    def test_number_variants_are_accepted(self):
+        for raw in ("2", "2.", "2)", "#2", "opsi 2", "pilihan 2", "option 2"):
+            with self.subTest(raw=raw):
+                self.interaction._PENDING.clear()
+                self._ask_with_options(("A", "B", "C"))
+                self.interaction.answer("telegram:9", raw)
+                self.assertEqual(self.interaction._PENDING["telegram:9"].answer, "B")
+
+    def test_free_text_is_kept_verbatim(self):
+        self._ask_with_options(("A", "B"))
+        self.interaction.answer("telegram:9", "tambah 2 file lagi")
+        self.assertEqual(
+            self.interaction._PENDING["telegram:9"].answer, "tambah 2 file lagi"
+        )
+
+    def test_out_of_range_number_is_kept_as_text(self):
+        self._ask_with_options(("A", "B"))
+        self.interaction.answer("telegram:9", "9")
+        self.assertEqual(self.interaction._PENDING["telegram:9"].answer, "9")
+
+    def test_free_form_question_is_unaffected(self):
+        self.interaction._PENDING["telegram:9"] = self.interaction.PendingQuestion(
+            identity="telegram:9", question="nama?", options=()
+        )
+        self.interaction.answer("telegram:9", "2")
+        self.assertEqual(self.interaction._PENDING["telegram:9"].answer, "2")
+
+
 if __name__ == "__main__":
     unittest.main()

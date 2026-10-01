@@ -85,6 +85,51 @@ _flood_lock = threading.Lock()
 _steer_ack_ts: dict[str, float] = {}
 _STEER_ACK_INTERVAL = 30.0
 
+# Konsolidasi narasi: bubble narasi TERAKHIR per identity, supaya narasi yang
+# berulang (model mengulangi langkah yang sama) di-EDIT alih-alih dikirim ulang
+# sebagai pesan baru — persis yang bikin chat "Running: …" berulang terlihat
+# berantakan. Hanya narasi yang hampir sama DALAM window ini yang digabung;
+# narasi yang berbeda (langkah baru) tetap jadi bubble sendiri.
+_last_narration: dict[str, dict[str, Any]] = {}
+_NARRATION_MERGE_WINDOW = 60.0
+
+
+def _similar_narration(a: str, b: str) -> bool:
+    """True bila dua narasi "langkah yang sama" — cocok untuk digabung.
+
+    Model sering mengulang rencana identik ("Running: curl …") di iterasi
+    beruntun. Dua teks dianggap mirip bila kata-katanya tumpang tindih banyak
+    (rasio Jaccard >= 0.6) ATAU salah satu prefix yang lain.
+    """
+    a_n = " ".join(a.lower().split())
+    b_n = " ".join(b.lower().split())
+    if not a_n or not b_n:
+        return False
+    if a_n == b_n:
+        return True
+    if a_n.startswith(b_n) or b_n.startswith(a_n):
+        return True
+    a_words = set(re.findall(r"[a-z0-9]+", a_n))
+    b_words = set(re.findall(r"[a-z0-9]+", b_n))
+    if not a_words or not b_words:
+        return False
+    overlap = len(a_words & b_words) / len(a_words | b_words)
+    # 0.5 (bukan 0.6): langkah yang sama dengan filter berbeda
+    # ("| head -n 30" vs "| grep") hanya punya ~0.55 tumpang tindih, dan masih
+    # harus digabung — kalau tidak, tiap variasi kecil jadi bubble baru lagi.
+    return overlap >= 0.5
+
+
+def _merge_narration(old: str, new: str) -> str:
+    """Gabung narasi yang mirip: ambil yang lebih informatif (lebih panjang).
+
+    Versi terbaru biasanya membawa detail tambahan ("… | head -n 30"). Kalau
+    sama persis, kembalikan yang lama (tidak perlu di-edit).
+    """
+    if old == new:
+        return old
+    return new if len(new) >= len(old) else old
+
 # Baris progres (bubble '⏰ Processing', edit feed tool) BUKAN hal kritis. Di
 # jaringan Termux yang sering drop, memanggilnya dengan timeout 65s + retry
 # akan MENAHAN loop agent tiap update → efek 'macet/lambat/cek-cek doang' dan
@@ -2179,15 +2224,26 @@ def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> 
 
 
 def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
-    """Send the question bubble for a pending ask_user entry."""
+    """Send the question bubble for a pending ask_user entry.
+
+    Dengan opsi: tiap pilihan jadi tombol yang bisa DIKLIK, bernomor (1., 2., …)
+    supaya cocok dengan balasan teks ("2") maupun tap tombol. Tanpa opsi: hint
+    bebas supaya user tahu bisa mengetik jawabannya. Dua jalur (klik & ketik)
+    selalu hidup, jadi user tidak pernah terjebak kalau tombolnya tidak nyaman.
+    """
     text = f"❓ {entry.question}"
     if entry.options:
         rows = [
-            [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index)}]
+            # Nomor di depan label: tampilannya sama seperti daftar pilihan,
+            # dan user yang mengetik "2" mendapat opsi yang sama dengan tap.
+            [{"text": f"{index + 1}. {option}"[:64],
+              "callback_data": _ask_callback_data(chat_id, index)}]
             for index, option in enumerate(entry.options)
         ]
         _api_call(
-            api, "sendMessage", chat_id=chat_id, text=text,
+            api, "sendMessage", chat_id=chat_id,
+            text=f"{text}\n\n<i>Tap a choice, or type your own answer.</i>",
+            parse_mode="HTML",
             reply_markup={"inline_keyboard": rows},
         )
     else:
@@ -3057,12 +3113,13 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_narration(sentence: str):
-        # Kalimat rencana/temuan model yang menyertai tool call → dikirim
-        # sebagai bubble chat UTUH tersendiri SEBELUM tool jalan. Ini yang
-        # bikin alur kebaca hidup & "satset": [penjelasan] → [tool feed] →
-        # [penjelasan] → [jawaban], tiap pesan rapi dan dikirim sekali (bukan
-        # di-edit live). Selesaikan dulu bubble progres berjalan biar narasi
-        # baru tampil di bawah aktivitas tool sebelumnya, bukan menimpanya.
+        # Kalimat rencana/temuan model yang menyertai tool call. Supaya chat
+        # tidak banjir pesan berulang ("Running: …", "Running: …", "Running: …"),
+        # narasi yang SANGAT MIRIP narasi sebelumnya (model mengulang langkah yang
+        # sama) digabung ke bubble narasi yang SUDAH ADA via edit — bukan pesan
+        # baru. Narasi yang berbeda (langkah baru yang beneran beda) tetap jadi
+        # bubble sendiri, jadi alur [penjelasan] → [tool feed] → [penjelasan]
+        # tetap kebaca.
         #
         # Guard: jangan kirim narasi kalau turn sudah di-stop. Kalau cancel
         # sudah di-set tapi agent masih sempat fire on_narration sebelum
@@ -3076,11 +3133,44 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if session_obj is not None and session_obj.cancel_event.is_set():
             return
         live.detach()
+        # Konsolidasi: bila narasi ini hampir sama dengan yang barusan (model
+        # mengulangi langkahnya), edit bubble narasi lama alih-alih mengirim
+        # duplikat. Ini persis yang membedakan chat yang rapi dari chat yang
+        # penuh "Running …" berulang.
+        now = time.monotonic()
+        prev = _last_narration.get(identity)
+        if (
+            prev
+            and prev.get("message_id")
+            and (now - prev["ts"]) < _NARRATION_MERGE_WINDOW
+            and _similar_narration(prev["text"], sentence)
+        ):
+            merged = _merge_narration(prev["text"], sentence)
+            if merged != prev["text"]:
+                _api_call(
+                    api, "editMessageText", chat_id=chat_id,
+                    message_id=prev["message_id"],
+                    text=_markdown_to_telegram_html(merged), parse_mode="HTML",
+                )
+                _last_narration[identity] = {
+                    "message_id": prev["message_id"], "text": merged, "ts": now,
+                }
+            else:
+                _last_narration[identity]["ts"] = now
+            _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                      timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+            return
+        first_message_id = None
         for part in _split_message(sentence):
-            _api_call(
+            response = _api_call(
                 api, "sendMessage", chat_id=chat_id,
                 text=_markdown_to_telegram_html(part), parse_mode="HTML",
             )
+            if first_message_id is None:
+                first_message_id = ((response or {}).get("result") or {}).get("message_id")
+        _last_narration[identity] = {
+            "message_id": first_message_id, "text": sentence, "ts": now,
+        }
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
@@ -3133,6 +3223,22 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # di finally block di atas — jangan clear lagi di sini.
     if isinstance(reply, str) and reply.strip() == _CANCELLED_SENTINEL and _consume_stop(identity):
         return
+    # Guard anti-senyap: provider yang mengembalikan teks kosong/whitespace
+    # (mis. model reasoning yang menaruh semua output di reasoning_content lalu
+    # kehabisan token sebelum menulis jawaban) dulu berakhir sebagai
+    # `_split_message("")` → satu part kosong → sendMessage tanpa isi → Telegram
+    # menolak → user melihat Zeline DIAM tanpa error. Kehilangan balasan terlihat
+    # seperti bot yang rusak. Lebih baik jujur: kirim satu pesan yang menyatakan
+    # tidak ada teks yang dihasilkan, supaya user tahu turn-nya selesai.
+    if not isinstance(reply, str) or not reply.strip():
+        _api_call(
+            api, "sendMessage", chat_id=chat_id,
+            text="(no text returned — the provider finished without a message. "
+                 "Try again, or switch model with /model.)",
+        )
+        if ok:
+            _maybe_reflect_bg(api, sessions, chat_id, identity)
+        return
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
     # Bubble PERTAMA di-reply ke pesan user (reply_to_message_id) supaya jelas
@@ -3141,6 +3247,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # (biar rantai jawaban tidak menumpuk quote berulang).
     first_part = True
     for part in _split_message(reply):
+        if not part.strip():
+            continue
         extra: dict[str, Any] = {}
         if first_part and reply_to_message_id:
             extra["reply_to_message_id"] = reply_to_message_id
@@ -3161,18 +3269,27 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # menyimpan/memperbaiki skill — jadi ini yang bikin Zeline "sering
     # Self-improvement" seperti diminta, tanpa nyampah di sesi ringan.
     if ok:
-        def _reflect_bg():
-            try:
-                summary = sessions.reflect(identity)
-            except Exception:
-                summary = None
-            if summary:
-                _api_call(
-                    api, "sendMessage", chat_id=chat_id,
-                    text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
-                    parse_mode="HTML",
-                )
-        threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
+        _maybe_reflect_bg(api, sessions, chat_id, identity)
+
+
+def _maybe_reflect_bg(api: str, sessions, chat_id: int, identity: str) -> None:
+    """Jalankan refleksi self-improvement di background (best-effort).
+
+    Dipisah dari `_send_agent_reply` supaya jalur balasan yang berbeda — pesan
+    normal maupun jalur 'tidak ada teks' — memakai perilaku refleksi yang SAMA.
+    """
+    def _reflect_bg():
+        try:
+            summary = sessions.reflect(identity)
+        except Exception:
+            summary = None
+        if summary:
+            _api_call(
+                api, "sendMessage", chat_id=chat_id,
+                text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
+                parse_mode="HTML",
+            )
+    threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
 def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> threading.Thread:
@@ -3193,18 +3310,34 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
     except Exception:
         pass
+    def _worker() -> None:
+        # Jaring pengaman terluar: _send_agent_reply punya try/except sendiri di
+        # sekitar pemanggilan agent, tetapi crash SEBELUM itu (mis. inisialisasi
+        # _LiveStatus atau heartbeat gagal) dulu membunuh worker tanpa jejak —
+        # user tidak melihat apa pun, seperti bot mati. Apa pun yang lolos harus
+        # tetap memberi tahu user alih-alih hilang di thread.
+        try:
+            _send_agent_reply(
+                api=api, sessions=sessions, chat_id=chat_id, identity=identity,
+                text=text, tool_profile=tool_profile,
+                reply_to_message_id=reply_to_message_id, system_extra=system_extra,
+            )
+        except Exception as exc:
+            print(
+                f"  [telegram] agent worker crashed: {exc.__class__.__name__}: {exc}",
+                flush=True,
+            )
+            try:
+                _api_call(
+                    api, "sendMessage", chat_id=chat_id,
+                    text="🪫 Zeline hit an internal problem handling that message. "
+                         "Please try again in a moment.",
+                )
+            except Exception:
+                pass
+
     worker = threading.Thread(
-        target=_send_agent_reply,
-        kwargs={
-            "api": api,
-            "sessions": sessions,
-            "chat_id": chat_id,
-            "identity": identity,
-            "text": text,
-            "tool_profile": tool_profile,
-            "reply_to_message_id": reply_to_message_id,
-            "system_extra": system_extra,
-        },
+        target=_worker,
         name=f"zeline-telegram-{chat_id}",
         daemon=True,
     )
@@ -3238,9 +3371,20 @@ def _dispatch_update(
             # SEMUA proses callback (termasuk answerCallbackQuery) dijalankan di
             # thread terpisah supaya loop polling TIDAK PERNAH ter-blok oleh
             # round-trip HTTP ke Telegram (yang bisa lambat dari Termux).
+            # Dibungkus: callback yang error dulu membunuh thread-nya tanpa
+            # jejak — tombol tampak "ditekan tapi tidak terjadi apa-apa".
+            def _run_callback() -> None:
+                try:
+                    _handle_callback(api, dict(callback), sessions)
+                except Exception as exc:
+                    print(
+                        f"  [telegram] callback failed: {exc.__class__.__name__}: {exc}",
+                        flush=True,
+                    )
+                    _notify_callback_failure(api, callback)
+
             threading.Thread(
-                target=_handle_callback,
-                args=(api, dict(callback), sessions),
+                target=_run_callback,
                 daemon=True,
                 name="zeline-callback",
             ).start()
@@ -3455,6 +3599,57 @@ def _verify_token(api: str) -> tuple[str | None, str]:
     return None, last_error
 
 
+def _notify_callback_failure(api: str, callback: dict[str, Any]) -> None:
+    """Beri tahu user kalau tombol yang ditekan gagal diproses.
+
+    Callback berjalan di thread sendiri; tanpa ini, error-nya hilang begitu saja
+    dan tombol terasa "mati". Dipakai setelah pemeriksaan izin sudah lewat, jadi
+    hanya menjawab chat milik pemilik bot.
+    """
+    message = callback.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if chat_id is None:
+        return
+    try:
+        chat_id_int = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    _api_call(
+        api, "sendMessage", chat_id=chat_id_int,
+        text="⚠️ That button press could not be processed. Please try the "
+             "command again (/model, /status, …).",
+    )
+
+
+def _notify_dispatch_failure(api: str, update: dict[str, Any], *, allowed: list[Any]) -> None:
+    """Beri tahu user bahwa pemrosesan pesannya gagal — jangan biarkan senyap.
+
+    Dipanggil HANYA setelah update lolos pemeriksaan izin (kalau tidak, kita
+    akan membalas pemilik chat asing). Tujuannya memastikan tidak ada pesan yang
+    hilang tanpa jejak di sisi user: error internal apa pun terlihat seperti bot
+    yang mati.
+    """
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
+        # callback_query yang gagal sudah punya jawaban alert di jalur izin;
+        # tidak ada chat untuk dikirimi pesan biasa.
+        return
+    try:
+        chat_id_int = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    if not _allowed(chat_id_int, allowed):
+        return
+    _api_call(
+        api, "sendMessage", chat_id=chat_id_int,
+        text="⚠️ Something went wrong processing that message and no reply was "
+             "produced. It was skipped so the bot stays healthy — please send it "
+             "again, or rephrase if it keeps failing.",
+    )
+
+
 def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     token = str(cfg["token"]).strip()
     api = API_TEMPLATE.format(token=token)
@@ -3589,6 +3784,14 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 _dispatch_update(api, token, sessions, update, allowed=allowed, tool_profile=tool_profile, stop_event=stop_event)
             except Exception as exc:
                 print(f"  [telegram] update {update_id} skipped: {exc.__class__.__name__}: {exc}", flush=True)
+                # Jangan senyap: kalau pemrosesan pesan gagal SETELAH melewati
+                # pemeriksaan izin, user berhak tahu bahwa pesannya tidak
+                # menghasilkan balasan. Dulu ini hanya dicetak ke log, jadi dari
+                # sisi user bot-nya terlihat mati — padahal ada error nyata.
+                # Update tetap di-skip (offset maju) supaya satu pesan rusak
+                # tidak mengulang tanpa henti; yang berubah hanya: user diberi
+                # tahu dan diminta mencoba lagi.
+                _notify_dispatch_failure(api, update, allowed=allowed)
             finally:
                 offset = max(offset, update_id + 1)
                 _save_offset(offset)

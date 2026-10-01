@@ -350,6 +350,53 @@ class StopRepliesOnceTests(unittest.TestCase):
         texts = [c.kwargs.get("text", "") for c in api.call_args_list]
         self.assertTrue(any("Ini jawaban normal." in t for t in texts))
 
+    def test_empty_reply_is_never_silent(self):
+        """Regresi: provider yang balas kosong dulu bikin Zeline DIAM total.
+
+        `_split_message("")` mengembalikan satu part kosong → sendMessage tanpa
+        isi → Telegram menolak → user tidak melihat apa pun, seperti bot rusak.
+        Sekarang jalur itu mengirim satu pesan yang jujur.
+        """
+        class Sessions:
+            def send(self, **_kwargs):
+                return ""
+
+            def reflect(self, _identity):
+                return None
+
+        with mock.patch.object(self.telegram, "_api_call") as api, \
+                mock.patch.object(self.telegram, "_LiveStatus"), \
+                mock.patch.object(self.telegram, "_start_working_heartbeat") as heartbeat:
+            heartbeat.return_value = mock.Mock()
+            self.telegram._send_agent_reply(
+                "bot-api", Sessions(), chat_id=42, identity="telegram:42",
+                text="tanya biasa", tool_profile="safe",
+            )
+        texts = [c.kwargs.get("text", "") for c in api.call_args_list]
+        self.assertTrue(
+            any("no text returned" in t for t in texts),
+            f"balasan kosong harus tetap mengirim pesan, dapat: {texts}",
+        )
+
+    def test_whitespace_only_reply_is_never_silent(self):
+        class Sessions:
+            def send(self, **_kwargs):
+                return "   \n\t "
+
+            def reflect(self, _identity):
+                return None
+
+        with mock.patch.object(self.telegram, "_api_call") as api, \
+                mock.patch.object(self.telegram, "_LiveStatus"), \
+                mock.patch.object(self.telegram, "_start_working_heartbeat") as heartbeat:
+            heartbeat.return_value = mock.Mock()
+            self.telegram._send_agent_reply(
+                "bot-api", Sessions(), chat_id=42, identity="telegram:42",
+                text="tanya biasa", tool_profile="safe",
+            )
+        texts = [c.kwargs.get("text", "") for c in api.call_args_list]
+        self.assertTrue(any("no text returned" in t for t in texts))
+
 
 class CompactionDigestFramingTests(unittest.TestCase):
     """Digest compaction harus terbaca sebagai CATATAN, bukan perintah baru."""
@@ -388,6 +435,49 @@ class CompactionDigestFramingTests(unittest.TestCase):
     def test_digest_still_respects_its_size_bound(self):
         text = self._digest([f"permintaan {i} " + "x" * 500 for i in range(40)])
         self.assertLessEqual(len(text), self.compaction.MAX_DIGEST_CHARS + 100)
+
+
+class SilentFailureGuardTests(unittest.TestCase):
+    """Error di jalur gateway tidak boleh menghilang tanpa pesan ke user."""
+
+    def setUp(self) -> None:
+        self.telegram = importlib.import_module("zeline.gateways.telegram")
+
+    def test_dispatch_failure_notifies_authorized_chat(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_dispatch_failure(
+                "bot-api", {"message": {"chat": {"id": 42}}}, allowed=[42],
+            )
+        self.assertEqual(api.call_count, 1)
+        self.assertIn("went wrong", api.call_args.kwargs["text"])
+
+    def test_dispatch_failure_never_messages_a_foreign_chat(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_dispatch_failure(
+                "bot-api", {"message": {"chat": {"id": 999}}}, allowed=[42],
+            )
+        self.assertEqual(api.call_count, 0, "chat di luar allowlist tidak boleh dibalas")
+
+    def test_dispatch_failure_ignores_callbacks(self):
+        # callback yang gagal sudah punya jawaban alert di jalur izin lain.
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_dispatch_failure(
+                "bot-api", {"callback_query": {"id": "1"}}, allowed=[42],
+            )
+        self.assertEqual(api.call_count, 0)
+
+    def test_callback_failure_notifies_its_chat(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_callback_failure(
+                "bot-api", {"message": {"chat": {"id": 42}}},
+            )
+        self.assertEqual(api.call_count, 1)
+        self.assertIn("could not be processed", api.call_args.kwargs["text"])
+
+    def test_callback_failure_without_chat_is_silent(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_callback_failure("bot-api", {})
+        self.assertEqual(api.call_count, 0)
 
 
 if __name__ == "__main__":

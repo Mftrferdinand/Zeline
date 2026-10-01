@@ -787,8 +787,37 @@ class Zeline:
         usage_chunk: dict[str, Any] | None = None
         reasoning_seen = False
         finish_reason: str | None = None
+        # Inactivity watchdog: kalau provider berhenti mengirim byte di tengah
+        # stream (hang, proxy diam, upstream mati tanpa penutup), iter_lines()
+        # bisa menunggu sampai timeout TCP/OS — menit ke jam. Thread ini menutup
+        # respons setelah jeda yang wajar sehingga iterasi berhenti dan turn
+        # gagal cepat dengan pesan yang jelas, bukan bot yang diam.
+        last_activity = time.monotonic()
+        stalled = threading.Event()
+        stop_watchdog = threading.Event()
+
+        def _watchdog() -> None:
+            limit = float(getattr(config, "STREAM_INACTIVITY_SECONDS", 120.0) or 0.0)
+            if limit <= 0:
+                return  # fitur dimatikan operator
+            # Cek beberapa kali per menit; interval dibatasi agar tidak sibuk.
+            poll = max(0.25, min(1.0, limit / 4.0))
+            while not stop_watchdog.wait(poll):
+                if time.monotonic() - last_activity > limit:
+                    stalled.set()
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                    return
+
+        watchdog = threading.Thread(
+            target=_watchdog, name="zeline-stream-watchdog", daemon=True
+        )
+        watchdog.start()
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
+                last_activity = time.monotonic()
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
                 if self._cancelled():
                     raise _TurnCancelled()
@@ -842,11 +871,27 @@ class Zeline:
                     if function.get("arguments"):
                         slot["function"]["arguments"] += str(function["arguments"])
         except (requests.exceptions.RequestException,) as exc:
+            if stalled.is_set():
+                raise ZelineError(
+                    f"The stream from '{self.model}' went silent (no data for "
+                    f"{int(float(getattr(config, 'STREAM_INACTIVITY_SECONDS', 120.0) or 120.0))}s). "
+                    "The provider likely stalled mid-response. Please try again."
+                ) from exc
             raise ZelineError(
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
         finally:
+            stop_watchdog.set()
             response.close()
+
+        # Provider yang koneksinya ditutup watchdog bisa berakhir tanpa exception
+        # (iterator berhenti normal). Perlakukan sama: gagal cepat dengan pesan
+        # yang jelas alih-alih memakai isi parsial seolah jawaban utuh.
+        if stalled.is_set():
+            raise ZelineError(
+                f"The stream from '{self.model}' went silent mid-response. "
+                "The provider likely stalled. Please try again."
+            )
 
         if usage_chunk is not None:
             self._record_usage(usage_chunk)
@@ -1162,40 +1207,6 @@ class Zeline:
             # bikin alurnya kebaca seperti Zeline (bubble penjelasan →
             # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
             narration = str(message.get("content") or "").strip()
-            if not narration and parsed_calls:
-                # Fallback: beberapa model langsung tool_calls tanpa teks.
-                # Generate narasi singkat dari tool pertama agar user tetap
-                # tahu apa yang sedang dikerjakan — bukan diam lalu eksekusi.
-                first_name = parsed_calls[0][1] if parsed_calls else "tool"
-                first_args = parsed_calls[0][2] if parsed_calls else {}
-                if first_name == "run_shell":
-                    cmd = str(first_args.get("command", ""))[:80]
-                    narration = f"Running: {cmd}" if cmd else "Running terminal command…"
-                elif first_name == "read_file":
-                    path = str(first_args.get("path", ""))[:60]
-                    narration = f"Reading {path}…" if path else "Reading file…"
-                elif first_name == "write_file":
-                    path = str(first_args.get("path", ""))[:60]
-                    narration = f"Writing {path}…" if path else "Writing file…"
-                elif first_name == "patch_file":
-                    path = str(first_args.get("path", ""))[:60]
-                    narration = f"Patching {path}…" if path else "Patching file…"
-                elif first_name == "search_files":
-                    query = str(first_args.get("query", first_args.get("pattern", "")))[:50]
-                    narration = f"Searching: {query}…" if query else "Searching files…"
-                elif first_name == "execute_code":
-                    narration = "Executing Python code…"
-                elif first_name == "update_task":
-                    task = str(first_args.get("task", ""))[:60]
-                    status = str(first_args.get("status", ""))
-                    narration = f"📋 {task} → {status}" if task else "Updating task board…"
-                elif first_name == "delegate_task":
-                    goal = str(first_args.get("goal", ""))[:80]
-                    narration = f"Delegating: {goal}…" if goal else "Delegating to sub-agent…"
-                elif first_name == "recall_history":
-                    narration = "Recalling past conversation…"
-                else:
-                    narration = f"Running {first_name}…"
             if narration and on_narration:
                 on_narration(narration)
 
