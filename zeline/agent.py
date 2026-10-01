@@ -297,31 +297,6 @@ class KeyPool:
                 self._preferred = key
 
 
-#: Narasi fallback. Dipakai HANYA saat model mengirim tool_calls tanpa teks
-#: (lihat Zeline._run_turn). Sengaja English, sama seperti progress label tool
-#: (📖 Reading, 🎬 Editing) — ini bagian UI/progress, bukan penjelasan ke user.
-#: Bahasa penjelasan & jawaban diatur terpisah oleh SOUL + blok LANGUAGE di
-#: system prompt (mengikuti bahasa user), jadi narasi tidak perlu ikut.
-_NARRATION_TEMPLATES: dict[str, dict[str, str]] = {
-    "en": {
-        "run_cmd": "Running: {cmd}",
-        "run": "Running a terminal command…",
-        "read": "Reading {path}…",
-        "write": "Writing {path}…",
-        "patch": "Patching {path}…",
-        "file": "Working with a file…",
-        "search": "Searching: {query}…",
-        "searching": "Searching files…",
-        "code": "Executing Python code…",
-        "task": "Updating the task board…",
-        "delegate": "Delegating: {goal}…",
-        "delegating": "Delegating to a sub-agent…",
-        "recall": "Recalling past conversation…",
-        "other": "Running {name}…",
-    },
-}
-
-
 class Zeline:
     """Satu sesi agent untuk satu user/chat.
 
@@ -1232,49 +1207,6 @@ class Zeline:
             # bikin alurnya kebaca seperti Zeline (bubble penjelasan →
             # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
             narration = str(message.get("content") or "").strip()
-            if not narration and parsed_calls:
-                # Fallback: beberapa model langsung tool_calls tanpa teks.
-                # Generate narasi singkat dari tool pertama agar user tetap
-                # tahu apa yang sedang dikerjakan — bukan diam lalu eksekusi.
-                #
-                # Bahasa mengikuti PESAN USER terakhir, bukan hardcoded English.
-                # Tanpa ini, user yang menulis Indonesia melihat narasi English
-                # ("Running: …") padahal jawaban akhirnya Indonesia — campur
-                # bahasa yang sama bikin Zeline terasa tidak menyimak.
-                first_name = parsed_calls[0][1] if parsed_calls else "tool"
-                first_args = parsed_calls[0][2] if parsed_calls else {}
-                # Narasi fallback SELALU English — ini bagian UI/progress, bukan
-                # penjelasan ke user. Progress label tool (📖 Reading, 🎬 Editing)
-                # juga English by design, jadi narasi konsisten dengannya.
-                nar = _NARRATION_TEMPLATES["en"]
-                if first_name == "run_shell":
-                    cmd = str(first_args.get("command", ""))[:80]
-                    narration = nar["run_cmd"].format(cmd=cmd) if cmd else nar["run"]
-                elif first_name == "read_file":
-                    path = str(first_args.get("path", ""))[:60]
-                    narration = nar["read"].format(path=path) if path else nar["file"]
-                elif first_name == "write_file":
-                    path = str(first_args.get("path", ""))[:60]
-                    narration = nar["write"].format(path=path) if path else nar["file"]
-                elif first_name == "patch_file":
-                    path = str(first_args.get("path", ""))[:60]
-                    narration = nar["patch"].format(path=path) if path else nar["file"]
-                elif first_name == "search_files":
-                    query = str(first_args.get("query", first_args.get("pattern", "")))[:50]
-                    narration = nar["search"].format(query=query) if query else nar["searching"]
-                elif first_name == "execute_code":
-                    narration = nar["code"]
-                elif first_name == "update_task":
-                    task = str(first_args.get("task", ""))[:60]
-                    status = str(first_args.get("status", ""))
-                    narration = f"📋 {task} → {status}" if task else nar["task"]
-                elif first_name == "delegate_task":
-                    goal = str(first_args.get("goal", ""))[:80]
-                    narration = nar["delegate"].format(goal=goal) if goal else nar["delegating"]
-                elif first_name == "recall_history":
-                    narration = nar["recall"]
-                else:
-                    narration = nar["other"].format(name=first_name)
             if narration and on_narration:
                 on_narration(narration)
 
