@@ -3144,6 +3144,22 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # di finally block di atas — jangan clear lagi di sini.
     if isinstance(reply, str) and reply.strip() == _CANCELLED_SENTINEL and _consume_stop(identity):
         return
+    # Guard anti-senyap: provider yang mengembalikan teks kosong/whitespace
+    # (mis. model reasoning yang menaruh semua output di reasoning_content lalu
+    # kehabisan token sebelum menulis jawaban) dulu berakhir sebagai
+    # `_split_message("")` → satu part kosong → sendMessage tanpa isi → Telegram
+    # menolak → user melihat Zeline DIAM tanpa error. Kehilangan balasan terlihat
+    # seperti bot yang rusak. Lebih baik jujur: kirim satu pesan yang menyatakan
+    # tidak ada teks yang dihasilkan, supaya user tahu turn-nya selesai.
+    if not isinstance(reply, str) or not reply.strip():
+        _api_call(
+            api, "sendMessage", chat_id=chat_id,
+            text="(no text returned — the provider finished without a message. "
+                 "Try again, or switch model with /model.)",
+        )
+        if ok:
+            _maybe_reflect_bg(api, sessions, chat_id, identity)
+        return
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
     # Bubble PERTAMA di-reply ke pesan user (reply_to_message_id) supaya jelas
@@ -3152,6 +3168,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # (biar rantai jawaban tidak menumpuk quote berulang).
     first_part = True
     for part in _split_message(reply):
+        if not part.strip():
+            continue
         extra: dict[str, Any] = {}
         if first_part and reply_to_message_id:
             extra["reply_to_message_id"] = reply_to_message_id
@@ -3172,18 +3190,27 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # menyimpan/memperbaiki skill — jadi ini yang bikin Zeline "sering
     # Self-improvement" seperti diminta, tanpa nyampah di sesi ringan.
     if ok:
-        def _reflect_bg():
-            try:
-                summary = sessions.reflect(identity)
-            except Exception:
-                summary = None
-            if summary:
-                _api_call(
-                    api, "sendMessage", chat_id=chat_id,
-                    text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
-                    parse_mode="HTML",
-                )
-        threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
+        _maybe_reflect_bg(api, sessions, chat_id, identity)
+
+
+def _maybe_reflect_bg(api: str, sessions, chat_id: int, identity: str) -> None:
+    """Jalankan refleksi self-improvement di background (best-effort).
+
+    Dipisah dari `_send_agent_reply` supaya jalur balasan yang berbeda — pesan
+    normal maupun jalur 'tidak ada teks' — memakai perilaku refleksi yang SAMA.
+    """
+    def _reflect_bg():
+        try:
+            summary = sessions.reflect(identity)
+        except Exception:
+            summary = None
+        if summary:
+            _api_call(
+                api, "sendMessage", chat_id=chat_id,
+                text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
+                parse_mode="HTML",
+            )
+    threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
 def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> threading.Thread:

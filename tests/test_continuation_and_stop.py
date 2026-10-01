@@ -350,6 +350,53 @@ class StopRepliesOnceTests(unittest.TestCase):
         texts = [c.kwargs.get("text", "") for c in api.call_args_list]
         self.assertTrue(any("Ini jawaban normal." in t for t in texts))
 
+    def test_empty_reply_is_never_silent(self):
+        """Regresi: provider yang balas kosong dulu bikin Zeline DIAM total.
+
+        `_split_message("")` mengembalikan satu part kosong → sendMessage tanpa
+        isi → Telegram menolak → user tidak melihat apa pun, seperti bot rusak.
+        Sekarang jalur itu mengirim satu pesan yang jujur.
+        """
+        class Sessions:
+            def send(self, **_kwargs):
+                return ""
+
+            def reflect(self, _identity):
+                return None
+
+        with mock.patch.object(self.telegram, "_api_call") as api, \
+                mock.patch.object(self.telegram, "_LiveStatus"), \
+                mock.patch.object(self.telegram, "_start_working_heartbeat") as heartbeat:
+            heartbeat.return_value = mock.Mock()
+            self.telegram._send_agent_reply(
+                "bot-api", Sessions(), chat_id=42, identity="telegram:42",
+                text="tanya biasa", tool_profile="safe",
+            )
+        texts = [c.kwargs.get("text", "") for c in api.call_args_list]
+        self.assertTrue(
+            any("no text returned" in t for t in texts),
+            f"balasan kosong harus tetap mengirim pesan, dapat: {texts}",
+        )
+
+    def test_whitespace_only_reply_is_never_silent(self):
+        class Sessions:
+            def send(self, **_kwargs):
+                return "   \n\t "
+
+            def reflect(self, _identity):
+                return None
+
+        with mock.patch.object(self.telegram, "_api_call") as api, \
+                mock.patch.object(self.telegram, "_LiveStatus"), \
+                mock.patch.object(self.telegram, "_start_working_heartbeat") as heartbeat:
+            heartbeat.return_value = mock.Mock()
+            self.telegram._send_agent_reply(
+                "bot-api", Sessions(), chat_id=42, identity="telegram:42",
+                text="tanya biasa", tool_profile="safe",
+            )
+        texts = [c.kwargs.get("text", "") for c in api.call_args_list]
+        self.assertTrue(any("no text returned" in t for t in texts))
+
 
 class CompactionDigestFramingTests(unittest.TestCase):
     """Digest compaction harus terbaca sebagai CATATAN, bukan perintah baru."""
