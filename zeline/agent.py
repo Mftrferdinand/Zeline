@@ -118,8 +118,17 @@ PROVIDER_STATUS_PREFIX = "The provider returned HTTP "
 #: yang benar-benar salah mengembalikan 401 dengan
 #: ``{"error":{"code":"invalid_api_key"}}``. Menyuruh user mengganti kunci yang
 #: sehat adalah saran yang menyesatkan.
+#:
+#: 400 dibiarkan netral dan actionable. Sebelumnya terbaca "This is a
+#: Zeline-side bug; please report it" — itu klaim yang salah. 400 dari router
+#: hampir selalu berarti provider menolak request karena ALASAN DI SISI PROVIDER,
+#: bukan bug Zeline: model tidak ada di route itu, endpoint tidak didukung
+#: (mis. /audio/speech saat tidak ada kredensial TTS — body nyata:
+#: ``No credentials for provider: openai``), field yang tidak dikenal, dsb.
+#: Menyuruh user melaporkan bug Zeline saat masalahnya kredensial provider
+#: menghabiskan waktu mereka dan menyembunyikan penyebab sebenarnya.
 PROVIDER_STATUS_HINTS: dict[int, str] = {
-    400: "Bad request — the provider rejected the request shape. This is a Zeline-side bug; please report it.",
+    400: "Bad request — the provider rejected the request. Usually the model or endpoint is not available on this route (e.g. no TTS/free-text credentials for that provider). Check the model with /model, or add the missing provider credentials.",
     401: "The API key is invalid or unauthorized. Update it with `zeline setup`.",
     402: "Payment required — the provider account has no balance left. Top up, then try again.",
     403: "Insufficient provider quota. Check your balance or usage limit and try again.",

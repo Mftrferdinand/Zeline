@@ -7,10 +7,16 @@ from unittest import mock
 
 
 class _FakeResp:
-    def __init__(self, ok=True, status=200, content=b""):
+    def __init__(self, ok=True, status=200, content=b"", payload=None):
         self.ok = ok
         self.status_code = status
         self.content = content
+        self._payload = payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json body")
+        return self._payload
 
 
 def _make_pdf(path: Path, pages: int = 1):
@@ -61,6 +67,31 @@ class MediaToolsBatchTest(unittest.TestCase):
             out = self.tools._text_to_speech("hi", "v.mp3", self.ws)
         self.assertIn("ERROR", out)
         self.assertIn("/audio/speech", out)
+
+    def test_tts_400_surfaces_provider_reason_not_zeline_bug(self):
+        """Regresi: 400 dulu bilang 'This is a Zeline-side bug'.
+
+        Nyata di 9Router: 'tts-1' diminta tapi provider OpenAI tidak punya
+        kredensial → 400 'No credentials for provider: openai'. Pesan yang
+        menyalahkan Zeline menyembunyikan penyebab sebenarnya.
+        """
+        payload = {"error": {"message": "No credentials for provider: openai"}}
+        with mock.patch.object(
+            self.tools.requests, "post", return_value=_FakeResp(ok=False, status=400, payload=payload)
+        ):
+            out = self.tools._text_to_speech("hi", "v.mp3", self.ws)
+        self.assertIn("ERROR", out)
+        self.assertIn("No credentials for provider: openai", out)
+        self.assertNotIn("Zeline-side bug", out)
+        self.assertIn("text-to-speech is not available", out)
+
+    def test_tts_400_without_json_body_still_explains(self):
+        """Provider 400 tanpa body JSON tetap dapat pesan actionable."""
+        with mock.patch.object(self.tools.requests, "post", return_value=_FakeResp(ok=False, status=400)):
+            out = self.tools._text_to_speech("hi", "v.mp3", self.ws)
+        self.assertIn("ERROR", out)
+        self.assertIn("text-to-speech is not available", out)
+        self.assertNotIn("Zeline-side bug", out)
 
     # ---- qr_code ----
     def test_qr_happy_path(self):

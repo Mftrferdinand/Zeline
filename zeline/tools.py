@@ -1463,6 +1463,27 @@ def _text_to_speech(text: str, path: str, workspace: Path, voice: str = "alloy",
 
         if response.status_code == 404:
             hint = f" — the model '{model}' or the /audio/speech endpoint was not found on this provider."
+        elif response.status_code == 400:
+            # The provider rejected the TTS request. The common real cause is
+            # that the routed provider has no text-to-speech credentials at all
+            # (9Router answers e.g. "No credentials for provider: openai" when
+            # 'tts-1' is requested but no OpenAI key is configured). Surface the
+            # provider's own message when present — it names the missing
+            # provider, which is the fix.
+            detail = ""
+            try:
+                body = response.json()
+                message = str(((body or {}).get("error") or {}).get("message") or "").strip()
+                if message:
+                    detail = f" (provider said: {message[:160]})"
+            except (ValueError, AttributeError):
+                pass
+            hint = (
+                f"{detail} — text-to-speech is not available on this route. The "
+                f"provider needs speech credentials (e.g. an OpenAI key for "
+                f"'{model}'), or pick a provider that offers TTS. Voice replies "
+                "stay off until then."
+            )
         elif response.status_code in PROVIDER_STATUS_HINTS:
             hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
         else:
