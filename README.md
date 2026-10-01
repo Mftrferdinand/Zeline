@@ -99,8 +99,8 @@ zeline setup
 
 The wrapper detects Python 3.10+ on your `PATH`, downloads the same versioned
 wheel and `SHA256SUMS` from the GitHub release, verifies the checksum, and
-installs into the same private runtime (`~/.local/share/zeline`). See
-[`README.npm.md`](README.npm.md) for details.
+installs into the same private runtime (`~/.local/share/zeline`). The `curl`
+and `iwr` routes below stay available for machines without Node.js.
 
 ### Verify the download independently (optional)
 
