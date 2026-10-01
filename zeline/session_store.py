@@ -343,6 +343,12 @@ class SessionPersistence:
         # berhenti pada pemisah PERTAMA yang ditemui — jeda waktu atau ganti
         # title. Jeda diukur antar-turn berurutan, bukan terhadap turn terbaru,
         # supaya sesi panjang yang aktif terus tidak terpotong di tengah.
+        #
+        # CATATAN PENTING: ``title`` di sini sekarang diisi dari ``last_topic``
+        # (topik terbaru), BUKAN title sesi yang stuck di pesan pertama. Ini
+        # membuat pembatas thread benar-benar memisahkan topik berbeda dalam
+        # satu sesi panjang — "lanjut" merujuk ke pekerjaan terakhir, bukan
+        # pekerjaan pertama sesi.
         kept: list[Any] = [rows[0]]
         for previous, row in zip(rows, rows[1:]):
             gap = float(previous[2] or 0.0) - float(row[2] or 0.0)

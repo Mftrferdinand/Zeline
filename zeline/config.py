@@ -35,7 +35,10 @@ DEFAULT_MAX_SESSIONS = 100
 DEFAULT_RESTART_DRAIN_TIMEOUT = 30
 # Detik menunggu jawaban operator untuk ask_user. Selalu di-clamp di bawah
 # MAX_TURN_SECONDS supaya pertanyaan tidak menggantung melewati turn-nya.
-DEFAULT_ASK_USER_TIMEOUT = 180
+# 600s (10 menit): user sering meninggalkan HP sebentar saat ditanya, dan
+# 3 menit (nilai lama) membuat pertanyaan kedaluwarsa sebelum sempat dijawab —
+# model lalu lanjut dengan asumsi yang tidak diminta user.
+DEFAULT_ASK_USER_TIMEOUT = 600
 # Batas waktu wall-clock satu turn agent (detik). Setelah lewat, agent berhenti
 # memanggil tool dan memaksa jawaban final — mencegah "Processing" berlarut saat
 # sebuah tool (mis. web_search) gagal/lambat berulang.
@@ -51,6 +54,14 @@ DEFAULT_ASK_USER_TIMEOUT = 180
 # ``max_tool_rounds`` x satu panggilan LLM lambat, dan bisa diatur operator.
 DEFAULT_MAX_TURN_SECONDS = 4500.0
 MAX_TURN_SECONDS = DEFAULT_MAX_TURN_SECONDS
+# Jeda maksimum tanpa byte apa pun dari provider saat streaming SEBELUM dianggap
+# menggantung. Read-timeout HTTP (180s) hanya menangkap koneksi yang benar-benar
+# diam sejak awal; provider yang mengirim beberapa delta lalu berhenti di tengah
+# — server hang, proxy diam, kuota habis tanpa penutup — bisa menyandera turn
+# sampai TCP/OS timeout (menit ke jam). Watchdog menutup koneksi setelah jeda ini
+# supaya turn gagal cepat dan user dapat pesan, bukan bot yang diam.
+DEFAULT_STREAM_INACTIVITY_SECONDS = 120.0
+STREAM_INACTIVITY_SECONDS = DEFAULT_STREAM_INACTIVITY_SECONDS
 # Rentang yang diterima dari config. Batas bawah menjaga ask_user tetap punya
 # ruang (lihat interaction.py); batas atas mencegah satu turn menyandera gateway
 # selamanya kalau operator mengetik angka yang tidak masuk akal.
@@ -119,12 +130,22 @@ wins if wording ever overlaps.
 </zeline_soul>
 
 LANGUAGE (critical — get this right every turn):
-- Default to English.
-- MIRROR THE USER'S LANGUAGE PER MESSAGE: always reply in the SAME language as
-  the user's LATEST message. If they write in English, reply in English. If they
-  switch to Indonesian, reply in Indonesian. Match each message, not the history.
-- Do NOT default to Indonesian just because earlier messages were Indonesian —
-  detect the language of the current message and follow it.
+- MIRROR THE USER'S LANGUAGE in your EXPLANATIONS AND ANSWERS. Always reply in
+  the SAME language as the user's LATEST message. Indonesian in → Indonesian
+  explanation out. English in → English out.
+- There is NO default language for explanations. Never fall back to English on
+  your own when the user wrote Indonesian.
+- Do NOT be swayed by history: earlier English replies (yours or theirs) are not
+  a reason to answer in English. Only the current message decides.
+- EXCEPTION — tool progress stays English by design. Any line describing a tool
+  you are about to run ("Running: …", "Reading <file>…", "Writing <file>…",
+  "Searching files…", the 📖/🎬/🔎 progress bubbles) is UI, not explanation, and
+  is always English regardless of the user's language. Do not translate it.
+- Keep code, commands, paths, identifiers, API names, and file contents in their
+  original form — translate only your own prose around them.
+- Only if the current message is genuinely language-neutral (e.g. just a number
+  or a paste of code with no words) continue in the language of the previous
+  user message.
 
 How you work:
 - Detect intent → if it matches an available skill, call load_skill first before
@@ -777,6 +798,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
     global MAX_TURN_SECONDS
+    global STREAM_INACTIVITY_SECONDS
     global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, OPENAPI_TOOLS, PLUGINS, TOOL_SEARCH
     global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS, CRON
     PROVIDER = cfg["provider"]
@@ -828,6 +850,17 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
         )
     except (TypeError, ValueError):
         MAX_TURN_SECONDS = float(DEFAULT_MAX_TURN_SECONDS)
+    # Watchdog jeda-stream: 0/non-positif mematikannya (perilaku lama). Batas
+    # bawah 15s mencegah nilai konyol yang memutus stream normal berjeda.
+    try:
+        _inact = float(
+            cfg.get("agent", {}).get(
+                "stream_inactivity_seconds", DEFAULT_STREAM_INACTIVITY_SECONDS
+            )
+        )
+        STREAM_INACTIVITY_SECONDS = max(15.0, _inact) if _inact > 0 else 0.0
+    except (TypeError, ValueError):
+        STREAM_INACTIVITY_SECONDS = float(DEFAULT_STREAM_INACTIVITY_SECONDS)
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))

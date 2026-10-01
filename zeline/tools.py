@@ -89,13 +89,14 @@ _CONTINUATION_WORDS = {
 }
 
 #: Umur maksimal turn TERBARU agar "lanjut" masih dianggap punya rujukan.
-#:
+#: Umur maksimal turn TERBARU agar "lanjut" masih dianggap punya rujukan.
 #: ``append_turn`` baru jalan SETELAH reply, jadi saat user mengetik "lanjut"
-#: di sesi baru, baris terbaru di archive masih milik sesi SEBELUMNYA. Tanpa
+#: di sesi baru, baris terbaru di archive masih milik sesi sebelumnya. Tanpa
 #: batas ini, "lanjut" pagi ini me-recall pekerjaan semalam seolah itu yang
-#: sedang berjalan. 6 jam menampung jeda tidur/kerja tapi tetap memisahkan
-#: sesi yang berbeda hari.
-_CONTINUATION_STALE_AFTER = 6 * 3600
+#: sedang dikerjakan. Diperpanjang ke 24 jam: gateway restart bisa terjadi
+#: kapan saja, dan user tetap berhak melanjutkan pekerjaan terakhirnya
+#: selama masih dalam hari yang sama.
+_CONTINUATION_STALE_AFTER = 24 * 3600
 
 #: Budget digest ``_recall_history``: maksimal karakter per thread dan total.
 #: Menjaga output recall tidak meledakkan context window walau archive besar.
@@ -310,6 +311,34 @@ def _update_task(task: str, status: str, identity: str) -> str:
         return f"ERROR task: could not save the board ({exc.__class__.__name__})."
     prefix = f"NOTE: {note}\n" if note else ""
     return f"{prefix}{tasks.render(board)}"
+
+
+def task_progress_summary(identity: str) -> str:
+    """Ringkasan progress task board untuk ditampilkan di UI.
+
+    Format: "📋 Updating tasks planning 6 task(s) — 2 completed, 3 remaining, 1 in progress"
+    Dipakai oleh gateway untuk menampilkan progress nyata, bukan cuma "Updating tasks".
+    """
+    try:
+        items = tasks.load(identity)
+    except Exception:
+        return "📋 Updating tasks"
+    if not items:
+        return "📋 Updating tasks (no active tasks)"
+    total = len(items)
+    completed = sum(1 for i in items if i["status"] == "completed")
+    in_progress = sum(1 for i in items if i["status"] == "in_progress")
+    pending = sum(1 for i in items if i["status"] == "pending")
+    cancelled = sum(1 for i in items if i["status"] == "cancelled")
+    remaining = total - completed - cancelled
+    parts = [f"planning {total} task(s)"]
+    if completed:
+        parts.append(f"{completed} completed")
+    if remaining:
+        parts.append(f"{remaining} remaining")
+    if in_progress:
+        parts.append(f"{in_progress} in progress")
+    return f"📋 Updating tasks {', '.join(parts)}"
 
 
 def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
@@ -1434,6 +1463,27 @@ def _text_to_speech(text: str, path: str, workspace: Path, voice: str = "alloy",
 
         if response.status_code == 404:
             hint = f" — the model '{model}' or the /audio/speech endpoint was not found on this provider."
+        elif response.status_code == 400:
+            # The provider rejected the TTS request. The common real cause is
+            # that the routed provider has no text-to-speech credentials at all
+            # (9Router answers e.g. "No credentials for provider: openai" when
+            # 'tts-1' is requested but no OpenAI key is configured). Surface the
+            # provider's own message when present — it names the missing
+            # provider, which is the fix.
+            detail = ""
+            try:
+                body = response.json()
+                message = str(((body or {}).get("error") or {}).get("message") or "").strip()
+                if message:
+                    detail = f" (provider said: {message[:160]})"
+            except (ValueError, AttributeError):
+                pass
+            hint = (
+                f"{detail} — text-to-speech is not available on this route. The "
+                f"provider needs speech credentials (e.g. an OpenAI key for "
+                f"'{model}'), or pick a provider that offers TTS. Voice replies "
+                "stay off until then."
+            )
         elif response.status_code in PROVIDER_STATUS_HINTS:
             hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
         else:
@@ -3345,6 +3395,40 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset({"workspace", "full"}),
     ),
+    ToolDef(
+        "whatsapp_send",
+        (
+            "Send a WhatsApp text message from the operator's business number. "
+            "Requires the WhatsApp connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "text": {"type": "string", "description": "Message text."},
+            },
+            "required": ["to", "text"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "whatsapp_template",
+        (
+            "Send an approved WhatsApp message template (needed for contacting "
+            "numbers outside the 24h conversation window). Requires the WhatsApp "
+            "connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "template": {"type": "string", "description": "Approved template name."},
+                "language": {"type": "string", "description": "Template language code (default en_US)."},
+            },
+            "required": ["to", "template"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
 ]
 
 
@@ -3541,6 +3625,12 @@ class ToolExecutor:
             ),
             "drive_list": lambda query="", limit=10: _connector_tool(
                 "google", "drive_list", query=query, limit=limit
+            ),
+            "whatsapp_send": lambda to, text: _connector_tool(
+                "whatsapp", "send_text", to=to, text=text
+            ),
+            "whatsapp_template": lambda to, template, language="en_US": _connector_tool(
+                "whatsapp", "send_template", to=to, template=template, language=language
             ),
         }
 

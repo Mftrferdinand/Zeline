@@ -1,4 +1,43 @@
 # Changelog
+## [0.3.7] — 2026-10-01
+
+### Added
+- **Muse-style reasoning engine (optional example)** — `examples/muse-reasoning-engine/`: OpenAI-compatible bridge with `tool_calls` passthrough, standalone poller for any OpenAI-compatible LLM, model-agnostic system prompt, one-command installer, and a watchdog timer with auto-restart ([#295]).
+- **Examples bundled in sdist** — `MANIFEST.in` now ships `examples/` in the source archive ([#295]).
+
+## [0.3.6] — 2026-09-30
+
+### Added
+- **Connectors framework** — base class + registry for external services ([#286]).
+- **GitHub connector** — issues, PRs, repos via API ([#286]).
+- **Google connector** — Gmail, Calendar, Sheets, Drive ([#288]).
+- **WhatsApp connector** — Business Cloud API (send_text, send_template) ([#289]).
+- **Media tools batch** — `tts`, `qr_code`, `transcribe_audio`, `pdf_tool` ([#285]).
+- **Edit video tool** — ffmpeg CapCut-style operations (trim, crop, text, speed) ([#284]).
+- **Edit image tool** — provider `/images/edits` ([#283]).
+- **Generate video tool** — Veo text-to-video ([#282]).
+- **Parity batch** — proactive briefing, memory nudges, skill curator, recall digest, crypto wallet fix ([#281]).
+- **Provider API key pools** — multiple keys with automatic rotation ([#280]).
+
+### Changed
+- **Mid-turn steering**: urgent message interrupts running task with banner; ordinary message injected as steer guidance ([#273], [#290]).
+- **Task progress indicator**: `📋 Updating tasks X → status` in the live feed ([#290]).
+- **Narration fallback**: silent models now narrate before executing tools ([#290]).
+- **/stop behavior**: progress bubble finalized (not deleted) so user can still see context ([#290]).
+- **/update reliability**: retry 3x with backoff + health-check after gateway restart ([#291]).
+- **Reasoning-content fallback**: thinking models no longer return empty replies ([#276]).
+
+### Fixed
+- **Telegram flood-ban**: honor `429 retry_after`, throttle progress edits ([#272]).
+- **Telegram cache-bust**: egress-proxy cache on getUpdates polling ([#287]).
+- **QR code dependency**: `qrcode[pil]` declared ([#285]).
+- **Session amnesia**: `last_topic` tracking — "lanjut" refers to most recent topic, not session start ([#290]).
+- **Steer ack icon**: ⏩ → ✈️ ([#290]).
+- **Stop message**: `❄️ Stopped — <title>` only, no extra description ([#290]).
+- **classify_steer**: context-aware (HARD vs SHORT patterns) — "jangan" in long refinement no longer triggers false interrupt ([#290]).
+- **_consume_stop**: actually consumes entry so next turn not blocked ([#290]).
+- **on_narration guard**: skip send if cancel_event set ([#290]).
+
 ## [0.3.5] — 2026-09-29
 
 ### Added
@@ -344,7 +383,9 @@ release's documented one-liner keeps working after a newer release ships.
 Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
-[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.5...main
+[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.6...main
+[0.3.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.7
+[0.3.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.6
 [0.3.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.4
 [0.3.3]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.3
@@ -358,7 +399,23 @@ Release notes for 0.2.5 and earlier are on the
 [#269]: https://github.com/Mftrferdinand/Zeline/pull/269
 [#270]: https://github.com/Mftrferdinand/Zeline/pull/270
 [#271]: https://github.com/Mftrferdinand/Zeline/pull/271
+[#272]: https://github.com/Mftrferdinand/Zeline/pull/272
+[#273]: https://github.com/Mftrferdinand/Zeline/pull/273
 [#275]: https://github.com/Mftrferdinand/Zeline/pull/275
+[#276]: https://github.com/Mftrferdinand/Zeline/pull/276
+[#280]: https://github.com/Mftrferdinand/Zeline/pull/280
+[#281]: https://github.com/Mftrferdinand/Zeline/pull/281
+[#282]: https://github.com/Mftrferdinand/Zeline/pull/282
+[#283]: https://github.com/Mftrferdinand/Zeline/pull/283
+[#284]: https://github.com/Mftrferdinand/Zeline/pull/284
+[#285]: https://github.com/Mftrferdinand/Zeline/pull/285
+[#286]: https://github.com/Mftrferdinand/Zeline/pull/286
+[#287]: https://github.com/Mftrferdinand/Zeline/pull/287
+[#288]: https://github.com/Mftrferdinand/Zeline/pull/288
+[#289]: https://github.com/Mftrferdinand/Zeline/pull/289
+[#290]: https://github.com/Mftrferdinand/Zeline/pull/290
+[#291]: https://github.com/Mftrferdinand/Zeline/pull/291
+[#295]: https://github.com/Mftrferdinand/Zeline/pull/295
 [#260]: https://github.com/Mftrferdinand/Zeline/pull/260
 [#261]: https://github.com/Mftrferdinand/Zeline/pull/261
 [#262]: https://github.com/Mftrferdinand/Zeline/pull/262
