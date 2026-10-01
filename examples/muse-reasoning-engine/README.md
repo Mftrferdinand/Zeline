@@ -32,6 +32,10 @@ Zeline agent  ──►  9Router  ──►  bridge.py (localhost:8765, OpenAI-c
 
 ## Prerequisites
 
+> **New here? Start with [SETUP.md](SETUP.md)** — step-by-step guide with two
+> brain options (standalone poller, or your own Muse as the reasoning engine)
+> plus a one-shot prompt you can paste to your Muse to set it all up.
+
 - Python 3.9+
 - [Zeline](https://github.com/Mftrferdinand/zeline) (`pip install zeline`)
 - [9Router](https://github.com/) or any OpenAI-compatible router/proxy
