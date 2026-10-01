@@ -437,5 +437,48 @@ class CompactionDigestFramingTests(unittest.TestCase):
         self.assertLessEqual(len(text), self.compaction.MAX_DIGEST_CHARS + 100)
 
 
+class SilentFailureGuardTests(unittest.TestCase):
+    """Error di jalur gateway tidak boleh menghilang tanpa pesan ke user."""
+
+    def setUp(self) -> None:
+        self.telegram = importlib.import_module("zeline.gateways.telegram")
+
+    def test_dispatch_failure_notifies_authorized_chat(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_dispatch_failure(
+                "bot-api", {"message": {"chat": {"id": 42}}}, allowed=[42],
+            )
+        self.assertEqual(api.call_count, 1)
+        self.assertIn("went wrong", api.call_args.kwargs["text"])
+
+    def test_dispatch_failure_never_messages_a_foreign_chat(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_dispatch_failure(
+                "bot-api", {"message": {"chat": {"id": 999}}}, allowed=[42],
+            )
+        self.assertEqual(api.call_count, 0, "chat di luar allowlist tidak boleh dibalas")
+
+    def test_dispatch_failure_ignores_callbacks(self):
+        # callback yang gagal sudah punya jawaban alert di jalur izin lain.
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_dispatch_failure(
+                "bot-api", {"callback_query": {"id": "1"}}, allowed=[42],
+            )
+        self.assertEqual(api.call_count, 0)
+
+    def test_callback_failure_notifies_its_chat(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_callback_failure(
+                "bot-api", {"message": {"chat": {"id": 42}}},
+            )
+        self.assertEqual(api.call_count, 1)
+        self.assertIn("could not be processed", api.call_args.kwargs["text"])
+
+    def test_callback_failure_without_chat_is_silent(self):
+        with mock.patch.object(self.telegram, "_api_call") as api:
+            self.telegram._notify_callback_failure("bot-api", {})
+        self.assertEqual(api.call_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3231,18 +3231,34 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
     except Exception:
         pass
+    def _worker() -> None:
+        # Jaring pengaman terluar: _send_agent_reply punya try/except sendiri di
+        # sekitar pemanggilan agent, tetapi crash SEBELUM itu (mis. inisialisasi
+        # _LiveStatus atau heartbeat gagal) dulu membunuh worker tanpa jejak —
+        # user tidak melihat apa pun, seperti bot mati. Apa pun yang lolos harus
+        # tetap memberi tahu user alih-alih hilang di thread.
+        try:
+            _send_agent_reply(
+                api=api, sessions=sessions, chat_id=chat_id, identity=identity,
+                text=text, tool_profile=tool_profile,
+                reply_to_message_id=reply_to_message_id, system_extra=system_extra,
+            )
+        except Exception as exc:
+            print(
+                f"  [telegram] agent worker crashed: {exc.__class__.__name__}: {exc}",
+                flush=True,
+            )
+            try:
+                _api_call(
+                    api, "sendMessage", chat_id=chat_id,
+                    text="🪫 Zeline hit an internal problem handling that message. "
+                         "Please try again in a moment.",
+                )
+            except Exception:
+                pass
+
     worker = threading.Thread(
-        target=_send_agent_reply,
-        kwargs={
-            "api": api,
-            "sessions": sessions,
-            "chat_id": chat_id,
-            "identity": identity,
-            "text": text,
-            "tool_profile": tool_profile,
-            "reply_to_message_id": reply_to_message_id,
-            "system_extra": system_extra,
-        },
+        target=_worker,
         name=f"zeline-telegram-{chat_id}",
         daemon=True,
     )
@@ -3276,9 +3292,20 @@ def _dispatch_update(
             # SEMUA proses callback (termasuk answerCallbackQuery) dijalankan di
             # thread terpisah supaya loop polling TIDAK PERNAH ter-blok oleh
             # round-trip HTTP ke Telegram (yang bisa lambat dari Termux).
+            # Dibungkus: callback yang error dulu membunuh thread-nya tanpa
+            # jejak — tombol tampak "ditekan tapi tidak terjadi apa-apa".
+            def _run_callback() -> None:
+                try:
+                    _handle_callback(api, dict(callback), sessions)
+                except Exception as exc:
+                    print(
+                        f"  [telegram] callback failed: {exc.__class__.__name__}: {exc}",
+                        flush=True,
+                    )
+                    _notify_callback_failure(api, callback)
+
             threading.Thread(
-                target=_handle_callback,
-                args=(api, dict(callback), sessions),
+                target=_run_callback,
                 daemon=True,
                 name="zeline-callback",
             ).start()
@@ -3491,6 +3518,28 @@ def _verify_token(api: str) -> tuple[str | None, str]:
             print(f"  [telegram] getMe {last_error}; retry in {delay:.0f}s", flush=True)
             time.sleep(delay)
     return None, last_error
+
+
+def _notify_callback_failure(api: str, callback: dict[str, Any]) -> None:
+    """Beri tahu user kalau tombol yang ditekan gagal diproses.
+
+    Callback berjalan di thread sendiri; tanpa ini, error-nya hilang begitu saja
+    dan tombol terasa "mati". Dipakai setelah pemeriksaan izin sudah lewat, jadi
+    hanya menjawab chat milik pemilik bot.
+    """
+    message = callback.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    if chat_id is None:
+        return
+    try:
+        chat_id_int = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    _api_call(
+        api, "sendMessage", chat_id=chat_id_int,
+        text="⚠️ That button press could not be processed. Please try the "
+             "command again (/model, /status, …).",
+    )
 
 
 def _notify_dispatch_failure(api: str, update: dict[str, Any], *, allowed: list[Any]) -> None:
