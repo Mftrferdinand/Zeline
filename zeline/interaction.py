@@ -24,6 +24,7 @@ Design rules learned from the ``/stop`` work:
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -143,15 +144,45 @@ def ask(identity: str, question: str, options: object = None) -> str:
 
 
 def answer(identity: str, text: str) -> bool:
-    """Route a user message to the pending question. True if it was consumed."""
+    """Route a user message to the pending question. True if it was consumed.
+
+    Bila pesannya cuma nomor pilihan ("2", "2.", "opsi 2") dan pertanyaannya
+    punya opsi, yang disimpan adalah TEKS opsi itu — bukan angka mentah. User
+    yang mengetik nomor harus mendapat hasil yang sama dengan menekan tombolnya,
+    sama seperti picker pada umumnya.
+    """
     key = identity or "cli:local"
+    raw = str(text or "").strip()
     with _LOCK:
         entry = _PENDING.get(key)
         if entry is None or entry.event.is_set():
             return False
-        entry.answer = str(text or "").strip()[:MAX_ANSWER_CHARS]
+        entry.answer = _resolve_choice(entry, raw)[:MAX_ANSWER_CHARS]
     entry.event.set()
     return True
+
+
+#: "2", "2)", "2.", "#2", "opsi 2", "pilihan 3", "option 1" — semua menandai
+#: pilihan baris ke-N. Angka di TENGAH kalimat tidak dianggap pilihan, supaya
+#: "tambah 2 file" tetap jadi jawaban bebas, bukan tap implisit.
+_CHOICE_NUMBER_RE = re.compile(
+    r"^\s*(?:#|no\.?\s*|opsi\s*|pilihan\s*|option\s*)?(\d{1,2})\s*[.)\]]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _resolve_choice(entry: PendingQuestion, text: str) -> str:
+    """Terjemahkan balasan teks menjadi opsi bila cocok; jika tidak, apa adanya."""
+    options = entry.options
+    if not options:
+        return text
+    match = _CHOICE_NUMBER_RE.match(text)
+    if not match:
+        return text
+    index = int(match.group(1)) - 1
+    if 0 <= index < len(options):
+        return options[index]
+    return text
 
 
 def answer_option(identity: str, index: int) -> str | None:

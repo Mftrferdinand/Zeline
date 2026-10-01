@@ -6,7 +6,8 @@ native tools can act on the operator's behalf. Credentials are kept in
 
 Phase 1 ships the framework plus the GitHub connector; phase 2 adds Google
 (Gmail, Calendar, Sheets, Drive) via the OAuth2 helpers in
-:mod:`zeline.connectors.oauth`.
+:mod:`zeline.connectors.oauth`; phase 3 adds WhatsApp via the Business
+Cloud API.
 """
 from __future__ import annotations
 
@@ -39,3 +40,4 @@ def all() -> list[BaseConnector]:
 # Built-in connectors self-register on import.
 from zeline.connectors import github as _github  # noqa: E402,F401
 from zeline.connectors import google as _google  # noqa: E402,F401
+from zeline.connectors import whatsapp as _whatsapp  # noqa: E402,F401

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run muse stack watchdog every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

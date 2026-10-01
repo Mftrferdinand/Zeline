@@ -72,7 +72,7 @@ One line, and it needs no existing Python tooling — it provisions a private
 environment for you:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.5/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.sh && bash install.sh
 ```
 
 Then `zeline setup`. The installer downloads the versioned wheel and verifies it
@@ -82,7 +82,7 @@ hand. On iSH, run `apk add bash curl python3` first.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.5/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Then `zeline setup`.
@@ -269,9 +269,11 @@ zeline disconnect github
 
 Phase 1 ships the framework plus GitHub (list repos/issues/PRs, create issues,
 comment). Phase 2 adds Google (Gmail search/read/send, Calendar, Sheets,
-Drive) via the OAuth2 helpers in `zeline/connectors/oauth.py`. The five
-`github_*` and six `gmail_search`/`gmail_read`/`gmail_send`/`google_calendar`/
-`sheets_read`/`drive_list` native tools are owner-gated (`workspace`/`full` profiles).
+Drive) via the OAuth2 helpers in `zeline/connectors/oauth.py`. Phase 3 adds
+WhatsApp (send text/template messages) via the Business Cloud API. The five
+`github_*`, six `gmail_search`/`gmail_read`/`gmail_send`/`google_calendar`/
+`sheets_read`/`drive_list`, and two `whatsapp_send`/`whatsapp_template` native
+tools are owner-gated (`workspace`/`full` profiles).
 
 ### Google connector setup
 
@@ -292,6 +294,28 @@ from your own Google Cloud project (one-time, ~5 minutes):
 
 Tokens (with a refresh token) are stored in
 `~/.zeline/connectors/google.json` (mode 0600) and refreshed automatically.
+
+### WhatsApp connector setup
+
+`zeline connect whatsapp` needs a WhatsApp Business Cloud API access token
+plus the phone number ID from your own Meta Developer app (one-time,
+~10 minutes):
+
+1. Go to [Meta for Developers](https://developers.facebook.com/) and create
+   an app (type *Business*).
+2. Add the **WhatsApp** product to the app from the dashboard.
+3. Under **WhatsApp → API Setup**, copy the **Phone number ID** and generate
+   a temporary access token (or create a permanent system-user token under
+   **Business settings** for long-term use).
+4. Run `zeline connect whatsapp`, paste the token + phone number ID. The
+   number is validated before anything is stored.
+5. Send a test message with the `whatsapp_send` tool (or `zeline` chat).
+
+Note: the free test number can only message the test recipient numbers you
+register. Messaging any other number requires either an approved message
+template (`whatsapp_template`) or a verified business number inside the
+24-hour conversation window. The token lives in
+`~/.zeline/connectors/whatsapp.json` (mode 0600) and is never logged.
 
 On first launch, Zeline requires one gateway selected from an arrow-key picker:
 Telegram, WhatsApp, Webhook, or Cancel. It configures only the selected gateway,

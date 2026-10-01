@@ -47,6 +47,11 @@ class Session:
     # yang tertunda. Diisi saat interrupt(), dibersihkan saat di-resume/di-drop.
     held_task: str | None = None
     held_at: float = 0.0
+    # Topik TERAKHIR yang dibahas user (bukan pesan pertama sesi). Diperbarui
+    # tiap turn agar "lanjut" merujuk ke pekerjaan terbaru, bukan sesi awal.
+    # Disimpan terpisah dari title karena title bisa stuck di pesan pertama.
+    last_topic: str = ""
+    last_topic_at: float = 0.0
 
 
 class SessionStore:
@@ -154,6 +159,13 @@ class SessionStore:
                 session.running = True
                 if session.title == "New Session":
                     session.title = text.strip().splitlines()[0][:80] or "New Session"
+                # Update last_topic SETIAP turn — ini yang dipakai "lanjut" untuk
+                # merujuk ke pekerjaan terbaru, bukan title yang stuck di awal.
+                # Skip pesan yang cuma greeting/command (tidak bermakna topik).
+                first_line = text.strip().splitlines()[0].strip()
+                if first_line and not first_line.startswith("/") and len(first_line) > 2:
+                    session.last_topic = first_line[:200]
+                    session.last_topic_at = time.monotonic()
 
             def take_steer() -> str | None:
                 with self._lock:
@@ -186,17 +198,23 @@ class SessionStore:
                 )
                 session.last_used = time.monotonic()
                 # Simpan history ke disk setelah tiap turn sukses → bertahan
-                # lintas restart gateway.
+                # lintas restart gateway. Simpan last_topic juga agar restore
+                # bisa pakai konteks terbaru, bukan title awal.
                 if self._persistence is not None:
                     try:
-                        self._persistence.save(identity, session.agent.export_history(), session.title)
+                        self._persistence.save(
+                            identity,
+                            session.agent.export_history(),
+                            session.last_topic or session.title,
+                        )
                     except Exception:
                         pass
                     # Arsip permanen: simpan user + assistant turn ini agar bisa
                     # di-recall lintas /new (bukan cuma window aktif). Best-effort.
                     try:
-                        self._persistence.append_turn(identity, "user", text, session.title)
-                        self._persistence.append_turn(identity, "assistant", reply, session.title)
+                        topic = session.last_topic or session.title
+                        self._persistence.append_turn(identity, "user", text, topic)
+                        self._persistence.append_turn(identity, "assistant", reply, topic)
                     except Exception:
                         pass
                 return reply
@@ -271,26 +289,44 @@ class SessionStore:
     #: sekadar disisipkan sebagai catatan). Cocokkan sebagai kata utuh, case-
     #: insensitive. User bisa menambah lewat config nanti; untuk sekarang daftar
     #: ini menutup mayoritas "stop/ganti/prioritas/sekarang".
-    _URGENT_STEER_PATTERNS = (
+    # Patterns that are ALWAYS urgent regardless of context — these are
+    # unambiguous stop/abort/redirect commands.
+    _URGENT_HARD_PATTERNS = (
         r"\bstop\b", r"\bberhenti\b", r"\bbatal\b", r"\bcancel\b",
-        r"\bganti\b", r"\bubah\b",
+        r"\bhentikan\b", r"\burgent\b",
+        r"\btunggu\s+dulu\b",
+        r"\bkoreksi\b", r"\brevisi\b",
         r"\bprioritas\w*\b", r"\bduluan\b",
-        r"\bcepet\b", r"\bcepat\b", r"\burgent\b",
-        r"\btunggu\s+dulu\b", r"\bjangan\b",
+        r"\bcepet\b", r"\bcepat\b",
+    )
+
+    # Patterns that are urgent ONLY when the message is SHORT (<=8 words) —
+    # short = standalone command; long = guidance/refinement embedded in a
+    # sentence (e.g. "jadi sl di 14-16$ karena risk 15$ jangan di 19$ okey").
+    _URGENT_SHORT_PATTERNS = (
+        r"\bganti\b", r"\bubah\b",
+        r"\bjangan\b",
         r"\bsalah\b", r"\bbukan\b", r"\bmalah\b",
-        r"\bkoreksi\b", r"\brevisi\b", r"\bhentikan\b",
     )
 
     def classify_steer(self, text: str) -> bool:
-        """True kalau pesan mid-turn ini MENDESAK (harus interupsi task).
+        """True if this mid-turn message is URGENT (should interrupt the task).
 
-        Heuristik murni (tanpa API call, sesuai preferensi murah/instan):
-        pesan yang memuat kata perintah/koreksi/urgensi dianggap mendesak dan
-        akan menginterupsi turn berjalan. Pertanyaan biasa ("btw harga eth
-        berapa") tidak cocok → diperlakukan sebagai steer biasa (menunggu).
+        Pure keyword heuristic (no API call):
+        - Hard patterns → always urgent (unambiguous stop/abort words).
+        - Soft patterns → urgent only when the message is ≤8 words, so that
+          refinement sentences like "jadi sl di 14-16$ jangan di 19$ okey"
+          are treated as steer guidance instead of an interrupt.
+        - Plain questions ("btw harga eth berapa") → ordinary steer (waits).
         """
         low = f" {text.strip().lower()} "
-        return any(re.search(p, low) for p in self._URGENT_STEER_PATTERNS)
+        if any(re.search(p, low) for p in self._URGENT_HARD_PATTERNS):
+            return True
+        word_count = len(text.strip().split())
+        if word_count <= 8:
+            if any(re.search(p, low) for p in self._URGENT_SHORT_PATTERNS):
+                return True
+        return False
 
     def progress(self, identity: str) -> tuple[int, int, float] | None:
         """(iteration, max_iteration, elapsed_seconds) turn berjalan, atau None."""

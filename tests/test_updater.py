@@ -182,7 +182,8 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
              mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(self.updater, "_run_installer", return_value=0):
             self.updater.update()
-        self.assertEqual(calls, ["status", "stop", "start:['telegram']"])
+        # Health-check call setelah start menambah satu "status" di akhir.
+        self.assertEqual(calls, ["status", "stop", "start:['telegram']", "status"])
 
     def test_a_failed_update_still_restores_the_same_selection(self):
         """A restart after a failure must not widen what was running either."""

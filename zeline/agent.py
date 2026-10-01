@@ -118,8 +118,17 @@ PROVIDER_STATUS_PREFIX = "The provider returned HTTP "
 #: yang benar-benar salah mengembalikan 401 dengan
 #: ``{"error":{"code":"invalid_api_key"}}``. Menyuruh user mengganti kunci yang
 #: sehat adalah saran yang menyesatkan.
+#:
+#: 400 dibiarkan netral dan actionable. Sebelumnya terbaca "This is a
+#: Zeline-side bug; please report it" — itu klaim yang salah. 400 dari router
+#: hampir selalu berarti provider menolak request karena ALASAN DI SISI PROVIDER,
+#: bukan bug Zeline: model tidak ada di route itu, endpoint tidak didukung
+#: (mis. /audio/speech saat tidak ada kredensial TTS — body nyata:
+#: ``No credentials for provider: openai``), field yang tidak dikenal, dsb.
+#: Menyuruh user melaporkan bug Zeline saat masalahnya kredensial provider
+#: menghabiskan waktu mereka dan menyembunyikan penyebab sebenarnya.
 PROVIDER_STATUS_HINTS: dict[int, str] = {
-    400: "Bad request — the provider rejected the request shape. This is a Zeline-side bug; please report it.",
+    400: "Bad request — the provider rejected the request. Usually the model or endpoint is not available on this route (e.g. no TTS/free-text credentials for that provider). Check the model with /model, or add the missing provider credentials.",
     401: "The API key is invalid or unauthorized. Update it with `zeline setup`.",
     402: "Payment required — the provider account has no balance left. Top up, then try again.",
     403: "Insufficient provider quota. Check your balance or usage limit and try again.",
@@ -778,8 +787,37 @@ class Zeline:
         usage_chunk: dict[str, Any] | None = None
         reasoning_seen = False
         finish_reason: str | None = None
+        # Inactivity watchdog: kalau provider berhenti mengirim byte di tengah
+        # stream (hang, proxy diam, upstream mati tanpa penutup), iter_lines()
+        # bisa menunggu sampai timeout TCP/OS — menit ke jam. Thread ini menutup
+        # respons setelah jeda yang wajar sehingga iterasi berhenti dan turn
+        # gagal cepat dengan pesan yang jelas, bukan bot yang diam.
+        last_activity = time.monotonic()
+        stalled = threading.Event()
+        stop_watchdog = threading.Event()
+
+        def _watchdog() -> None:
+            limit = float(getattr(config, "STREAM_INACTIVITY_SECONDS", 120.0) or 0.0)
+            if limit <= 0:
+                return  # fitur dimatikan operator
+            # Cek beberapa kali per menit; interval dibatasi agar tidak sibuk.
+            poll = max(0.25, min(1.0, limit / 4.0))
+            while not stop_watchdog.wait(poll):
+                if time.monotonic() - last_activity > limit:
+                    stalled.set()
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                    return
+
+        watchdog = threading.Thread(
+            target=_watchdog, name="zeline-stream-watchdog", daemon=True
+        )
+        watchdog.start()
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
+                last_activity = time.monotonic()
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
                 if self._cancelled():
                     raise _TurnCancelled()
@@ -833,11 +871,27 @@ class Zeline:
                     if function.get("arguments"):
                         slot["function"]["arguments"] += str(function["arguments"])
         except (requests.exceptions.RequestException,) as exc:
+            if stalled.is_set():
+                raise ZelineError(
+                    f"The stream from '{self.model}' went silent (no data for "
+                    f"{int(float(getattr(config, 'STREAM_INACTIVITY_SECONDS', 120.0) or 120.0))}s). "
+                    "The provider likely stalled mid-response. Please try again."
+                ) from exc
             raise ZelineError(
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
         finally:
+            stop_watchdog.set()
             response.close()
+
+        # Provider yang koneksinya ditutup watchdog bisa berakhir tanpa exception
+        # (iterator berhenti normal). Perlakukan sama: gagal cepat dengan pesan
+        # yang jelas alih-alih memakai isi parsial seolah jawaban utuh.
+        if stalled.is_set():
+            raise ZelineError(
+                f"The stream from '{self.model}' went silent mid-response. "
+                "The provider likely stalled. Please try again."
+            )
 
         if usage_chunk is not None:
             self._record_usage(usage_chunk)
@@ -1134,6 +1188,19 @@ class Zeline:
             self.last_turn_tool_calls += len(tool_calls)
             self._tool_calls_since_reflection += len(tool_calls)
 
+            # Parse setiap tool call sekali (nama + argumen) dengan urutan dijaga.
+            parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                name = str(function.get("name", ""))
+                try:
+                    args = json.loads(function.get("arguments") or "{}")
+                    if not isinstance(args, dict):
+                        args = {}
+                except json.JSONDecodeError:
+                    args = {}
+                parsed_calls.append((tool_call, name, args))
+
             # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu
             # konfignya lalu benerin") adalah kalimat rencana model. Kirim ke
             # user sebagai bubble tersendiri SEBELUM tool jalan — inilah yang
@@ -1151,18 +1218,6 @@ class Zeline:
                     "tool_calls": tool_calls,
                 }
             )
-            # Parse setiap tool call sekali (nama + argumen) dengan urutan dijaga.
-            parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
-            for tool_call in tool_calls:
-                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-                name = str(function.get("name", ""))
-                try:
-                    args = json.loads(function.get("arguments") or "{}")
-                    if not isinstance(args, dict):
-                        args = {}
-                except json.JSONDecodeError:
-                    args = {}
-                parsed_calls.append((tool_call, name, args))
 
             # Bila model meminta >1 tool dan SEMUANYA read-only aman-paralel,
             # jalankan bareng dalam thread pool (percepat riset/baca banyak file).

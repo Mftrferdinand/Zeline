@@ -1504,6 +1504,18 @@ def cmd_connect(service: str | None, code: str = "") -> int:
         client_secret = getpass.getpass("Google OAuth client secret: ").strip()
         print(conn.connect(client_id=client_id, client_secret=client_secret, code=code or ""))
         return 0
+    if service == "whatsapp":
+        import getpass
+
+        access_token = getpass.getpass("WhatsApp Cloud API access token: ").strip()
+        phone_number_id = input("Phone number ID: ").strip()
+        business_account_id = input("Business account ID (optional): ").strip()
+        print(conn.connect(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            business_account_id=business_account_id,
+        ))
+        return 0
     print(conn.connect())
     return 0
 

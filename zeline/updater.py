@@ -210,17 +210,45 @@ def _pause_gateway_for_update() -> list[str] | None:
 
 
 def _resume_gateway_after_update(only: list[str] | None) -> None:
-    """Restart the gateway with the same selection it was running before."""
+    """Restart the gateway with the same selection it was running before.
+
+    Retry with backoff: if the first start fails (port still held, venv not
+    fully written, etc.), wait and try again. A gateway that does not come
+    back is a critical failure — the user thinks the update worked but the
+    bot is dead. We also health-check after start to confirm it is really up.
+    """
+    import time as _time
     try:
         from zeline import gateway_service
-
-        started, message = gateway_service.start(only or None)
-        print(f"  {message}")
-        if started:
-            print("  Gateway relaunched on the updated code.")
-    except Exception as exc:  # noqa: BLE001 — report, don't crash a successful update
-        print(f"  WARNING: could not restart the gateway ({exc.__class__.__name__}).")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ERROR: gateway_service unavailable ({exc.__class__.__name__}).")
         print("  Start it manually: zeline gateway start")
+        return
+
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            started, message = gateway_service.start(only or None)
+            print(f"  {message}")
+            if started:
+                # Health check: confirm the gateway actually answers.
+                _time.sleep(2)
+                active, status_msg, _state = gateway_service.status()
+                if active:
+                    print("  Gateway relaunched on the updated code.")
+                    return
+                print(f"  WARNING: gateway started but status check failed ({status_msg}).")
+            else:
+                print(f"  WARNING: gateway start returned not-started (attempt {attempt}/{max_attempts}).")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  WARNING: restart attempt {attempt} failed ({exc.__class__.__name__}).")
+        if attempt < max_attempts:
+            backoff = attempt * 3
+            print(f"  Retrying in {backoff}s…")
+            _time.sleep(backoff)
+
+    print("  ERROR: gateway did not restart after update.")
+    print("  Start it manually: zeline gateway start")
 
 
 def update() -> int:
