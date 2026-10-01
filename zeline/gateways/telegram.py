@@ -2179,15 +2179,26 @@ def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> 
 
 
 def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
-    """Send the question bubble for a pending ask_user entry."""
+    """Send the question bubble for a pending ask_user entry.
+
+    Dengan opsi: tiap pilihan jadi tombol yang bisa DIKLIK, bernomor (1., 2., …)
+    supaya cocok dengan balasan teks ("2") maupun tap tombol. Tanpa opsi: hint
+    bebas supaya user tahu bisa mengetik jawabannya. Dua jalur (klik & ketik)
+    selalu hidup, jadi user tidak pernah terjebak kalau tombolnya tidak nyaman.
+    """
     text = f"❓ {entry.question}"
     if entry.options:
         rows = [
-            [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index)}]
+            # Nomor di depan label: tampilannya sama seperti daftar pilihan,
+            # dan user yang mengetik "2" mendapat opsi yang sama dengan tap.
+            [{"text": f"{index + 1}. {option}"[:64],
+              "callback_data": _ask_callback_data(chat_id, index)}]
             for index, option in enumerate(entry.options)
         ]
         _api_call(
-            api, "sendMessage", chat_id=chat_id, text=text,
+            api, "sendMessage", chat_id=chat_id,
+            text=f"{text}\n\n<i>Tap a choice, or type your own answer.</i>",
+            parse_mode="HTML",
             reply_markup={"inline_keyboard": rows},
         )
     else:
