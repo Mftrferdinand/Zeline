@@ -1,0 +1,14 @@
+[Unit]
+Description=Muse Poller (reasoning engine for muse-stack)
+After=network.target muse-bridge.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/muse-stack
+EnvironmentFile=/etc/muse-stack/poller.env
+ExecStart=/usr/bin/python3 /opt/muse-stack/poller.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

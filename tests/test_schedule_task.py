@@ -275,11 +275,11 @@ class ProgressFeedTests(unittest.TestCase):
 
     def test_each_action_gets_its_own_line_not_a_generic_tool_label(self):
         cases = {
-            ("add", "09:00", ""): "⏰ Scheduling a job: 09:00",
-            ("list", "", ""): "⏰ Checking scheduled jobs…",
+            ("add", "09:00", ""): "⏰ Scheduling 09:00",
+            ("list", "", ""): "⏰ Checking scheduled jobs",
             ("pause", "", "job1"): "⏸ Pausing scheduled job job1",
             ("resume", "", "job1"): "▶️ Resuming scheduled job job1",
-            ("run", "", "job2"): "⚡ Running scheduled job now job2",
+            ("run", "", "job2"): "⚡ Running scheduled job job2",
             ("remove", "", "job3"): "🗑 Removing scheduled job job3",
             ("show", "", "job1"): "⏰ Reading scheduled job job1",
         }

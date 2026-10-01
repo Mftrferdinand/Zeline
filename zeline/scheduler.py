@@ -200,6 +200,12 @@ class Job:
     schedule: str
     prompt: str
     deliver: str = "local"
+    # Identitas agent turn untuk job ini. Kosong = terisolasi sebagai
+    # ``cron:<id>``. Hanya boleh diisi operator lewat CLI untuk job miliknya
+    # sendiri (mis. proactive briefing yang butuh memory chat user) — jangan
+    # pernah diisi dari prompt/teks yang datang dari chat, supaya sebuah job
+    # tidak bisa menyamar menjadi identitas chat lain.
+    run_as: str = ""
     enabled: bool = True
     next_run: float = 0.0
     last_run: float = 0.0
@@ -285,7 +291,7 @@ def _new_id(existing: list[Job]) -> str:
     raise CronError("too many jobs.")
 
 
-def add_job(schedule: str, prompt: str, deliver: str = "local") -> Job:
+def add_job(schedule: str, prompt: str, deliver: str = "local", run_as: str = "") -> Job:
     parsed = parse_schedule(schedule)   # validate before writing anything
     prompt = (prompt or "").strip()
     if not prompt:
@@ -297,6 +303,7 @@ def add_job(schedule: str, prompt: str, deliver: str = "local") -> Job:
             schedule=parsed.raw,
             prompt=prompt,
             deliver=(deliver or "local").strip() or "local",
+            run_as=(run_as or "").strip(),
             next_run=parsed.next_after(time.time()),
         )
         jobs.append(job)
@@ -433,6 +440,11 @@ def _prune_output(directory: Path) -> None:
 
 def deliver(job: Job, text: str) -> tuple[bool, str]:
     """Send a result to the job's target. Returns (delivered, detail)."""
+    if (text or "").strip() in ("", "__SILENT__"):
+        # Mekanisme anti-spam global: job yang memutuskan tidak ada yang layak
+        # dikirim (mis. proactive briefing) tidak mengirim apa pun. Output-nya
+        # sendiri tetap tersimpan lewat save_output() oleh pemanggil.
+        return True, "silent: nothing worth sending"
     target = (job.deliver or "local").strip()
     if target in ("", "local", "none"):
         return True, "saved locally"
@@ -479,6 +491,17 @@ def _deliver_file_telegram(chat_id: str, path: Any, caption: str, kind: str) -> 
 
 
 # --------------------------------------------------------------- the loop
+def _job_identity(job: Job) -> str:
+    """Identity agent turn untuk job ini.
+
+    Default-nya terisolasi (``cron:<id>``). ``run_as`` hanya boleh diisi
+    operator lewat CLI untuk job miliknya sendiri — lihat catatan di field
+    ``Job.run_as``.
+    """
+    run_as = (job.run_as or "").strip()
+    return run_as if run_as else f"cron:{job.id}"
+
+
 class Scheduler:
     """Runs due jobs on a background thread inside the gateway process."""
 
@@ -613,7 +636,9 @@ class Scheduler:
 
         A dedicated identity per job keeps cron work out of the operator's chat
         history and memory — a nightly job should not appear as though the user
-        had asked for it, nor inherit that conversation's context.
+        had asked for it, nor inherit that conversation's context. Jobs that
+        genuinely need the operator's context (e.g. proactive briefing) set
+        ``run_as`` explicitly; see ``_job_identity``.
 
         A file the job produces is delivered through the job's own target, for the
         duration of the run only. Without this a scheduled job that renders a chart
@@ -626,7 +651,7 @@ class Scheduler:
             "question, so never ask one — decide and act. Produce the finished "
             "result the job asks for, not a plan or a status note."
         )
-        identity = f"cron:{job.id}"
+        identity = _job_identity(job)
         target = (job.deliver or "").strip()
         if target.startswith("telegram:"):
             delivery.register_channel(

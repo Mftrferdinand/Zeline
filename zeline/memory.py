@@ -268,6 +268,48 @@ class MemoryStore:
             remaining = len(_live(kept))
         return f"OK, removed {removed} facts. {remaining} remaining."
 
+    def consolidate(self) -> dict[str, int]:
+        """Bersihkan duplikat-varian dan record kedaluwarsa dari file.
+
+        Nudge deterministik tanpa LLM:
+
+        - **Duplikat** = teks yang sama setelah normalisasi (strip, collapse
+          whitespace, casefold). ``add()`` hanya menolak duplikat persis,
+          jadi varian seperti ``"Nama  saya Budi"`` vs ``"nama saya budi"``
+          lolos dan menumpuk — di sini yang disimpan adalah record PERTAMA
+          (tertua), sisanya dibuang.
+        - **Expired** = ``expires_at`` sudah lewat. ``_live()`` hanya menyaring
+          saat baca; di sini record mati dihapus permanen dari file.
+        - Tulis balik atomis via ``_write()`` di dalam lock identitas yang
+          sama seperti ``add()``/``remove()``.
+        - Idempoten: bila tidak ada yang dibuang, file tidak ditulis ulang.
+
+        Mengembalikan ``{"removed_duplicates", "removed_expired",
+        "kept"}`` — kontrak untuk tool ``consolidate_memory``.
+        """
+        with self._lock:
+            records = _read(self.path)
+            now = time.time()
+            live = _live(records, now)
+            removed_expired = len(records) - len(live)
+            seen: set[str] = set()
+            kept_records: list[dict[str, Any]] = []
+            removed_duplicates = 0
+            for record in live:
+                normalized = " ".join(record["text"].split()).casefold()
+                if normalized in seen:
+                    removed_duplicates += 1
+                    continue
+                seen.add(normalized)
+                kept_records.append(record)
+            if removed_expired or removed_duplicates:
+                _write(self.path, kept_records)
+            return {
+                "removed_duplicates": removed_duplicates,
+                "removed_expired": removed_expired,
+                "kept": len(kept_records),
+            }
+
     # ---------------------------------------------------------------- prompt
     def prompt_block(self) -> str:
         """Inject memory as *data*, not instructions, into the system prompt.

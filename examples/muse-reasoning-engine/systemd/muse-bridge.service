@@ -1,0 +1,14 @@
+[Unit]
+Description=Muse Bridge for 9Router (muse-stack)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/muse-stack
+EnvironmentFile=/etc/muse-stack/bridge.env
+ExecStart=/usr/bin/python3 /opt/muse-stack/bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
