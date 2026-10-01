@@ -3493,6 +3493,35 @@ def _verify_token(api: str) -> tuple[str | None, str]:
     return None, last_error
 
 
+def _notify_dispatch_failure(api: str, update: dict[str, Any], *, allowed: list[Any]) -> None:
+    """Beri tahu user bahwa pemrosesan pesannya gagal — jangan biarkan senyap.
+
+    Dipanggil HANYA setelah update lolos pemeriksaan izin (kalau tidak, kita
+    akan membalas pemilik chat asing). Tujuannya memastikan tidak ada pesan yang
+    hilang tanpa jejak di sisi user: error internal apa pun terlihat seperti bot
+    yang mati.
+    """
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
+        # callback_query yang gagal sudah punya jawaban alert di jalur izin;
+        # tidak ada chat untuk dikirimi pesan biasa.
+        return
+    try:
+        chat_id_int = int(chat_id)
+    except (TypeError, ValueError):
+        return
+    if not _allowed(chat_id_int, allowed):
+        return
+    _api_call(
+        api, "sendMessage", chat_id=chat_id_int,
+        text="⚠️ Something went wrong processing that message and no reply was "
+             "produced. It was skipped so the bot stays healthy — please send it "
+             "again, or rephrase if it keeps failing.",
+    )
+
+
 def start(sessions, cfg: dict[str, Any], stop_event) -> None:
     token = str(cfg["token"]).strip()
     api = API_TEMPLATE.format(token=token)
@@ -3627,6 +3656,14 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
                 _dispatch_update(api, token, sessions, update, allowed=allowed, tool_profile=tool_profile, stop_event=stop_event)
             except Exception as exc:
                 print(f"  [telegram] update {update_id} skipped: {exc.__class__.__name__}: {exc}", flush=True)
+                # Jangan senyap: kalau pemrosesan pesan gagal SETELAH melewati
+                # pemeriksaan izin, user berhak tahu bahwa pesannya tidak
+                # menghasilkan balasan. Dulu ini hanya dicetak ke log, jadi dari
+                # sisi user bot-nya terlihat mati — padahal ada error nyata.
+                # Update tetap di-skip (offset maju) supaya satu pesan rusak
+                # tidak mengulang tanpa henti; yang berubah hanya: user diberi
+                # tahu dan diminta mencoba lagi.
+                _notify_dispatch_failure(api, update, allowed=allowed)
             finally:
                 offset = max(offset, update_id + 1)
                 _save_offset(offset)
