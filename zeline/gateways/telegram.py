@@ -85,6 +85,51 @@ _flood_lock = threading.Lock()
 _steer_ack_ts: dict[str, float] = {}
 _STEER_ACK_INTERVAL = 30.0
 
+# Konsolidasi narasi: bubble narasi TERAKHIR per identity, supaya narasi yang
+# berulang (model mengulangi langkah yang sama) di-EDIT alih-alih dikirim ulang
+# sebagai pesan baru — persis yang bikin chat "Running: …" berulang terlihat
+# berantakan. Hanya narasi yang hampir sama DALAM window ini yang digabung;
+# narasi yang berbeda (langkah baru) tetap jadi bubble sendiri.
+_last_narration: dict[str, dict[str, Any]] = {}
+_NARRATION_MERGE_WINDOW = 60.0
+
+
+def _similar_narration(a: str, b: str) -> bool:
+    """True bila dua narasi "langkah yang sama" — cocok untuk digabung.
+
+    Model sering mengulang rencana identik ("Running: curl …") di iterasi
+    beruntun. Dua teks dianggap mirip bila kata-katanya tumpang tindih banyak
+    (rasio Jaccard >= 0.6) ATAU salah satu prefix yang lain.
+    """
+    a_n = " ".join(a.lower().split())
+    b_n = " ".join(b.lower().split())
+    if not a_n or not b_n:
+        return False
+    if a_n == b_n:
+        return True
+    if a_n.startswith(b_n) or b_n.startswith(a_n):
+        return True
+    a_words = set(re.findall(r"[a-z0-9]+", a_n))
+    b_words = set(re.findall(r"[a-z0-9]+", b_n))
+    if not a_words or not b_words:
+        return False
+    overlap = len(a_words & b_words) / len(a_words | b_words)
+    # 0.5 (bukan 0.6): langkah yang sama dengan filter berbeda
+    # ("| head -n 30" vs "| grep") hanya punya ~0.55 tumpang tindih, dan masih
+    # harus digabung — kalau tidak, tiap variasi kecil jadi bubble baru lagi.
+    return overlap >= 0.5
+
+
+def _merge_narration(old: str, new: str) -> str:
+    """Gabung narasi yang mirip: ambil yang lebih informatif (lebih panjang).
+
+    Versi terbaru biasanya membawa detail tambahan ("… | head -n 30"). Kalau
+    sama persis, kembalikan yang lama (tidak perlu di-edit).
+    """
+    if old == new:
+        return old
+    return new if len(new) >= len(old) else old
+
 # Baris progres (bubble '⏰ Processing', edit feed tool) BUKAN hal kritis. Di
 # jaringan Termux yang sering drop, memanggilnya dengan timeout 65s + retry
 # akan MENAHAN loop agent tiap update → efek 'macet/lambat/cek-cek doang' dan
@@ -3068,12 +3113,13 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_narration(sentence: str):
-        # Kalimat rencana/temuan model yang menyertai tool call → dikirim
-        # sebagai bubble chat UTUH tersendiri SEBELUM tool jalan. Ini yang
-        # bikin alur kebaca hidup & "satset": [penjelasan] → [tool feed] →
-        # [penjelasan] → [jawaban], tiap pesan rapi dan dikirim sekali (bukan
-        # di-edit live). Selesaikan dulu bubble progres berjalan biar narasi
-        # baru tampil di bawah aktivitas tool sebelumnya, bukan menimpanya.
+        # Kalimat rencana/temuan model yang menyertai tool call. Supaya chat
+        # tidak banjir pesan berulang ("Running: …", "Running: …", "Running: …"),
+        # narasi yang SANGAT MIRIP narasi sebelumnya (model mengulang langkah yang
+        # sama) digabung ke bubble narasi yang SUDAH ADA via edit — bukan pesan
+        # baru. Narasi yang berbeda (langkah baru yang beneran beda) tetap jadi
+        # bubble sendiri, jadi alur [penjelasan] → [tool feed] → [penjelasan]
+        # tetap kebaca.
         #
         # Guard: jangan kirim narasi kalau turn sudah di-stop. Kalau cancel
         # sudah di-set tapi agent masih sempat fire on_narration sebelum
@@ -3087,11 +3133,44 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if session_obj is not None and session_obj.cancel_event.is_set():
             return
         live.detach()
+        # Konsolidasi: bila narasi ini hampir sama dengan yang barusan (model
+        # mengulangi langkahnya), edit bubble narasi lama alih-alih mengirim
+        # duplikat. Ini persis yang membedakan chat yang rapi dari chat yang
+        # penuh "Running …" berulang.
+        now = time.monotonic()
+        prev = _last_narration.get(identity)
+        if (
+            prev
+            and prev.get("message_id")
+            and (now - prev["ts"]) < _NARRATION_MERGE_WINDOW
+            and _similar_narration(prev["text"], sentence)
+        ):
+            merged = _merge_narration(prev["text"], sentence)
+            if merged != prev["text"]:
+                _api_call(
+                    api, "editMessageText", chat_id=chat_id,
+                    message_id=prev["message_id"],
+                    text=_markdown_to_telegram_html(merged), parse_mode="HTML",
+                )
+                _last_narration[identity] = {
+                    "message_id": prev["message_id"], "text": merged, "ts": now,
+                }
+            else:
+                _last_narration[identity]["ts"] = now
+            _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                      timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+            return
+        first_message_id = None
         for part in _split_message(sentence):
-            _api_call(
+            response = _api_call(
                 api, "sendMessage", chat_id=chat_id,
                 text=_markdown_to_telegram_html(part), parse_mode="HTML",
             )
+            if first_message_id is None:
+                first_message_id = ((response or {}).get("result") or {}).get("message_id")
+        _last_narration[identity] = {
+            "message_id": first_message_id, "text": sentence, "ts": now,
+        }
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
