@@ -99,7 +99,7 @@ To add a new Google / Google Workspace account to 9Router under the `antigravity
    // returns: { authUrl, state, codeVerifier, redirectUri }
    ```
 2. User opens `authUrl` in browser, signs in, and authorizes permissions.
-3. Browser redirects to `http://localhost:20128/callback?code=...`.
+3. Browser redirects to `http://localhost:<ROUTER_PORT>/callback?code=...`.
 4. Exchange the code and save token into 9Router:
    ```javascript
    await client.exchangeOAuthCode('antigravity', {
@@ -133,7 +133,7 @@ When automating bulk Google Workspace/GSuite logins in Termux (`chromium-browser
 4. Input password into `input[type="password"]`, then submit using `send_keys(Keys.ENTER)`.
 5. If GSuite speedbump ("I understand" / "Saya mengerti") appears, click it. Pastikan klik menggunakan execute_script JS click dan scrollIntoView, serta matcher mencakup role="button" dan button tags.
 6. On OAuth consent page: button text is often nested inside spans (e.g. `'Login'`, `'Allow'`, `'Continue'`, `'Izinkan'`). Iterate `driver.find_elements(By.XPATH, "//button | //*[@role='button'] | //input[@type='submit']")` dan lakukan JS click (`drv.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", el)`). Hati-hati dengan single vs double quote string Python di xpath.
-7. Once clicked, driver lands on `http://localhost:20128/callback?code=...&state=...`.
+7. Once clicked, driver lands on `http://localhost:<ROUTER_PORT>/callback?code=...&state=...`.
 8. Extract `code` and `state`, then call `client.exchangeOAuthCode('antigravity', ...)` via node to insert directly into 9Router DB.
 
 ### Testing / Verifying Registered Connections via 9Router Internal Client
