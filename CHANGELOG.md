@@ -1,4 +1,61 @@
 # Changelog
+## [0.3.7] — 2026-10-01
+
+### Added
+- **Muse-style reasoning engine (optional example)** — `examples/muse-reasoning-engine/`: OpenAI-compatible bridge with `tool_calls` passthrough, standalone poller for any OpenAI-compatible LLM, model-agnostic system prompt, one-command installer, and a watchdog timer with auto-restart ([#295]).
+- **Examples bundled in sdist** — `MANIFEST.in` now ships `examples/` in the source archive ([#295]).
+
+## [0.3.6] — 2026-09-30
+
+### Added
+- **Connectors framework** — base class + registry for external services ([#286]).
+- **GitHub connector** — issues, PRs, repos via API ([#286]).
+- **Google connector** — Gmail, Calendar, Sheets, Drive ([#288]).
+- **WhatsApp connector** — Business Cloud API (send_text, send_template) ([#289]).
+- **Media tools batch** — `tts`, `qr_code`, `transcribe_audio`, `pdf_tool` ([#285]).
+- **Edit video tool** — ffmpeg CapCut-style operations (trim, crop, text, speed) ([#284]).
+- **Edit image tool** — provider `/images/edits` ([#283]).
+- **Generate video tool** — Veo text-to-video ([#282]).
+- **Parity batch** — proactive briefing, memory nudges, skill curator, recall digest, crypto wallet fix ([#281]).
+- **Provider API key pools** — multiple keys with automatic rotation ([#280]).
+
+### Changed
+- **Mid-turn steering**: urgent message interrupts running task with banner; ordinary message injected as steer guidance ([#273], [#290]).
+- **Task progress indicator**: `📋 Updating tasks X → status` in the live feed ([#290]).
+- **Narration fallback**: silent models now narrate before executing tools ([#290]).
+- **/stop behavior**: progress bubble finalized (not deleted) so user can still see context ([#290]).
+- **/update reliability**: retry 3x with backoff + health-check after gateway restart ([#291]).
+- **Reasoning-content fallback**: thinking models no longer return empty replies ([#276]).
+
+### Fixed
+- **Telegram flood-ban**: honor `429 retry_after`, throttle progress edits ([#272]).
+- **Telegram cache-bust**: egress-proxy cache on getUpdates polling ([#287]).
+- **QR code dependency**: `qrcode[pil]` declared ([#285]).
+- **Session amnesia**: `last_topic` tracking — "lanjut" refers to most recent topic, not session start ([#290]).
+- **Steer ack icon**: ⏩ → ✈️ ([#290]).
+- **Stop message**: `❄️ Stopped — <title>` only, no extra description ([#290]).
+- **classify_steer**: context-aware (HARD vs SHORT patterns) — "jangan" in long refinement no longer triggers false interrupt ([#290]).
+- **_consume_stop**: actually consumes entry so next turn not blocked ([#290]).
+- **on_narration guard**: skip send if cancel_event set ([#290]).
+
+## [0.3.5] — 2026-09-29
+
+### Added
+- **`/steer <prompt>` command** (Telegram): steer the running task explicitly from the command menu; behaves like a normal message when no turn is running.
+- **Held-task memory across interruptions**: a task parked by an urgent message is remembered so Zeline can offer to resume it after the interruption is handled.
+- **New bundled skills**: `voice-reply` (anime-female VN style, Indonesian) ([#275]), `file-converter` ([#271]), `video-downloader` ([#270]), `airdrop-manager` ([#269]).
+
+### Changed
+- **Mid-turn steering is now steer-first**: a message sent while a turn is running is injected into the running turn (arrives after the next tool call) instead of aborting the task via a keyword heuristic. The turn keeps running; the user cancels explicitly with `/stop`. Busy-acks are terse, English-only, and debounced to one per 30s.
+- **Progress labels rewritten** to short action phrases (`Reading`, `Writing`, `Editing`, `Running code`, `Searching files for …`, `Searching the web for …`); trailing ellipses and filler words removed, emoji icons unchanged.
+- **Self-identity locked in**: Zeline consistently knows it is Zeline by Zerolinear, plus its configurable chat name; never answers "I don't know what Zeline/Zerolinear is".
+
+### Fixed
+- **Web search no longer fails silently**: `r.jina.ai` reader proxy started rejecting browser User-Agents with HTTP 403, which collapsed Bing+DDG search to Google News + Wikipedia only ("web search failed on all sources"). The reader now uses a bot UA the proxy accepts; verified 0 → 7/9/6 results on representative queries.
+- **Telegram flood-ban handling**: honor `429 retry_after` and throttle progress-bubble edits so long tasks with rapid tool calls no longer trip a flood ban.
+- **Reply-to context**: quoted-message text is injected as `[Replying to: "..."]` so the model resolves which message "this" refers to (distinguishes replying to the bot / own message / someone else).
+- **`sessions.progress()` guarded** for lightweight session stubs in the test suite.
+
 ## [0.3.4] — 2026-09-11
 
 ### Added
@@ -326,7 +383,10 @@ release's documented one-liner keeps working after a newer release ships.
 Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
-[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.4...main
+[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.6...main
+[0.3.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.7
+[0.3.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.6
+[0.3.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.4
 [0.3.3]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.3
 [0.3.2]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.2
@@ -336,6 +396,26 @@ Release notes for 0.2.5 and earlier are on the
 [0.2.8]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.8
 [0.2.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.7
 [0.2.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.6
+[#269]: https://github.com/Mftrferdinand/Zeline/pull/269
+[#270]: https://github.com/Mftrferdinand/Zeline/pull/270
+[#271]: https://github.com/Mftrferdinand/Zeline/pull/271
+[#272]: https://github.com/Mftrferdinand/Zeline/pull/272
+[#273]: https://github.com/Mftrferdinand/Zeline/pull/273
+[#275]: https://github.com/Mftrferdinand/Zeline/pull/275
+[#276]: https://github.com/Mftrferdinand/Zeline/pull/276
+[#280]: https://github.com/Mftrferdinand/Zeline/pull/280
+[#281]: https://github.com/Mftrferdinand/Zeline/pull/281
+[#282]: https://github.com/Mftrferdinand/Zeline/pull/282
+[#283]: https://github.com/Mftrferdinand/Zeline/pull/283
+[#284]: https://github.com/Mftrferdinand/Zeline/pull/284
+[#285]: https://github.com/Mftrferdinand/Zeline/pull/285
+[#286]: https://github.com/Mftrferdinand/Zeline/pull/286
+[#287]: https://github.com/Mftrferdinand/Zeline/pull/287
+[#288]: https://github.com/Mftrferdinand/Zeline/pull/288
+[#289]: https://github.com/Mftrferdinand/Zeline/pull/289
+[#290]: https://github.com/Mftrferdinand/Zeline/pull/290
+[#291]: https://github.com/Mftrferdinand/Zeline/pull/291
+[#295]: https://github.com/Mftrferdinand/Zeline/pull/295
 [#260]: https://github.com/Mftrferdinand/Zeline/pull/260
 [#261]: https://github.com/Mftrferdinand/Zeline/pull/261
 [#262]: https://github.com/Mftrferdinand/Zeline/pull/262

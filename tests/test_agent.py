@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -888,6 +889,45 @@ class StreamingTests(unittest.TestCase):
             reply = agent.send("halo")
         self.assertEqual(resp.encoding, "utf-8")
         self.assertIn("\u2192", reply)
+
+    def test_stream_inactivity_watchdog_closes_a_stalled_stream(self):
+        """Provider yang berhenti mengirim byte di tengah harus gagal cepat.
+
+        Tanpa watchdog, iter_lines() bisa menunggu sampai timeout TCP/OS —
+        menit ke jam — dan user hanya melihat bot diam. Watchdog menutup respons
+        sehingga stream berhenti dan turn memberi pesan yang jelas.
+        """
+        cfg = importlib.import_module("zeline.config")
+        cfg.STREAM_INACTIVITY_SECONDS = 0.4  # cepat untuk tes
+
+        class HangingStream:
+            def __init__(self):
+                self.status_code = 200
+                self.ok = True
+                self.text = ""
+                self.closed = False
+                self.encoding = None
+
+            def iter_lines(self, decode_unicode: bool = False):
+                # Kirim satu delta, lalu HANG tanpa pernah mengakhiri iterator —
+                # ini yang terjadi saat upstream mati tanpa menutup koneksi.
+                yield 'data: {"choices":[{"delta":{"content":"sebagian"}}]}'
+                while not self.closed:
+                    time.sleep(0.05)
+
+            def close(self):
+                self.closed = True
+
+        stream = HangingStream()
+        agent = self.agent_module.Zeline(identity="cli:stall", tool_profile="safe")
+        with mock.patch.object(self.agent_module.requests, "post", return_value=stream):
+            started = time.monotonic()
+            with self.assertRaises(self.agent_module.ZelineError) as ctx:
+                agent.send("jawab sesuatu")
+            elapsed = time.monotonic() - started
+        self.assertTrue(stream.closed, "watchdog harus menutup stream yang macet")
+        self.assertLess(elapsed, 8.0, f"harus gagal cepat, bukan menggantung ({elapsed:.1f}s)")
+        self.assertIn("silent", str(ctx.exception).casefold())
 
     def test_anthropic_stream_assembles_text(self):
         cfg = importlib.import_module("zeline.config").config_copy()

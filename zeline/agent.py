@@ -9,6 +9,7 @@ import contextlib
 import copy
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
@@ -117,8 +118,17 @@ PROVIDER_STATUS_PREFIX = "The provider returned HTTP "
 #: yang benar-benar salah mengembalikan 401 dengan
 #: ``{"error":{"code":"invalid_api_key"}}``. Menyuruh user mengganti kunci yang
 #: sehat adalah saran yang menyesatkan.
+#:
+#: 400 dibiarkan netral dan actionable. Sebelumnya terbaca "This is a
+#: Zeline-side bug; please report it" — itu klaim yang salah. 400 dari router
+#: hampir selalu berarti provider menolak request karena ALASAN DI SISI PROVIDER,
+#: bukan bug Zeline: model tidak ada di route itu, endpoint tidak didukung
+#: (mis. /audio/speech saat tidak ada kredensial TTS — body nyata:
+#: ``No credentials for provider: openai``), field yang tidak dikenal, dsb.
+#: Menyuruh user melaporkan bug Zeline saat masalahnya kredensial provider
+#: menghabiskan waktu mereka dan menyembunyikan penyebab sebenarnya.
 PROVIDER_STATUS_HINTS: dict[int, str] = {
-    400: "Bad request — the provider rejected the request shape. This is a Zeline-side bug; please report it.",
+    400: "Bad request — the provider rejected the request. Usually the model or endpoint is not available on this route (e.g. no TTS/free-text credentials for that provider). Check the model with /model, or add the missing provider credentials.",
     401: "The API key is invalid or unauthorized. Update it with `zeline setup`.",
     402: "Payment required — the provider account has no balance left. Top up, then try again.",
     403: "Insufficient provider quota. Check your balance or usage limit and try again.",
@@ -171,6 +181,122 @@ def _parse_response(text: str) -> dict[str, Any]:
     return value
 
 
+#: Key yang kena 401/403 dianggap mati selama ini (cukup lama untuk menandai
+#: key yang dicabut, cukup singkat untuk pulih bila relay yang flapping).
+_KEY_BAD_TTL = 600.0
+#: Key yang kena 429 diistirahatkan selama ini sebelum boleh dipakai lagi.
+_KEY_LIMITED_TTL = 60.0
+
+
+def _pool_from_config() -> list[str]:
+    """Bangun pool key dari config; api_key tunggal selalu jadi prioritas #1.
+
+    Menjamin kode/test yang menyetel ``config.API_KEY`` langsung tetap
+    berfungsi seperti dulu: key itu yang dikirim pertama.
+    """
+    keys = list(getattr(config, "API_KEYS", ()))
+    single = str(getattr(config, "API_KEY", "") or "")
+    if single and single not in keys:
+        keys.insert(0, single)
+    return keys
+
+
+class KeyPool:
+    """Pool API key dengan rotasi otomatis (credential pools).
+
+    Urutan key = prioritas (config ``api_key`` dulu, lalu ``api_keys``).
+    - 401/403 → key ditandai *bad* selama ``_KEY_BAD_TTL`` dan dilewati.
+    - 429 → key diistirahatkan selama ``_KEY_LIMITED_TTL``; request lanjut
+      ke key berikut alih-alih membakar retry pada key yang sama.
+    - Key yang sukses jadi *sticky* (dipakai pertama pada call berikutnya).
+    Thread-safe: satu gateway process bisa melayani banyak chat paralel.
+    """
+
+    def __init__(self, keys: list[str] | tuple[str, ...] = ()) -> None:
+        self._lock = threading.Lock()
+        self._keys: list[str] = [k for k in keys if k]
+        self._bad_until: dict[str, float] = {}
+        self._limited_until: dict[str, float] = {}
+        self._preferred: str | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def rebuild(self, keys: list[str] | tuple[str, ...]) -> None:
+        """Ganti seluruh pool (dipakai ``reload_provider``); state hangus."""
+        with self._lock:
+            self._keys = [k for k in keys if k]
+            self._bad_until.clear()
+            self._limited_until.clear()
+            self._preferred = None
+
+    def _live(self, now: float) -> list[str]:
+        ordered = list(self._keys)
+        if self._preferred in ordered:
+            ordered.remove(self._preferred)
+            ordered.insert(0, self._preferred)
+        return [
+            k
+            for k in ordered
+            if self._bad_until.get(k, 0) <= now and self._limited_until.get(k, 0) <= now
+        ]
+
+    def live_keys(self) -> list[str]:
+        """Key yang boleh dipakai sekarang, urutan prioritas."""
+        with self._lock:
+            return self._live(time.time())
+
+    def plan(self) -> list[tuple[str, bool]]:
+        """Urutan coba per model: (key, rotate_on_429).
+
+        Key sehat dicoba dulu sesuai prioritas. Entri terakhir adalah
+        *last-ditch* (key pertama yang tidak dicoret-mati): 429 di situ
+        diperlakukan seperti dulu — backoff retry pada key yang sama —
+        sehingga perilaku single-key tidak berubah.
+        """
+        with self._lock:
+            now = time.time()
+            live = self._live(now)
+            rotate = len(live) > 1
+            seq = [(k, rotate) for k in live]
+            first = next(
+                (k for k in self._keys if self._bad_until.get(k, 0) <= now),
+                None,
+            )
+            if first is not None and all(k != first for k, _ in seq):
+                seq.append((first, False))
+            return seq
+
+    def is_bad(self, key: str) -> bool:
+        """True bila key sedang dicoret karena 401/403."""
+        with self._lock:
+            return self._bad_until.get(key, 0) > time.time()
+
+    def all_keys(self) -> list[str]:
+        with self._lock:
+            return list(self._keys)
+
+    def mark_bad(self, key: str) -> None:
+        with self._lock:
+            self._bad_until[key] = time.time() + _KEY_BAD_TTL
+            if self._preferred == key:
+                self._preferred = None
+
+    def mark_limited(self, key: str) -> None:
+        with self._lock:
+            self._limited_until[key] = time.time() + _KEY_LIMITED_TTL
+            if self._preferred == key:
+                self._preferred = None
+
+    def mark_good(self, key: str) -> None:
+        with self._lock:
+            if key in self._keys:
+                self._preferred = key
+
+
 class Zeline:
     """Satu sesi agent untuk satu user/chat.
 
@@ -190,7 +316,11 @@ class Zeline:
     ):
         self.identity = identity or "cli:local"
         self.base_url = config.BASE_URL
-        self.api_key = config.API_KEY
+        # Pool key untuk rotasi otomatis antar beberapa credential.
+        # _pool_from_config defensif terhadap config yang di-patch manual.
+        # `api_key` tetap tersedia sebagai property (key prioritas #1) agar
+        # kode lama yang assign/read langsung tetap berfungsi.
+        self._key_pool = KeyPool(_pool_from_config())
         self.model = config.MODEL
         self.protocol = config.PROTOCOL
         self.depth = int(depth)
@@ -258,22 +388,49 @@ class Zeline:
             + f"\n\nActive runtime (non-secret): model={self.model}; protocol={self.protocol}; profile={self.executor.profile}. "
             + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
             "Jika tugas sesuai skill yang tersedia, panggil load_skill terlebih dahulu. "
-            "\n\nSelf-identity (answer cleanly, don't ramble or leak infra): you are "
-            "Zeline, an agentic AI framework by Zerolinear. When asked what model "
-            "you are, state the configured model id plainly (call runtime_info) in "
-            "ONE short line, e.g. 'Zeline (model: <id>).' Do NOT speculate about "
-            "the 'real' model behind any relay/router, do NOT reveal or guess the "
-            "provider base URL, host, port, proxy, or relay name (e.g. localhost "
-            "addresses), and do NOT add disclaimers about labels not proving the "
-            "underlying model. The model id and protocol are not secret; API keys, "
-            "tokens, base URLs, hosts, and any other infrastructure detail are — "
-            "never disclose them."
+            "\n\nSelf-identity (ALWAYS know this — answer cleanly, don't ramble or "
+            "leak infra):\n"
+            f"- Your chat/bot name: {config.NAME} (the name the operator gave you; "
+            "this is how users address you in conversation).\n"
+            "- Your agent framework: Zeline — an open-source agentic AI framework. "
+            "Zeline is who you ARE at the core, regardless of what chat name is set. "
+            "You are an instance of Zeline running on this device.\n"
+            "- Your lab/creator: Zerolinear — the team/lab that built and maintains "
+            "Zeline. When asked 'who made you', 'who is behind this', 'siapa yang "
+            "bikin', the answer is Zerolinear.\n"
+            "- When asked 'what is Zeline' → Zeline is an open-source agentic AI "
+            "framework by Zerolinear. It gives AI models real tools (terminal, "
+            "browser, files, code, memory, skills) so they can actually execute "
+            "tasks, not just chat.\n"
+            "- When asked 'what is Zerolinear' → Zerolinear is the lab that builds "
+            "Zeline. They focus on agentic AI — making AI that does real work.\n"
+            "- These are FACTS about yourself. Never say 'I don't know what Zeline "
+            "is' or 'I'm not sure about Zerolinear'. You ARE Zeline by Zerolinear.\n"
+            "- When asked what model you are, state the configured model id plainly "
+            "(call runtime_info) in ONE short line, e.g. 'I'm running on <model_id>.' "
+            "Do NOT speculate about the 'real' model behind any relay/router, do NOT "
+            "reveal or guess the provider base URL, host, port, proxy, or relay name "
+            "(e.g. localhost addresses), and do NOT add disclaimers about labels not "
+            "proving the underlying model. The model id and protocol are not secret; "
+            "API keys, tokens, base URLs, hosts, and any other infrastructure detail "
+            "are — never disclose them."
         )
 
     def _refresh_system_prompt(self) -> None:
         """Refresh dynamic memory/lesson/task sections without touching history."""
         if self.messages and self.messages[0].get("role") == "system":
             self.messages[0]["content"] = self._build_system_prompt()
+
+    @property
+    def api_key(self) -> str:
+        """Key prioritas #1 dari pool (kompat: pola lama ``agent.api_key``)."""
+        keys = self._key_pool.live_keys() or self._key_pool.all_keys()
+        return keys[0] if keys else ""
+
+    @api_key.setter
+    def api_key(self, value: str) -> None:
+        # Assign langsung = ganti pool jadi single key (perilaku lama).
+        self._key_pool.rebuild([value] if value else [])
 
     def reload_provider(self) -> None:
         """Adopsi provider aktif (model/base_url/key/protocol) TANPA menghapus
@@ -283,7 +440,7 @@ class Zeline:
         info model akurat, tapi seluruh pesan user/assistant sebelumnya dijaga.
         """
         self.base_url = config.BASE_URL
-        self.api_key = config.API_KEY
+        self._key_pool.rebuild(_pool_from_config())
         self.model = config.MODEL
         self.protocol = config.PROTOCOL
         self._refresh_system_prompt()
@@ -351,23 +508,33 @@ class Zeline:
         """
         self.messages = tool_protocol.repair(self.messages)
 
+    def _auth_headers(self, key: str) -> dict[str, str]:
+        """Header auth per key — dipanggil tiap rotasi pool."""
+        if self.protocol == "anthropic":
+            return {
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+                "User-Agent": f"zeline/{__version__}",
+            }
+        return {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": f"zeline/{__version__}",
+        }
+
     def _call_llm(
         self,
         use_tools: bool = True,
         on_stream_delta: Callable[[str], None] | None = None,
         force_stream: bool | None = None,
     ) -> dict[str, Any]:
-        if not self.api_key:
+        if not self._key_pool:
             raise ZelineError("API key not configured. Run `zeline setup`.")
         if not self.base_url or not self.model:
             raise ZelineError("Provider not fully configured. Run `zeline setup`.")
 
         endpoint = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": f"zeline/{__version__}",
-        }
         outbound_messages = copy.deepcopy(self.messages)
         if self._turn_skill_context:
             for item in reversed(outbound_messages):
@@ -408,12 +575,6 @@ class Zeline:
 
         if self.protocol == "anthropic":
             endpoint = f"{self.base_url}/messages"
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-                "User-Agent": f"zeline/{__version__}",
-            }
             messages: list[dict[str, Any]] = []
             for item in outbound_messages[1:]:
                 role = str(item.get("role", "user"))
@@ -456,31 +617,68 @@ class Zeline:
 
             response = None
             retryable = {400, 408, 409, 429, 500, 502, 503, 504, 529}
+            auth_failures = 0
+            done = False
             for model_index, candidate in enumerate(candidates):
                 if self._cancelled():
                     raise _TurnCancelled()
                 payload["model"] = candidate
-                for attempt in range(2):
+                # Rotasi credential pool: key sehat sesuai prioritas, lalu
+                # satu last-ditch (429 = backoff retry ala single-key lama).
+                for key, rotate_on_429 in self._key_pool.plan():
                     if self._cancelled():
                         raise _TurnCancelled()
-                    response = requests.post(
-                        endpoint,
-                        headers=headers,
-                        json=copy.deepcopy(payload),
-                        timeout=180,
-                        stream=stream,
-                    )
-                    self._active_response = response
-                    if response.status_code not in retryable:
-                        break
-                    close_response = getattr(response, "close", None)
-                    if callable(close_response):
-                        close_response()
-                    # Small bounded backoff: enough for a router connection to
-                    # rotate/recover without making Telegram wait for minutes.
-                    time.sleep(0.5 + 0.5 * attempt + 0.25 * model_index)
-                if response is not None and response.status_code not in retryable:
+                    if not rotate_on_429 and self._key_pool.is_bad(key):
+                        continue  # last-ditch hanya untuk key yang tidak dicoret-mati
+                    headers = self._auth_headers(key)
+                    for attempt in range(2):
+                        if self._cancelled():
+                            raise _TurnCancelled()
+                        response = requests.post(
+                            endpoint,
+                            headers=headers,
+                            json=copy.deepcopy(payload),
+                            timeout=180,
+                            stream=stream,
+                        )
+                        self._active_response = response
+                        status = response.status_code
+                        if status in (401, 403):
+                            # Key mati/dicabut — coret dari pool, lanjut key berikut.
+                            self._key_pool.mark_bad(key)
+                            auth_failures += 1
+                            break
+                        if status == 429 and rotate_on_429:
+                            # Kuota key ini habis — putar ke key berikut, jangan
+                            # bakar retry pada key yang sama.
+                            self._key_pool.mark_limited(key)
+                            break
+                        if status not in retryable:
+                            break
+                        close_response = getattr(response, "close", None)
+                        if callable(close_response):
+                            close_response()
+                        # Small bounded backoff: enough for a router connection to
+                        # rotate/recover without making Telegram wait for minutes.
+                        time.sleep(0.5 + 0.5 * attempt + 0.25 * model_index)
+                    if response is not None:
+                        if response.ok:
+                            self._key_pool.mark_good(key)
+                            done = True
+                            break
+                        if response.status_code in (401, 403):
+                            continue  # key berikut; gagal total hanya bila semua mati
+                        if response.status_code not in retryable:
+                            done = True
+                            break
+                if done:
                     break
+            pool_size = len(self._key_pool)
+            if pool_size > 1 and auth_failures >= pool_size:
+                raise ZelineError(
+                    "All API keys in the pool were rejected (401/403). "
+                    "Check `zeline keys list` and replace the dead keys."
+                )
             if response is None:
                 raise ZelineError("Provider failover chain produced no response.")
         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout) as exc:
@@ -602,8 +800,37 @@ class Zeline:
         usage_chunk: dict[str, Any] | None = None
         reasoning_seen = False
         finish_reason: str | None = None
+        # Inactivity watchdog: kalau provider berhenti mengirim byte di tengah
+        # stream (hang, proxy diam, upstream mati tanpa penutup), iter_lines()
+        # bisa menunggu sampai timeout TCP/OS — menit ke jam. Thread ini menutup
+        # respons setelah jeda yang wajar sehingga iterasi berhenti dan turn
+        # gagal cepat dengan pesan yang jelas, bukan bot yang diam.
+        last_activity = time.monotonic()
+        stalled = threading.Event()
+        stop_watchdog = threading.Event()
+
+        def _watchdog() -> None:
+            limit = float(getattr(config, "STREAM_INACTIVITY_SECONDS", 120.0) or 0.0)
+            if limit <= 0:
+                return  # fitur dimatikan operator
+            # Cek beberapa kali per menit; interval dibatasi agar tidak sibuk.
+            poll = max(0.25, min(1.0, limit / 4.0))
+            while not stop_watchdog.wait(poll):
+                if time.monotonic() - last_activity > limit:
+                    stalled.set()
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                    return
+
+        watchdog = threading.Thread(
+            target=_watchdog, name="zeline-stream-watchdog", daemon=True
+        )
+        watchdog.start()
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
+                last_activity = time.monotonic()
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
                 if self._cancelled():
                     raise _TurnCancelled()
@@ -657,11 +884,27 @@ class Zeline:
                     if function.get("arguments"):
                         slot["function"]["arguments"] += str(function["arguments"])
         except (requests.exceptions.RequestException,) as exc:
+            if stalled.is_set():
+                raise ZelineError(
+                    f"The stream from '{self.model}' went silent (no data for "
+                    f"{int(float(getattr(config, 'STREAM_INACTIVITY_SECONDS', 120.0) or 120.0))}s). "
+                    "The provider likely stalled mid-response. Please try again."
+                ) from exc
             raise ZelineError(
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
         finally:
+            stop_watchdog.set()
             response.close()
+
+        # Provider yang koneksinya ditutup watchdog bisa berakhir tanpa exception
+        # (iterator berhenti normal). Perlakukan sama: gagal cepat dengan pesan
+        # yang jelas alih-alih memakai isi parsial seolah jawaban utuh.
+        if stalled.is_set():
+            raise ZelineError(
+                f"The stream from '{self.model}' went silent mid-response. "
+                "The provider likely stalled. Please try again."
+            )
 
         if usage_chunk is not None:
             self._record_usage(usage_chunk)
@@ -835,6 +1078,7 @@ class Zeline:
         take_steer: Callable[[], str | None] | None = None,
         on_narration: Callable[[str], None] | None = None,
         on_stream_delta: Callable[[str], None] | None = None,
+        turn_extra: str = "",
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -850,7 +1094,11 @@ class Zeline:
         self._drop_incomplete_tail()
         self._trim_history()
         self._should_stop = should_stop
-        self._turn_skill_context = ""
+        # ``turn_extra`` = catatan runtime sekali-pakai untuk turn ini saja (mis.
+        # pengingat task tertunda setelah interupsi). Ditaruh di skill-context
+        # ephemeral: masuk ke payload provider turn ini, TIDAK dipersist ke
+        # history — jadi tidak merusak cache percakapan lintas turn.
+        self._turn_skill_context = str(turn_extra or "").strip()
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []
         if _DAILY_CHECKIN_INTENT_RE.search(text):
@@ -869,7 +1117,12 @@ class Zeline:
             )
             if not loaded.startswith("ERROR"):
                 loaded_contexts.append(f"## Auto-loaded skill: {skill_name}\n{loaded}")
-        self._turn_skill_context = "\n\n".join(loaded_contexts)
+        # Gabungkan skill auto-load dengan turn_extra (pengingat task tertunda,
+        # dll) yang sudah diset di atas — jangan sampai menimpanya.
+        _base_extra = self._turn_skill_context
+        self._turn_skill_context = "\n\n".join(
+            part for part in ([_base_extra] + loaded_contexts) if part
+        )
         self.messages.append({"role": "user", "content": text})
         self.last_turn_tool_calls = 0
         try:
@@ -948,6 +1201,19 @@ class Zeline:
             self.last_turn_tool_calls += len(tool_calls)
             self._tool_calls_since_reflection += len(tool_calls)
 
+            # Parse setiap tool call sekali (nama + argumen) dengan urutan dijaga.
+            parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+                name = str(function.get("name", ""))
+                try:
+                    args = json.loads(function.get("arguments") or "{}")
+                    if not isinstance(args, dict):
+                        args = {}
+                except json.JSONDecodeError:
+                    args = {}
+                parsed_calls.append((tool_call, name, args))
+
             # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu
             # konfignya lalu benerin") adalah kalimat rencana model. Kirim ke
             # user sebagai bubble tersendiri SEBELUM tool jalan — inilah yang
@@ -965,18 +1231,6 @@ class Zeline:
                     "tool_calls": tool_calls,
                 }
             )
-            # Parse setiap tool call sekali (nama + argumen) dengan urutan dijaga.
-            parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
-            for tool_call in tool_calls:
-                function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-                name = str(function.get("name", ""))
-                try:
-                    args = json.loads(function.get("arguments") or "{}")
-                    if not isinstance(args, dict):
-                        args = {}
-                except json.JSONDecodeError:
-                    args = {}
-                parsed_calls.append((tool_call, name, args))
 
             # Bila model meminta >1 tool dan SEMUANYA read-only aman-paralel,
             # jalankan bareng dalam thread pool (percepat riset/baca banyak file).

@@ -22,6 +22,7 @@ import mimetypes
 import os
 import re
 import signal
+import shutil
 import socket
 import subprocess
 import threading
@@ -88,13 +89,20 @@ _CONTINUATION_WORDS = {
 }
 
 #: Umur maksimal turn TERBARU agar "lanjut" masih dianggap punya rujukan.
-#:
+#: Umur maksimal turn TERBARU agar "lanjut" masih dianggap punya rujukan.
 #: ``append_turn`` baru jalan SETELAH reply, jadi saat user mengetik "lanjut"
-#: di sesi baru, baris terbaru di archive masih milik sesi SEBELUMNYA. Tanpa
+#: di sesi baru, baris terbaru di archive masih milik sesi sebelumnya. Tanpa
 #: batas ini, "lanjut" pagi ini me-recall pekerjaan semalam seolah itu yang
-#: sedang berjalan. 6 jam menampung jeda tidur/kerja tapi tetap memisahkan
-#: sesi yang berbeda hari.
-_CONTINUATION_STALE_AFTER = 6 * 3600
+#: sedang dikerjakan. Diperpanjang ke 24 jam: gateway restart bisa terjadi
+#: kapan saja, dan user tetap berhak melanjutkan pekerjaan terakhirnya
+#: selama masih dalam hari yang sama.
+_CONTINUATION_STALE_AFTER = 24 * 3600
+
+#: Budget digest ``_recall_history``: maksimal karakter per thread dan total.
+#: Menjaga output recall tidak meledakkan context window walau archive besar.
+_RECALL_THREAD_BUDGET = 1500
+_RECALL_TOTAL_BUDGET = 6000
+_TRUNC_MARK = "…(truncated)"
 
 
 def _is_continuation_query(query: str) -> bool:
@@ -303,6 +311,34 @@ def _update_task(task: str, status: str, identity: str) -> str:
         return f"ERROR task: could not save the board ({exc.__class__.__name__})."
     prefix = f"NOTE: {note}\n" if note else ""
     return f"{prefix}{tasks.render(board)}"
+
+
+def task_progress_summary(identity: str) -> str:
+    """Ringkasan progress task board untuk ditampilkan di UI.
+
+    Format: "📋 Updating tasks planning 6 task(s) — 2 completed, 3 remaining, 1 in progress"
+    Dipakai oleh gateway untuk menampilkan progress nyata, bukan cuma "Updating tasks".
+    """
+    try:
+        items = tasks.load(identity)
+    except Exception:
+        return "📋 Updating tasks"
+    if not items:
+        return "📋 Updating tasks (no active tasks)"
+    total = len(items)
+    completed = sum(1 for i in items if i["status"] == "completed")
+    in_progress = sum(1 for i in items if i["status"] == "in_progress")
+    pending = sum(1 for i in items if i["status"] == "pending")
+    cancelled = sum(1 for i in items if i["status"] == "cancelled")
+    remaining = total - completed - cancelled
+    parts = [f"planning {total} task(s)"]
+    if completed:
+        parts.append(f"{completed} completed")
+    if remaining:
+        parts.append(f"{remaining} remaining")
+    if in_progress:
+        parts.append(f"{in_progress} in progress")
+    return f"📋 Updating tasks {', '.join(parts)}"
 
 
 def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
@@ -983,6 +1019,45 @@ GENERATED_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_SIZE_ALLOWED = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1792x1024", "1024x1792", "auto"}
 
 
+def _save_image_item(item: Any, dest: Path, workspace: Path, image_model: str, label: str = "generated image") -> str:
+    """Decode a provider image item (b64_json or temporary URL) and write it into the workspace."""
+    # Providers return either inline base64 (b64_json) or a temporary URL.
+    raw: bytes
+    b64 = item.get("b64_json") if isinstance(item, dict) else None
+    if b64:
+        try:
+            raw = base64.b64decode(b64)
+        except (ValueError, TypeError):
+            return "ERROR: image provider returned invalid base64 data."
+    else:
+        img_url = item.get("url") if isinstance(item, dict) else None
+        if not img_url:
+            return "ERROR: image provider returned neither image data nor a URL."
+        try:
+            with requests.get(img_url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True) as img_resp:
+                if not img_resp.ok:
+                    return f"ERROR: could not download generated image (HTTP {img_resp.status_code})."
+                chunks = []
+                total = 0
+                for chunk in img_resp.iter_content(65536):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > GENERATED_IMAGE_MAX_BYTES:
+                        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+                raw = b"".join(chunks)
+        except requests.RequestException as exc:
+            return f"ERROR downloading generated image: {exc.__class__.__name__}: {exc}"
+    if len(raw) > GENERATED_IMAGE_MAX_BYTES:
+        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+    except OSError as exc:
+        return f"ERROR writing image: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, {label} saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
+
+
 def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1024") -> str:
     """Generate an image from a text prompt via the provider's images API.
 
@@ -1044,41 +1119,708 @@ def _generate_image(prompt: str, path: str, workspace: Path, size: str = "1024x1
         item = response.json()["data"][0]
     except (KeyError, IndexError, TypeError, ValueError):
         return "ERROR: image provider returned an unexpected response."
-    # Providers return either inline base64 (b64_json) or a temporary URL.
-    raw: bytes
-    b64 = item.get("b64_json") if isinstance(item, dict) else None
-    if b64:
+    return _save_image_item(item, dest, workspace, image_model)
+
+
+def _edit_image(
+    image_path: str,
+    prompt: str,
+    path: str,
+    workspace: Path,
+    mask_path: str = "",
+    size: str = "1024x1024",
+) -> str:
+    """Edit an existing image via the provider's OpenAI-compatible ``/images/edits`` endpoint.
+
+    Takes a source image from the workspace plus a text instruction describing
+    the change (e.g. "remove the people in the background") and writes the
+    edited result into the workspace. An optional mask image (white = area to
+    repaint) can steer the edit on providers that support it. Requires an
+    image model that supports edits (e.g. gpt-image-1); if the configured
+    ``image_model`` does not, the provider's error is surfaced honestly.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return "ERROR: need a text prompt describing the edit to make."
+    image_model = getattr(config, "IMAGE_MODEL", "") or ""
+    if not config.API_KEY or not config.BASE_URL:
+        return "ERROR: provider is not configured for image editing."
+    if not image_model:
+        return (
+            "ERROR: no image model is configured. The owner can set one with "
+            "`zeline setup` (image model) or the ZELINE_IMAGE_MODEL environment variable, "
+            "e.g. gpt-image-1 (which supports image edits)."
+        )
+    try:
+        src = _resolve_workspace_path(image_path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if not src.is_file():
+        return f"ERROR: source image not found in the workspace: {image_path}"
+    if src.suffix.lower() not in _VISION_IMAGE_EXT:
+        return "ERROR: source image must be a .png/.jpg/.jpeg/.webp/.gif file."
+    mask_file = None
+    if mask_path:
         try:
-            raw = base64.b64decode(b64)
-        except (ValueError, TypeError):
-            return "ERROR: image provider returned invalid base64 data."
+            mask_file = _resolve_workspace_path(mask_path, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not mask_file.is_file():
+            return f"ERROR: mask image not found in the workspace: {mask_path}"
+        if mask_file.suffix.lower() not in _VISION_IMAGE_EXT:
+            return "ERROR: mask image must be a .png/.jpg/.jpeg/.webp/.gif file."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() not in _VISION_IMAGE_EXT:
+        return "ERROR: output path must end in .png/.jpg/.jpeg/.webp/.gif."
+    size = (size or "1024x1024").strip() or "1024x1024"
+    if size not in _IMAGE_SIZE_ALLOWED:
+        return f"ERROR: unsupported size '{size}'. Allowed: {', '.join(sorted(_IMAGE_SIZE_ALLOWED))}."
+    try:
+        image_bytes = src.read_bytes()
+        mask_bytes = mask_file.read_bytes() if mask_file else None
+    except OSError as exc:
+        return f"ERROR: could not read source image: {exc}"
+    files: dict[str, tuple[str, bytes, str]] = {"image": (src.name, image_bytes, "image/png")}
+    if mask_bytes is not None and mask_file is not None:
+        files["mask"] = (mask_file.name, mask_bytes, "image/png")
+    data = {"model": image_model, "prompt": prompt, "size": size, "n": "1"}
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/images/edits",
+            headers={"Authorization": f"Bearer {config.API_KEY}"},
+            files=files,
+            data=data,
+            timeout=180,
+        )
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout, requests.exceptions.Timeout):
+        return (
+            f"ERROR: the image model '{image_model}' did not respond within 180s (timed out). "
+            "The model/route is likely overloaded — try again or switch the image model."
+        )
+    except requests.exceptions.ConnectionError:
+        return f"ERROR: could not connect to the image provider at {config.BASE_URL}. Check the router/proxy is running."
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the image provider ({exc.__class__.__name__}). Try again."
+    if not response.ok:
+        from zeline.agent import PROVIDER_STATUS_HINTS
+
+        if response.status_code == 404:
+            hint = (
+                f" — the model '{image_model}' or the /images/edits endpoint was not found on this provider. "
+                "Not every image model supports edits."
+            )
+        elif response.status_code in PROVIDER_STATUS_HINTS:
+            hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
+        else:
+            hint = ""
+        return f"ERROR: image provider HTTP {response.status_code}{hint}"
+    try:
+        item = response.json()["data"][0]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "ERROR: image provider returned an unexpected response."
+    return _save_image_item(item, dest, workspace, image_model, "edited image")
+
+
+_EDIT_VIDEO_ACTIONS = ("trim", "concat", "text", "audio", "speed")
+_EDIT_VIDEO_TIMEOUT = 600
+_EDIT_VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi")
+_EDIT_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
+_FFMPEG_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+
+def _ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def _atempo_chain(factor: float) -> str:
+    """Split a speed factor into chained atempo filters (each must stay within 0.5-2.0)."""
+    parts = []
+    rest = factor
+    while rest > 2.0:
+        parts.append("atempo=2.0")
+        rest /= 2.0
+    while rest < 0.5:
+        parts.append("atempo=0.5")
+        rest /= 0.5
+    parts.append(f"atempo={rest:.4f}")
+    return ",".join(parts)
+
+
+def _drawtext_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+
+
+def _edit_video(
+    action: str,
+    video: str,
+    path: str,
+    workspace: Path,
+    videos: str = "",
+    start: str = "",
+    duration: str = "",
+    text: str = "",
+    fontsize: int = 48,
+    fontcolor: str = "white",
+    position: str = "bottom",
+    audio: str = "",
+    volume: float = 1.0,
+    factor: float = 1.0,
+) -> str:
+    """Edit video files with ffmpeg (CapCut-style operations, no GUI app needed).
+
+    Actions:
+      trim   — cut a segment (``start``/``duration`` in seconds).
+      concat — join clips (``videos`` = comma-separated workspace paths).
+      text   — overlay a title/caption (``text``, ``fontsize``, ``fontcolor``,
+               ``position`` = top/center/bottom, optional ``start``/``duration`` timing).
+      audio  — add or replace the audio track (``audio`` = workspace audio file,
+               ``volume`` multiplier).
+      speed  — change playback speed (``factor`` 0.25-4.0).
+
+    All inputs must live in the workspace; output is always MP4.
+    """
+    action = (action or "").strip().lower()
+    if action not in _EDIT_VIDEO_ACTIONS:
+        return f"ERROR: unknown action '{action}'. Allowed: {', '.join(_EDIT_VIDEO_ACTIONS)}."
+    if not shutil.which("ffmpeg"):
+        return "ERROR: ffmpeg is not installed on this machine, video editing is unavailable."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".mp4":
+        return "ERROR: output path must end in .mp4."
+
+    def _resolve_video(p: str) -> Path | str:
+        try:
+            src = _resolve_workspace_path(p, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not src.is_file():
+            return f"ERROR: video not found in the workspace: {p}"
+        if src.suffix.lower() not in _EDIT_VIDEO_EXTS:
+            return f"ERROR: unsupported video format '{src.suffix}'. Allowed: {', '.join(_EDIT_VIDEO_EXTS)}."
+        return src
+
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    tmp_list = None
+    if action == "concat":
+        parts = [p.strip() for p in (videos or "").split(",") if p.strip()]
+        if len(parts) < 2:
+            return "ERROR: concat needs at least 2 videos (comma-separated in 'videos')."
+        srcs = []
+        for p in parts:
+            r = _resolve_video(p)
+            if isinstance(r, str):
+                return r
+            srcs.append(r)
+        tmp_list = workspace / f".concat_{os.getpid()}.txt"
+        try:
+            tmp_list.write_text("".join(f"file '{s}'\n" for s in srcs))
+        except OSError as exc:
+            return f"ERROR: could not write concat list: {exc}"
+        cmd += ["-f", "concat", "-safe", "0", "-i", str(tmp_list),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
     else:
-        img_url = item.get("url") if isinstance(item, dict) else None
-        if not img_url:
-            return "ERROR: image provider returned neither image data nor a URL."
-        try:
-            with requests.get(img_url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True) as img_resp:
-                if not img_resp.ok:
-                    return f"ERROR: could not download generated image (HTTP {img_resp.status_code})."
-                chunks = []
-                total = 0
-                for chunk in img_resp.iter_content(65536):
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > GENERATED_IMAGE_MAX_BYTES:
-                        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
-                raw = b"".join(chunks)
-        except requests.RequestException as exc:
-            return f"ERROR downloading generated image: {exc.__class__.__name__}: {exc}"
-    if len(raw) > GENERATED_IMAGE_MAX_BYTES:
-        return f"ERROR: generated image exceeds the {GENERATED_IMAGE_MAX_BYTES // (1024*1024)} MB limit."
+        r = _resolve_video(video)
+        if isinstance(r, str):
+            return r
+        src = r
+        if action == "trim":
+            cmd += ["-i", str(src)]
+            if (start or "").strip():
+                try:
+                    float(start)
+                except ValueError:
+                    return "ERROR: start must be a number of seconds."
+                cmd += ["-ss", start.strip()]
+            if (duration or "").strip():
+                try:
+                    d = float(duration)
+                except ValueError:
+                    return "ERROR: duration must be a number of seconds."
+                if d <= 0:
+                    return "ERROR: duration must be positive."
+                cmd += ["-t", duration.strip()]
+            cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
+        elif action == "text":
+            overlay = (text or "").strip()
+            if not overlay:
+                return "ERROR: text action needs the 'text' to overlay."
+            try:
+                fs = int(fontsize)
+            except (TypeError, ValueError):
+                return "ERROR: fontsize must be an integer."
+            if not 8 <= fs <= 200:
+                return "ERROR: fontsize must be between 8 and 200."
+            pos = (position or "bottom").strip().lower()
+            coords = {
+                "top": "x=(w-text_w)/2:y=60",
+                "center": "x=(w-text_w)/2:y=(h-text_h)/2",
+                "bottom": "x=(w-text_w)/2:y=h-text_h-60",
+            }
+            if pos not in coords:
+                return f"ERROR: unknown position '{position}'. Allowed: top, center, bottom."
+            filt = f"drawtext={coords[pos]}:fontsize={fs}:fontcolor={fontcolor}:text='{_drawtext_escape(overlay)}'"
+            if os.path.exists(_FFMPEG_FONT):
+                filt = f"drawtext=fontfile={_FFMPEG_FONT}:{coords[pos]}:fontsize={fs}:fontcolor={fontcolor}:text='{_drawtext_escape(overlay)}'"
+            timing = ""
+            if (start or "").strip() or (duration or "").strip():
+                try:
+                    s = float(start or 0)
+                    e = s + float(duration) if (duration or "").strip() else 1e9
+                except ValueError:
+                    return "ERROR: start/duration must be numbers of seconds."
+                timing = f":enable='between(t,{s},{e})'"
+            cmd += ["-i", str(src), "-vf", filt + timing,
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
+        elif action == "audio":
+            try:
+                a = _resolve_workspace_path(audio, workspace)
+            except ValueError as exc:
+                return f"ERROR: {exc}"
+            if not a.is_file():
+                return f"ERROR: audio not found in the workspace: {audio}"
+            if a.suffix.lower() not in _EDIT_AUDIO_EXTS:
+                return f"ERROR: unsupported audio format '{a.suffix}'. Allowed: {', '.join(_EDIT_AUDIO_EXTS)}."
+            try:
+                vol = float(volume)
+            except (TypeError, ValueError):
+                return "ERROR: volume must be a number."
+            if not 0 <= vol <= 5:
+                return "ERROR: volume must be between 0 and 5."
+            cmd += ["-i", str(src), "-i", str(a), "-c:v", "copy",
+                    "-filter:a", f"volume={vol}", "-c:a", "aac", "-shortest", str(dest)]
+        elif action == "speed":
+            try:
+                f = float(factor)
+            except (TypeError, ValueError):
+                return "ERROR: factor must be a number."
+            if not 0.25 <= f <= 4.0:
+                return "ERROR: factor must be between 0.25 and 4.0."
+            cmd += ["-i", str(src), "-vf", f"setpts=PTS/{f}", "-af", _atempo_chain(f),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_EDIT_VIDEO_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return f"ERROR: ffmpeg took longer than {_EDIT_VIDEO_TIMEOUT}s — video may be too large."
+    except OSError as exc:
+        return f"ERROR: could not run ffmpeg: {exc}"
+    finally:
+        if tmp_list is not None:
+            try:
+                tmp_list.unlink()
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip().splitlines()
+        tail = " ".join(err[-3:])[:400] if err else "unknown ffmpeg error"
+        return f"ERROR: ffmpeg failed: {tail}"
+    if not dest.is_file() or dest.stat().st_size == 0:
+        return "ERROR: ffmpeg produced no output file."
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, edited video saved: {rel} ({_format_size(dest.stat().st_size)}) [action={action}]"
+
+
+_TTS_MAX_CHARS = 4000
+
+
+def _text_to_speech(text: str, path: str, workspace: Path, voice: str = "alloy", model: str = "tts-1") -> str:
+    """Convert text to spoken audio via the provider's OpenAI-compatible ``/audio/speech`` endpoint.
+
+    Saves an MP3 voice note into the workspace — use when the user asks the bot
+    to reply with voice, read something aloud, or make an audio version of text.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "ERROR: need the text to speak."
+    if len(text) > _TTS_MAX_CHARS:
+        return f"ERROR: text is too long ({len(text)} chars, max {_TTS_MAX_CHARS}). Split it and call again."
+    if not config.API_KEY or not config.BASE_URL:
+        return "ERROR: provider is not configured for text-to-speech."
+    model = (model or "tts-1").strip() or "tts-1"
+    voice = (voice or "alloy").strip() or "alloy"
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".mp3":
+        return "ERROR: output path must end in .mp3."
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/audio/speech",
+            headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
+            json={"model": model, "input": text, "voice": voice, "response_format": "mp3"},
+            timeout=180,
+        )
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the speech provider ({exc.__class__.__name__}). Try again."
+    if not response.ok:
+        from zeline.agent import PROVIDER_STATUS_HINTS
+
+        if response.status_code == 404:
+            hint = f" — the model '{model}' or the /audio/speech endpoint was not found on this provider."
+        elif response.status_code == 400:
+            # The provider rejected the TTS request. The common real cause is
+            # that the routed provider has no text-to-speech credentials at all
+            # (9Router answers e.g. "No credentials for provider: openai" when
+            # 'tts-1' is requested but no OpenAI key is configured). Surface the
+            # provider's own message when present — it names the missing
+            # provider, which is the fix.
+            detail = ""
+            try:
+                body = response.json()
+                message = str(((body or {}).get("error") or {}).get("message") or "").strip()
+                if message:
+                    detail = f" (provider said: {message[:160]})"
+            except (ValueError, AttributeError):
+                pass
+            hint = (
+                f"{detail} — text-to-speech is not available on this route. The "
+                f"provider needs speech credentials (e.g. an OpenAI key for "
+                f"'{model}'), or pick a provider that offers TTS. Voice replies "
+                "stay off until then."
+            )
+        elif response.status_code in PROVIDER_STATUS_HINTS:
+            hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}"
+        else:
+            hint = ""
+        return f"ERROR: speech provider HTTP {response.status_code}{hint}"
+    raw = response.content or b""
+    if len(raw) < 1024:
+        return "ERROR: speech provider returned suspiciously little audio data."
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(raw)
     except OSError as exc:
-        return f"ERROR writing image: {exc}"
+        return f"ERROR writing audio: {exc}"
     rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
-    return f"OK, generated image saved: {rel} ({_format_size(len(raw))}) using model {image_model}"
+    return f"OK, speech saved: {rel} ({_format_size(len(raw))}) using model {model}"
+
+
+def _qr_code(text: str, path: str, workspace: Path, size: int = 10) -> str:
+    """Generate a QR code image (PNG) from text — links, WiFi credentials, plain text.
+
+    Runs fully offline. Use when the user asks for a QR code / barcode image.
+    """
+    try:
+        import qrcode
+    except ImportError:
+        return "ERROR: the 'qrcode' package is not installed on this machine (pip install 'qrcode[pil]')."
+    data = (text or "").strip()
+    if not data:
+        return "ERROR: need the text/data to encode in the QR code."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".png":
+        return "ERROR: output path must end in .png."
+    try:
+        box = int(size)
+    except (TypeError, ValueError):
+        return "ERROR: size must be an integer."
+    box = max(2, min(20, box))
+    try:
+        qr = qrcode.QRCode(box_size=box, border=4)
+        qr.add_data(data)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        img.save(str(dest))
+    except Exception as exc:
+        return f"ERROR generating QR code: {exc.__class__.__name__}: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, QR code saved: {rel}"
+
+
+def _transcribe_audio(audio: str, workspace: Path, language: str = "", prompt: str = "") -> str:
+    """Transcribe a voice note / audio file in the workspace to text.
+
+    Uses the provider's ``/audio/transcriptions`` endpoint (same engine behind
+    analyze_media). Use when the user sends a voice message and wants the words,
+    without a full media analysis.
+    """
+    from zeline import transcribe as _stt
+
+    try:
+        src = _resolve_workspace_path(audio, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if not src.is_file():
+        return f"ERROR: audio not found in the workspace: {audio}"
+    try:
+        text = _stt.transcribe(src, language=(language or "").strip(), prompt=(prompt or "").strip())
+    except _stt.TranscribeError as exc:
+        return f"ERROR: {exc}"
+    text = (text or "").strip()
+    if not text:
+        return "ERROR: transcription came back empty — the audio may be silent."
+    return f"OK, transcription of {src.name}:\n{text}"
+
+
+_PDF_ACTIONS = ("merge", "split", "info")
+
+
+def _parse_pdf_pages(spec: str, total: int) -> list[int] | str:
+    """Parse '1-3,5' (1-based) into 0-based page indexes. Returns an error string on failure."""
+    idx: list[int] = []
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                a, b = part.split("-", 1)
+                lo, hi = int(a), int(b)
+            except ValueError:
+                return f"ERROR: bad page range '{part}'. Use like 1-3,5."
+            if lo < 1 or hi > total or lo > hi:
+                return f"ERROR: page range '{part}' out of bounds (document has {total} pages)."
+            idx.extend(range(lo - 1, hi))
+        else:
+            try:
+                n = int(part)
+            except ValueError:
+                return f"ERROR: bad page '{part}'. Use like 1-3,5."
+            if n < 1 or n > total:
+                return f"ERROR: page {n} out of bounds (document has {total} pages)."
+            idx.append(n - 1)
+    if not idx:
+        return "ERROR: no pages selected. Use like 1-3,5."
+    return idx
+
+
+def _pdf_tool(action: str, path: str, workspace: Path, pdfs: str = "", pages: str = "") -> str:
+    """Work with PDF files. Actions:
+
+    - merge: join PDFs (``pdfs`` = comma-separated workspace paths) into one.
+    - split: extract pages (``pages`` like "1-3,5") from one PDF (``pdfs`` = single path).
+    - info: report page count (``pdfs`` = single path; no output file needed).
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        return "ERROR: the 'pypdf' package is not installed on this machine (pip install pypdf)."
+    action = (action or "").strip().lower()
+    if action not in _PDF_ACTIONS:
+        return f"ERROR: unknown action '{action}'. Allowed: {', '.join(_PDF_ACTIONS)}."
+
+    def _resolve_pdf(p: str):
+        try:
+            src = _resolve_workspace_path(p, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not src.is_file():
+            return f"ERROR: PDF not found in the workspace: {p}"
+        if src.suffix.lower() != ".pdf":
+            return f"ERROR: not a PDF file: {p}"
+        return src
+
+    parts = [p.strip() for p in (pdfs or "").split(",") if p.strip()]
+    if not parts:
+        return "ERROR: need at least one PDF path in 'pdfs'."
+    srcs = []
+    for p in parts:
+        r = _resolve_pdf(p)
+        if isinstance(r, str):
+            return r
+        srcs.append(r)
+
+    if action == "info":
+        try:
+            reader = PdfReader(str(srcs[0]))
+            n = len(reader.pages)
+        except Exception as exc:
+            return f"ERROR reading PDF: {exc.__class__.__name__}: {exc}"
+        return f"OK, {srcs[0].name}: {n} page(s)."
+
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".pdf":
+        return "ERROR: output path must end in .pdf."
+    try:
+        writer = PdfWriter()
+        if action == "merge":
+            total = 0
+            for src in srcs:
+                reader = PdfReader(str(src))
+                for page in reader.pages:
+                    writer.add_page(page)
+                    total += 1
+            if total == 0:
+                return "ERROR: the PDFs contain no pages."
+        else:  # split
+            if len(srcs) != 1:
+                return "ERROR: split takes exactly one PDF in 'pdfs'."
+            reader = PdfReader(str(srcs[0]))
+            sel = _parse_pdf_pages(pages, len(reader.pages))
+            if isinstance(sel, str):
+                return sel
+            for i in sel:
+                writer.add_page(reader.pages[i])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as fh:
+            writer.write(fh)
+    except Exception as exc:
+        return f"ERROR working with PDF: {exc.__class__.__name__}: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, PDF saved: {rel} [action={action}]"
+
+
+_VEO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_VEO_POLL_INTERVAL = 10
+_VEO_POLL_MAX_ATTEMPTS = 30  # ~5 minutes of polling
+_VEO_MAX_BYTES = 200 * 1024 * 1024
+_VEO_DURATIONS = (5, 8)
+_VEO_ASPECTS = ("16:9", "9:16")
+
+
+def _generate_video(
+    prompt: str,
+    path: str,
+    workspace: Path,
+    duration: int = 8,
+    aspect_ratio: str = "16:9",
+    operation: str = "",
+) -> str:
+    """Generate a short video clip from a text prompt via Google's Veo API.
+
+    The chat/text provider usually cannot render video, so this tool uses a
+    separate capability: a Gemini API key (``gemini_api_key`` in config, or
+    ``ZELINE_GEMINI_API_KEY``) plus a Veo video model (``video_model`` in
+    config, or ``ZELINE_VIDEO_MODEL``). Generation is a long-running
+    operation: the tool submits the job, polls for completion, downloads the
+    MP4 and writes it into the workspace. If the job is still running when
+    polling times out, the operation name is returned so a later call with
+    ``operation=<name>`` can resume instead of starting over.
+    """
+    prompt = (prompt or "").strip()
+    operation = (operation or "").strip()
+    if not prompt and not operation:
+        return "ERROR: need a text prompt describing the video to generate."
+    api_key = getattr(config, "GEMINI_API_KEY", "") or ""
+    video_model = getattr(config, "VIDEO_MODEL", "") or ""
+    if not api_key:
+        return (
+            "ERROR: video generation is not available — no Gemini API key is configured. "
+            "The owner can add one with `zeline setup` (Gemini API key for video) or the "
+            "ZELINE_GEMINI_API_KEY environment variable. A Gemini API key with Veo access "
+            "is required because the chat provider cannot render video itself."
+        )
+    if not video_model:
+        return (
+            "ERROR: no text-to-video model is configured. The owner can set one with "
+            "`zeline setup` (video model) or the ZELINE_VIDEO_MODEL environment variable, "
+            "e.g. veo-3.0-generate-001."
+        )
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".mp4":
+        return "ERROR: output path must end in .mp4."
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+
+    def _poll(op_name: str) -> dict | None:
+        url = f"{_VEO_API_BASE}/{op_name}"
+        for _ in range(_VEO_POLL_MAX_ATTEMPTS):
+            try:
+                resp = requests.get(url, headers={"x-goog-api-key": api_key}, timeout=30)
+            except requests.RequestException as exc:
+                return {"_error": f"network error while polling video job ({exc.__class__.__name__})"}
+            if not resp.ok:
+                return {"_error": f"video job poll HTTP {resp.status_code}"}
+            try:
+                data = resp.json()
+            except ValueError:
+                return {"_error": "video provider returned an unreadable poll response"}
+            if data.get("done"):
+                return data
+            time.sleep(_VEO_POLL_INTERVAL)
+        return None
+
+    if operation:
+        # Resume a previously submitted job.
+        result = _poll(operation)
+        op_name = operation
+    else:
+        try:
+            duration_int = int(duration)
+        except (TypeError, ValueError):
+            return f"ERROR: duration must be one of {', '.join(str(d) for d in _VEO_DURATIONS)} seconds."
+        if duration_int not in _VEO_DURATIONS:
+            return f"ERROR: unsupported duration '{duration}'. Allowed: {', '.join(str(d) for d in _VEO_DURATIONS)}."
+        aspect_ratio = (aspect_ratio or "16:9").strip()
+        if aspect_ratio not in _VEO_ASPECTS:
+            return f"ERROR: unsupported aspect ratio '{aspect_ratio}'. Allowed: {', '.join(_VEO_ASPECTS)}."
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"durationSeconds": duration_int, "aspectRatio": aspect_ratio},
+        }
+        try:
+            resp = requests.post(
+                f"{_VEO_API_BASE}/models/{video_model}:generateVideo",
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            return f"ERROR: could not reach the video provider ({exc.__class__.__name__}). Try again."
+        if not resp.ok:
+            hint = ""
+            if resp.status_code == 404:
+                hint = f" — the model '{video_model}' was not found. Check the video model name."
+            elif resp.status_code in (400, 403):
+                hint = " — the API key may lack Veo access or the request was rejected."
+            return f"ERROR: video provider HTTP {resp.status_code}{hint}"
+        try:
+            op_name = resp.json().get("name", "")
+        except ValueError:
+            return "ERROR: video provider returned an unreadable response."
+        if not op_name:
+            return "ERROR: video provider did not return a job id."
+        result = _poll(op_name)
+
+    if result is None:
+        return (
+            f"PENDING: video job '{op_name}' is still rendering after ~5 minutes. "
+            f"Call generate_video again with operation='{op_name}' (and the same path) to check it later."
+        )
+    if "_error" in result:
+        return f"ERROR: {result['_error']}"
+    try:
+        video_uri = result["response"]["generatedSamples"][0]["video"]["uri"]
+    except (KeyError, IndexError, TypeError):
+        err = result.get("error", {})
+        msg = err.get("message", "no video was produced") if isinstance(err, dict) else "no video was produced"
+        return f"ERROR: video generation failed: {msg}"
+    try:
+        with requests.get(video_uri, headers={"x-goog-api-key": api_key}, timeout=300, stream=True) as dl:
+            if not dl.ok:
+                return f"ERROR: could not download generated video (HTTP {dl.status_code})."
+            chunks = []
+            total = 0
+            for chunk in dl.iter_content(65536):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _VEO_MAX_BYTES:
+                    return f"ERROR: generated video exceeds the {_VEO_MAX_BYTES // (1024*1024)} MB limit."
+            raw = b"".join(chunks)
+    except requests.RequestException as exc:
+        return f"ERROR downloading generated video: {exc.__class__.__name__}"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+    except OSError as exc:
+        return f"ERROR writing video: {exc}"
+    rel = dest.relative_to(workspace) if dest.is_relative_to(workspace) else dest
+    return f"OK, generated video saved: {rel} ({_format_size(len(raw))}) using model {video_model}"
 
 
 def _schedule_task(
@@ -1259,6 +2001,10 @@ WEB_MAX_BYTES = 200_000
 WEB_MAX_RESULTS = 5
 DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB cap untuk download_file
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+# UA khusus untuk r.jina.ai: proxy ini MEMBLOKIR UA browser (Chrome/…) dengan
+# 403 tapi meloloskan UA bot ringan / curl / python-requests. Wajib beda dari
+# _UA di atas, kalau tidak seluruh SERP Bing+DDG mati dan search jadi "bego".
+_READER_UA = "curl/8.4.0"
 # Reader proxy: cepat & tahan blokir dari jaringan mobile/Termux (DuckDuckGo
 # langsung sering timeout/HTTP 000). Semua pencarian & fetch lewat sini dulu.
 _JINA_READER = "https://r.jina.ai/"
@@ -1394,13 +2140,19 @@ def _reader_get(target_url: str):
     Reader proxy (r.jina.ai) merender SERP server-side dan sesekali lambat pada
     percobaan pertama (cold), lalu sukses pada retry. Satu retry singkat menutup
     kasus 0-hasil-padahal-engine-hidup tanpa menggantung lama.
+
+    PENTING (bug 403): r.jina.ai kini MEMBLOKIR User-Agent browser (Chrome/…)
+    dengan 403, tapi meloloskan UA kosong / curl / python-requests. Mengirim
+    browser _UA di sini membuat SELURUH pencarian Bing+DDG (mesin utama untuk
+    hasil web relevan) mati diam-diam — hanya menyisakan Google News + Wikipedia
+    yang bego untuk kueri umum. Solusi: pakai UA bot ringan, BUKAN browser UA.
     """
     last_exc: Exception | None = None
     for attempt in range(2):
         try:
             resp = requests.get(
                 _JINA_READER + target_url,
-                headers={"User-Agent": _UA},
+                headers={"User-Agent": _READER_UA},
                 timeout=READER_SEARCH_TIMEOUT,
             )
             if resp.ok and resp.text.strip():
@@ -1762,7 +2514,8 @@ TOOL_DEFS: list[ToolDef] = [
             "Send a file from the workspace to the user in this chat: an image, a "
             "PDF, a spreadsheet, an archive, anything you produced. Use this "
             "whenever you create a file the user should SEE — after generate_image, "
-            "after building a report/invoice/chart, after exporting data. Printing "
+            "after edit_image, after generate_video, after edit_video, after text_to_speech, "
+            "after qr_code, after pdf_tool, after building a report/invoice/chart, after exporting data. Printing "
             "the file path alone is useless to someone on a phone; the file must be "
             "delivered. Images arrive as photos, audio as a voice/audio message, "
             "everything else as a document. Optional 'caption' is one short line of "
@@ -1897,6 +2650,14 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "consolidate_memory",
+        "Tidy this conversation's long-term memory: drop duplicate and expired "
+        "facts, keep the rest. Deterministic nudge (no LLM call) — safe to run "
+        "periodically via cron to stop memory bloat.",
+        {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "load_skill",
         "Read the full content of a skill/procedure by its skill file name.",
         {
@@ -1983,6 +2744,120 @@ TOOL_DEFS: list[ToolDef] = [
                 "size": {"type": "string", "description": "Image size like 1024x1024, 1536x1024, or 1024x1536. Optional (default 1024x1024)."},
             },
             "required": ["prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "generate_video",
+        "Generate a short video clip from a text prompt (text-to-video) and save it into the workspace as MP4. Use when the user asks to create/render a video, animation, or clip. Requires a Gemini API key with Veo access (the chat/text model cannot render video itself) — if it is not configured, the tool says so plainly instead of faking it. Generation takes minutes; if the job is still rendering, the tool returns an operation id you can resume with the 'operation' parameter. Returns the saved file path — then call send_file with that path so the user actually SEES the video instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed description of the video to create"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .mp4"},
+                "duration": {"type": "integer", "description": "Clip length in seconds: 5 or 8. Optional (default 8)."},
+                "aspect_ratio": {"type": "string", "description": "16:9 or 9:16. Optional (default 16:9)."},
+                "operation": {"type": "string", "description": "Resume a previously submitted job by its operation id. Optional."},
+            },
+            "required": ["prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "edit_image",
+        "Edit an existing image from the workspace with a text instruction (inpainting-style edit) and save the result as a new image file. Use when the user asks to change part of a picture — e.g. remove people or objects from the background, change colors, add/remove elements. Takes the source image path in the workspace plus a prompt describing the edit. Requires an image model that supports edits (e.g. gpt-image-1); the provider's error is surfaced honestly if it does not. Returns the saved file path — then call send_file with that path so the user actually SEES the edited image instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "image": {"type": "string", "description": "Source image path in the workspace (.png/.jpg/.jpeg/.webp/.gif)"},
+                "prompt": {"type": "string", "description": "Description of the edit to make, e.g. 'remove the people in the background'"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .png/.jpg/.webp"},
+                "mask": {"type": "string", "description": "Optional mask image path in the workspace (white = area to repaint). Best-effort; not all models use it."},
+                "size": {"type": "string", "description": "Output size like 1024x1024, 1536x1024, or 1024x1536. Optional (default 1024x1024)."},
+            },
+            "required": ["image", "prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "edit_video",
+        "Edit a video file with CapCut-style operations (no phone app needed; runs ffmpeg on the server) and save the result as MP4 in the workspace. Actions: trim (cut a segment with start/duration in seconds), concat (join 2+ clips via comma-separated 'videos'), text (overlay a title/caption with font size/color/position and optional timing), audio (add or replace the soundtrack from an audio file, with volume), speed (change playback speed with 'factor' 0.25-4.0). Use when the user asks to cut, merge, caption, mute/replace audio, or speed up/slow down a video. Returns the saved file path — then call send_file with that path so the user actually SEES the video instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "trim, concat, text, audio, or speed"},
+                "video": {"type": "string", "description": "Source video path in the workspace (not needed for concat)"},
+                "videos": {"type": "string", "description": "Comma-separated video paths in the workspace, for concat"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .mp4"},
+                "start": {"type": "string", "description": "Start time in seconds (trim, text timing)"},
+                "duration": {"type": "string", "description": "Duration in seconds (trim, text timing)"},
+                "text": {"type": "string", "description": "Text to overlay (text action)"},
+                "fontsize": {"type": "integer", "description": "Overlay font size 8-200 (default 48)"},
+                "fontcolor": {"type": "string", "description": "Overlay font color name (default white)"},
+                "position": {"type": "string", "description": "top, center, or bottom (default bottom)"},
+                "audio": {"type": "string", "description": "Audio file path in the workspace (audio action)"},
+                "volume": {"type": "number", "description": "Audio volume multiplier 0-5 (default 1.0)"},
+                "factor": {"type": "number", "description": "Speed factor 0.25-4.0 (default 1.0)"},
+            },
+            "required": ["action", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "text_to_speech",
+        "Convert text into spoken audio (a voice note) via the provider's /audio/speech endpoint and save it as MP3 in the workspace. Use when the user asks the bot to speak, read text aloud, or make an audio version of something. Returns the saved file path — then call send_file with that path so the user actually HEARS the audio instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to speak (max 4000 chars)"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .mp3"},
+                "voice": {"type": "string", "description": "Voice name, e.g. alloy, echo, fable, onyx, nova, shimmer. Optional (default alloy)."},
+                "model": {"type": "string", "description": "Speech model. Optional (default tts-1)."},
+            },
+            "required": ["text", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "qr_code",
+        "Generate a QR code image (PNG) from any text — a link, WiFi credentials, or plain text. Runs fully offline. Returns the saved file path — then call send_file with that path so the user actually SEES the QR code instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text/data to encode in the QR code"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .png"},
+                "size": {"type": "integer", "description": "Module size 2-20, bigger = larger image. Optional (default 10)."},
+            },
+            "required": ["text", "path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "transcribe_audio",
+        "Transcribe a voice note or audio file from the workspace into text, via the provider's /audio/transcriptions endpoint. Use when the user sends a voice message and just wants the words written out. Returns the transcript directly — no file is created.",
+        {
+            "type": "object",
+            "properties": {
+                "audio": {"type": "string", "description": "Audio file path in the workspace (.ogg/.mp3/.m4a/.wav/...)"},
+                "language": {"type": "string", "description": "Optional ISO language code hint, e.g. id, en."},
+                "prompt": {"type": "string", "description": "Optional hint: names or jargon likely spoken in the audio."},
+            },
+            "required": ["audio"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "pdf_tool",
+        "Work with PDF files in the workspace: merge (join several PDFs into one), split (extract pages like '1-3,5' from one PDF), info (report page count). Returns the saved file path for merge/split — then call send_file with that path so the user actually GETS the PDF instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "merge, split, or info"},
+                "pdfs": {"type": "string", "description": "Comma-separated PDF paths in the workspace (one for split/info, several for merge)"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .pdf (merge/split)"},
+                "pages": {"type": "string", "description": "Pages to extract for split, e.g. '1-3,5'"},
+            },
+            "required": ["action", "pdfs"],
         },
         frozenset({"workspace", "full"}),
     ),
@@ -2337,7 +3212,244 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset(SAFE_PROFILES),
     ),
+    ToolDef(
+        "github_repos",
+        (
+            "List the operator's GitHub repositories (most recently updated first). "
+            "Requires the GitHub connector: the owner links it once with "
+            "`zeline connect github`."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many repos (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_issues",
+        (
+            "List issues of a GitHub repository. Pull requests are skipped. "
+            "Requires the GitHub connector (`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "state": {"type": "string", "description": "'open', 'closed', or 'all' (default 'open')."},
+                "limit": {"type": "integer", "description": "How many issues (default 10)."},
+            },
+            "required": ["owner", "repo"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_create_issue",
+        (
+            "Create a GitHub issue in a repository. Requires the GitHub connector "
+            "(`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "title": {"type": "string", "description": "Issue title."},
+                "body": {"type": "string", "description": "Optional issue body (Markdown)."},
+            },
+            "required": ["owner", "repo", "title"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_issue_comment",
+        (
+            "Post a comment on a GitHub issue (or pull request). Requires the GitHub "
+            "connector (`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "number": {"type": "integer", "description": "Issue/PR number."},
+                "body": {"type": "string", "description": "Comment body (Markdown)."},
+            },
+            "required": ["owner", "repo", "number", "body"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "github_prs",
+        (
+            "List pull requests of a GitHub repository. Requires the GitHub connector "
+            "(`zeline connect github`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repository owner."},
+                "repo": {"type": "string", "description": "Repository name."},
+                "state": {"type": "string", "description": "'open', 'closed', or 'all' (default 'open')."},
+                "limit": {"type": "integer", "description": "How many PRs (default 10)."},
+            },
+            "required": ["owner", "repo"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "gmail_search",
+        (
+            "Search the operator's Gmail. Returns one line per message: "
+            "message-id | date | from | subject. Requires the Google connector "
+            "(`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Gmail search query, e.g. 'from:bank subject:otp newer_than:7d'."},
+                "limit": {"type": "integer", "description": "How many messages (default 10)."},
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "gmail_read",
+        (
+            "Read one Gmail message (Subject/From/Date + first 2000 characters of "
+            "the text body). Requires the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Gmail message id from gmail_search."},
+            },
+            "required": ["message_id"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "gmail_send",
+        (
+            "Send a plain-text email from the operator's Gmail account. Requires "
+            "the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address."},
+                "subject": {"type": "string", "description": "Email subject."},
+                "body": {"type": "string", "description": "Plain-text body."},
+            },
+            "required": ["to", "subject", "body"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "google_calendar",
+        (
+            "List upcoming events on the operator's primary Google Calendar. "
+            "Requires the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "time_min": {"type": "string", "description": "ISO start bound (default: now)."},
+                "time_max": {"type": "string", "description": "Optional ISO end bound."},
+                "limit": {"type": "integer", "description": "How many events (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "sheets_read",
+        (
+            "Read a range from a Google Sheet, returned as compact TSV. Requires "
+            "the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "spreadsheet_id": {"type": "string", "description": "The spreadsheet id from its URL."},
+                "range_name": {"type": "string", "description": "A1 notation, e.g. 'Sheet1!A1:D20'."},
+            },
+            "required": ["spreadsheet_id", "range_name"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "drive_list",
+        (
+            "List files in the operator's Google Drive (most recently modified "
+            "first). Requires the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Optional Drive search query."},
+                "limit": {"type": "integer", "description": "How many files (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "whatsapp_send",
+        (
+            "Send a WhatsApp text message from the operator's business number. "
+            "Requires the WhatsApp connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "text": {"type": "string", "description": "Message text."},
+            },
+            "required": ["to", "text"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "whatsapp_template",
+        (
+            "Send an approved WhatsApp message template (needed for contacting "
+            "numbers outside the 24h conversation window). Requires the WhatsApp "
+            "connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "template": {"type": "string", "description": "Approved template name."},
+                "language": {"type": "string", "description": "Template language code (default en_US)."},
+            },
+            "required": ["to", "template"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
 ]
+
+
+def _connector_tool(cid: str, method: str, **kwargs) -> str:
+    """Call a connector operation; the import stays lazy so startup stays light.
+
+    Returns a plain "ERROR: ..." string when the connector is unknown or not
+    linked, so the model knows to ask the owner to run `zeline connect <id>`.
+    """
+    from zeline import connectors as connectors_pkg
+
+    conn = connectors_pkg.get(cid)
+    label = conn.name if conn is not None else cid
+    if conn is None or not conn.is_connected():
+        return f"ERROR: {label} not connected. The owner can run `zeline connect {cid}` to link it."
+    try:
+        return str(getattr(conn, method)(**kwargs))
+    except RuntimeError as exc:
+        return str(exc)
+    except Exception as exc:  # never leak tracebacks to the model
+        return f"ERROR: {label} {method} failed ({exc})."
 
 
 class ToolExecutor:
@@ -2417,6 +3529,7 @@ class ToolExecutor:
             "add_memory": self.memory.add,
             "remove_memory": self.memory.remove,
             "list_memory": self.memory.formatted,
+            "consolidate_memory": lambda: self._consolidate_memory(),
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
@@ -2424,6 +3537,25 @@ class ToolExecutor:
             "deep_research": lambda query: _deep_research(query),
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
+            "edit_image": lambda image, prompt, path, mask="", size="1024x1024": _edit_image(
+                image, prompt, path, self.workspace, mask, size
+            ),
+            "edit_video": lambda action, path, video="", videos="", start="", duration="", text="", fontsize=48, fontcolor="white", position="bottom", audio="", volume=1.0, factor=1.0: _edit_video(
+                action, video, path, self.workspace, videos, start, duration, text, fontsize, fontcolor, position, audio, volume, factor
+            ),
+            "text_to_speech": lambda text, path, voice="alloy", model="tts-1": _text_to_speech(
+                text, path, self.workspace, voice, model
+            ),
+            "qr_code": lambda text, path, size=10: _qr_code(text, path, self.workspace, size),
+            "transcribe_audio": lambda audio, language="", prompt="": _transcribe_audio(
+                audio, self.workspace, language, prompt
+            ),
+            "pdf_tool": lambda action, pdfs, path="", pages="": _pdf_tool(
+                action, path, self.workspace, pdfs, pages
+            ),
+            "generate_video": lambda prompt, path, duration=8, aspect_ratio="16:9", operation="": _generate_video(
+                prompt, path, self.workspace, duration, aspect_ratio, operation
+            ),
             "send_file": lambda path, caption="": _send_file(path, self.workspace, self.identity, caption),
             "git": lambda action, path="", message="", ref="", staged=False, limit=10: _git(
                 action, self.workspace, path=path, message=message, ref=ref, staged=staged, limit=limit
@@ -2463,6 +3595,43 @@ class ToolExecutor:
             ),
             "recall_history": lambda query="": self._recall_history(query),
             "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
+            "github_repos": lambda limit=10: _connector_tool("github", "list_repos", limit=limit),
+            "github_issues": lambda owner, repo, state="open", limit=10: _connector_tool(
+                "github", "list_issues", owner=owner, repo=repo, state=state, limit=limit
+            ),
+            "github_create_issue": lambda owner, repo, title, body="": _connector_tool(
+                "github", "create_issue", owner=owner, repo=repo, title=title, body=body
+            ),
+            "github_issue_comment": lambda owner, repo, number, body: _connector_tool(
+                "github", "comment_issue", owner=owner, repo=repo, number=number, body=body
+            ),
+            "github_prs": lambda owner, repo, state="open", limit=10: _connector_tool(
+                "github", "list_prs", owner=owner, repo=repo, state=state, limit=limit
+            ),
+            "gmail_search": lambda query, limit=10: _connector_tool(
+                "google", "gmail_search", query=query, limit=limit
+            ),
+            "gmail_read": lambda message_id: _connector_tool(
+                "google", "gmail_read", message_id=message_id
+            ),
+            "gmail_send": lambda to, subject, body: _connector_tool(
+                "google", "gmail_send", to=to, subject=subject, body=body
+            ),
+            "google_calendar": lambda time_min="", time_max="", limit=10: _connector_tool(
+                "google", "calendar_list", time_min=time_min, time_max=time_max, limit=limit
+            ),
+            "sheets_read": lambda spreadsheet_id, range_name: _connector_tool(
+                "google", "sheets_read", spreadsheet_id=spreadsheet_id, range_name=range_name
+            ),
+            "drive_list": lambda query="", limit=10: _connector_tool(
+                "google", "drive_list", query=query, limit=limit
+            ),
+            "whatsapp_send": lambda to, text: _connector_tool(
+                "whatsapp", "send_text", to=to, text=text
+            ),
+            "whatsapp_template": lambda to, template, language="en_US": _connector_tool(
+                "whatsapp", "send_template", to=to, template=template, language=language
+            ),
         }
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
@@ -2617,6 +3786,28 @@ class ToolExecutor:
         except lsp_module.LspError as exc:
             return f"ERROR code_intel: {exc}"
 
+    def _consolidate_memory(self) -> str:
+        """Rapikan memory jangka panjang: buang fakta duplikat & kedaluwarsa.
+
+        Nudge deterministik murni — tidak ada LLM call, jadi aman dipanggil
+        berkala via cron. Kontrak: ``MemoryStore.consolidate()`` mengembalikan
+        dict dengan key ``removed_duplicates``, ``removed_expired``, ``kept``.
+        """
+        try:
+            result = self.memory.consolidate()
+        except Exception as exc:  # noqa: BLE001 — tool tidak boleh meledak
+            return f"ERROR: consolidate_memory failed: {exc}"
+        try:
+            dup = int(result.get("removed_duplicates", 0))
+            exp = int(result.get("removed_expired", 0))
+            kept = int(result.get("kept", 0))
+        except (AttributeError, TypeError, ValueError):
+            return f"ERROR: consolidate_memory returned unexpected result: {result!r}"
+        return (
+            f"Consolidated memory: {dup} duplicates removed, "
+            f"{exp} expired removed, {kept} kept."
+        )
+
     def _recall_history(self, query: str = "") -> str:
         """Cari transkrip percakapan lama chat ini (archive permanen).
 
@@ -2671,14 +3862,58 @@ class ToolExecutor:
                     "instead of guessing from an older session."
                 )
             return f"No past conversation found matching '{q}'. This chat has no earlier transcript on that topic."
+        # Digest berkelompok dari FTS5 (tanpa LLM call tambahan):
+        # baris dikelompokkan per thread berdasar (title, tanggal) supaya model
+        # membaca konteks per topik, bukan tumpukan turn acak. Budget karakter
+        # menjaga output tidak meledakkan context window.
         lines = [header, ""]
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        order: list[tuple[str, str]] = []
         for r in rows:
-            who = "User" if r["role"] == "user" else "You"
-            snippet = r["content"].replace("\n", " ").strip()
-            if len(snippet) > 400:
-                snippet = snippet[:400] + "…"
-            lines.append(f"[{r['when']}] {who}: {snippet}")
-        return "\n".join(lines)
+            title = (r.get("title") or "").strip() or "(untitled)"
+            date = (r.get("when") or "")[:10] or "????-??-??"
+            key = (title, date)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(r)
+        used_total = 0
+        cut_total = False
+        for title, date in order:
+            if used_total >= _RECALL_TOTAL_BUDGET:
+                cut_total = True
+                break
+            lines.append(f"### {title} — {date}")
+            used_total += len(lines[-1]) + 1
+            used_thread = 0
+            for r in groups[(title, date)]:
+                who = "User" if r["role"] == "user" else "You"
+                snippet = r["content"].replace("\n", " ").strip()
+                if len(snippet) > 400:
+                    snippet = snippet[:400] + "…"
+                line = f"[{r['when']}] {who}: {snippet}"
+                if used_thread + len(line) + 1 > _RECALL_THREAD_BUDGET:
+                    keep = max(0, _RECALL_THREAD_BUDGET - used_thread - len(_TRUNC_MARK))
+                    line = line[:keep] + _TRUNC_MARK
+                    lines.append(line)
+                    used_total += len(line) + 1
+                    break  # thread ini dipotong; lanjut ke thread berikut
+                if used_total + len(line) + 1 > _RECALL_TOTAL_BUDGET:
+                    keep = max(0, _RECALL_TOTAL_BUDGET - used_total - len(_TRUNC_MARK))
+                    line = line[:keep] + _TRUNC_MARK
+                    lines.append(line)
+                    used_total += len(line) + 1
+                    cut_total = True
+                    break
+                lines.append(line)
+                used_total += len(line) + 1
+                used_thread += len(line) + 1
+            lines.append("")
+            if cut_total:
+                break
+        if cut_total:
+            lines.append(_TRUNC_MARK)
+        return "\n".join(lines).rstrip("\n")
 
     def _spawn_subagent(self, brief: str, system_extra: str, suffix: str) -> str:
         """Run one sub-agent to completion and return its final summary.

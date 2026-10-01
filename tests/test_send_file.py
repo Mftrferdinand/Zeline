@@ -240,7 +240,7 @@ class TelegramFileUploadTests(unittest.TestCase):
 
     def test_the_progress_feed_names_the_file_being_sent(self):
         line = self.telegram._tool_progress_text("send_file", {"path": "reports/q3.xlsx"})
-        self.assertEqual(line, "📤 Sending file <code>q3.xlsx</code>")
+        self.assertEqual(line, "📤 Sending <code>q3.xlsx</code>")
         self.assertFalse(line.startswith("🔧"))
 
 
