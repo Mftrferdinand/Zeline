@@ -1176,6 +1176,37 @@ class Zeline:
             tool_calls = message.get("tool_calls")
             if not tool_calls:
                 content = str(message.get("content") or "").strip()
+                # AUTO-CONTINUE: provider kadang balikin content kosong (token
+                # cap habis di reasoning, finish_reason=length, atau stream
+                # terpotong). User biasanya ngetik "lanjut" manual — jangan
+                # tunggu itu. Kirim nudge internal dan panggil LLM lagi.
+                # Batasi max 2 auto-continue per turn supaya tidak infinite loop.
+                if not content:
+                    auto_continues = getattr(self, "_auto_continue_count", 0)
+                    if auto_continues < 2:
+                        self._auto_continue_count = auto_continues + 1
+                        nudge = (
+                            "Your previous reply was empty — likely the token budget "
+                            "was consumed by reasoning before any visible content. "
+                            "Continue from where you left off and output the actual "
+                            "answer now. Be direct and concise."
+                        )
+                        self.messages.append({"role": "user", "content": nudge})
+                        self._trim_history()
+                        continue
+                    # Sudah 2x auto-continue, tetap kosong — JANGAN tampilkan
+                    # placeholder teknis "(provider tidak mengirim jawaban teks)"
+                    # ke user. Ganti dengan pesan natural yang bisa ditindaklanjuti.
+                    self._auto_continue_count = 0
+                    self.messages.append({"role": "assistant", "content": content})
+                    self._trim_history()
+                    return (
+                        "Provider cuma ngirim proses berpikir, jawabannya kepotong "
+                        "(biasanya token cap habis di reasoning). Kirim ulang pesan "
+                        "lo, atau ganti model dengan /model."
+                    )
+                # Konten ada — reset counter dan lanjut normal.
+                self._auto_continue_count = 0
                 if self._turn_cloudflare_detected and _PUBLIC_SOLVER_REFUSAL_RE.search(content):
                     correction = (
                         "## Trusted runtime correction\n"
@@ -1194,7 +1225,10 @@ class Zeline:
                         continue
                 self.messages.append({"role": "assistant", "content": content})
                 self._trim_history()
-                return content or "(provider tidak mengirim jawaban teks)"
+                return content or (
+                    "Provider cuma ngirim proses berpikir, jawabannya kepotong. "
+                    "Kirim ulang pesan lo, atau ganti model dengan /model."
+                )
 
             if not isinstance(tool_calls, list):
                 raise ZelineError("Invalid tool call format from the provider.")

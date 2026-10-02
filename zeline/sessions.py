@@ -298,25 +298,33 @@ class SessionStore:
         r"\bkoreksi\b", r"\brevisi\b",
         r"\bprioritas\w*\b", r"\bduluan\b",
         r"\bcepet\b", r"\bcepat\b",
+        # Perintah imperatif yang jelas ingin mengganti arah task sekarang:
+        r"\bjangan\b", r"\bganti\b", r"\bubah\b",
+        r"\bsalah\b", r"\bbukan\b", r"\bmalah\b",
+        # Tambahan: frasa umum yang user pakai saat mau redirect task:
+        r"\bpindah\b", r"\bskip\b", r"\blewati\b", r"\babai\b",
+        r"\bfokus\b", r"\bulang\b", r"\bredo\b",
+        r"\bwait\b", r"\bhold\b",
     )
 
     # Patterns that are urgent ONLY when the message is SHORT (<=8 words) —
     # short = standalone command; long = guidance/refinement embedded in a
     # sentence (e.g. "jadi sl di 14-16$ karena risk 15$ jangan di 19$ okey").
     _URGENT_SHORT_PATTERNS = (
-        r"\bganti\b", r"\bubah\b",
-        r"\bjangan\b",
-        r"\bsalah\b", r"\bbukan\b", r"\bmalah\b",
+        r"\bkurang\b", r"\btambah\b",
     )
 
     def classify_steer(self, text: str) -> bool:
         """True if this mid-turn message is URGENT (should interrupt the task).
 
         Pure keyword heuristic (no API call):
-        - Hard patterns → always urgent (unambiguous stop/abort words).
+        - Hard patterns → always urgent (unambiguous stop/abort/redirect words).
+          Ini sekarang lebih luas: "jangan", "ganti", "ubah", "salah", "bukan",
+          "malah" langsung urgent tanpa batasan panjang — user yang koreksi
+          task yang sedang jalan hampir selalu mau interupsi, bukan steer.
         - Soft patterns → urgent only when the message is ≤8 words, so that
-          refinement sentences like "jadi sl di 14-16$ jangan di 19$ okey"
-          are treated as steer guidance instead of an interrupt.
+          refinement sentences like "tambahin border merah" are treated as
+          steer guidance instead of an interrupt.
         - Plain questions ("btw harga eth berapa") → ordinary steer (waits).
         """
         low = f" {text.strip().lower()} "

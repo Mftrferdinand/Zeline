@@ -3478,6 +3478,14 @@ def _dispatch_update(
                             text=f"⚡ Interrupting current task ({el} elapsed{iter_str}). "
                                  "Working on your message now.",
                         )
+                    else:
+                        # classify bilang urgent tapi interrupt() return None —
+                        # race condition (turn baru aja selesai antara dua cek).
+                        # Kirim banner tetap supaya user tau pesannya didahulukan.
+                        _api_call(
+                            api, "sendMessage", chat_id=chat_id_int,
+                            text="⚡ Priority message received — processing now.",
+                        )
                     # jalankan pesan mendesak sebagai turn baru (turn lama sudah
                     # dibatalkan; SessionStore.send serial via lock, jadi ia
                     # menunggu turn lama benar-benar lepas lalu jalan). Sisipkan

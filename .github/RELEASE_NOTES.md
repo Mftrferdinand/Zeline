@@ -1,4 +1,4 @@
-## Zeline v0.3.7
+## Zeline v0.3.8
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
@@ -17,7 +17,7 @@ Then `zeline setup`.
 One line on every POSIX platform — Termux, Linux, macOS, iSH:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.7/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.8/install.sh && bash install.sh
 ```
 
 The installer downloads the versioned wheel and verifies it against
@@ -30,23 +30,28 @@ that is missing any of it.
 
 ### Highlights
 
-- **Muse-style reasoning engine (new optional example).**
-  `examples/muse-reasoning-engine/` shows how to give Zeline a reasoning
-  backend running on your own machine: an OpenAI-compatible bridge
-  (`bridge.py`, with `tool_calls` passthrough so the backend can drive
-  Zeline's full native toolset), a standalone poller (`poller.py`) that
-  works with **any** OpenAI-compatible LLM via your own API key, a
-  model-agnostic system prompt (natural narration, `ask_user` picker for
-  every question, wallet safety rules), a one-command installer
-  (`sudo ./install.sh`), and a watchdog timer that reinstalls + restarts
-  the stack if units vanish or services die. Zeline itself stays 100%
-  provider-agnostic — this is opt-in, nothing changes by default.
+- **Interactive choice picker (`ask_user`).**
+  Operators can now select options from numbered interactive pickers on
+  both Telegram and the CLI interface.
+- **Graceful gateway drain & user notifications.**
+  Before a gateway restart or update, active sessions receive advance warning
+  and running turns are allowed to finish cleanly instead of being cut off.
+- **Reasoning model auto-continue & fallback.**
+  Thinking models that exhaust token budgets in reasoning before producing
+  visible output receive an autonomous nudge (up to 2x) to finish, with automatic
+  fallback to `reasoning_content` when content is blank.
+- **Steer & interrupt reliability.**
+  Imperative words (`jangan`, `ganti`, `ubah`, `salah`, etc.) trigger immediate
+  interrupts reliably, silent background thread crashes are trapped and notified,
+  and dead streams are terminated by watchdogs.
+- **Core SOUL and operational rules.**
+  Standardized "Narrate, don't interrogate" principles and authorized crypto,
+  wallet, and airdrop task workflows into the core agent instructions.
 
 ### Upgrade note
 
 No configuration changes are required. Existing installs can upgrade in place
-with `zeline update`, or `/update` from Telegram. The new example ships in
-the source archive and the repository; it is not auto-installed.
+with `zeline update`, or `/update` from Telegram.
 
 ### Security
 
@@ -57,7 +62,7 @@ credentials.
 
 ### Installation
 
-See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.7/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.7/CHANGELOG.md) for the full list of changes.
+See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.8/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.8/CHANGELOG.md) for the full list of changes.
 
 ### Assets
 

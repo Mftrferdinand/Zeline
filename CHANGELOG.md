@@ -1,4 +1,25 @@
 # Changelog
+
+## [0.3.8] — 2026-10-02
+
+### Added
+- **Interactive choice picker** — `ask_user` supports numbered picker menus on Telegram and CLI so operators can select options by number ([#296]).
+- **Router skills** — `9router-antigravity-batch-bind` and `9router-antigravity-verify-links` for binding and verifying local inference routes ([#302]).
+- **Gateway drain notification** — active users receive warning notice before gateway restarts so in-flight work is not silently cut off.
+- **Reasoning model auto-continue** — autonomous nudge (up to 2x) when thinking models consume token budget in reasoning before emitting visible content.
+
+### Changed
+- **Narration consolidation** — reverted fallback progress spam to clean 0.3.5 baseline; model narration merges cleanly into single bubbles via edits ([#301]).
+- **SOUL operational guidelines** — established "Narrate, don't interrogate" and authorized crypto/wallet task handling in core operating rules.
+- **npm install route documented** — verified package documentation across installation guides alongside curl/iwr routes ([#254]).
+
+### Fixed
+- **Stream stalls & message queue safety** — inactivity watchdog terminates dead streams; gateway never skips messages silently or goes silent on empty provider responses ([#297], [#299], [#300]).
+- **Reasoning content fallback** — non-stream reasoning models returning empty content fall back to `reasoning_content` ([#276]).
+- **Path hygiene in bundled skills** — replaced machine-specific developer paths with neutral lookups in `google-workspace` ([#303]) and `llm-wiki` ([#222]).
+- **Urgent steer classification** — expanded imperative redirection words (`jangan`, `ganti`, `ubah`, `salah`, etc.) to trigger priority interrupts reliably.
+- **Dependency updates** — bumped `actions/upload-artifact` to v7 ([#244]) and `actions/download-artifact` to v8 ([#243]).
+
 ## [0.3.7] — 2026-10-01
 
 ### Added
@@ -383,7 +404,8 @@ release's documented one-liner keeps working after a newer release ships.
 Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
-[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.6...main
+[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.8...main
+[0.3.8]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.8
 [0.3.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.7
 [0.3.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.6
 [0.3.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.5
@@ -396,6 +418,10 @@ Release notes for 0.2.5 and earlier are on the
 [0.2.8]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.8
 [0.2.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.7
 [0.2.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.2.6
+[#222]: https://github.com/Mftrferdinand/Zeline/pull/222
+[#243]: https://github.com/Mftrferdinand/Zeline/pull/243
+[#244]: https://github.com/Mftrferdinand/Zeline/pull/244
+[#254]: https://github.com/Mftrferdinand/Zeline/pull/254
 [#269]: https://github.com/Mftrferdinand/Zeline/pull/269
 [#270]: https://github.com/Mftrferdinand/Zeline/pull/270
 [#271]: https://github.com/Mftrferdinand/Zeline/pull/271
@@ -416,6 +442,14 @@ Release notes for 0.2.5 and earlier are on the
 [#290]: https://github.com/Mftrferdinand/Zeline/pull/290
 [#291]: https://github.com/Mftrferdinand/Zeline/pull/291
 [#295]: https://github.com/Mftrferdinand/Zeline/pull/295
+[#296]: https://github.com/Mftrferdinand/Zeline/pull/296
+[#297]: https://github.com/Mftrferdinand/Zeline/pull/297
+[#298]: https://github.com/Mftrferdinand/Zeline/pull/298
+[#299]: https://github.com/Mftrferdinand/Zeline/pull/299
+[#300]: https://github.com/Mftrferdinand/Zeline/pull/300
+[#301]: https://github.com/Mftrferdinand/Zeline/pull/301
+[#302]: https://github.com/Mftrferdinand/Zeline/pull/302
+[#303]: https://github.com/Mftrferdinand/Zeline/pull/303
 [#260]: https://github.com/Mftrferdinand/Zeline/pull/260
 [#261]: https://github.com/Mftrferdinand/Zeline/pull/261
 [#262]: https://github.com/Mftrferdinand/Zeline/pull/262

@@ -87,6 +87,46 @@ def _print_banner() -> None:
     print(branding.banner(__version__))
 
 
+def _notify_active_users_before_drain(sessions) -> None:
+    """Kirim notifikasi ke semua chat yang turn-nya sedang aktif sebelum drain.
+
+    Dipanggil dari drain_and_shutdown SEBELUM pause() supaya pesan masih bisa
+    keluar. Best-effort: kalau satu chat gagal, yang lain tetap dinotif.
+    """
+    try:
+        from zeline.gateways.telegram import _api_call, API_TEMPLATE
+    except Exception:  # noqa: BLE001
+        return
+    busy = sessions.running_identities()
+    if not busy:
+        return
+    # Ambil token dari config gateway telegram yang enabled.
+    tg_cfg = config.GATEWAYS.get("telegram", {})
+    token = str(tg_cfg.get("token", "")).strip()
+    if not token:
+        return
+    api = API_TEMPLATE.format(token=token)
+    for identity in busy:
+        # identity format: "telegram:<chat_id>" — ekstrak chat_id untuk sendMessage
+        try:
+            chat_id_str = identity.split(":", 1)[1]
+            chat_id = int(chat_id_str)
+        except (IndexError, ValueError):
+            continue
+        try:
+            _api_call(
+                api, "sendMessage",
+                chat_id=chat_id,
+                text=(
+                    "⚠️ Gateway is restarting for an update. "
+                    "Your current task will be interrupted — "
+                    "send your message again after the restart."
+                ),
+            )
+        except Exception:  # noqa: BLE001 — one failed notify must not block others
+            pass
+
+
 def _provider_display() -> str:
     """Human provider name for the chat header; never the base URL or key."""
     provider = config.stored_config_copy().get("provider", {})
@@ -1358,9 +1398,15 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         SIGKILL, jadi build/install/analisis yang sedang berjalan mati di
         tengah jalan. Dengan drain, turn aktif dibiarkan selesai lebih dulu
         dan turn baru ditolak dengan pesan yang jelas.
+
+        Setiap user yang turn-nya sedang jalan dinotif dulu sebelum drain
+        dimulai — mereka tahu bot akan restart dan task-nya mungkin terpotong.
         """
         timeout = float(getattr(config, "RESTART_DRAIN_TIMEOUT", 30.0))
         print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
+        # Notif user yang turn-nya aktif: gateway akan restart, task mungkin
+        # terpotong. Dilakukan SEBELUM pause supaya pesan masih bisa terkirim.
+        _notify_active_users_before_drain(sessions)
         # Stop arming new jobs first, or a tick during the drain starts work we
         # are about to kill.
         cron.stop()
