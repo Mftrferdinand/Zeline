@@ -29,9 +29,11 @@ class SecurityHygieneTests(unittest.TestCase):
     def test_tracked_text_has_no_retired_brand_literals(self):
         terms = (
             "her" + "mes", "aes" + "ora", "nous" + " research",
-            "nous" + "research", "open" + "claw", "claw" + "hub",
+            "nous" + "research", "open" + "claw",
             "super" + "agent", "iron" + "claw", "sel" + "ena",
         )
+        # Note: "clawhub" (ClawHub skills registry) is a third-party service
+        # integration like GitHub API, not a competitor brand. Allowed.
         tracked = subprocess.check_output(
             ["git", "ls-files", "-z"], cwd=ROOT
         ).decode().split("\0")

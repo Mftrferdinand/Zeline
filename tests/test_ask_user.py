@@ -214,25 +214,22 @@ class SynchronousChannelTests(AskUserBase):
         self.assertLess(time.monotonic() - started, 2)
         self.assertFalse(self.interaction.has_pending("cli:local"))
 
-    def test_a_broken_channel_falls_back_to_waiting_instead_of_crashing(self):
+    def test_a_broken_channel_fails_closed_with_deny_instead_of_hanging(self):
+        """Renderer yang raise TIDAK BOLEH mengembalikan alur ke event.wait
+        (hang seperti kasus timeout approval dulu): ask() harus langsung
+        deny dalam <1 dtk (fail-closed)."""
+        started_at = time.monotonic()
+
         def renderer(_entry):
             raise RuntimeError("renderer exploded")
 
-        self.interaction.register_channel("telegram:1", renderer)
-        box: dict[str, str] = {}
-
-        def run():
-            box["result"] = self.interaction.ask("telegram:1", "Still works?")
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-        for _ in range(100):
-            if self.interaction.has_pending("telegram:1"):
-                break
-            time.sleep(0.01)
-        self.assertTrue(self.interaction.answer("telegram:1", "yes"))
-        worker.join(timeout=5)
-        self.assertEqual(box["result"], "yes")
+        self.interaction.register_channel("probe:1", renderer)
+        result = self.interaction.ask("probe:1", "Still works?")
+        elapsed = time.monotonic() - started_at
+        self.assertLess(elapsed, 1.0, f"ask() hang {elapsed:.1f}s setelah renderer raise")
+        self.assertTrue(result.startswith("Deny"), result)
+        # Tidak ada pertanyaan menggantung yang menunggu jawaban.
+        self.assertFalse(self.interaction.has_pending("probe:1"))
 
     def test_unregister_channel_restores_async_behaviour(self):
         self.interaction.register_channel("cli:local", lambda _e: "inline")

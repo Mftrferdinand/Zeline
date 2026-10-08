@@ -124,7 +124,22 @@ def _content_to_text(result: dict[str, Any]) -> str:
 
 @dataclass
 class MCPServer:
-    """Satu koneksi ke sebuah MCP server (stdio atau http)."""
+    """Satu koneksi ke sebuah MCP server (stdio atau http).
+
+    ``risk_cap`` adalah pernyataan kepercayaan eksplisit operator, HANYA dari
+    file config (``mcp.servers.<nama>.trust.risk_cap``) — tidak pernah dari
+    chat. Tanpanya (atau bila nilainya tidak valid), setiap tool server ini
+    diperlakukan sebagai Destructive oleh risk gate (fail closed): tool MCP
+    tidak bisa diaudit per-tool oleh Zeline, jadi defaultnya adalah kelas
+    paling ketat. Cap yang valid MENURUNKAN kelas itu, mis. ``"read"`` untuk
+    server yang memang hanya menyediakan pencarian/dokumen.
+
+    Peringatan yang harus dipahami sebelum mengisi ini: cap adalah kepercayaan
+    pada SERVER, bukan pada satu tool — bila server di-update dan salah satu
+    tool-nya berubah perilaku (mis. dari read menjadi write), cap tidak akan
+    menangkapnya. Pilih cap sesempit mungkin, dan uji ulang perilaku tool
+    setelah update server.
+    """
 
     name: str
     transport: str  # "stdio" | "http"
@@ -132,6 +147,9 @@ class MCPServer:
     url: str = ""  # untuk http
     headers: dict[str, str] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
+    #: Raw risk-cap string from config; validated against TOOL_RISKS by the
+    #: risk gate (zeline/tools.py), never trusted blindly here.
+    risk_cap: str | None = None
 
     _process: subprocess.Popen | None = field(default=None, repr=False)
     _rpc_id: int = field(default=0, repr=False)
@@ -323,6 +341,11 @@ class MCPRegistry:
             if not isinstance(spec, dict) or not spec.get("enabled", True):
                 continue
             transport = str(spec.get("transport") or ("http" if spec.get("url") else "stdio"))
+            trust = spec.get("trust") or {}
+            raw_cap = trust.get("risk_cap") if isinstance(trust, dict) else None
+            # Normalized here (case/whitespace tolerant); validated fail-closed
+            # by the risk gate — a missing or unknown value keeps Destructive.
+            risk_cap = str(raw_cap).strip().lower() if raw_cap else None
             servers.append(MCPServer(
                 name=str(name),
                 transport=transport,
@@ -330,6 +353,7 @@ class MCPRegistry:
                 url=str(spec.get("url", "")),
                 headers={str(k): str(v) for k, v in (spec.get("headers") or {}).items()},
                 env={str(k): str(v) for k, v in (spec.get("env") or {}).items()},
+                risk_cap=risk_cap,
             ))
         return cls(servers)
 
@@ -349,6 +373,18 @@ class MCPRegistry:
     def has_tool(self, name: str) -> bool:
         parsed = parse_tool_name(name)
         return bool(parsed and parsed[0] in self.servers)
+
+    def risk_cap_for(self, server_name: str) -> str | None:
+        """Raw risk-cap string the operator configured for this server.
+
+        Returns ``None`` when the server is unknown or has no cap. The value
+        is NOT validated here — the risk gate (``zeline/tools.py``) checks it
+        against the known risk classes and fails closed to Destructive on
+        anything unexpected, so a typo in the config can never silently
+        widen permissions.
+        """
+        server = self.servers.get(server_name)
+        return server.risk_cap if server is not None else None
 
     def call(self, name: str, arguments: dict[str, Any]) -> str:
         parsed = parse_tool_name(name)

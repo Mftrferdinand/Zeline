@@ -6,6 +6,7 @@ Jadi Telegram user A tidak pernah berbagi history atau memory dengan user B.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import copy
 import json
 import re
@@ -18,11 +19,13 @@ import requests
 
 from zeline import __version__, config
 from zeline import compaction
+from zeline import goals
 from zeline import tasks
 from zeline import skills
 from zeline import lessons
-from zeline.tools import ToolExecutor
+from zeline.tools import ToolExecutor, ApprovalPolicy, InteractiveApprovalPolicy
 from zeline import project_rules
+from zeline import routing
 from zeline import tool_protocol
 from zeline import usage_stats
 
@@ -77,6 +80,21 @@ _PUBLIC_SOLVER_REFUSAL_RE = re.compile(
     r"|(?:garis|line).{0,80}(?:nggak|tidak|won't).{0,40}(?:lewat|cross)",
     re.IGNORECASE | re.DOTALL,
 )
+
+_ERROR_TEXT_RE = re.compile(r"^ERROR[:\s]")
+
+
+def is_error_text(text: str) -> bool:
+    """True bila teks mengikuti konvensi error framework.
+
+    Semua emitter di ``tools.py`` memakai huruf kapital dengan format
+    ``"ERROR: ..."`` atau ``"ERROR <kata> ..."`` — pola ini case-sensitive
+    dan menuntut ``:``/spasi tepat setelah ``ERROR``, sehingga keluaran
+    sukses seperti ``"ERRORS: 0"`` tidak ikut terlabeli gagal. Helper bersama
+    yang juga dipakai dari ``zeline.cli`` (``from zeline.agent import
+    is_error_text``) supaya deteksi error konsisten di semua jalur.
+    """
+    return bool(_ERROR_TEXT_RE.match(str(text or "")))
 
 
 class _TurnCancelled(Exception):
@@ -348,7 +366,19 @@ class Zeline:
         # Skill context selected deterministically for the active turn. It is
         # added only to the provider payload, never persisted into transcript.
         self._turn_skill_context: str = ""
+        # SuperContext block: pre-message research sweep result for this turn.
+        # Prepended to the system prompt (never persisted to history).
+        self._supercontext_block: str = ""
         self._turn_cloudflare_detected = False
+        # Model routing per-turn (zeline.routing). None = turn ini memakai
+        # self.model seperti biasa; diisi oleh send() hanya bila routing aktif
+        # dan ada route yang cocok. Dibersihkan di finally send() supaya tidak
+        # bocor ke turn berikutnya atau ke pemanggil _call_llm di luar send()
+        # (mis. reflect()).
+        self._turn_model: str | None = None
+        # Keputusan routing turn terakhir — observabilitas; None bila routing
+        # mati atau evaluasinya gagal (routing tidak boleh merusak turn).
+        self.last_route_decision = None
         # Override streaming per-instance. None = ikuti config global
         # (``agent.stream``). Front-end yang protokolnya MEMBUTUHKAN token
         # mengalir — misalnya adapter SSE/WebSocket di luar repo ini — menyetel
@@ -370,12 +400,44 @@ class Zeline:
             return bool(self.stream_responses)
         return bool(getattr(config, "STREAM_RESPONSES", True))
 
+    def _last_user_text(self) -> str | None:
+        """Teks pesan user terakhir — query untuk scored retrieval turn ini.
+
+        ``None`` saat sesi baru (system prompt dibangun sebelum ada pesan user)
+        → blok memory/lessons fallback ke injeksi penuh seperti dulu.
+        """
+        for message in reversed(getattr(self, "messages", None) or []):
+            if message.get("role") == "user":
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+        return None
+
     def _build_system_prompt(self) -> str:
+        # Scored memory retrieval: blok memory & lessons
+        # hanya menyuntik top-K record yang relevan dengan pesan user terakhir,
+        # bukan seluruh store tiap turn. Tanpa pesan user (sesi baru), query
+        # kosong, atau nol hit → fallback ke injeksi penuh, byte-identical
+        # dengan perilaku sebelum retrieval ada.
+        query = self._last_user_text()
+        # Proactive episodic surfacing: relevant past episodes are injected
+        # automatically (no tool call needed).
+        from zeline import memory as memory_pkg
+        episodes = memory_pkg.search_episodes(self.identity, query or "", limit=2)
+        episode_block = memory_pkg.format_episodes(episodes)
+        if episode_block:
+            episode_block = "\n" + episode_block + "\n"
+        # SuperContext block goes FIRST: background research for this turn's
+        # message. Empty string when disabled or nothing relevant found.
+        _sc_block = getattr(self, "_supercontext_block", "") or ""
+        _sc_prefix = f"[SUPERCONTEXT]\n{_sc_block}\n\n" if _sc_block.strip() else ""
         return (
-            config.SYSTEM_PROMPT
-            + self.executor.memory.prompt_block()
-            + lessons.lessons_block(self.identity)
-            + skills.skills_block(include_private=self.executor.profile == "full")
+            _sc_prefix
+            + config.SYSTEM_PROMPT
+            + self.executor.memory.prompt_block(query=query)
+            + episode_block
+            + lessons.lessons_block(self.identity, query=query)
+            + skills.skills_block(include_private=self.executor.profile == "full", identity=self.identity)
             # Project conventions from ZELINE.md/AGENTS.md in the workspace. Read
             # once here so the system prompt stays byte-stable for the life of the
             # session (prompt caching); edits apply to the next session.
@@ -384,6 +446,9 @@ class Zeline:
             # gateway restart: a rebuilt session starts knowing what was left open
             # instead of the operator re-explaining it.
             + tasks.prompt_block(self.identity)
+            # Long-term goals (zeline-brain). Unlike tasks, goals survive /new:
+            # they are commitments, shown compactly with a text progress bar.
+            + goals.prompt_block_goals(self.identity)
             + self._system_extra
             + f"\n\nActive runtime (non-secret): model={self.model}; protocol={self.protocol}; profile={self.executor.profile}. "
             + "\n\nSimpan fakta jangka panjang yang benar-benar berguna memakai add_memory. "
@@ -552,7 +617,7 @@ class Zeline:
             else bool(force_stream)
         )
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": self._turn_model or self.model,
             "messages": outbound_messages,
             "temperature": 0.7,
             "stream": streaming,
@@ -595,7 +660,7 @@ class Zeline:
                 elif role in {"user", "assistant"}:
                     messages.append({"role": role, "content": str(item.get("content", ""))})
             payload = {
-                "model": self.model,
+                "model": self._turn_model or self.model,
                 "system": str(self.messages[0].get("content", "")),
                 "messages": messages,
                 "max_tokens": 4096,
@@ -770,7 +835,7 @@ class Zeline:
             prompt_tokens, completion_tokens = usage_stats.extract_usage(payload, self.protocol)
             if prompt_tokens or completion_tokens:
                 self._usage_store().record(
-                    self.model, prompt_tokens, completion_tokens, self.identity
+                    self._turn_model or self.model, prompt_tokens, completion_tokens, self.identity
                 )
 
     def _usage_store(self):
@@ -1079,12 +1144,43 @@ class Zeline:
         on_narration: Callable[[str], None] | None = None,
         on_stream_delta: Callable[[str], None] | None = None,
         turn_extra: str = "",
+        approval_policy: ApprovalPolicy | None = None,
     ) -> str:
         text = user_input.strip()
         if not text:
             return "Please write a message first."
         if len(text) > 16_000:
             return "Message too long (maximum 16,000 characters)."
+        # Model routing per-turn: pilih model sesuai kategori tugas.
+        # Mati secara default → perilaku identik seperti sebelumnya.
+        # Seluruh blok defensif: routing tidak boleh merusak turn.
+        self._turn_model = None
+        self.last_route_decision = None
+        try:
+            _routing_section = config.config.get("routing", {})
+            _router_cfg = routing.RouterConfig.from_dict(
+                _routing_section, default_model=self.model
+            )
+            _router_cfg.apply_env()  # env selalu menang atas file
+            # History tanpa system prompt: system prompt adalah overhead
+            # konstan di setiap turn (puluhan ribu karakter) dan tidak membawa
+            # sinyal tentang tugas turn ini — kalau diikutkan, setiap turn
+            # akan terklasifikasi long_context.
+            _decision = routing.resolve(text, self.messages[1:], _router_cfg, self.model)
+            self.last_route_decision = _decision
+            if _decision.routed:
+                self._turn_model = _decision.model
+                if on_narration:
+                    try:
+                        on_narration(
+                            f"🔀 Routing ke {_decision.model} "
+                            f"(kategori: {_decision.category})"
+                        )
+                    except Exception:
+                        pass
+        except Exception:  # noqa: BLE001 — routing gagal = pakai model default
+            self._turn_model = None
+            self.last_route_decision = None
         # Simpan predikat pembatalan supaya loop streaming bisa berhenti di
         # tengah respons provider (tanpa ini /stop harus menunggu sampai
         # seluruh respons selesai — sumber keluhan 'susah disuruh stop').
@@ -1094,11 +1190,48 @@ class Zeline:
         self._drop_incomplete_tail()
         self._trim_history()
         self._should_stop = should_stop
+        # Satu-satunya choke point approval ada di ToolExecutor.run(); setiap
+        # turn memasang kebijakan yang sesuai konteksnya di sini. Default =
+        # interaktif (chat/reflect/sub-agent: tanya operator via picker).
+        # Konteks yang tidak interaktif (cron) menyuntikkan kebijakannya
+        # sendiri lewat parameter approval_policy.
+        self.executor.approval_policy = (
+            approval_policy
+            if approval_policy is not None
+            else InteractiveApprovalPolicy(on_tool=on_tool)
+        )
         # ``turn_extra`` = catatan runtime sekali-pakai untuk turn ini saja (mis.
         # pengingat task tertunda setelah interupsi). Ditaruh di skill-context
         # ephemeral: masuk ke payload provider turn ini, TIDAK dipersist ke
         # history — jadi tidak merusak cache percakapan lintas turn.
         self._turn_skill_context = str(turn_extra or "").strip()
+        # Drain background-worker completions into this turn's ephemeral
+        # context (same lifetime as turn_extra: this turn's provider payload
+        # only, never persisted to history). The chat loop never blocks on
+        # workers — their results arrive here on the next user turn, and the
+        # model is told not to poll for them.
+        try:
+            from zeline import supervisor as _supervisor_module
+
+            _supervisor = _supervisor_module.get_supervisor(self.executor.identity)
+            # Refresh the runner context on EVERY turn: a worker that was
+            # queued before a restart resumes with whatever was bound last —
+            # never let it run with a stale (or silently defaulted) context.
+            # The default runner fails loudly when nothing was ever bound.
+            _supervisor.bind(
+                profile=self.executor.profile,
+                workspace=str(self.executor.workspace),
+                depth=getattr(self.executor, "depth", 0),
+            )
+            _worker_block = _supervisor_module.drain_completion_block(
+                self.executor.identity
+            )
+        except Exception:  # noqa: BLE001 — a drain failure must never break a turn
+            _worker_block = ""
+        if _worker_block:
+            self._turn_skill_context = "\n\n".join(
+                part for part in (self._turn_skill_context, _worker_block) if part
+            )
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []
         if _DAILY_CHECKIN_INTENT_RE.search(text):
@@ -1124,7 +1257,32 @@ class Zeline:
             part for part in ([_base_extra] + loaded_contexts) if part
         )
         self.messages.append({"role": "user", "content": text})
+        # SuperContext: pre-message research sweep (no cold starts). Runs
+        # BEFORE _refresh_system_prompt so the block lands in this turn's
+        # system prompt. Local reads only, budgeted <500ms, never raises.
+        self._supercontext_block = ""
+        try:
+            if getattr(config, "SUPERCONTEXT_ENABLED", True):
+                from zeline import supercontext as _sc
+
+                self._supercontext_block = _sc.gather_context(text, self.identity)
+        except Exception:
+            self._supercontext_block = ""
+        # Refresh system prompt SEKARANG supaya blok memory/lessons turn ini
+        # di-retrieve terhadap pesan yang baru masuk (scored retrieval butuh
+        # query SEBELUM provider call, bukan setelah refleksi).
+        self._refresh_system_prompt()
         self.last_turn_tool_calls = 0
+        # Hooks: turn start (never raises; isolated with timeout)
+        try:
+            from zeline import hooks as _hooks
+
+            _hooks.trigger(
+                _hooks.ON_TURN_START,
+                {"identity": self.identity, "text": text[:500]},
+            )
+        except Exception:
+            pass
         try:
             return self._run_turn(
                 on_tool=on_tool,
@@ -1141,9 +1299,39 @@ class Zeline:
             self._drop_incomplete_tail()
             self._trim_history()
             return CANCELLED_REPLY
+        except Exception as exc:
+            # Hooks: turn error (re-raised after hooks run)
+            try:
+                from zeline import hooks as _hooks
+
+                _hooks.trigger(
+                    _hooks.ON_ERROR,
+                    {
+                        "identity": self.identity,
+                        "error": str(exc)[:500],
+                        "where": "send",
+                    },
+                )
+            except Exception:
+                pass
+            raise
         finally:
+            # Hooks: turn end (never raises; isolated with timeout)
+            try:
+                from zeline import hooks as _hooks
+
+                _hooks.trigger(
+                    _hooks.ON_TURN_END,
+                    {
+                        "identity": self.identity,
+                        "tool_calls": int(self.last_turn_tool_calls or 0),
+                    },
+                )
+            except Exception:
+                pass
             self._should_stop = None
             self._turn_skill_context = ""
+            self._turn_model = None
 
     def _run_turn(
         self,
@@ -1158,9 +1346,68 @@ class Zeline:
         turn_started = time.monotonic()
         repeated_failures = 0  # tool call berturut yang balik ERROR
 
+        # Background services: auto-fetch sync + subconscious review
+        # (run once per turn, cheap checks)
+        try:
+            from zeline import autofetch as _af
+            if _af.should_run():
+                _af.run_sync()
+        except Exception:
+            pass
+        try:
+            from zeline import subconscious as _sub
+            # Run review every ~10 turns (track via instance counter)
+            _turn_count = getattr(self, "_sub_turn_count", 0) + 1
+            self._sub_turn_count = _turn_count
+            if _turn_count % 10 == 0:
+                _sub.review()
+            # Memory rollup every ~50 turns (prevent fact bloat)
+            if _turn_count % 50 == 0:
+                try:
+                    from zeline import memory_rollup as _mr
+                    _mr.rollup(self.identity, max_age_days=90, min_confidence=0.5)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
                 return CANCELLED_REPLY
+            # Live steering: check for mid-flight instructions from the
+            # operator (steer_worker). Injected as a user message so the
+            # agent naturally incorporates the new direction — no restart.
+            try:
+                from zeline import supervisor as _sup_mod
+                # Worker identities are "parent:worker_id"; the parent
+                # supervisor holds steer messages keyed by full identity.
+                # Try own supervisor first, then parent's.
+                _steers: list[str] = []
+                _sup = _sup_mod.peek_supervisor(self.identity)
+                if _sup is not None:
+                    _steers = _sup.pop_steer_messages(self.identity)
+                if not _steers and "::" in self.identity:
+                    _parent_id = self.identity.rsplit("::", 1)[0]
+                    _psup = _sup_mod.peek_supervisor(_parent_id)
+                    if _psup is not None:
+                        _steers = _psup.pop_steer_messages(self.identity)
+                for _s in _steers:
+                    self._history.append({
+                        "role": "user",
+                        "content": f"[STEER — operator mid-flight instruction]: {_s}",
+                    })
+                # Subconscious directives: background alignment nudges
+                try:
+                    from zeline import subconscious as _sub
+                    for _d in _sub.pop_directives():
+                        self._history.append({
+                            "role": "user",
+                            "content": f"[SUBCONSCIOUS — background alignment]: {_d}",
+                        })
+                except Exception:
+                    pass
+            except Exception:
+                pass
             # Batas waktu wall-clock per turn: kalau sudah lewat, jangan lanjut
             # loop tool (mis. web_search yang gagal berulang) — paksa jawaban
             # final dari data yang ada. Ini mencegah "Processing" 10 menit.
@@ -1276,13 +1523,51 @@ class Zeline:
             if on_tool:
                 for _tc, name, args in parsed_calls:
                     on_tool(name, args)
+            # Hooks: tool call (never raises; isolated with timeout)
+            try:
+                from zeline import hooks as _hooks
+
+                for _tc, name, args in parsed_calls:
+                    try:
+                        _safe_args = {
+                            k: (str(v)[:200] if not isinstance(v, str) else v[:200])
+                            for k, v in (args or {}).items()
+                        }
+                    except Exception:
+                        _safe_args = {}
+                    _hooks.trigger(
+                        _hooks.ON_TOOL_CALL,
+                        {"identity": self.identity, "name": name, "args": _safe_args},
+                    )
+            except Exception:
+                pass
 
             if run_parallel:
+                # Gate approval-nya ada di dalam executor.run(), jadi cabang
+                # paralel ikut ter-gate oleh kebijakan turn ini (biasanya
+                # read-only semua → lolos tanpa tanya).
+                #
+                # Thread pool tidak mewarisi ContextVar thread pengirim:
+                # tanpa salinan ini, note_used() di worker thread jadi
+                # no-op dan telemetri skill buta untuk tool paralel.
+                # Satu salinan konteks per task (bukan satu ctx dipakai
+                # bareng) agar mutasi konteks satu task tidak bocor ke
+                # task paralel lain yang berjalan bersamaan.
+                contexts = [contextvars.copy_context() for _ in parsed_calls]
                 with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
-                    results = list(pool.map(lambda ca: self.executor.run(ca[1], ca[2]), parsed_calls))
+                    results = list(pool.map(
+                        lambda item: item[0].run(
+                            self.executor.run, item[1][1], item[1][2]
+                        ),
+                        zip(contexts, parsed_calls),
+                    ))
             else:
                 # Serial: cek pembatalan SEBELUM tiap tool, jadi /stop tidak
-                # perlu menunggu seluruh rangkaian tool selesai.
+                # perlu menunggu seluruh rangkaian tool selesai. Approval
+                # tidak dicek di sini lagi: ToolExecutor.run() adalah
+                # satu-satunya choke point (kebijakan dipasang per-turn di
+                # send()), jadi cabang paralel, reflect(), dan sub-agent
+                # otomatis ter-gate oleh kebijakan yang sama.
                 results = []
                 for _tc, name, args in parsed_calls:
                     if should_stop and should_stop():
@@ -1322,6 +1607,39 @@ class Zeline:
             for (tool_call, name, args), result in zip(parsed_calls, results):
                 if on_tool_result:
                     on_tool_result(name, args, result)
+                # Hooks: tool result (never raises; isolated with timeout)
+                try:
+                    from zeline import hooks as _hooks
+
+                    _failed = str(result).strip().upper().startswith("ERROR")
+                    _hooks.trigger(
+                        _hooks.ON_TOOL_RESULT,
+                        {
+                            "identity": self.identity,
+                            "name": name,
+                            "success": not _failed,
+                            "result_preview": str(result)[:300],
+                        },
+                    )
+                except Exception:
+                    pass
+                # GEPA: record tool call for automatic pattern learning
+                try:
+                    from zeline import gepa as _gepa
+                    _success = not str(result).strip().upper().startswith("ERROR")
+                    _gepa.record_tool_call(name, _success)
+                    # GEPA: if agent used a draft skill, record the use for promotion
+                    # (draft skills are invoked via load_skill with draft_ prefix)
+                    if name == "load_skill":
+                        _skill_name = str(args.get("name", ""))
+                        if _skill_name.startswith("draft_") or "auto-" in _skill_name:
+                            # Find matching draft and record use
+                            for _d in _gepa.get_drafts():
+                                if _d.get("name") == _skill_name or _d.get("id") == _skill_name:
+                                    _gepa.record_skill_use(_d["id"], _success)
+                                    break
+                except Exception:
+                    pass
                 if steer_text:
                     result += f"\n\n[User steering — follow this guidance now: {steer_text}]"
                     steer_text = None  # sertakan sekali saja, di tool result pertama
@@ -1337,7 +1655,7 @@ class Zeline:
             # kegagalan beruntun. Setelah beberapa ronde gagal berturut (mis.
             # web_search mati di jaringan ini), berhenti nge-hajar tool — paksa
             # jawaban final dari data yang ada, jangan sampai 20 ronde × detik.
-            if results and all(str(r).startswith("ERROR") for r in results):
+            if results and all(is_error_text(r) for r in results):
                 repeated_failures += 1
                 if repeated_failures >= config.MAX_REPEATED_TOOL_FAILURES:
                     answer = self._force_final_answer(should_stop, on_stream_delta=on_stream_delta)
@@ -1410,6 +1728,18 @@ class Zeline:
         # directly. Normal sends maintain the cumulative counter.
         if max(self._tool_calls_since_reflection, self.last_turn_tool_calls) < min_tool_calls:
             return None
+        # Refleksi tidak boleh mewarisi kebijakan approval sisa turn terakhir
+        # (mis. GrantApprovalPolicy dari run cron): tool berbahaya selama
+        # refleksi otonom harus lewat operator. Pasang kebijakan interaktif
+        # FRESH — tidak berbagi state dengan turn terakhir — lalu kembalikan
+        # di finally supaya tidak bocor ke turn berikutnya. Renderer
+        # ``on_tool`` (bukan keputusan approval, hanya cara picker
+        # dirender) diwariskan supaya pertanyaan approval selama refleksi
+        # tetap tampil ke operator seperti biasa.
+        previous_policy = self.executor.approval_policy
+        self.executor.approval_policy = InteractiveApprovalPolicy(
+            on_tool=getattr(previous_policy, "on_tool", None)
+        )
         # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
         # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
         saved_messages = copy.deepcopy(self.messages)
@@ -1495,6 +1825,9 @@ class Zeline:
                             args = {}
                     except json.JSONDecodeError:
                         args = {}
+                    # Ter-gate oleh kebijakan interaktif FRESH via ToolExecutor.run()
+                    # (dipasang di awal reflect()): refleksi yang otonom tidak
+                    # boleh menjalankan tool berbahaya tanpa operator.
                     result = self.executor.run(name, args)
                     # ``list`` hanya orientasi (cek duplikat) — bukan perubahan, jadi
                     # tidak dilaporkan sebagai hasil self-improvement. Tanpa filter ini
@@ -1515,12 +1848,27 @@ class Zeline:
         finally:
             # Kembalikan source default; instance memory dipakai lagi di sesi ini.
             self.executor.memory.default_source = previous_source
+            # Kembalikan kebijakan approval sisa turn terakhir; kebijakan
+            # fresh reflect() hanya berlaku selama refleksi berjalan.
+            self.executor.approval_policy = previous_policy
             # Buang jejak refleksi dari history utama supaya tidak mengganggu
             # konteks percakapan berikutnya.
             self.messages = saved_messages
             if review_completed:
                 self._tool_calls_since_reflection = 0
                 self.last_turn_tool_calls = 0
+                # GEPA: automatic pattern learning after complex tasks.
+                # Runs silently — drafts are created, not auto-promoted.
+                try:
+                    from zeline import gepa as _gepa
+                    _new_drafts = _gepa.auto_learn()
+                    if _new_drafts:
+                        actions.append(
+                            f"GEPA: {len(_new_drafts)} skill draft(s) created "
+                            f"from observed patterns."
+                        )
+                except Exception:
+                    pass
             # A reflection may have changed memory, lessons, or skills. Make the
             # next ordinary turn see the new knowledge immediately.
             self._refresh_system_prompt()

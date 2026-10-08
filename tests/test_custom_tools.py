@@ -262,12 +262,28 @@ class ProfileTests(CustomToolBase):
         self.assertIn("parameters", schema["function"])
 
 
+
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji perilaku tool, bukan gate-nya — jadi gate
+    dilewati dengan allow-all. Tanpa policy, fallback fail-closed (verdict
+    owner) akan me-deny tool mutasi sebelum tool berjalan.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
 class RegistryIntegrationTests(CustomToolBase):
     def _registry(self, profile: str):
         tools_module = importlib.import_module("zeline.tools")
-        return tools_module.ToolExecutor(
+        ex = tools_module.ToolExecutor(
             identity="cli:local", profile=profile, workspace=str(self.home)
         )
+        ex.approval_policy = _AllowAllPolicy()
+        return ex
 
     def test_custom_tools_appear_in_the_agent_schema_list(self):
         self.write("t.py", "def shout(text: str) -> str:\n    return text.upper()\n")

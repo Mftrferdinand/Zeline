@@ -260,11 +260,27 @@ class SearchTests(IndexBase):
         self.assertLessEqual(len(self.idx.revealed) - before, 4)
 
 
+
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji perilaku tool, bukan gate-nya — jadi gate
+    dilewati dengan allow-all. Tanpa policy, fallback fail-closed (verdict
+    owner) akan me-deny tool mutasi sebelum tool berjalan.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
 class ExecutorTests(IndexBase):
     def executor(self, profile: str = "full"):
-        return self.tools.ToolExecutor(
+        ex = self.tools.ToolExecutor(
             identity="cli:local", profile=profile, workspace=str(self.home)
         )
+        ex.approval_policy = _AllowAllPolicy()
+        return ex
 
     def test_off_means_identical_behaviour_to_before_the_feature(self):
         self.switch(False)

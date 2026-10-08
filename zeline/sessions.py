@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Callable
 
 from zeline import config
+from zeline import approvals
 from zeline import tasks
 from zeline import tools
 from zeline.agent import Zeline
@@ -89,6 +90,12 @@ class SessionStore:
                 # instead — the map shrinks back as soon as any turn finishes.
                 return
             self._sessions.pop(victim)
+            # Sesi yang di-evict sudah berakhir: izin "allow sesi ini"-nya
+            # tidak boleh bertahan untuk identity yang dibuat ulang nanti.
+            try:
+                approvals.clear_session_allows(victim)
+            except Exception:
+                pass
 
     def get_or_create(
         self,
@@ -143,6 +150,7 @@ class SessionStore:
         on_iteration: Callable | None = None,
         on_narration: Callable | None = None,
         on_stream_delta: Callable | None = None,
+        approval_policy: object | None = None,
     ) -> str:
         # Gateway sedang drain untuk restart/update: jangan mulai turn baru,
         # dan katakan alasannya. Turn yang sudah jalan tetap diselesaikan.
@@ -195,6 +203,7 @@ class SessionStore:
                     on_narration=on_narration,
                     on_stream_delta=on_stream_delta,
                     turn_extra=system_extra,
+                    approval_policy=approval_policy,
                 )
                 session.last_used = time.monotonic()
                 # Simpan history ke disk setelah tiap turn sukses → bertahan
@@ -254,6 +263,13 @@ class SessionStore:
         # grup prosesnya, jadi turn tidak lagi tertahan sampai perintah selesai.
         try:
             tools.cancel_identity(identity)
+        except Exception:
+            pass
+        # /stop = interupsi eksplisit operator di tengah sesi: izin "allow sesi
+        # ini" ikut dicabut supaya turn berikutnya dinilai ulang dari awal,
+        # bukan melanjutkan atas izin yang diberikan sebelum interupsi.
+        try:
+            approvals.clear_session_allows(identity)
         except Exception:
             pass
         return True
@@ -417,6 +433,12 @@ class SessionStore:
         # dibunuh, bukan dibiarkan hidup setelah sesinya dibuang.
         try:
             tools.cancel_identity(identity)
+        except Exception:
+            pass
+        # Sesi berakhir (/new, /reset): seluruh izin "allow sesi ini"
+        # dibersihkan supaya tidak bocor ke sesi berikutnya.
+        try:
+            approvals.clear_session_allows(identity)
         except Exception:
             pass
         # /new atau /reset harus menghapus history disk juga, bukan cuma RAM.

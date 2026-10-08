@@ -1,114 +1,89 @@
 #!/usr/bin/env python3
-"""voice_reply.py — teks jadi voice note (ogg/opus) untuk skill voice-reply.
+"""voice_reply.py — thin CLI wrapper di atas ``zeline.voice`` (core TTS).
 
-Pakai edge-tts (gratis, neural, online) → mp3, lalu ffmpeg → ogg/opus supaya
-Telegram render sebagai voice bubble (bukan file attachment).
-
-Suara default = Emma multilingual (bisa Bahasa Indonesia) dengan tuning "anime":
-pitch +35Hz, rate +10%. Bisa diganti lewat --voice / preset --style.
+Logika TTS (preset, edge-tts -> mp3 -> ffmpeg ogg/opus) dipromosikan
+dari script ini ke ``zeline/voice.py`` supaya gateway bisa membalas dengan
+voice note secara otomatis. Script ini dipertahankan sebagai wrapper CLI yang
+kompatibel ke belakang: antarmuka ``say``/``voices``/``presets`` dan semua flag
+tidak berubah.
 
 Perintah:
   say "<teks>" [--out PATH] [--voice V] [--rate R] [--pitch P] [--style S]
-      → hasilkan voice note ogg. Cetak "FILE: <path>".
-  voices                → daftar preset suara cewe (kode → voice/tuning)
-  presets               → alias sama dengan voices
-
-Preset (--style):
-  emma-anime  (DEFAULT) Emma multilingual, pitch +35Hz rate +10% — anime, Indo OK
-  ava-anime   Ava multilingual, pitch +30Hz rate +8% — anime natural
-  gadis       id-ID-Gadis normal — Indo asli, natural
-  gadis-anime id-ID-Gadis pitch +40Hz rate +15% — Indo asli super imut
-  ana         en-US-Ana — cute cartoon (English)
-  nanami      ja-JP-Nanami — seiyuu Jepang
+      -> hasilkan voice note ogg. Cetak "FILE: <path>".
+  voices / presets -> daftar preset suara
 """
 import argparse
 import os
-import shutil
-import subprocess
 import sys
+from pathlib import Path
+
+# Pastikan ``zeline`` bisa diimport saat script dijalankan langsung dari repo
+# (bukan dari instalasi pip): cari direktori yang memuat paket ``zeline``.
+_here = Path(__file__).resolve()
+_repo_root = next(
+    (p for p in _here.parents if (p / "zeline" / "__init__.py").is_file()),
+    None,
+)
+if _repo_root is not None and str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
+from zeline.voice import DEFAULT_STYLE, PRESETS, VoiceError, synthesize
 
 OUT_DIR = os.path.expanduser("~/.zeline/voice-out")
-
-# preset: style -> (voice, rate, pitch)
-PRESETS = {
-    "emma-anime": ("en-US-EmmaMultilingualNeural", "+10%", "+35Hz"),
-    "ava-anime":  ("en-US-AvaMultilingualNeural",  "+8%",  "+30Hz"),
-    "gadis":      ("id-ID-GadisNeural",            "+0%",  "+0Hz"),
-    "gadis-anime":("id-ID-GadisNeural",            "+15%", "+40Hz"),
-    "ana":        ("en-US-AnaNeural",              "+0%",  "+0Hz"),
-    "nanami":     ("ja-JP-NanamiNeural",           "+0%",  "+0Hz"),
-}
-DEFAULT_STYLE = "emma-anime"
-
-
-def _ensure_dir():
-    os.makedirs(OUT_DIR, exist_ok=True)
 
 
 def cmd_voices(_a):
     print("Preset suara (pakai --style <kode>):")
-    for k, (v, r, p) in PRESETS.items():
-        star = "  ← DEFAULT" if k == DEFAULT_STYLE else ""
+    for k in sorted(PRESETS):
+        v, r, p = PRESETS[k]
+        star = "  <- DEFAULT" if k == DEFAULT_STYLE else ""
         print(f"  {k:<12} {v:<32} rate {r:<5} pitch {p}{star}")
     return 0
 
 
 def cmd_say(a):
-    if not shutil.which("edge-tts"):
-        print("ERROR: edge-tts belum terpasang. `pip install edge-tts`", file=sys.stderr)
-        return 1
-    if not shutil.which("ffmpeg"):
-        print("ERROR: ffmpeg belum terpasang (perlu buat ogg/opus voice bubble).",
-              file=sys.stderr)
-        return 1
-
-    # tentukan voice/rate/pitch: --style jadi basis, --voice/--rate/--pitch override
     style = a.style or DEFAULT_STYLE
     if style not in PRESETS:
         print(f"ERROR: style '{style}' tidak dikenal. Lihat: voice_reply.py voices",
               file=sys.stderr)
         return 1
-    voice, rate, pitch = PRESETS[style]
-    voice = a.voice or voice
-    rate = a.rate or rate
-    pitch = a.pitch or pitch
-
-    _ensure_dir()
     stem = a.out or os.path.join(OUT_DIR, "reply")
     stem = stem[:-4] if stem.endswith((".ogg", ".mp3")) else stem
-    mp3 = stem + ".mp3"
-    ogg = stem + ".ogg"
-
-    # 1) edge-tts → mp3
-    cmd = ["edge-tts", "--voice", voice, "--rate", rate, "--pitch", pitch,
-           "--text", a.text, "--write-media", mp3]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if r.returncode != 0 or not os.path.exists(mp3):
-        print("ERROR edge-tts:", (r.stderr or r.stdout or "").strip()[:200], file=sys.stderr)
-        return 1
-
-    # 2) ffmpeg mp3 → ogg/opus (voice bubble Telegram)
-    r2 = subprocess.run(
-        ["ffmpeg", "-y", "-i", mp3, "-c:a", "libopus", "-b:a", "48k", ogg],
-        capture_output=True, text=True, timeout=120)
-    if r2.returncode != 0 or not os.path.exists(ogg):
-        # fallback: kirim mp3 kalau opus gagal
-        print(f"FILE: {mp3}")
-        print(f"VOICE: {voice} (rate {rate}, pitch {pitch})")
-        print("WARN: konversi opus gagal, pakai mp3.", file=sys.stderr)
-        return 0
-
+    out_dir = os.path.dirname(stem) or OUT_DIR
+    # zeline.voice.synthesize selalu menulis reply.<ogg|mp3> di out_dir;
+    # pindahkan ke stem yang diminta supaya --out tetap dihormati.
     try:
-        os.remove(mp3)
-    except OSError:
-        pass
-    print(f"FILE: {ogg}")
-    print(f"VOICE: {voice} (rate {rate}, pitch {pitch}, style {style})")
+        result = synthesize(
+            a.text,
+            style=style,
+            voice=a.voice or "",
+            rate=a.rate or "",
+            pitch=a.pitch or "",
+            out_dir=Path(out_dir),
+        )
+    except VoiceError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    wanted = Path(stem + result.suffix)
+    if result != wanted:
+        try:
+            result.replace(wanted)
+            result = wanted
+        except OSError:
+            pass  # nama alternatif gagal: pakai hasil asli, tetap valid
+    voice_name, rate, pitch = PRESETS[style]
+    voice_name = a.voice or voice_name
+    rate = a.rate or rate
+    pitch = a.pitch or pitch
+    if result.suffix == ".mp3":
+        print(f"WARN: konversi opus gagal, pakai mp3 (bukan voice bubble).", file=sys.stderr)
+    print(f"FILE: {result}")
+    print(f"VOICE: {voice_name} (rate {rate}, pitch {pitch}, style {style})")
     return 0
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Teks → voice note (edge-tts + ffmpeg opus)")
+    p = argparse.ArgumentParser(description="Teks -> voice note (edge-tts + ffmpeg opus)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("say")

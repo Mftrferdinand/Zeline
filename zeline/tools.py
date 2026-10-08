@@ -27,6 +27,7 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,8 @@ import requests
 
 from zeline import config
 from zeline import compaction
+from zeline import goals
+from zeline import injection_filter
 from zeline import memory
 from zeline import offload
 from zeline import skills
@@ -45,6 +48,7 @@ from zeline import transcribe
 from zeline import vcs
 from zeline import network_routes
 from zeline import interaction
+from zeline import approvals
 from zeline import checkpoints, custom_tools, formatters, openapi_tools
 from zeline import plugins as plugin_bus
 from zeline import tool_index
@@ -61,6 +65,11 @@ class ToolDef:
     description: str
     parameters: dict[str, Any]
     profiles: frozenset[str]
+    risk: str
+
+    def __post_init__(self) -> None:
+        if self.risk not in TOOL_RISKS:
+            raise ValueError(f"unknown tool risk {self.risk!r} for tool {self.name!r}")
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -71,6 +80,74 @@ class ToolDef:
                 "parameters": self.parameters,
             },
         }
+
+
+class ToolRisk:
+    """Risk classes for native tools.
+
+    Every native tool carries exactly one class, chosen for its most
+    privileged capability ("when in doubt, stricter"): a tool that *can*
+    delete is Destructive even if it usually only reads.
+
+    Risk is judged by *effect*, not by channel: a GET over the network has
+    the same effect as reading a local file (none), while a POST that sends
+    a message has an effect no local read can produce. That is why the
+    network classes split on mutation, not on "uses the network":
+
+    - ``READ``: no side effects. A pure read-only network fetch (web search,
+      page fetch, a transcription/vision inference call against the
+      already-trusted provider) is a READ — the effect is a read, even
+      though bytes cross the network. Never asks.
+    - ``WRITE``: mutates local state (files, memory, task board, skills).
+      Asks only when the write escapes the session workspace. A download
+      (GET + workspace write) is a WRITE: the network leg is a read, the
+      effect is a local file.
+    - ``NETWORK``: a network call that *mutates* — it sends data out to
+      change state somewhere else (sending a message/email, uploading a
+      file, posting a comment, calling a state-changing API). Always asks,
+      because the channel crossing is the point of no return: the operator
+      cannot undo a send.
+    - ``INSTALL``: installs something persistent — software via shell aside,
+      here: scheduled jobs, proxy routes, agent skills. Always asks.
+    - ``DESTRUCTIVE``: can irreversibly destroy data (arbitrary code/shell
+      trivially can), or performs network mutations too broad to scope
+      (raw HTTP with any method incl. DELETE, full browser control).
+      Always asks. Scoped, single-purpose sends (one email, one comment,
+      one issue) are ``NETWORK`` instead — still asking, but labelled by
+      their actual effect.
+
+    Non-native tools (MCP ``mcp__*``, custom ``custom_*``, OpenAPI ``api_*``)
+    are not classified per tool: anything not explicitly trusted by the
+    operator in the config file defaults to ``DESTRUCTIVE`` (fail closed —
+    a tool whose effects we cannot audit must never run silently). A per-MCP-
+    server ``trust.risk_cap`` in the config file can lower that default, and
+    only from the config file, never from chat.
+
+    Approval is enforced by the agent loop through the ``ask_user`` picker:
+    Install/Destructive/Network calls, and Write calls that escape the
+    workspace, do not run on the model's authority alone. The legacy
+    ``SAFE_PROFILES`` are unchanged and still gate *visibility*:
+
+    - ``safe`` (public gateways): Read tools plus scoped in-profile writes
+      (memory); the odd dangerous tool exposed here (``http_request``)
+      still asks first — visibility never implies trust.
+    - ``workspace``: safe + Read/Write inside the operator workspace; a
+      Write that escapes the workspace triggers approval.
+    - ``full``: everything, including Install/Destructive/Network — each
+      dangerous call asks first. Default only for the owner's local CLI.
+    """
+
+    READ = "read"
+    WRITE = "write"
+    NETWORK = "network"
+    INSTALL = "install"
+    DESTRUCTIVE = "destructive"
+
+
+#: All valid risk classes, for validation and tests.
+TOOL_RISKS = frozenset(
+    {ToolRisk.READ, ToolRisk.WRITE, ToolRisk.NETWORK, ToolRisk.INSTALL, ToolRisk.DESTRUCTIVE}
+)
 
 
 SAFE_PROFILES = {"safe", "workspace", "full"}
@@ -120,6 +197,154 @@ def _is_continuation_query(query: str) -> bool:
     return all(word in _CONTINUATION_WORDS for word in words)
 
 
+#: Above this many characters, a tool result is no longer passed through
+#: verbatim: it is extractively compressed (deterministic, zero-token, no LLM)
+#: and the full text is offloaded to disk for recovery. Mirrors the philosophy
+#: of ``zeline.compaction``: keep what matters (numbers, error lines, file
+#: paths, the beginning and the end), drop the rest, never reword anything.
+TOOL_OUTPUT_COMPRESS_THRESHOLD = 12_000
+
+#: Target size of the compressed summary, as a fraction of the threshold.
+#: 12_000 chars in -> at most ~4_000 chars shown inline.
+TOOL_OUTPUT_TARGET_RATIO = 1 / 3
+
+#: Head/tail lines always kept as context, even when they score low.
+TOOL_OUTPUT_CONTEXT_LINES = 8
+
+#: Substrings marking a line as carrying failure information. Matched
+#: case-insensitively and deliberately broad: a missed error line is worse
+#: than a kept noisy one, because the summary is extractive (lines are never
+#: reworded, so a false positive costs a few chars, not correctness).
+_ERROR_LINE_HINTS = (
+    "error", "err:", "failed", "failure", "fatal", "panic", "exception",
+    "traceback", "denied", "refused", "timeout", "timed out", "invalid",
+    "unable to", "cannot", "could not", "couldn't", "not found", "no such",
+    "missing", "abort", "killed", "crash", "warning",
+)
+
+#: Heuristic for "this line mentions a file path or a dotted test id".
+_PATH_HINT_RE = re.compile(r"[A-Za-z]:[\\/]|[\w.~$-]+/[\w.~$-]+|\.\w{1,5}\b")
+
+#: Pytest prints assertion context as lines starting with a bare "E ".
+_PYTEST_ERROR_RE = re.compile(r"^E\s")
+
+#: Masks digits so "test 12 passed" and "test 34 passed" share one shape.
+_SHAPE_DIGIT_RE = re.compile(r"\d+")
+
+
+def _line_shape(line: str) -> str:
+    """Structural shape of a line, digits masked. Boilerplate repeats it."""
+    return _SHAPE_DIGIT_RE.sub("#", line.strip())
+
+
+def _score_output_line(line: str) -> int:
+    """Information score for one output line. Deterministic; higher = keep first."""
+    stripped = line.strip()
+    if not stripped:
+        return -100  # blank lines never win a budget fight
+    score = 0
+    lowered = stripped.lower()
+    if any(hint in lowered for hint in _ERROR_LINE_HINTS):
+        score += 6
+    if _PYTEST_ERROR_RE.match(stripped):
+        score += 4  # pytest assertion detail ("E assert ...")
+    if re.search(r"\d", stripped):
+        score += 3  # counts, ports, sizes, durations, line numbers
+    if _PATH_HINT_RE.search(stripped):
+        score += 2  # file paths, test ids like test_x.py::test_y
+    if "=" in stripped and len(stripped) < 300:
+        score += 1  # key=value settings, env, asserts
+    if len(stripped) > 600:
+        score -= 4  # minified blobs / base64 noise
+    return score
+
+
+def _extractive_summary(text: str, target_chars: int) -> str:
+    """Deterministic extractive compression: most informative lines, in order.
+
+    Pure function — text in, text out, no state, no I/O, no LLM — so it stays
+    correct when a tool result arrives from a background worker instead of a
+    synchronous call site. Always keeps the head and tail of the output as
+    context, then fills the remaining budget with the highest-scoring middle
+    lines (error lines, numbers, file paths first). Lines are never reworded;
+    dropped spans are marked with an explicit omission note.
+
+    When the selection still exceeds the budget (omission markers cost chars
+    too), lines are shed least-important-first: weak middle lines, then head
+    lines, then tail lines — the very last line (the final result) is shed
+    absolutely last.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    # Boilerplate that repeats hundreds of times (progress lines, heartbeats)
+    # is less informative than a line with a unique shape: penalize frequent
+    # shapes so one-off error lines win budget fights against log spam.
+    shape_counts: dict[str, int] = {}
+    for line in lines:
+        shape = _line_shape(line)
+        shape_counts[shape] = shape_counts.get(shape, 0) + 1
+
+    def _effective_score(index: int) -> int:
+        base = _score_output_line(lines[index])
+        repetitions = shape_counts[_line_shape(lines[index])]
+        if repetitions > 20:
+            base -= 4
+        elif repetitions > 5:
+            base -= 2
+        return base
+
+    context = TOOL_OUTPUT_CONTEXT_LINES
+    head: set[int] = set(range(min(context, len(lines))))
+    tail: set[int] = set(range(max(len(lines) - context, 0), len(lines)))
+    keep = set(head | tail)
+    scored = sorted(
+        ((_effective_score(i), i) for i in range(len(lines)) if i not in keep),
+        key=lambda item: (-item[0], item[1]),
+    )
+    budget = target_chars - sum(len(lines[i]) + 1 for i in keep)
+    for _, index in scored:
+        cost = len(lines[index]) + 1
+        if cost > budget:
+            continue
+        keep.add(index)
+        budget -= cost
+
+    def _render(kept: set[int]) -> str:
+        parts: list[str] = []
+        previous = -1
+        for index in sorted(kept):
+            if index - previous > 1:
+                parts.append(f"... [{index - previous - 1} lines omitted] ...")
+            parts.append(lines[index])
+            previous = index
+        return "\n".join(parts)
+
+    rendered = _render(keep)
+    if len(rendered) > target_chars and keep:
+        scores = {i: _effective_score(i) for i in keep - head - tail}
+        # Shed order: weakest middle lines first, then head (line 0 survives
+        # longest), then tail (the final line is shed absolutely last).
+        shed_order = sorted(scores, key=lambda i: (scores[i], -i))
+        shed_order += sorted(head & keep, reverse=True)
+        shed_order += sorted(tail & keep)
+        for index in shed_order:
+            keep.discard(index)
+            if len(keep) == 1:
+                only = next(iter(keep))
+                if len(lines[only]) > target_chars:
+                    rendered = (
+                        lines[only][:target_chars].rstrip()
+                        + "\n... [single line cut to fit budget]"
+                    )
+                    keep = set()
+                    break
+            rendered = _render(keep)
+            if len(rendered) <= target_chars:
+                break
+    return rendered
+
+
 def _resolve_workspace_path(raw_path: str, workspace: Path) -> Path:
     """Resolve a relative/absolute user path and keep it inside workspace."""
     requested = Path(raw_path).expanduser()
@@ -162,10 +387,11 @@ def _read_file(path: str, workspace: Path, offset: int = 1, limit: int = 0) -> s
             remaining = len(lines) - (start + len(window))
             note = f"[lines {start + 1}-{start + len(window)} of {len(lines)}"
             note += f"; {remaining} remaining, continue with offset={start + len(window) + 1}]" if remaining else "]"
-            return f"{note}\n{shown}"
+            return injection_filter.filter_tool_result(f"{note}\n{shown}")
         if len(content) > 20_000:
-            return offload.maybe_offload(content, 20_000)
-        return content
+            return injection_filter.filter_tool_result(
+                offload.maybe_offload(content, 20_000))
+        return injection_filter.filter_tool_result(content)
     except Exception as exc:
         return f"ERROR read file: {exc}"
 
@@ -371,11 +597,37 @@ def _clamp_timeout(timeout: Any) -> int:
     return min(seconds, config.SHELL_MAX_TIMEOUT_SECONDS)
 
 
-def _truncate_output(text: str, limit: int = 12_000) -> str:
+def _truncate_output(text: str, limit: int = TOOL_OUTPUT_COMPRESS_THRESHOLD) -> str:
+    """Bound a tool result for the context window.
+
+    Small results pass through untouched. Large results are extractively
+    compressed (see :func:`_extractive_summary`) and the full text is offloaded
+    to disk, so the model gets the informative core inline and can
+    ``read_file`` the rest instead of re-running the work.
+    """
     text = (text or "").strip()
     if not text:
         return "(no output)"
-    return offload.maybe_offload(text, limit)
+    if len(text) <= limit:
+        return text
+    target_chars = max(1_000, int(limit * TOOL_OUTPUT_TARGET_RATIO))
+    summary = _extractive_summary(text, target_chars)
+    line_count = text.count("\n") + 1
+    header = (
+        f"Output too large for context ({len(text):,} chars, {line_count:,} lines). "
+        "Extractive summary below — key numbers, error lines, file paths and the "
+        "start/end of the output are preserved verbatim; nothing was reworded."
+    )
+    target = offload.store(text)
+    if target is None:
+        return f"{header}\n(full text could not be saved to disk)\n\n{summary}"
+    return (
+        f"{header} The full text was saved to:\n{target}\n\n"
+        "Read the parts you need with "
+        f'read_file(path="{target}", offset=1, limit=200) — offset is a 1-based '
+        "line number. Do not re-run the command to see the rest.\n\n"
+        f"{summary}"
+    )
 
 
 # ---------------------------------------------------------------- background jobs
@@ -643,6 +895,38 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
         )
 
     seconds = _clamp_timeout(timeout)
+    # Route through configured execution backend (docker/ssh/sandbox) if not local.
+    # Background jobs always run locally (need process handles).
+    # F1 fix: only catch ImportError/AttributeError here. ValueError from
+    # get_backend() (unknown backend name) must propagate as loud error,
+    # not silent fallback to local (that would neutralize the S3 fix).
+    try:
+        from zeline import backends as _backends
+        _backend = _backends.get_backend()
+    except ValueError as _ve:
+        # Unknown backend name - fail LOUD, don't run locally
+        return f"ERROR: {_ve}. Command NOT executed."
+    except (ImportError, AttributeError):
+        _backend = None  # config not available, use local
+    except Exception:
+        _backend = None  # unexpected, fall through to local
+    if _backend is not None and not isinstance(_backend, _backends.LocalBackend):
+        try:
+            _result = _backend.run(command, str(workspace), seconds, shell=True)
+        except Exception as _be:
+            # Fail-closed: do NOT silently fall back to local.
+            # User configured docker/ssh/sandbox expecting isolation.
+            return (
+                f"ERROR: {type(_backend).__name__} failed: {_be}. "
+                f"Fail-closed: command NOT executed locally. "
+                f"Fix the backend config or switch to local backend explicitly."
+            )
+        if _result.timed_out:
+            return (
+                f"ERROR: command timed out (>{seconds} seconds) on "
+                f"{type(_backend).__name__}."
+            )
+        return f"exit={_result.exit_code}\n{_truncate_output(_result.output)}"
     try:
         code, output, timed_out = _run_tracked(
             command, shell=True, cwd=str(workspace), seconds=seconds, identity=identity,
@@ -819,11 +1103,13 @@ def _http_request(method: str, url: str, headers: str = "", body: str = "") -> s
         if stripped.startswith("{") or stripped.startswith("["):
             hdrs["Content-Type"] = "application/json"
     try:
-        response = requests.request(
-            method, url, headers=hdrs, data=data, timeout=WEB_TIMEOUT, allow_redirects=True,
+        response = _safe_request(
+            method, url, headers=hdrs, data=data, timeout=WEB_TIMEOUT,
         )
     except requests.RequestException as exc:
         return f"ERROR request: {exc.__class__.__name__}: {exc}"
+    except ValueError as exc:
+        return f"ERROR request blocked: {exc}"
     text = response.text or ""
     if len(text) > 8_000:
         text = text[:8_000] + "\n... [truncated]"
@@ -851,7 +1137,11 @@ def _download_file(url: str, path: str, workspace: Path) -> str:
         return f"ERROR: {exc}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True) as response:
+        # Note: redirects disabled for downloads (SSRF safety).
+        # If a URL redirects, the download will fail safely.
+        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=False) as response:
+            if response.status_code in (301, 302, 303, 307, 308):
+                return f"ERROR: download URL redirects (blocked for safety). Use the final URL directly."
             if not response.ok:
                 return f"ERROR: HTTP {response.status_code} {response.reason}."
             size = 0
@@ -1831,6 +2121,8 @@ def _schedule_task(
     prompt: str = "",
     job_id: str = "",
     deliver: str = "",
+    grants: object = None,
+    ask: Callable[[str, object], str] | None = None,
 ) -> str:
     """Let the agent manage its own scheduled jobs.
 
@@ -1842,6 +2134,11 @@ def _schedule_task(
     from a Telegram chat should report back into that chat. `local` is honoured when
     asked for explicitly, since a job whose work is a file or a commit does not need
     to say anything.
+
+    Capability pre-authorization: a new job is created PAUSED and is
+    only armed after the operator approves its capability grants once, through
+    the ``ask`` callback (the executor's ask_operator, so the Telegram picker
+    renders). A denial discards the job instead of leaving a dead entry behind.
     """
     from zeline import scheduler as cron
 
@@ -1863,6 +2160,7 @@ def _schedule_task(
             f"{job.id}  {job.parsed().describe()}  [{state}]  next {cron.describe_next_run(job)}",
             f"  target: {job.deliver}",
             f"  task: {job.prompt[:300]}",
+            f"  capabilities: {cron.describe_grants(job)}",
         ]
         if job.last_status:
             stamp = f"{cron.format_time(job.last_run)} " if job.last_run else ""
@@ -1896,9 +2194,45 @@ def _schedule_task(
             # that silently wrote to disk would look like it never ran.
             target = identity if identity.startswith("telegram:") else "local"
         try:
-            job = cron.add_job(schedule, prompt, target)
+            # Created paused: the capability grant below decides whether this
+            # job ever arms. A job that cannot be approved must not exist as a
+            # half-alive entry the scheduler could fire.
+            job = cron.add_job(schedule, prompt, target, grants=grants, enabled=False)
         except cron.CronError as exc:
             return f"ERROR schedule_task: {exc}"
+        # One-time pre-authorization: the operator approves the
+        # job's capabilities ONCE, now, instead of per tool call at 3 AM.
+        # No way to ask (ask=None), or a failed ask, fails closed: the job is
+        # discarded. A failed ask is reported as such — it is not a denial.
+        approved = False
+        ask_failed = ask is None
+        if ask is not None:
+            try:
+                verdict = ask(cron.capability_question(job), ["Allow", "Deny"])
+            except Exception:
+                ask_failed = True
+            else:
+                # _dispatch turns an ask_user crash into an "ERROR ..." string
+                # rather than raising: the question never reached the
+                # operator, so this is not a denial. (Timeouts and
+                # cancellations are NOT errors — they parse to deny, as the
+                # answer-parsing contract requires.)
+                if isinstance(verdict, str) and verdict.startswith("ERROR"):
+                    ask_failed = True
+                else:
+                    approved = approvals.parse_verdict(verdict) != "deny"
+        if not approved:
+            cron.remove_job(job.id)
+            reason = (
+                "the approval question itself could not be asked"
+                if ask_failed
+                else "the capability grant was denied"
+            )
+            return (
+                f"Not created: {reason} for {job.id}, "
+                "so the job was discarded. Nothing was scheduled."
+            )
+        cron.set_enabled(job.id, True)
         where = (
             "results will be sent to this chat"
             if job.deliver.startswith("telegram:")
@@ -1906,7 +2240,8 @@ def _schedule_task(
         )
         return (
             f"Created {job.id}: {job.parsed().describe()}, first run "
-            f"{cron.describe_next_run(job)} — {where}."
+            f"{cron.describe_next_run(job)} — {where}. "
+            f"Capabilities granted (approved once): {cron.describe_grants(job)}."
         )
 
     wanted = str(job_id or "").strip()
@@ -2033,6 +2368,35 @@ def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
         or addr.is_multicast
         or addr.is_unspecified
     )
+
+
+def _safe_request(method: str, url: str, **kwargs) -> "requests.Response":
+    """HTTP request with SSRF-safe manual redirect following.
+
+    Validates each redirect target with _is_internal_ip (max 5 hops).
+    Prevents SSRF bypass via malicious redirects.
+    """
+    import requests
+    from urllib.parse import urlparse, urljoin
+    kwargs["allow_redirects"] = False
+    max_hops = 5
+    current_url = url
+    for _ in range(max_hops + 1):
+        # Validate current URL host
+        host = urlparse(current_url).hostname or ""
+        if _is_internal_ip(host):
+            raise ValueError(f"Blocked internal host: {host}")
+        resp = requests.request(method, current_url, **kwargs)
+        # Check for redirect
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location")
+            if not location:
+                return resp
+            current_url = urljoin(current_url, location)
+            resp.close()
+            continue
+        return resp
+    raise ValueError("Too many redirects (max 5)")
 
 
 def _html_to_text(raw: bytes) -> str:
@@ -2329,12 +2693,12 @@ def _fetch_with_network_routes(url: str) -> str | None:
         label = str(route.get("label", "route"))
         country = str(route.get("country", "")) or "unknown"
         try:
-            response = requests.get(
+            response = _safe_request(
+                "GET",
                 url,
                 headers={"User-Agent": _UA},
                 proxies=network_routes.proxies(str(route["proxy_url"])),
                 timeout=WEB_TIMEOUT,
-                allow_redirects=True,
                 stream=True,
             )
             chunks: list[bytes] = []
@@ -2389,11 +2753,11 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
         pass
     # 2) Fallback: fetch langsung.
     try:
-        response = requests.get(
+        response = _safe_request(
+            "GET",
             url,
             headers={"User-Agent": _UA},
             timeout=WEB_TIMEOUT,
-            allow_redirects=True,
             stream=True,
         )
         if response.ok:
@@ -2413,7 +2777,8 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
                 if routed:
                     return routed
             if text and not _looks_like_cf_challenge(text) and not _looks_like_geo_block(response, text):
-                return offload.maybe_offload(text, 12_000)
+                return injection_filter.filter_tool_result(
+                    offload.maybe_offload(text, 12_000))
     except requests.RequestException:
         pass
     # 3) Owner-only per-request routes. Telegram/provider/localhost stay direct.
@@ -2424,7 +2789,7 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
     # 4) Fallback terakhir: snapshot archive.org (bypass Cloudflare, zero-cost).
     archived = _fetch_via_wayback(url)
     if archived:
-        return archived
+        return injection_filter.filter_tool_result(archived)
     return (
         f"ERROR [CLOUDFLARE_CHALLENGE url={url}]: halaman publik tidak bisa "
         "dibaca lewat fetch/arsip karena challenge Cloudflare. Runtime harus "
@@ -2461,50 +2826,116 @@ def _search_result_urls(query: str, limit: int = 4) -> list[str]:
     return urls
 
 
-def _deep_research(query: str) -> str:
-    """Riset multi-sumber: cari URL teratas, baca 2-3 sumber PARALEL via reader
-    proxy, lalu kumpulkan kutipan untuk disintesis. Dibatasi ketat agar cepat."""
+def _extract_keywords(text: str, limit: int = 5) -> list[str]:
+    """Extract key phrases from text for follow-up searches (no model needed).
+
+    Uses simple frequency analysis on capitalized phrases and significant
+    terms. Returns up to ``limit`` phrases.
+    """
+    import re
+    from collections import Counter
+
+    # Capitalized phrases (likely entities/topics).
+    phrases = re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b", text)
+    # Significant lowercase terms (4+ chars, not stopwords).
+    stopwords = {
+        "yang", "dan", "untuk", "dengan", "dari", "pada", "adalah", "ini",
+        "itu", "the", "and", "for", "with", "from", "that", "this",
+    }
+    words = re.findall(r"\b[a-z]{4,}\b", text.lower())
+    words = [w for w in words if w not in stopwords]
+
+    counter = Counter(phrases + words)
+    # Filter: must appear at least twice, or be a multi-word phrase.
+    keywords = [
+        kw for kw, cnt in counter.most_common(limit * 2)
+        if cnt >= 2 or " " in kw
+    ]
+    return keywords[:limit]
+
+
+def _deep_research(query: str, max_hops: int = 2) -> str:
+    """Riset multi-sumber multi-hop: cari, baca, gali lebih dalam.
+
+    Hop 1: cari URL teratas untuk query, baca 2-3 sumber paralel.
+    Hop 2+: ekstrak keyword dari hasil hop sebelumnya, cari + baca
+    sumber tambahan. Deduplikasi URL antar hop.
+    """
     query = query.strip()
     if not query:
         return "ERROR: empty query."
-    urls = _search_result_urls(query, limit=3)
-    if not urls:
-        # Tidak dapat URL → pakai hasil web_search ringkas saja (cepat).
-        return _web_search(query)
 
     import concurrent.futures
 
-    bodies: dict[str, str] = {}
-    # Batas total waktu keras agar tidak pernah menggantung lama.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {pool.submit(_web_fetch, url): url for url in urls}
-        try:
-            for future in concurrent.futures.as_completed(futures, timeout=14):
-                url = futures[future]
-                try:
-                    bodies[url] = future.result()
-                except Exception:
-                    bodies[url] = "ERROR"
-        except concurrent.futures.TimeoutError:
-            pass  # ambil yang sudah selesai; sisanya dilewati
+    seen_urls: set[str] = set()
+    all_sections: list[str] = [f"Riset untuk: {query}", ""]
+    current_queries = [query]
 
-    sections: list[str] = [f"Riset untuk: {query}", ""]
-    read = 0
-    for url in urls:
-        body = bodies.get(url, "")
-        if not body or body.startswith("ERROR") or body.startswith("(halaman"):
-            continue
-        sections.append(f"### Sumber: {url}\n{body[:1_800].strip()}")
-        sections.append("")
-        read += 1
-    if read == 0:
+    def fetch_urls(urls: list[str]) -> dict[str, str]:
+        bodies: dict[str, str] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(_web_fetch, url): url for url in urls}
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=14):
+                    url = futures[future]
+                    try:
+                        bodies[url] = future.result()
+                    except Exception:
+                        bodies[url] = "ERROR"
+            except concurrent.futures.TimeoutError:
+                pass
+        return bodies
+
+    for hop in range(max_hops):
+        hop_urls: list[str] = []
+        for q in current_queries:
+            for url in _search_result_urls(q, limit=3):
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    hop_urls.append(url)
+                if len(hop_urls) >= 3:
+                    break
+            if len(hop_urls) >= 3:
+                break
+
+        if not hop_urls:
+            break
+
+        bodies = fetch_urls(hop_urls)
+        hop_text = ""
+        read = 0
+        for url in hop_urls:
+            body = bodies.get(url, "")
+            if not body or body.startswith("ERROR") or body.startswith("(halaman"):
+                continue
+            all_sections.append(f"### Sumber (hop {hop + 1}): {url}\n{body[:1_800].strip()}")
+            all_sections.append("")
+            hop_text += " " + body[:2_000]
+            read += 1
+
+        if read == 0 or hop == max_hops - 1:
+            break
+
+        # Next hop: follow-up queries from extracted keywords.
+        keywords = _extract_keywords(hop_text)
+        current_queries = [f"{query} {kw}" for kw in keywords[:2]]
+        if not current_queries:
+            break
+
+    if len(all_sections) <= 2:  # only header, no sources read
         return _web_search(query)
-    sections.append(
+
+    all_sections.append(
         "Instruksi: sintesis poin-poin di atas menjadi jawaban ringkas & "
         "berbukti. Sebutkan sumber (URL) untuk klaim penting. Jangan mengarang "
         "fakta yang tidak ada di sumber. Jangan panggil tool lagi bila cukup."
     )
-    return "\n".join(sections)[:14_000]
+    return "\n".join(all_sections)[:20_000]
+
+
+#: Shared help text for goal tool schemas. Defined here because TOOL_DEFS
+#: is built at import time, before the wrapper section further below.
+_GOAL_ID_HELP = "Goal id (from goal_list)."
 
 
 TOOL_DEFS: list[ToolDef] = [
@@ -2530,6 +2961,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "git",
@@ -2565,6 +2997,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,  # add/commit mutate; worst case wins
     ),
     ToolDef(
         "schedule_task",
@@ -2612,16 +3045,45 @@ TOOL_DEFS: list[ToolDef] = [
                         "commit), or 'telegram:<chat_id>' for a different chat."
                     ),
                 },
+                "grants": {
+                    "type": "object",
+                    "description": (
+                        "For 'add': the capabilities the job may use while nobody is "
+                        "watching, approved once by the operator at creation. "
+                        "Omit for the minimal default (read anything + write only "
+                        "inside the workspace). Declare more only when the task "
+                        "truly needs it — e.g. {\"tools\": [\"run_shell\"]} or "
+                        "{\"risk\": [\"read\", \"network\"]}. Anything not granted "
+                        "is denied at run time, loudly."
+                    ),
+                    "properties": {
+                        "tools": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exact tool names the job may call.",
+                        },
+                        "risk": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Risk classes the job may use: read, write "
+                                "(workspace-confined), network, install, destructive."
+                            ),
+                        },
+                    },
+                },
             },
             "required": ["action"],
         },
         frozenset({"full"}),
+        risk=ToolRisk.INSTALL,  # installs persistent unattended jobs
     ),
     ToolDef(
         "runtime_info",
         "Show Zeline runtime identity, model, provider, protocol, profile, and tools without leaking the API key or token.",
         {"type": "object", "properties": {}},
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "add_memory",
@@ -2632,22 +3094,84 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["fact"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "remove_memory",
-        "Remove a fact in this conversation's memory containing a given substring.",
+        "Remove a fact in this conversation's memory containing a given substring. "
+        "The fact is moved to a per-conversation trash (not deleted permanently) "
+        "and can be brought back with restore_memory.",
         {
             "type": "object",
             "properties": {"substring": {"type": "string", "description": "Substring of the fact to remove"}},
             "required": ["substring"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,  # scoped store maintenance, not fs destruction
+    ),
+    ToolDef(
+        "restore_memory",
+        "Bring back facts previously removed from this conversation's memory "
+        "(they wait in a per-conversation trash). Match by substring of the fact text.",
+        {
+            "type": "object",
+            "properties": {"substring": {"type": "string", "description": "Substring of the trashed fact to restore"}},
+            "required": ["substring"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,  # scoped store maintenance, not fs destruction
     ),
     ToolDef(
         "list_memory",
         "Show all facts stored for this user/conversation.",
         {"type": "object", "properties": {}},
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "episode_add",
+        "Record an episodic memory: a titled sequence of events (what happened, in order). Use for narratives like 'yesterday we debugged X, then deployed Y'.",
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Episode title."},
+                "events": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ordered list of what happened.",
+                },
+            },
+            "required": ["title", "events"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "episode_list",
+        "List recent episodic memories (event sequences).",
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max episodes.", "default": 10},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "search_sessions",
+        "Full-text search across ALL past sessions (conversations + episodes). "
+        "Use when you need to recall something from a previous session.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keywords."},
+                "limit": {"type": "integer", "description": "Max results.", "default": 5},
+            },
+            "required": ["query"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "consolidate_memory",
@@ -2656,6 +3180,352 @@ TOOL_DEFS: list[ToolDef] = [
         "periodically via cron to stop memory bloat.",
         {"type": "object", "properties": {}},
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,  # scoped store maintenance, not fs destruction
+    ),
+    ToolDef(
+        "learn_skill",
+        "Distill this task's experience into a reusable skill. Call after "
+        "completing a complex, repeatable task so future sessions can reuse "
+        "what you learned. This is the self-improving learning loop.",
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short skill name, e.g. 'deploy-to-vps'."},
+                "description": {"type": "string", "description": "One-line summary."},
+                "content": {"type": "string", "description": "Full Markdown: steps, examples, gotchas."},
+            },
+            "required": ["name", "description", "content"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "list_learned_skills",
+        "List skills the agent learned from past experience.",
+        {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "improve_skill",
+        "Append an improvement or gotcha to an existing learned skill.",
+        {
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Skill filename slug."},
+                "addition": {"type": "string", "description": "Markdown to append."},
+            },
+            "required": ["slug", "addition"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "user_model_set",
+        "Record/update a trait in the dialectic user model. Use when you learn "
+        "something durable about the user (style, preferences, goals, constraints). "
+        "Confidence 0.0-1.0; include evidence.",
+        {
+            "type": "object",
+            "properties": {
+                "dimension": {"type": "string", "description": "One of: communication, technical, goals, preferences, constraints, relationships."},
+                "key": {"type": "string", "description": "Trait name, e.g. 'verbosity'."},
+                "value": {"type": "string", "description": "Trait value."},
+                "confidence": {"type": "number", "description": "0.0-1.0."},
+                "evidence": {"type": "string", "description": "What supports this."},
+            },
+            "required": ["dimension", "key", "value", "confidence"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "user_model_get",
+        "Read the dialectic user model (or one dimension) to personalize your behavior.",
+        {
+            "type": "object",
+            "properties": {
+                "dimension": {"type": "string", "description": "Optional: filter to one dimension."},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "skill_pack",
+        "Package a local skill as a shareable .zip file.",
+        {
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "description": "Name of the skill to package."},
+            },
+            "required": ["skill_name"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "skill_install",
+        "Install a skill from a URL or local .zip. Content is safety-scanned; "
+        "suspicious packages are quarantined, not installed.",
+        {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "URL or local path to .skill.zip."},
+            },
+            "required": ["source"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "clawhub_search",
+        "Search ClawHub (5000+ community skills). Returns slug, name, summary, installs.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "Max results (1-50).", "default": 10},
+            },
+            "required": ["query"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "clawhub_install",
+        "Install a skill from ClawHub by slug. Safety-scanned before install.",
+        {
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "ClawHub skill slug."},
+            },
+            "required": ["slug"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "workflow_execute",
+        "Start a saved visual workflow (DAG of task/approval/note nodes) in "
+        "the background. Task nodes run as unattended agent turns; approval "
+        "nodes pause the run until workflow_resume approves/denies. Returns "
+        "an execution id; poll workflow_status for progress.",
+        {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string", "description": "Workflow id from the visual builder."},
+                "node_timeout": {"type": "number", "description": "Max seconds per task node (default 300)."},
+                "approval_timeout": {"type": "number", "description": "Max seconds to wait at an approval gate (default 1800)."},
+            },
+            "required": ["workflow_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.INSTALL,  # persistent background agent work running unattended
+    ),
+    ToolDef(
+        "workflow_pause",
+        "Pause a running workflow execution between nodes.",
+        {
+            "type": "object",
+            "properties": {
+                "exec_id": {"type": "string", "description": "Execution id from workflow_execute."},
+            },
+            "required": ["exec_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "workflow_resume",
+        "Resume a paused workflow execution, or resolve a waiting approval "
+        "gate (approved=false cancels the run).",
+        {
+            "type": "object",
+            "properties": {
+                "exec_id": {"type": "string", "description": "Execution id from workflow_execute."},
+                "approved": {"type": "boolean", "description": "Approve (true) or deny (false) a waiting approval gate. Ignored when resuming a pause."},
+            },
+            "required": ["exec_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "workflow_status",
+        "Snapshot of a workflow execution: overall status plus per-node "
+        "statuses, results and errors.",
+        {
+            "type": "object",
+            "properties": {
+                "exec_id": {"type": "string", "description": "Execution id from workflow_execute."},
+            },
+            "required": ["exec_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "peer_send",
+        "Send a message to a configured peer Zeline instance and get its reply. "
+        "The peer runs the message through its own agent loop. "
+        "Peers are configured in config.json under peer.peers as "
+        "{name: {url, secret}}. Use peer name, not a raw URL.",
+        {
+            "type": "object",
+            "properties": {
+                "peer": {"type": "string", "description": "Configured peer name (from peer.peers)."},
+                "message": {"type": "string", "description": "Message text to send."},
+            },
+            "required": ["peer", "message"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "email_send",
+        (
+            "Send an email from the operator's configured mailbox. "
+            "Requires the email gateway (`~/.zeline/gateways/email.json`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address."},
+                "subject": {"type": "string", "description": "Email subject."},
+                "body": {"type": "string", "description": "Plain-text email body."},
+            },
+            "required": ["to", "subject", "body"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends an email: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "gepa_drafts",
+        "List auto-learned skill drafts (GEPA). Drafts are patterns the agent "
+        "detected automatically; they become permanent skills only after "
+        "verified successful uses.",
+        {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filter: draft, permanent, deprecated."},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gepa_learn",
+        "Manually trigger automatic pattern detection. Scans recent tool "
+        "calls for repeatable successful patterns and creates skill drafts.",
+        {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "goal_add",
+        "Create a long-term goal for the user (survives across sessions, unlike "
+        "tasks which /new wipes). Use for commitments like 'pass the $100k eval'.",
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short goal title."},
+                "target": {"type": "string", "description": "Concrete measurable target."},
+                "deadline": {
+                    "type": "string",
+                    "description": "ISO date YYYY-MM-DD, optional.",
+                },
+                "milestones": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Milestone titles, optional.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "Parent goal ID to create a sub-goal. Optional.",
+                },
+            },
+            "required": ["title", "target"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,  # scoped store maintenance, not fs destruction
+    ),
+    ToolDef(
+        "goal_update",
+        "Update a long-term goal: progress 0-100, status, one milestone, title, "
+        "target, or deadline. Progress 100 always flips status to done.",
+        {
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "string", "description": _GOAL_ID_HELP},
+                "progress": {
+                    "type": "integer",
+                    "description": "New progress 0-100.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "done"],
+                },
+                "milestone": {
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "description": "Milestone index (0-based) or title."
+                        },
+                        "done": {"type": "boolean"},
+                    },
+                    "description": "Mark one milestone done/not done.",
+                },
+                "title": {"type": "string"},
+                "target": {"type": "string"},
+                "deadline": {
+                    "type": "string",
+                    "description": "ISO date YYYY-MM-DD; empty string clears it.",
+                },
+            },
+            "required": ["goal_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,  # scoped store maintenance, not fs destruction
+    ),
+    ToolDef(
+        "goal_list",
+        "List the user's long-term goals with progress. Filter by status if needed.",
+        {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "done"],
+                    "description": "Filter by status; omit for all.",
+                },
+            },
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "goal_get",
+        "Show one long-term goal in detail, including its milestones.",
+        {
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "string", "description": _GOAL_ID_HELP},
+            },
+            "required": ["goal_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "sync_memory",
+        "Pull recent Gmail/Calendar/GitHub activity into long-term memory. "
+        "Deterministic and idempotent (watermark per source, no re-pull). "
+        "Safe to run periodically via cron to keep memory fresh.",
+        {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,  # scoped store maintenance, not fs destruction
     ),
     ToolDef(
         "load_skill",
@@ -2666,6 +3536,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["name"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "web_search",
@@ -2676,6 +3547,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["query"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,  # pure search; effect is a read, not a mutation
     ),
     ToolDef(
         "web_fetch",
@@ -2686,6 +3558,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["url"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,  # pure GET; effect is a read, not a mutation
     ),
     ToolDef(
         "network_route",
@@ -2701,16 +3574,26 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action"],
         },
         frozenset({"full"}),
+        risk=ToolRisk.INSTALL,  # installs proxy routes + stores credentials
     ),
     ToolDef(
         "deep_research",
-        "In-depth multi-source research: search the web, open the top 3 pages, and gather evidence-backed quotes to synthesize. Use when the user asks for research, comparison, or an answer needing several sources — not just one quick fact.",
+        "In-depth multi-source multi-hop research: search the web, open top pages, extract keywords for follow-up searches, and gather evidence-backed quotes to synthesize. Use when the user asks for research, comparison, or an answer needing several sources — not just one quick fact. For the full 7-step playbook (local memory first, multi-source cross-check, certainty split), load the `deep-research` skill instead.",
         {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "Research topic or question"}},
+            "properties": {
+                "query": {"type": "string", "description": "Research topic or question"},
+                "max_hops": {
+                    "type": "integer",
+                    "description": "Research iterations (1-3). Default 2.",
+                    "minimum": 1,
+                    "maximum": 3,
+                },
+            },
             "required": ["query"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,  # orchestrates search+fetch; read-only end to end
     ),
     ToolDef(
         "analyze_media",
@@ -2732,6 +3615,10 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["path_or_url"],
         },
         frozenset({"workspace", "full"}),
+        # Inference against the already-trusted provider: the effect is a
+        # read (a description/transcript), not an external state change.
+        # Must stay ask-free — voice messages transcribe through here.
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "generate_image",
@@ -2746,6 +3633,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["prompt", "path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "generate_video",
@@ -2762,6 +3650,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["prompt", "path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "edit_image",
@@ -2778,6 +3667,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["image", "prompt", "path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "edit_video",
@@ -2802,6 +3692,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action", "path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "text_to_speech",
@@ -2817,6 +3708,37 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["text", "path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "voice_transcribe",
+        "Transcribe an audio file to text using local faster-whisper (offline, no API cost). Use when the user sends a voice note/audio file and asks what was said. Returns the transcribed text. Requires faster-whisper installed and the model cached (`zeline voice download-model`).",
+        {
+            "type": "object",
+            "properties": {
+                "audio_path": {"type": "string", "description": "Audio file path in the workspace (wav/mp3/ogg/m4a)."},
+                "model": {"type": "string", "description": "Whisper model size: tiny, base, small, medium, large-v3, turbo. Optional (default tiny)."},
+                "language": {"type": "string", "description": "Language code, e.g. 'id' or 'en'. Optional (auto-detect)."},
+            },
+            "required": ["audio_path"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "voice_speak",
+        "Convert text to spoken audio as a WAV file using a local offline TTS engine (piper, espeak-ng, or espeak — no API cost, no internet needed). Use when the user asks for an audio version of text and the provider TTS is unavailable. Returns the saved file path — then call send_file with that path so the user actually HEARS the audio instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to speak (max 5000 chars)."},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .wav. Optional (auto-named if omitted)."},
+                "voice": {"type": "string", "description": "espeak voice code, e.g. 'id' for Indonesian. Optional (default id)."},
+            },
+            "required": ["text"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "qr_code",
@@ -2831,6 +3753,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["text", "path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "transcribe_audio",
@@ -2845,6 +3768,10 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["audio"],
         },
         frozenset({"workspace", "full"}),
+        # Same reasoning as analyze_media: remote inference, read effect,
+        # no file written, no external state changed. The voice-message loop
+        # must never block on an approval picker.
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "pdf_tool",
@@ -2860,6 +3787,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action", "pdfs"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "http_request",
@@ -2875,6 +3803,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["method", "url"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.DESTRUCTIVE,  # arbitrary methods incl. DELETE + bodies
     ),
     ToolDef(
         "browser",
@@ -2904,6 +3833,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.DESTRUCTIVE,  # JS eval + clicks/types/form submits
     ),
     ToolDef(
         "code_intel",
@@ -2930,12 +3860,14 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "system_env",
         "Show environment info: OS/arch/CPU, installed runtimes & tools (python/node/go/git/docker/ffmpeg), and active local ports. Call before running commands to see which tools are available.",
         {"type": "object", "properties": {}},
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "read_file",
@@ -2957,6 +3889,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["path"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "write_file",
@@ -2970,24 +3903,28 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["path", "content"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "edit_file",
         "Edit one unique section of a text file in the workspace.",
         {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "patch_file",
         "Apply a unique replace patch to one workspace file.",
         {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]},
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "search_files",
         "Search text within workspace files.",
         {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string", "description": "File glob, default *"}}, "required": ["query"]},
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "download_file",
@@ -3001,6 +3938,10 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["url", "path"],
         },
         frozenset({"workspace", "full"}),
+        # GET + workspace-confined write: the network leg is a read, the
+        # effect is a local file — so this is a WRITE, gated by the
+        # workspace-escape check like any other file write.
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "undo_file",
@@ -3035,6 +3976,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,  # restores from snapshot; itself snapshotted
     ),
     ToolDef(
         "update_task",
@@ -3048,6 +3990,7 @@ TOOL_DEFS: list[ToolDef] = [
         ),
         {"type": "object", "properties": {"task": {"type": "string", "description": "Short task description. Reuse the same wording to update an existing item."}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}}, "required": ["task", "status"]},
         frozenset({"full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "manage_skill",
@@ -3067,6 +4010,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action"],
         },
         frozenset({"full"}),
+        risk=ToolRisk.INSTALL,  # installs/modifies the agent's own procedures
     ),
     ToolDef(
         "resolve_lesson",
@@ -3090,6 +4034,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["tool", "args_sig_contains", "fix"],
         },
         frozenset({"full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "execute_code",
@@ -3103,6 +4048,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["code"],
         },
         frozenset({"full"}),
+        risk=ToolRisk.DESTRUCTIVE,  # arbitrary code can delete/install
     ),
     ToolDef(
         "run_shell",
@@ -3117,6 +4063,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["command"],
         },
         frozenset({"full"}),
+        risk=ToolRisk.DESTRUCTIVE,  # arbitrary shell can delete/install
     ),
     ToolDef(
         "process_control",
@@ -3131,6 +4078,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["action"],
         },
         frozenset({"full"}),
+        risk=ToolRisk.DESTRUCTIVE,  # kill terminates process groups
     ),
     ToolDef(
         "delegate_task",
@@ -3171,6 +4119,131 @@ TOOL_DEFS: list[ToolDef] = [
             },
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,  # workers' dangerous tools are gated individually
+    ),
+    ToolDef(
+        "spawn_worker",
+        (
+            "Start a background worker sub-agent that keeps working AFTER this turn "
+            "without blocking the chat — the call returns immediately with a worker "
+            "id. Use for long independent jobs (research, multi-step investigation) "
+            "whose result is not needed right now. The worker runs unattended under "
+            "the 'grants' you declare (default: read-only); anything outside the "
+            "grant is denied, and it can never ask the operator. When it finishes "
+            "or fails, a short summary is injected automatically at the start of a "
+            "later turn — do NOT poll worker_status repeatedly; call it (or "
+            "worker_result) only if you need the outcome inside THIS turn. "
+            "'accept_if' is an optional phrase the result must mention, otherwise "
+            "the run is rejected and retried once, then fails loudly."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Self-contained task for the worker: goal, file paths, constraints, desired output language. It knows nothing about this chat.",
+                },
+                "grants": {
+                    "type": "object",
+                    "description": (
+                        "Capabilities the worker may use unattended. The spawn "
+                        "itself always asks the operator (Install-class), and "
+                        "the approval question shows this exact declaration. "
+                        "Under grant-based contexts (cron jobs, workers) the "
+                        "declaration must additionally fit inside the caller's "
+                        "own grants — a worker can never exceed its spawner's "
+                        "capability. Omit for the read-only default. Declare "
+                        "more only when the task truly needs it — e.g. "
+                        "{\"tools\": [\"run_shell\"]} or "
+                        "{\"risk\": [\"read\", \"write\"]}. Anything not granted "
+                        "is denied at run time, loudly."
+                    ),
+                    "properties": {
+                        "tools": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exact tool names the worker may call.",
+                        },
+                        "risk": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Risk classes the worker may use: read, write, network, install, destructive.",
+                        },
+                    },
+                },
+                "accept_if": {
+                    "type": "string",
+                    "description": "Optional acceptance phrase: the worker's result must mention it (case-insensitive), otherwise the run is rejected and retried once.",
+                },
+                "depends_on": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Worker IDs that must complete successfully before this worker starts. For dependent tasks (B needs A's output).",
+                },
+            },
+            "required": ["task"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.INSTALL,  # persistent background work running unattended:
+        # spawning always asks, and the declared worker grants are shown in
+        # the approval question; the worker's own tools are gated by its grants
+    ),
+    ToolDef(
+        "steer_worker",
+        "Send a mid-flight instruction to a RUNNING worker without terminating "
+        "it. The worker picks up the instruction at its next iteration and "
+        "adjusts course. Use to redirect, add context, or correct a worker "
+        "that's going the wrong way — no restart needed .",
+        {
+            "type": "object",
+            "properties": {
+                "worker_id": {"type": "string", "description": "Worker ID from spawn_worker."},
+                "instruction": {"type": "string", "description": "New instruction/direction for the worker."},
+            },
+            "required": ["worker_id", "instruction"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "worker_status",
+        (
+            "Check background worker(s) started by spawn_worker. Pass a worker id "
+            "for one worker, or leave empty to list all. Prefer waiting for the "
+            "automatic completion report at the start of a later turn over polling "
+            "this."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "worker_id": {
+                    "type": "string",
+                    "description": "Worker id from spawn_worker. Empty = list all workers.",
+                },
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "worker_result",
+        (
+            "Read the full result of a finished background worker. Reports loudly "
+            "when the worker is still running, unknown, or failed (the error is "
+            "shown instead of a result)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "worker_id": {
+                    "type": "string",
+                    "description": "Worker id from spawn_worker.",
+                },
+            },
+            "required": ["worker_id"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "recall_history",
@@ -3182,6 +4255,7 @@ TOOL_DEFS: list[ToolDef] = [
             },
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "ask_user",
@@ -3211,6 +4285,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["question"],
         },
         frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,  # the approval mechanism itself; never gated
     ),
     ToolDef(
         "github_repos",
@@ -3226,6 +4301,7 @@ TOOL_DEFS: list[ToolDef] = [
             },
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "github_issues",
@@ -3244,6 +4320,7 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["owner", "repo"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
     ),
     ToolDef(
         "github_create_issue",
@@ -3262,6 +4339,8 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["owner", "repo", "title"],
         },
         frozenset({"workspace", "full"}),
+        # Posts an issue via the GitHub API: a mutating network action.
+        risk=ToolRisk.NETWORK,
     ),
     ToolDef(
         "github_issue_comment",
@@ -3280,6 +4359,8 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["owner", "repo", "number", "body"],
         },
         frozenset({"workspace", "full"}),
+        # Posts a comment via the GitHub API: a mutating network action.
+        risk=ToolRisk.NETWORK,
     ),
     ToolDef(
         "github_prs",
@@ -3298,6 +4379,3198 @@ TOOL_DEFS: list[ToolDef] = [
             "required": ["owner", "repo"],
         },
         frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gmail_search",
+        (
+            "Search the operator's Gmail. Returns one line per message: "
+            "message-id | date | from | subject. Requires the Google connector "
+            "(`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Gmail search query, e.g. 'from:bank subject:otp newer_than:7d'."},
+                "limit": {"type": "integer", "description": "How many messages (default 10)."},
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gmail_read",
+        (
+            "Read one Gmail message (Subject/From/Date + first 2000 characters of "
+            "the text body). Requires the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Gmail message id from gmail_search."},
+            },
+            "required": ["message_id"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gmail_send",
+        (
+            "Send a plain-text email from the operator's Gmail account. Requires "
+            "the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address."},
+                "subject": {"type": "string", "description": "Email subject."},
+                "body": {"type": "string", "description": "Plain-text body."},
+            },
+            "required": ["to", "subject", "body"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends an email: the canonical mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "google_calendar",
+        (
+            "List upcoming events on the operator's primary Google Calendar. "
+            "Requires the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "time_min": {"type": "string", "description": "ISO start bound (default: now)."},
+                "time_max": {"type": "string", "description": "Optional ISO end bound."},
+                "limit": {"type": "integer", "description": "How many events (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "sheets_read",
+        (
+            "Read a range from a Google Sheet, returned as compact TSV. Requires "
+            "the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "spreadsheet_id": {"type": "string", "description": "The spreadsheet id from its URL."},
+                "range_name": {"type": "string", "description": "A1 notation, e.g. 'Sheet1!A1:D20'."},
+            },
+            "required": ["spreadsheet_id", "range_name"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "drive_list",
+        (
+            "List files in the operator's Google Drive (most recently modified "
+            "first). Requires the Google connector (`zeline connect google`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Optional Drive search query."},
+                "limit": {"type": "integer", "description": "How many files (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "whatsapp_send",
+        (
+            "Send a WhatsApp text message from the operator's business number. "
+            "Requires the WhatsApp connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "text": {"type": "string", "description": "Message text."},
+            },
+            "required": ["to", "text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends a WhatsApp message: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "whatsapp_template",
+        (
+            "Send an approved WhatsApp message template (needed for contacting "
+            "numbers outside the 24h conversation window). Requires the WhatsApp "
+            "connector (`zeline connect whatsapp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number (digits, may start with +)."},
+                "template": {"type": "string", "description": "Approved template name."},
+                "language": {"type": "string", "description": "Template language code (default en_US)."},
+            },
+            "required": ["to", "template"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends a WhatsApp template message: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    # ---- Wave 1 connectors (slack, notion, linear, gitlab, trello, todoist,
+    # airtable, jira, discord, telegram_bot) ----
+    ToolDef(
+        "slack_list_channels",
+        (
+            "List the operator's Slack channels (most active first). "
+            "Requires the Slack connector (`zeline connect slack`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many channels (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "slack_send_message",
+        (
+            "Send a message to a Slack channel. Requires the Slack connector "
+            "(`zeline connect slack`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "description": "Channel ID or name (e.g. 'C12345' or '#general')."},
+                "text": {"type": "string", "description": "Message text."},
+            },
+            "required": ["channel", "text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Posts a message via the Slack API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "slack_read_history",
+        (
+            "Read recent messages from a Slack channel. Requires the Slack "
+            "connector (`zeline connect slack`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "description": "Channel ID or name (e.g. 'C12345' or '#general')."},
+                "limit": {"type": "integer", "description": "How many messages (default 10)."},
+            },
+            "required": ["channel"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "notion_search",
+        (
+            "Search the operator's Notion workspace (pages and databases). "
+            "Requires the Notion connector (`zeline connect notion`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search text."},
+                "limit": {"type": "integer", "description": "How many results (default 10)."},
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "notion_query_database",
+        (
+            "Query a Notion database and list its rows. Requires the Notion "
+            "connector (`zeline connect notion`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "database_id": {"type": "string", "description": "Notion database ID."},
+                "limit": {"type": "integer", "description": "How many rows (default 10)."},
+            },
+            "required": ["database_id"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "notion_create_page",
+        (
+            "Create a Notion page under a parent page. Requires the Notion "
+            "connector (`zeline connect notion`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "parent_page_id": {"type": "string", "description": "Parent page ID."},
+                "title": {"type": "string", "description": "Page title."},
+                "content": {"type": "string", "description": "Optional page body text."},
+            },
+            "required": ["parent_page_id", "title"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a page via the Notion API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "linear_list_issues",
+        (
+            "List issues from the operator's Linear workspace (most recently "
+            "updated first). Requires the Linear connector (`zeline connect linear`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many issues (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "linear_create_issue",
+        (
+            "Create an issue in a Linear team. Requires the Linear connector "
+            "(`zeline connect linear`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "team_id": {"type": "string", "description": "Linear team ID."},
+                "title": {"type": "string", "description": "Issue title."},
+                "description": {"type": "string", "description": "Optional issue description."},
+            },
+            "required": ["team_id", "title"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates an issue via the Linear API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "gitlab_list_projects",
+        (
+            "List the operator's GitLab projects (most recently active first). "
+            "Requires the GitLab connector (`zeline connect gitlab`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many projects (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gitlab_list_mrs",
+        (
+            "List merge requests across the operator's GitLab projects. "
+            "Requires the GitLab connector (`zeline connect gitlab`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "state": {"type": "string", "description": "'opened', 'closed', or 'merged' (default 'opened')."},
+                "limit": {"type": "integer", "description": "How many merge requests (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gitlab_list_issues",
+        (
+            "List issues across the operator's GitLab projects. Requires the "
+            "GitLab connector (`zeline connect gitlab`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "state": {"type": "string", "description": "'opened' or 'closed' (default 'opened')."},
+                "limit": {"type": "integer", "description": "How many issues (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "trello_list_boards",
+        (
+            "List the operator's Trello boards. Requires the Trello connector "
+            "(`zeline connect trello`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many boards (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "trello_list_cards",
+        (
+            "List cards on a Trello board. Requires the Trello connector "
+            "(`zeline connect trello`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string", "description": "Trello board ID."},
+                "limit": {"type": "integer", "description": "How many cards (default 20)."},
+            },
+            "required": ["board_id"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "trello_create_card",
+        (
+            "Create a card in a Trello list. Requires the Trello connector "
+            "(`zeline connect trello`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "list_id": {"type": "string", "description": "Trello list ID."},
+                "name": {"type": "string", "description": "Card name."},
+                "desc": {"type": "string", "description": "Optional card description."},
+            },
+            "required": ["list_id", "name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a card via the Trello API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "todoist_list_tasks",
+        (
+            "List the operator's Todoist tasks (due soonest first). Requires "
+            "the Todoist connector (`zeline connect todoist`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many tasks (default 10)."},
+            },
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "todoist_add_task",
+        (
+            "Add a task to the operator's Todoist inbox. Requires the Todoist "
+            "connector (`zeline connect todoist`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Task content."},
+                "description": {"type": "string", "description": "Optional task description."},
+                "priority": {"type": "integer", "description": "Priority 1 (normal) to 4 (urgent, default 1)."},
+            },
+            "required": ["content"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a task via the Todoist API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "airtable_list_records",
+        (
+            "List records from an Airtable table. Requires the Airtable "
+            "connector (`zeline connect airtable`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "base_id": {"type": "string", "description": "Airtable base ID."},
+                "table_id": {"type": "string", "description": "Table ID or name."},
+                "limit": {"type": "integer", "description": "How many records (default 10)."},
+            },
+            "required": ["base_id", "table_id"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "airtable_create_record",
+        (
+            "Create a record in an Airtable table. Requires the Airtable "
+            "connector (`zeline connect airtable`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "base_id": {"type": "string", "description": "Airtable base ID."},
+                "table_id": {"type": "string", "description": "Table ID or name."},
+                "fields": {"type": "object", "description": "Field values for the new record."},
+            },
+            "required": ["base_id", "table_id", "fields"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a record via the Airtable API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "jira_search",
+        (
+            "Search the operator's Jira with JQL. Requires the Jira connector "
+            "(`zeline connect jira`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "jql": {"type": "string", "description": "JQL query, e.g. 'project = ENG AND status = \"In Progress\"'."},
+                "limit": {"type": "integer", "description": "How many issues (default 10)."},
+            },
+            "required": ["jql"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "jira_create_issue",
+        (
+            "Create an issue in a Jira project. Requires the Jira connector "
+            "(`zeline connect jira`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "project_key": {"type": "string", "description": "Jira project key (e.g. 'ENG')."},
+                "summary": {"type": "string", "description": "Issue summary."},
+                "description": {"type": "string", "description": "Optional issue description."},
+                "issue_type": {"type": "string", "description": "Issue type name (default 'Task')."},
+            },
+            "required": ["project_key", "summary"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates an issue via the Jira API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "discord_list_channels",
+        (
+            "List channels of a Discord server (guild). Requires the Discord "
+            "connector (`zeline connect discord`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "guild_id": {"type": "string", "description": "Discord server (guild) ID."},
+                "limit": {"type": "integer", "description": "How many channels (default 20)."},
+            },
+            "required": ["guild_id"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "discord_send_message",
+        (
+            "Send a message to a Discord channel. Requires the Discord "
+            "connector (`zeline connect discord`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "channel_id": {"type": "string", "description": "Discord channel ID."},
+                "content": {"type": "string", "description": "Message content."},
+            },
+            "required": ["channel_id", "content"],
+        },
+        frozenset({"workspace", "full"}),
+        # Posts a message via the Discord API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "telegram_bot_get_me",
+        (
+            "Show the linked Telegram bot's identity (username, id). Requires "
+            "the Telegram Bot connector (`zeline connect telegram_bot`)."
+        ),
+        {
+            "type": "object",
+            "properties": {},
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "telegram_bot_send_message",
+        (
+            "Send a message as the linked Telegram bot. Requires the Telegram "
+            "Bot connector (`zeline connect telegram_bot`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Recipient chat ID."},
+                "text": {"type": "string", "description": "Message text."},
+            },
+            "required": ["chat_id", "text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends a message via the Telegram Bot API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    # ---- Wave 2 connectors (teams, twilio, sendgrid, pushover, asana,
+    # clickup, monday, bitbucket, sentry, pagerduty, vercel, cloudflare,
+    # datadog, confluence, dropbox, hubspot, zendesk, intercom, calendly,
+    # stripe) ----
+    ToolDef(
+        "teams_send_message",
+        (
+            "Send a message to a Microsoft Teams channel via an incoming webhook. "
+            "Requires the Teams connector (`zeline connect teams`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Message text."}
+            },
+            "required": ["text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends a Teams message: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "twilio_send_sms",
+        (
+            "Send an SMS via Twilio. Requires the Twilio connector (`zeline connect "
+            "twilio`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "from_number": {"type": "string", "description": "Sender phone number (Twilio number)."},
+                "to_number": {"type": "string", "description": "Recipient phone number."},
+                "body": {"type": "string", "description": "Message body."}
+            },
+            "required": ["from_number", "to_number", "body"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends an SMS via Twilio: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "twilio_list_messages",
+        (
+            "List recent Twilio messages. Requires the Twilio connector (`zeline connect "
+            "twilio`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Twilio messages: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "sendgrid_send_email",
+        (
+            "Send an email via SendGrid. Requires the SendGrid connector (`zeline connect "
+            "sendgrid`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "to_email": {"type": "string", "description": "Recipient email."},
+                "subject": {"type": "string", "description": "Email subject."},
+                "body": {"type": "string", "description": "Plain-text body."},
+                "from_email": {"type": "string", "description": "Sender email."}
+            },
+            "required": ["to_email", "subject", "body", "from_email"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends an email via SendGrid: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "pushover_send_notification",
+        (
+            "Send a push notification via Pushover. Requires the Pushover connector "
+            "(`zeline connect pushover`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Notification message."},
+                "title": {"type": "string", "description": "Notification title (optional)."},
+                "priority": {"type": "integer", "description": "Priority -2..2 (default 0)."}
+            },
+            "required": ["message"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends a Pushover notification: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "asana_list_tasks",
+        (
+            "List Asana tasks. Requires the Asana connector (`zeline connect asana`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+                "assignee": {"type": "string", "description": "Assignee filter (default 'me')."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Asana tasks: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "asana_create_task",
+        (
+            "Create an Asana task. Requires the Asana connector (`zeline connect asana`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Task name."},
+                "notes": {"type": "string", "description": "Task notes (optional)."},
+                "workspace": {"type": "string", "description": "Workspace gid (optional)."}
+            },
+            "required": ["name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates an Asana task: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "clickup_list_tasks",
+        (
+            "List tasks in a ClickUp list. Requires the ClickUp connector (`zeline "
+            "connect clickup`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "list_id": {"type": "string", "description": "ClickUp list ID."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["list_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads ClickUp tasks: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "clickup_create_task",
+        (
+            "Create a task in a ClickUp list. Requires the ClickUp connector (`zeline "
+            "connect clickup`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "list_id": {"type": "string", "description": "ClickUp list ID."},
+                "name": {"type": "string", "description": "Task name."},
+                "description": {"type": "string", "description": "Task description (optional)."}
+            },
+            "required": ["list_id", "name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a ClickUp task: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "monday_list_boards",
+        (
+            "List monday.com boards. Requires the monday connector (`zeline connect "
+            "monday`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads monday boards: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "monday_list_items",
+        (
+            "List items on a monday.com board. Requires the monday connector (`zeline "
+            "connect monday`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string", "description": "Board ID."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["board_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads monday board items: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "bitbucket_list_repos",
+        (
+            "List Bitbucket repositories. Requires the Bitbucket connector (`zeline "
+            "connect bitbucket`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Bitbucket repos: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "bitbucket_list_prs",
+        (
+            "List pull requests in a Bitbucket repo. Requires the Bitbucket connector "
+            "(`zeline connect bitbucket`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "workspace": {"type": "string", "description": "Workspace slug."},
+                "repo_slug": {"type": "string", "description": "Repository slug."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["workspace", "repo_slug"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Bitbucket PRs: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "sentry_list_issues",
+        (
+            "List Sentry issues. Requires the Sentry connector (`zeline connect sentry`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+                "project_slug": {"type": "string", "description": "Project slug filter (optional)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Sentry issues: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "pagerduty_list_incidents",
+        (
+            "List PagerDuty incidents. Requires the PagerDuty connector (`zeline connect "
+            "pagerduty`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+                "status": {"type": "string", "description": "Incident status (default 'triggered')."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads PagerDuty incidents: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "vercel_list_deployments",
+        (
+            "List Vercel deployments. Requires the Vercel connector (`zeline connect "
+            "vercel`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Vercel deployments: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "cloudflare_list_zones",
+        (
+            "List Cloudflare zones. Requires the Cloudflare connector (`zeline connect "
+            "cloudflare`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Cloudflare zones: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "cloudflare_list_dns_records",
+        (
+            "List DNS records in a Cloudflare zone. Requires the Cloudflare connector "
+            "(`zeline connect cloudflare`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "zone_id": {"type": "string", "description": "Zone ID."}
+            },
+            "required": ["zone_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Cloudflare DNS records: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "datadog_list_monitors",
+        (
+            "List Datadog monitors. Requires the Datadog connector (`zeline connect "
+            "datadog`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Datadog monitors: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "confluence_search_pages",
+        (
+            "Search Confluence pages by CQL. Requires the Confluence connector (`zeline "
+            "connect confluence`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "cql": {"type": "string", "description": "CQL query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["cql"],
+        },
+        frozenset({"workspace", "full"}),
+        # Searches Confluence: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "confluence_get_page",
+        (
+            "Get a Confluence page's content. Requires the Confluence connector (`zeline "
+            "connect confluence`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "string", "description": "Page ID."}
+            },
+            "required": ["page_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads a Confluence page: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "dropbox_list_files",
+        (
+            "List files in a Dropbox folder. Requires the Dropbox connector (`zeline "
+            "connect dropbox`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Folder path (empty = root)."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Dropbox files: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "dropbox_get_metadata",
+        (
+            "Get metadata for a Dropbox file. Requires the Dropbox connector (`zeline "
+            "connect dropbox`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path."}
+            },
+            "required": ["path"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Dropbox metadata: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "hubspot_list_contacts",
+        (
+            "List HubSpot contacts. Requires the HubSpot connector (`zeline connect "
+            "hubspot`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads HubSpot contacts: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "hubspot_create_contact",
+        (
+            "Create a HubSpot contact. Requires the HubSpot connector (`zeline connect "
+            "hubspot`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Contact email."},
+                "firstname": {"type": "string", "description": "First name (optional)."},
+                "lastname": {"type": "string", "description": "Last name (optional)."}
+            },
+            "required": ["email"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a HubSpot contact: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "zendesk_list_tickets",
+        (
+            "List Zendesk tickets. Requires the Zendesk connector (`zeline connect "
+            "zendesk`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Zendesk tickets: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "zendesk_create_ticket",
+        (
+            "Create a Zendesk ticket. Requires the Zendesk connector (`zeline connect "
+            "zendesk`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string", "description": "Ticket subject."},
+                "comment": {"type": "string", "description": "Ticket comment body."},
+                "priority": {"type": "string", "description": "Priority (default 'normal')."}
+            },
+            "required": ["subject", "comment"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a Zendesk ticket: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "intercom_list_conversations",
+        (
+            "List Intercom conversations. Requires the Intercom connector (`zeline "
+            "connect intercom`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Intercom conversations: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "calendly_list_events",
+        (
+            "List Calendly scheduled events. Requires the Calendly connector (`zeline "
+            "connect calendly`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Calendly events: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "stripe_list_charges",
+        (
+            "List Stripe charges. Requires the Stripe connector (`zeline connect "
+            "stripe`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Stripe charges: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "stripe_list_customers",
+        (
+            "List Stripe customers. Requires the Stripe connector (`zeline connect "
+            "stripe`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads Stripe customers: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    # ---- Wave 3 connectors (x_api, reddit, hackernews, mastodon, bluesky,
+    # devto, mailgun, resend, vonage, onesignal, wrike, teamwork, shortcut,
+    # height, npm_registry, pypi_registry, rubygems, jenkins, opsgenie,
+    # render) ----
+    ToolDef(
+        "x_api_post_tweet",
+        (
+            "Post a tweet on X. Requires the X API connector (`zeline connect x_api`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Tweet text."}
+            },
+            "required": ["text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via X API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "x_api_read_timeline",
+        (
+            "Read a user's recent tweets on X. Requires the X API connector (`zeline connect x_api`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "username": {"type": "string", "description": "X username (without @)."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["username"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via X API: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "reddit_list_posts",
+        (
+            "List hot/new/top posts of a subreddit. Requires the Reddit connector (`zeline connect reddit`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "subreddit": {"type": "string", "description": "Subreddit name (without r/)."},
+                "sort": {"type": "string", "description": "'hot', 'new' or 'top' (default 'hot')."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["subreddit"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Reddit: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "reddit_search",
+        (
+            "Search Reddit posts. Requires the Reddit connector (`zeline connect reddit`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "subreddit": {"type": "string", "description": "Limit to a subreddit (optional)."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Reddit: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "hackernews_top_stories",
+        (
+            "List Hacker News top stories. Requires the Hacker News connector (`zeline connect hackernews`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Hacker News: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "hackernews_get_item",
+        (
+            "Get a Hacker News item (story/comment) by id. Requires the Hacker News connector (`zeline connect hackernews`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "integer", "description": "Hacker News item id."}
+            },
+            "required": ["item_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Hacker News: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "mastodon_post_toot",
+        (
+            "Post a toot on Mastodon. Requires the Mastodon connector (`zeline connect mastodon`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Toot text."},
+                "visibility": {"type": "string", "description": "'public', 'unlisted', 'private' or 'direct' (default 'public')."}
+            },
+            "required": ["text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via Mastodon: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "mastodon_read_timeline",
+        (
+            "Read the Mastodon home timeline. Requires the Mastodon connector (`zeline connect mastodon`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Mastodon: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "bluesky_post",
+        (
+            "Post on Bluesky. Requires the Bluesky connector (`zeline connect bluesky`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Post text."}
+            },
+            "required": ["text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via Bluesky: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "bluesky_read_timeline",
+        (
+            "Read the Bluesky timeline. Requires the Bluesky connector (`zeline connect bluesky`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Bluesky: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "devto_list_articles",
+        (
+            "List dev.to articles. Requires the dev.to connector (`zeline connect devto`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+                "tag": {"type": "string", "description": "Filter by tag (optional)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via dev.to: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "devto_create_article",
+        (
+            "Publish an article on dev.to. Requires the dev.to connector (`zeline connect devto`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Article title."},
+                "body_markdown": {"type": "string", "description": "Article body in Markdown."},
+                "published": {"type": "boolean", "description": "Publish immediately (default false, saved as draft)."}
+            },
+            "required": ["title", "body_markdown"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via dev.to: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "mailgun_send_email",
+        (
+            "Send an email via Mailgun. Requires the Mailgun connector (`zeline connect mailgun`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "from_addr": {"type": "string", "description": "Sender address."},
+                "to": {"type": "string", "description": "Recipient address."},
+                "subject": {"type": "string", "description": "Subject."},
+                "text": {"type": "string", "description": "Plain-text body."}
+            },
+            "required": ["from_addr", "to", "subject", "text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via Mailgun: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "mailgun_list_messages",
+        (
+            "List recent Mailgun events. Requires the Mailgun connector (`zeline connect mailgun`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Mailgun: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "resend_send_email",
+        (
+            "Send an email via Resend. Requires the Resend connector (`zeline connect resend`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "from_addr": {"type": "string", "description": "Sender address."},
+                "to": {"type": "string", "description": "Recipient address."},
+                "subject": {"type": "string", "description": "Subject."},
+                "html": {"type": "string", "description": "HTML body."}
+            },
+            "required": ["from_addr", "to", "subject", "html"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via Resend: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "vonage_send_sms",
+        (
+            "Send an SMS via Vonage. Requires the Vonage connector (`zeline connect vonage`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient phone number in E.164."},
+                "from_name": {"type": "string", "description": "Sender name/number."},
+                "text": {"type": "string", "description": "Message text."}
+            },
+            "required": ["to", "from_name", "text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via Vonage: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "onesignal_send_push",
+        (
+            "Send a push notification via OneSignal. Requires the OneSignal connector (`zeline connect onesignal`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Notification title."},
+                "message": {"type": "string", "description": "Notification message."}
+            },
+            "required": ["title", "message"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via OneSignal: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "wrike_list_tasks",
+        (
+            "List Wrike tasks. Requires the Wrike connector (`zeline connect wrike`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Wrike: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "wrike_create_task",
+        (
+            "Create a Wrike task in a folder. Requires the Wrike connector (`zeline connect wrike`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Task title."},
+                "folder_id": {"type": "string", "description": "Wrike folder id."},
+                "description": {"type": "string", "description": "Task description (optional)."}
+            },
+            "required": ["title", "folder_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via Wrike: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "teamwork_list_projects",
+        (
+            "List Teamwork projects. Requires the Teamwork connector (`zeline connect teamwork`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Teamwork: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "teamwork_list_tasks",
+        (
+            "List Teamwork tasks. Requires the Teamwork connector (`zeline connect teamwork`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Teamwork: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "shortcut_list_stories",
+        (
+            "List Shortcut stories. Requires the Shortcut connector (`zeline connect shortcut`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Shortcut: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "shortcut_create_story",
+        (
+            "Create a Shortcut story. Requires the Shortcut connector (`zeline connect shortcut`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Story name."},
+                "description": {"type": "string", "description": "Story description (optional)."},
+                "story_type": {"type": "string", "description": "'feature', 'bug' or 'chore' (default 'feature')."}
+            },
+            "required": ["name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Sends via Shortcut: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "height_list_tasks",
+        (
+            "List Height tasks. Requires the Height connector (`zeline connect height`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Height: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "npm_registry_package_info",
+        (
+            "Show npm package info. Requires the npm Registry connector (`zeline connect npm_registry`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Package name."}
+            },
+            "required": ["name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via npm Registry: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "npm_registry_search",
+        (
+            "Search npm packages. Requires the npm Registry connector (`zeline connect npm_registry`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via npm Registry: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "pypi_registry_package_info",
+        (
+            "Show PyPI package info. Requires the PyPI connector (`zeline connect pypi_registry`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Package name."}
+            },
+            "required": ["name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via PyPI: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "rubygems_package_info",
+        (
+            "Show RubyGem info. Requires the RubyGems connector (`zeline connect rubygems`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Gem name."}
+            },
+            "required": ["name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via RubyGems: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "rubygems_search",
+        (
+            "Search RubyGems. Requires the RubyGems connector (`zeline connect rubygems`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via RubyGems: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "jenkins_list_jobs",
+        (
+            "List Jenkins jobs. Requires the Jenkins connector (`zeline connect jenkins`)."
+        ),
+        {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Jenkins: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "jenkins_job_status",
+        (
+            "Show the last build status of a Jenkins job. Requires the Jenkins connector (`zeline connect jenkins`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "job_name": {"type": "string", "description": "Job name."}
+            },
+            "required": ["job_name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Jenkins: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "opsgenie_list_alerts",
+        (
+            "List Opsgenie alerts. Requires the Opsgenie connector (`zeline connect opsgenie`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Opsgenie: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "render_list_services",
+        (
+            "List Render services. Requires the Render connector (`zeline connect render`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Render: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "render_list_deploys",
+        (
+            "List deploys of a Render service. Requires the Render connector (`zeline connect render`)."
+        ),
+{
+            "type": "object",
+            "properties": {
+                "service_id": {"type": "string", "description": "Render service id."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["service_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Render: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    # ---- Wave 4 connectors (typeform, tally, jotform, surveymonkey,
+    # openweathermap, coinbase, wise, paypal, linkedin, producthunt,
+    # gitbook, ghost, zoho_crm, pipedrive, freshdesk, close, chargebee,
+    # paddle, box, webflow) ----
+    ToolDef(
+        "typeform_list_forms",
+        (
+            "List Typeform forms. Requires the Typeform connector (`zeline connect typeform`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Typeform: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "typeform_get_responses",
+        (
+            "Get responses of a Typeform form. Requires the Typeform connector (`zeline connect typeform`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Typeform form id."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": ["form_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Typeform: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "tally_list_forms",
+        (
+            "List Tally forms. Requires the Tally connector (`zeline connect tally`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Tally: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "jotform_list_forms",
+        (
+            "List Jotform forms. Requires the Jotform connector (`zeline connect jotform`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Jotform: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "jotform_get_submissions",
+        (
+            "Get submissions of a Jotform form. Requires the Jotform connector (`zeline connect jotform`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Jotform form id."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": ["form_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Jotform: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "surveymonkey_list_surveys",
+        (
+            "List SurveyMonkey surveys. Requires the SurveyMonkey connector (`zeline connect surveymonkey`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via SurveyMonkey: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "openweathermap_current_weather",
+        (
+            "Get current weather for a city. Requires the OpenWeatherMap connector (`zeline connect openweathermap`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name, e.g. Jakarta."},
+            },
+            "required": ["city"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via OpenWeatherMap: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "openweathermap_forecast",
+        (
+            "Get weather forecast for a city. Requires the OpenWeatherMap connector (`zeline connect openweathermap`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name, e.g. Jakarta."},
+                "limit": {"type": "integer", "description": "How many forecast entries (default 8, max 100)."},
+            },
+            "required": ["city"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via OpenWeatherMap: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "coinbase_list_accounts",
+        (
+            "List Coinbase accounts. Requires the Coinbase connector (`zeline connect coinbase`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Coinbase: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "coinbase_spot_price",
+        (
+            "Get spot price of a currency pair. Requires the Coinbase connector (`zeline connect coinbase`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "pair": {"type": "string", "description": "Currency pair, e.g. BTC-USD (default BTC-USD)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Coinbase: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "wise_list_profiles",
+        (
+            "List Wise profiles. Requires the Wise connector (`zeline connect wise`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Wise: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "wise_get_rate",
+        (
+            "Get a Wise exchange rate. Requires the Wise connector (`zeline connect wise`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "Source currency, e.g. USD."},
+                "target": {"type": "string", "description": "Target currency, e.g. EUR."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Wise: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "paypal_list_invoices",
+        (
+            "List PayPal invoices. Requires the PayPal connector (`zeline connect paypal`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via PayPal: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "paypal_get_order",
+        (
+            "Get a PayPal order by id. Requires the PayPal connector (`zeline connect paypal`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "PayPal order id."},
+            },
+            "required": ["order_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via PayPal: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "linkedin_get_profile",
+        (
+            "Get the linked LinkedIn profile. Requires the LinkedIn connector (`zeline connect linkedin`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via LinkedIn: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "linkedin_share_post",
+        (
+            "Share a text post on LinkedIn. Requires the LinkedIn connector (`zeline connect linkedin`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Post text."},
+            },
+            "required": ["text"],
+        },
+        frozenset({"workspace", "full"}),
+        # Shares via LinkedIn: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "producthunt_todays_hunts",
+        (
+            "List today's top Product Hunt posts. Requires the Product Hunt connector (`zeline connect producthunt`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Product Hunt: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "producthunt_search_posts",
+        (
+            "Search Product Hunt posts. Requires the Product Hunt connector (`zeline connect producthunt`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Product Hunt: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gitbook_list_spaces",
+        (
+            "List GitBook spaces. Requires the GitBook connector (`zeline connect gitbook`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via GitBook: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "gitbook_list_content",
+        (
+            "List content of a GitBook space. Requires the GitBook connector (`zeline connect gitbook`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "space_id": {"type": "string", "description": "GitBook space id."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": ["space_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via GitBook: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "ghost_list_posts",
+        (
+            "List Ghost posts. Requires the Ghost connector (`zeline connect ghost`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Ghost: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "ghost_create_post",
+        (
+            "Create a Ghost draft post. Requires the Ghost connector (`zeline connect ghost`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Post title."},
+                "html": {"type": "string", "description": "Post HTML content."},
+            },
+            "required": ["title"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates via Ghost: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "zoho_crm_list_contacts",
+        (
+            "List Zoho CRM contacts. Requires the Zoho CRM connector (`zeline connect zoho_crm`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Zoho CRM: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "zoho_crm_create_contact",
+        (
+            "Create a Zoho CRM contact. Requires the Zoho CRM connector (`zeline connect zoho_crm`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "first_name": {"type": "string", "description": "First name."},
+                "last_name": {"type": "string", "description": "Last name."},
+                "email": {"type": "string", "description": "Email address."},
+            },
+            "required": ["first_name", "last_name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates via Zoho CRM: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "pipedrive_list_deals",
+        (
+            "List Pipedrive deals. Requires the Pipedrive connector (`zeline connect pipedrive`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Pipedrive: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "pipedrive_create_deal",
+        (
+            "Create a Pipedrive deal. Requires the Pipedrive connector (`zeline connect pipedrive`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Deal title."},
+                "value": {"type": "string", "description": "Deal value."},
+            },
+            "required": ["title"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates via Pipedrive: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "freshdesk_list_tickets",
+        (
+            "List Freshdesk tickets. Requires the Freshdesk connector (`zeline connect freshdesk`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Freshdesk: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "freshdesk_create_ticket",
+        (
+            "Create a Freshdesk ticket. Requires the Freshdesk connector (`zeline connect freshdesk`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string", "description": "Ticket subject."},
+                "description": {"type": "string", "description": "Ticket description."},
+                "email": {"type": "string", "description": "Requester email."},
+                "priority": {"type": "integer", "description": "Priority 1-4 (default 1)."},
+                "status": {"type": "integer", "description": "Status code (default 2)."},
+            },
+            "required": ["subject", "description"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates via Freshdesk: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "close_list_leads",
+        (
+            "List Close leads. Requires the Close connector (`zeline connect close`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Close: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "close_create_lead",
+        (
+            "Create a Close lead. Requires the Close connector (`zeline connect close`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Lead name."},
+            },
+            "required": ["name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates via Close: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "chargebee_list_customers",
+        (
+            "List Chargebee customers. Requires the Chargebee connector (`zeline connect chargebee`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Chargebee: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "chargebee_list_subscriptions",
+        (
+            "List Chargebee subscriptions. Requires the Chargebee connector (`zeline connect chargebee`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Chargebee: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "paddle_list_customers",
+        (
+            "List Paddle customers. Requires the Paddle connector (`zeline connect paddle`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Paddle: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "paddle_list_transactions",
+        (
+            "List Paddle transactions. Requires the Paddle connector (`zeline connect paddle`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Paddle: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "box_list_files",
+        (
+            "List files in a Box folder. Requires the Box connector (`zeline connect box`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "folder_id": {"type": "string", "description": "Box folder id (default 0 = root)."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Box: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "box_get_file_info",
+        (
+            "Get Box file info. Requires the Box connector (`zeline connect box`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "Box file id."},
+            },
+            "required": ["file_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Box: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "webflow_list_sites",
+        (
+            "List Webflow sites. Requires the Webflow connector (`zeline connect webflow`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Webflow: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "webflow_list_collections",
+        (
+            "List collections of a Webflow site. Requires the Webflow connector (`zeline connect webflow`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "site_id": {"type": "string", "description": "Webflow site id."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": ["site_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Webflow: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    # ---- Wave 5 connectors (n8n, mailchimp, activecampaign, convertkit,
+    # beehiiv, buffer, railway, flyio, heroku, digitalocean, hetzner, vultr,
+    # betterstack, healthchecks, cronitor, plausible, fathom, algolia,
+    # meilisearch, typesense) ----
+    ToolDef(
+        "n8n_list_workflows",
+        (
+            "List n8n workflows. Requires the n8n connector (`zeline connect n8n`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via n8n: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "n8n_get_workflow",
+        (
+            "Get a single n8n workflow by id. Requires the n8n connector (`zeline connect n8n`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string", "description": "n8n workflow id."},
+            },
+            "required": ["workflow_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via n8n: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "n8n_execute_workflow",
+        (
+            "Execute an n8n workflow with an optional payload. Requires the n8n connector (`zeline connect n8n`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string", "description": "n8n workflow id."},
+                "data": {"type": "object", "description": "Payload sent to the workflow (optional)."},
+            },
+            "required": ["workflow_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Executes a workflow via the n8n API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "mailchimp_list_audiences",
+        (
+            "List Mailchimp audiences. Requires the Mailchimp connector (`zeline connect mailchimp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Mailchimp: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "mailchimp_list_campaigns",
+        (
+            "List Mailchimp campaigns. Requires the Mailchimp connector (`zeline connect mailchimp`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Mailchimp: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "activecampaign_list_contacts",
+        (
+            "List ActiveCampaign contacts. Requires the ActiveCampaign connector (`zeline connect activecampaign`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via ActiveCampaign: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "activecampaign_create_contact",
+        (
+            "Create an ActiveCampaign contact. Requires the ActiveCampaign connector (`zeline connect activecampaign`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Contact email address."},
+                "first_name": {"type": "string", "description": "Contact first name."},
+                "last_name": {"type": "string", "description": "Contact last name."},
+            },
+            "required": ["email"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates a contact via the ActiveCampaign API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "convertkit_list_subscribers",
+        (
+            "List ConvertKit subscribers. Requires the ConvertKit connector (`zeline connect convertkit`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via ConvertKit: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "beehiiv_list_posts",
+        (
+            "List Beehiiv posts. Requires the Beehiiv connector (`zeline connect beehiiv`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Beehiiv: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "buffer_list_profiles",
+        (
+            "List Buffer profiles. Requires the Buffer connector (`zeline connect buffer`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Buffer: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "buffer_create_post",
+        (
+            "Create a Buffer post for one or more profiles. Requires the Buffer connector (`zeline connect buffer`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Post text."},
+                "profile_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Buffer profile ids to post to.",
+                },
+            },
+            "required": ["text", "profile_ids"],
+        },
+        frozenset({"workspace", "full"}),
+        # Posts via the Buffer API: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "railway_list_projects",
+        (
+            "List Railway projects. Requires the Railway connector (`zeline connect railway`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Railway: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "flyio_list_apps",
+        (
+            "List Fly.io apps. Requires the Fly.io connector (`zeline connect flyio`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Fly.io: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "heroku_list_apps",
+        (
+            "List Heroku apps. Requires the Heroku connector (`zeline connect heroku`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Heroku: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "digitalocean_list_droplets",
+        (
+            "List DigitalOcean droplets. Requires the DigitalOcean connector (`zeline connect digitalocean`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via DigitalOcean: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "hetzner_list_servers",
+        (
+            "List Hetzner Cloud servers. Requires the HetznerCloud connector (`zeline connect hetzner`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via HetznerCloud: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "vultr_list_instances",
+        (
+            "List Vultr instances. Requires the Vultr connector (`zeline connect vultr`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Vultr: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "betterstack_list_monitors",
+        (
+            "List BetterStack monitors. Requires the BetterStack connector (`zeline connect betterstack`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via BetterStack: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "healthchecks_list_checks",
+        (
+            "List Healthchecks checks. Requires the Healthchecks connector (`zeline connect healthchecks`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Healthchecks: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "cronitor_list_monitors",
+        (
+            "List Cronitor monitors. Requires the Cronitor connector (`zeline connect cronitor`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Cronitor: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "plausible_list_sites",
+        (
+            "List Plausible sites. Requires the Plausible connector (`zeline connect plausible`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Plausible: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "plausible_site_stats",
+        (
+            "Get stats of a Plausible site. Requires the Plausible connector (`zeline connect plausible`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "site_id": {"type": "string", "description": "Plausible site id or domain."},
+                "period": {"type": "string", "description": "Stats period (default 7d)."},
+            },
+            "required": ["site_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Plausible: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "fathom_list_sites",
+        (
+            "List Fathom sites. Requires the Fathom connector (`zeline connect fathom`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Fathom: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "algolia_list_indexes",
+        (
+            "List Algolia indexes. Requires the Algolia connector (`zeline connect algolia`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Algolia: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "algolia_search_index",
+        (
+            "Search an Algolia index. Requires the Algolia connector (`zeline connect algolia`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "index": {"type": "string", "description": "Algolia index name."},
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": ["index", "query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Algolia: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "meilisearch_list_indexes",
+        (
+            "List Meilisearch indexes. Requires the Meilisearch connector (`zeline connect meilisearch`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Meilisearch: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "meilisearch_search_index",
+        (
+            "Search a Meilisearch index. Requires the Meilisearch connector (`zeline connect meilisearch`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "index_uid": {"type": "string", "description": "Meilisearch index uid."},
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."},
+            },
+            "required": ["index_uid", "query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Meilisearch: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "typesense_list_collections",
+        (
+            "List Typesense collections. Requires the Typesense connector (`zeline connect typesense`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Typesense: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "typesense_search_collection",
+        (
+            "Search a Typesense collection. Requires the Typesense connector (`zeline connect typesense`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "description": "Typesense collection name."},
+                "query": {"type": "string", "description": "Search query."},
+                "query_by": {"type": "string", "description": "Search fields, comma-separated (default *)."},
+            },
+            "required": ["collection", "query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Typesense: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "lemlist_list_campaigns",
+        (
+            "List Lemlist campaigns. Requires the Lemlist connector (`zeline connect lemlist`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Lemlist: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "lemlist_campaign_stats",
+        (
+            "Show Lemlist campaign statistics. Requires the Lemlist connector (`zeline connect lemlist`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "campaign_id": {"type": "string", "description": "Lemlist campaign ID."}
+            },
+            "required": ["campaign_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Lemlist: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "apollo_people_search",
+        (
+            "Search people via Apollo. Requires the Apollo connector (`zeline connect apollo`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query (name, title, company)."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Apollo: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "apollo_enrich_person",
+        (
+            "Enrich a person's data via Apollo. Requires the Apollo connector (`zeline connect apollo`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Person's email address."}
+            },
+            "required": ["email"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Apollo: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "hunter_domain_search",
+        (
+            "Find email addresses at a domain via Hunter. Requires the Hunter connector (`zeline connect hunter`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string", "description": "Domain to search (e.g. example.com)."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["domain"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Hunter: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "hunter_verify_email",
+        (
+            "Verify an email address via Hunter. Requires the Hunter connector (`zeline connect hunter`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Email address to verify."}
+            },
+            "required": ["email"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Hunter: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "bitly_shorten",
+        (
+            "Shorten a URL via Bitly. Requires the Bitly connector (`zeline connect bitly`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "long_url": {"type": "string", "description": "The long URL to shorten."}
+            },
+            "required": ["long_url"],
+        },
+        frozenset({"workspace", "full"}),
+        # Creates via Bitly: a mutating network action.
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "bitly_list_links",
+        (
+            "List Bitly shortened links. Requires the Bitly connector (`zeline connect bitly`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Bitly: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "cloudinary_list_resources",
+        (
+            "List Cloudinary media resources. Requires the Cloudinary connector (`zeline connect cloudinary`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "resource_type": {"type": "string", "description": "Resource type (default image)."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Cloudinary: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "cloudinary_resource_info",
+        (
+            "Show Cloudinary resource details. Requires the Cloudinary connector (`zeline connect cloudinary`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "public_id": {"type": "string", "description": "Resource public ID."},
+                "resource_type": {"type": "string", "description": "Resource type (default image)."}
+            },
+            "required": ["public_id"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Cloudinary: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "bunnycdn_list_pull_zones",
+        (
+            "List BunnyCDN pull zones. Requires the BunnyCDN connector (`zeline connect bunnycdn`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via BunnyCDN: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "bunnycdn_list_storage_zones",
+        (
+            "List BunnyCDN storage zones. Requires the BunnyCDN connector (`zeline connect bunnycdn`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via BunnyCDN: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "polar_list_products",
+        (
+            "List Polar products. Requires the Polar connector (`zeline connect polar`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Polar: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "polar_list_orders",
+        (
+            "List Polar orders. Requires the Polar connector (`zeline connect polar`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Polar: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "lemon_squeezy_list_customers",
+        (
+            "List Lemon Squeezy customers. Requires the Lemon Squeezy connector (`zeline connect lemon_squeezy`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Lemon Squeezy: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "lemon_squeezy_list_orders",
+        (
+            "List Lemon Squeezy orders. Requires the Lemon Squeezy connector (`zeline connect lemon_squeezy`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Lemon Squeezy: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "crates_io_crate_info",
+        (
+            "Show crates.io crate info. Requires the crates.io connector (`zeline connect crates_io`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Crate name."}
+            },
+            "required": ["name"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via crates.io: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "crates_io_search_crates",
+        (
+            "Search crates.io crates. Requires the crates.io connector (`zeline connect crates_io`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via crates.io: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "packagist_package_info",
+        (
+            "Show Packagist package info. Requires the Packagist connector (`zeline connect packagist`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "vendor": {"type": "string", "description": "Package vendor."},
+                "package": {"type": "string", "description": "Package name."}
+            },
+            "required": ["vendor", "package"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Packagist: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "packagist_search_packages",
+        (
+            "Search Packagist packages. Requires the Packagist connector (`zeline connect packagist`)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "description": "How many (default 10, max 100)."}
+            },
+            "required": ["query"],
+        },
+        frozenset({"workspace", "full"}),
+        # Reads via Packagist: a read-only network action.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "propose_skill_fix",
+        (
+            "Record a proposed fix for a skill's content WITHOUT changing any file. "
+            "The proposal must be approved by the operator and applied via "
+            "apply_skill_proposal. old_text must match exactly once in the skill's "
+            "current file, otherwise the proposal is rejected."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "description": "Skill name (normalized lowercase)."},
+                "title": {"type": "string", "description": "Short proposal title."},
+                "old_text": {"type": "string", "description": "Exact text in the skill file (must match exactly once)."},
+                "new_text": {"type": "string", "description": "Replacement text."},
+                "reason": {"type": "string", "description": "Why this fix is needed."},
+                "file_path": {"type": "string", "description": "File inside the skill folder (default SKILL.md)."},
+            },
+            "required": ["skill_name", "old_text", "new_text", "reason"],
+        },
+        frozenset({"workspace", "full"}),
+        # Records a proposal under ~/.zeline; no skill content is touched.
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "apply_skill_proposal",
+        (
+            "Apply an operator-approved skill fix proposal. Re-verifies the file "
+            "before patching: if the file changed since the proposal was made, the "
+            "patch is REFUSED. Files are checkpointed before patching (undoable)."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "proposal_id": {"type": "string", "description": "Proposal id from propose_skill_fix (e.g. 'p-9f2c...')."},
+            },
+            "required": ["proposal_id"],
+        },
+        frozenset({"full"}),
+        # Modifies the agent's own procedures.
+        risk=ToolRisk.INSTALL,
+    ),
+    ToolDef(
+        "review_skills",
+        (
+            "Dry-run review of skill usage: which skills to promote (used and helpful), "
+            "demote, archive (unused or consistently failing), and which overlap. "
+            "Changes nothing — apply via apply_skill_review."
+        ),
+        {"type": "object", "properties": {}},
+        frozenset({"workspace", "full"}),
+        # Dry-run: pure computation over telemetry and skill scan.
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "apply_skill_review",
+        (
+            "Apply the skill review plan (promote/demote/archive). Every change is "
+            "logged and reversible; archiving moves skills to .archive (restorable). "
+            "Overlaps are only reported, never auto-merged."
+        ),
+        {"type": "object", "properties": {}},
+        frozenset({"full"}),
+        # Changes the agent's own skill set (priorities, archiving).
+        risk=ToolRisk.INSTALL,
+    ),
+    ToolDef(
+        "rollback_skill_change",
+        (
+            "Undo one logged skill change: a review change (priority/archive) or an "
+            "applied proposal (id starts with 'p-'). Restores the previous state."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "change_id": {"type": "string", "description": "Change id from the review ledger, or proposal id (p-...)."},
+            },
+            "required": ["change_id"],
+        },
+        frozenset({"full"}),
+        # INSTALL (bukan WRITE): rollback proposal me-rewrite konten skill —
+        # itu mutasi konten yang HANYA boleh jalan lewat approval operator.
+        # WRITE + tanpa path arg akan lolos approval_question diam-diam.
+        risk=ToolRisk.INSTALL,
     ),
     ToolDef(
         "gmail_search",
@@ -3432,6 +7705,600 @@ TOOL_DEFS: list[ToolDef] = [
 ]
 
 
+#: Path-like arguments per Write-class tool, for the workspace-escape check.
+#: A Write call whose target resolves outside the session workspace needs
+#: operator approval even though Write is otherwise allowed in workspace/full.
+#: Tools without filesystem targets (memory, task board, lessons) are not
+#: listed: their state is internal to the session, not the filesystem.
+_WRITE_PATH_ARGS: dict[str, tuple[str, ...]] = {
+    "write_file": ("path",),
+    "edit_file": ("path",),
+    "patch_file": ("path",),
+    "undo_file": ("path",),
+    "git": ("path",),
+    "generate_image": ("path",),
+    "generate_video": ("path",),
+    "edit_image": ("image", "path", "mask"),
+    "edit_video": ("video", "videos", "path", "audio"),
+    "text_to_speech": ("path",),
+    "voice_speak": ("path",),
+    "qr_code": ("path",),
+    "pdf_tool": ("pdfs", "path"),
+    # download_file's destination is caged to the workspace at runtime, but
+    # the approval gate sees the raw args first: an escape attempt asks here
+    # instead of merely failing later inside the handler.
+    "download_file": ("path",),
+}
+
+
+def _summarize_call_args(args: Any) -> str:
+    """Argument summary for approval questions.
+
+    The first argument (usually the command/path — the thing the operator
+    most needs to judge) is shown IN FULL, up to ``interaction.MAX_DETAIL_CHARS``:
+    a truncated command is exactly what makes approvals dangerous, so the
+    approver must be able to see all of it. ``interaction.ask`` caps the
+    picker itself at ``MAX_QUESTION_CHARS`` and delivers this full text as a
+    code block ahead of the picker, so a long first argument costs the
+    operator one extra message, not a blind approval. The remaining arguments
+    are abbreviated; at most four are shown.
+    """
+    if not isinstance(args, dict) or not args:
+        return "(no arguments)"
+    lines = []
+    for position, key in enumerate(list(args)[:4]):
+        value = str(args[key])
+        budget = interaction.MAX_DETAIL_CHARS if position == 0 else 60
+        if len(value) > budget:
+            value = value[:budget] + "…"
+        lines.append(f"{key}={value}")
+    return "\n".join(lines)
+
+
+def _episode_add(identity: str, title: str, events: list) -> str:
+    """Wrapper tool ``episode_add``: record an episodic memory."""
+    from zeline import memory as memory_pkg
+    eid = memory_pkg.add_episode(identity, title, events or [])
+    if eid.startswith("ERROR"):
+        return eid
+    return f"Episode recorded: {eid} — {title} ({len(events or [])} events)"
+
+
+def _episode_list(identity: str, limit: int = 10) -> str:
+    """Wrapper tool ``episode_list``: list recent episodes."""
+    from zeline import memory as memory_pkg
+    episodes = memory_pkg.list_episodes(identity, limit=limit)
+    if not episodes:
+        return "No episodes recorded."
+    return memory_pkg.format_episodes(episodes)
+
+
+def _search_sessions(query: str, limit: int = 5) -> str:
+    """Wrapper tool ``search_sessions``: FTS5 full-text search across all
+    past sessions (conversations + episodes)."""
+    from zeline import session_search
+    try:
+        results = session_search.search_sessions(query, limit=limit)
+    except Exception as exc:
+        return f"ERROR search sessions: {exc}"
+    if not results:
+        return f"No past sessions matched {query!r}."
+    lines = [f"Found {len(results)} match(es) for {query!r}:"]
+    for r in results:
+        lines.append(f"\n[{r['source']}] {r['identifier']}\n{r['snippet']}")
+    return "\n".join(lines)
+
+
+def _learn_skill(name: str, description: str, content: str) -> str:
+    """Wrapper tool ``learn_skill``: distill experience into a reusable skill."""
+    from zeline import learning
+    try:
+        path = learning.save_learned_skill(name, description, content)
+    except Exception as exc:
+        return f"ERROR learn skill: {exc}"
+    return f"Skill saved: {path}\nIt will be available in future sessions."
+
+
+def _list_learned_skills() -> str:
+    """Wrapper tool ``list_learned_skills``."""
+    from zeline import learning
+    skills = learning.list_learned_skills()
+    if not skills:
+        return "No learned skills yet. Use learn_skill after completing a complex task."
+    lines = [f"{len(skills)} learned skill(s):"]
+    for s in skills:
+        lines.append(f"- {s['name']} ({s['file']}): {s['description']}")
+    return "\n".join(lines)
+
+
+def _improve_skill(slug: str, addition: str) -> str:
+    """Wrapper tool ``improve_skill``: append to a learned skill."""
+    from zeline import learning
+    try:
+        path = learning.improve_learned_skill(slug, addition)
+    except Exception as exc:
+        return f"ERROR improve skill: {exc}"
+    return f"Skill updated: {path}"
+
+
+def _user_model_set(dimension: str, key: str, value: str,
+                    confidence: float, evidence: str = "") -> str:
+    """Wrapper tool ``user_model_set``."""
+    from zeline import user_model
+    if dimension not in user_model.DIMENSIONS:
+        return f"ERROR: unknown dimension {dimension!r}. Valid: {sorted(user_model.DIMENSIONS)}"
+    try:
+        t = user_model.set_trait(dimension, key, value, float(confidence), evidence)
+    except Exception as exc:
+        return f"ERROR user model set: {exc}"
+    return f"Trait saved: [{dimension}] {key} = {t['value']} (confidence {t['confidence']})"
+
+
+def _user_model_get(dimension: str | None = None) -> str:
+    """Wrapper tool ``user_model_get``."""
+    from zeline import user_model
+    try:
+        if dimension:
+            if dimension not in user_model.DIMENSIONS:
+                return f"ERROR: unknown dimension {dimension!r}."
+            traits = user_model.get_dimension(dimension)
+            if not traits:
+                return f"No traits in dimension {dimension!r} yet."
+            lines = [f"## {dimension}"]
+            for k, t in sorted(traits.items()):
+                lines.append(f"- {k}: {t['value']} (confidence {t.get('confidence', 0)})")
+            return "\n".join(lines)
+        return user_model.summarize()
+    except Exception as exc:
+        return f"ERROR user model get: {exc}"
+
+
+def _skill_pack(skill_name: str) -> str:
+    """Wrapper tool ``skill_pack``."""
+    from zeline import skill_hub
+    try:
+        path = skill_hub.pack_skill(skill_name)
+    except Exception as exc:
+        return f"ERROR pack skill: {exc}"
+    return f"Skill packaged: {path}"
+
+
+def _skill_install(source: str) -> str:
+    """Wrapper tool ``skill_install``."""
+    from zeline import skill_hub
+    try:
+        return skill_hub.install_skill(source)
+    except Exception as exc:
+        return f"ERROR install skill: {exc}"
+
+
+def _clawhub_search(query: str, limit: int = 10) -> str:
+    """Search ClawHub skills."""
+    try:
+        from zeline import clawhub
+        results = clawhub.search_clawhub(query, limit)
+        if not results:
+            return "No skills found."
+        lines = [f"ClawHub results for {query!r}:"]
+        for r in results:
+            lines.append(
+                f"  - {r['slug']}: {r['displayName']} "
+                f"({r['installs']} installs, v{r['version']})"
+            )
+            if r['summary']:
+                lines.append(f"    {r['summary'][:120]}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def _clawhub_install(slug: str) -> str:
+    """Install a ClawHub skill."""
+    try:
+        from zeline import clawhub
+        path = clawhub.install_clawhub_skill(slug)
+        return f"Installed ClawHub skill {slug!r} to {path}"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def _email_send(to: str, subject: str, body: str) -> str:
+    """Send an email via the configured email gateway (lazy import)."""
+    try:
+        from zeline.gateways import email as email_gw
+        return email_gw.tool_send(to, subject, body)
+    except Exception as exc:  # never leak tracebacks to the model
+        return f"ERROR: email_send failed ({exc})."
+
+
+def _peer_send(peer: str, message: str) -> str:
+    """Send a message to a configured peer and return its reply."""
+    try:
+        from zeline import peer as peer_mod
+        from zeline import config as _cfg
+
+        peers = getattr(_cfg, "PEERS", {}) or {}
+        entry = peers.get(str(peer).strip())
+        if not entry:
+            known = ", ".join(sorted(peers)) or "(none configured)"
+            return (
+                f"ERROR: unknown peer {peer!r}. "
+                f"Configured peers: {known}. "
+                "Add peers in config.json under peer.peers."
+            )
+        url = entry.get("url", "")
+        secret = entry.get("secret", "") or str(getattr(_cfg, "PEER_SECRET", "") or "")
+        if not secret:
+            return f"ERROR: no secret for peer {peer!r} (and no global peer.secret)."
+        data = peer_mod.send_to_peer(
+            url, secret, message,
+            from_name=str(getattr(_cfg, "NAME", "") or "zeline"),
+        )
+        if data.get("ok"):
+            return f"[reply from {data.get('from', peer)}]\n{data.get('response', '')}"
+        return f"ERROR: peer returned: {data}"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def _voice_transcribe(audio_path: str, workspace: Path, model: str = "tiny",
+                      language: str | None = None) -> str:
+    """Wrapper tool ``voice_transcribe``: audio file -> text (local STT)."""
+    from zeline import voice as _voice_mod
+    try:
+        target = _resolve_workspace_path(audio_path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    try:
+        text = _voice_mod.transcribe(str(target), model=model or "tiny",
+                                     language=language or None)
+    except _voice_mod.VoiceError as exc:
+        return f"ERROR: {exc}"
+    if not text:
+        return "(no speech detected in the audio)"
+    return text
+
+
+def _voice_speak(text: str, path: str, workspace: Path, voice: str = "id") -> str:
+    """Wrapper tool ``voice_speak``: text -> WAV file (local offline TTS)."""
+    from zeline import voice as _voice_mod
+    import time as _time
+    raw = (path or "").strip()
+    if not raw:
+        raw = f"voice-{int(_time.time())}.wav"
+    try:
+        dest = _resolve_workspace_path(raw, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".wav":
+        return "ERROR: output path must end in .wav."
+    try:
+        out = _voice_mod.speak(text, dest, voice=voice or "id")
+    except _voice_mod.VoiceError as exc:
+        return f"ERROR: {exc}"
+    try:
+        rel = out.relative_to(workspace.resolve(strict=False))
+        return f"Saved voice audio to {rel} — call send_file with that path so the user actually HEARS the audio instead of a filename."
+    except ValueError:
+        return f"Saved voice audio to {out}"
+
+
+def _gepa_drafts(status: str | None = None) -> str:
+    """Wrapper tool ``gepa_drafts``."""
+    from zeline import gepa
+    try:
+        drafts = gepa.get_drafts(status)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    if not drafts:
+        return "No skill drafts." + (f" (status={status})" if status else "")
+    lines = [f"{len(drafts)} draft(s):"]
+    for d in drafts:
+        lines.append(
+            f"- [{d['status']}] {d['name']}: {d['description']} "
+            f"(uses: {d['successful_uses']}/{d['uses']})"
+        )
+    return "\n".join(lines)
+
+
+def _gepa_learn() -> str:
+    """Wrapper tool ``gepa_learn``: trigger automatic pattern detection."""
+    from zeline import gepa
+    try:
+        new_ids = gepa.auto_learn()
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    if not new_ids:
+        return "No new patterns detected."
+    return f"Created {len(new_ids)} skill draft(s): {', '.join(new_ids)}"
+
+
+def _declared_worker_grants(args: Any) -> tuple[list[str], list[str]]:
+    """Normalized ``(tools, risk)`` a ``spawn_worker`` call would grant.
+
+    Uses the supervisor's canonical normalization — the same function
+    ``spawn()`` applies — so the approval question and the session-cache
+    key describe exactly what the worker will get, never a parallel
+    interpretation that could drift from enforcement.
+    """
+    from zeline import supervisor as supervisor_module  # lazy: avoid the import cycle
+
+    raw = args.get("grants") if isinstance(args, dict) else None
+    normalized = supervisor_module.Supervisor._normalize_grants(raw)
+    return normalized["tools"], normalized["risk"]
+
+
+def _spawn_grants_key(name: str, args: Any) -> str:
+    """Session-cache discriminator for approval-gated tools; ``""`` otherwise.
+
+    A session allow is only valid for the exact thing the operator approved:
+    - ``spawn_worker``: the exact grant declaration (approving a read-only
+      spawn must not silently cover a later spawn declaring destructive
+      tools). The key is the canonical JSON of the normalized declaration,
+      so ``{"risk": ["destructive"]}`` and ``{"risk": ["destructive",
+      "destructive"]}`` share one key while any real difference re-asks.
+    - ``apply_skill_proposal``: the exact proposal id — approving one diff
+      must not silently cover a different proposal's diff later in the
+      session.
+    - ``rollback_skill_change``: the exact change id — approving one
+      rollback must not silently cover rolling back a different change
+      later in the session.
+    """
+    if name == "spawn_worker":
+        tools, risks = _declared_worker_grants(args)
+        return json.dumps({"tools": tools, "risk": risks}, sort_keys=True)
+    if name == "apply_skill_proposal":
+        pid = args.get("proposal_id", "") if isinstance(args, dict) else ""
+        return json.dumps({"proposal_id": pid}, sort_keys=True)
+    if name == "rollback_skill_change":
+        cid = args.get("change_id", "") if isinstance(args, dict) else ""
+        return json.dumps({"change_id": str(cid).strip()}, sort_keys=True)
+    return ""
+
+
+# --- zeline-brain: durable goals + memory sync wrappers --------------------
+
+def _goal_add(
+    identity: str,
+    title: str,
+    target: str,
+    deadline: str | None = None,
+    milestones: Any = None,
+    parent_id: str | None = None,
+) -> str:
+    """Wrapper tool ``goal_add``: buat goal jangka panjang baru."""
+    goal = goals.add_goal(
+        identity, title, target, deadline=deadline or None,
+        milestones=milestones, parent_id=parent_id or None,
+    )
+    kind = "Sub-goal" if parent_id else "Goal"
+    return f"{kind} dibuat: {goal['id']} — {goal['title']} (progress 0%)"
+
+
+def _goal_update(
+    identity: str,
+    goal_id: str,
+    progress: Any = None,
+    status: str | None = None,
+    milestone: Any = None,
+    title: str | None = None,
+    target: str | None = None,
+    deadline: str | None = None,
+) -> str:
+    """Wrapper tool ``goal_update``.
+
+    ``goals.update_goal`` mengembalikan TUPLE ``(goal, note)`` — wrapper ini
+    WAJIB unpack di sini supaya model tidak menerima repr tuple mentah.
+    ``milestone`` dari argumen tool berbentuk dict ``{"key", "done"}`` dan
+    dikonversi ke tuple yang dimengerti ``update_goal``.
+    """
+    if isinstance(milestone, dict):
+        milestone = (milestone.get("key"), milestone.get("done"))
+    goal, note = goals.update_goal(
+        identity,
+        goal_id,
+        progress=progress,
+        status=status,
+        milestone=milestone,
+        title=title,
+        target=target,
+        deadline=deadline,
+    )
+    out = f"Goal {goal['id']} — {goal['title']}: {goal['progress']}% [{goal['status']}]"
+    # Rollup: if this is a sub-goal, update parent progress.
+    parent_id = goal.get("parent_id")
+    if parent_id and progress is not None:
+        try:
+            new_avg = goals.rollup_progress(identity, parent_id)
+            out += f"\nParent {parent_id} rollup: {new_avg}%"
+        except Exception:  # noqa: BLE001 - rollup must not break update
+            pass
+    if note:
+        out += f"\n{note}"
+    return out
+
+
+def _goal_list(identity: str, status: str | None = None) -> str:
+    """Wrapper tool ``goal_list``: daftar goal sebagai teks ringkas."""
+    items = goals.list_goals(identity, status=status)
+    if not items:
+        return "Belum ada goal."
+    lines = []
+    for item in items:
+        line = f"• {item['id']} — {item['title']}: {item['progress']}% [{item['status']}]"
+        if item.get("target"):
+            line += f" (target: {item['target']})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _goal_get(identity: str, goal_id: str) -> str:
+    """Wrapper tool ``goal_get``: detail satu goal termasuk milestones."""
+    goal = goals.get_goal(identity, goal_id)
+    lines = [
+        f"{goal['title']} [{goal['status']}] — {goal['progress']}%",
+        f"id: {goal['id']}",
+    ]
+    if goal.get("target"):
+        lines.append(f"target: {goal['target']}")
+    if goal.get("deadline"):
+        lines.append(f"deadline: {goal['deadline']}")
+    for index, ms in enumerate(goal.get("milestones", [])):
+        mark = "✓" if ms["done"] else "○"
+        lines.append(f"  {mark} [{index}] {ms['title']}")
+    return "\n".join(lines)
+
+
+def _sync_memory(identity: str) -> str:
+    """Wrapper tool ``sync_memory``: tarik aktivitas konektor → memory.
+
+    Import lazy supaya startup tetap ringan; konektor di-resolve dari
+    registry di dalam ``memory_sync`` (tidak terkoneksi = source di-skip
+    dengan pesan yang jelas di ringkasan).
+    """
+    from zeline import memory_sync
+
+    summary = memory_sync.sync_all(identity)
+    if not summary.get("enabled"):
+        return "Memory sync disabled (MEMORY_SYNC_ENABLED is false)."
+    parts = []
+    for source in ("gmail", "calendar", "github"):
+        stats = summary.get(source, {})
+        parts.append(
+            f"{source}: +{stats.get('added', 0)} fakta, {stats.get('skipped', 0)} dilewati"
+        )
+    errors = summary.get("errors", {})
+    for source, message in errors.items():
+        parts.append(f"{source}: ERROR {message}")
+    return "\n".join(parts)
+
+
+def _propose_skill_fix(
+    identity: str,
+    skill_name: str,
+    old_text: str,
+    new_text: str,
+    reason: str,
+    title: str = "",
+    file_path: str = "SKILL.md",
+) -> str:
+    """Wrapper tool ``propose_skill_fix``: catat proposal tanpa mengubah file."""
+    from zeline import skill_proposals as _sp
+
+    try:
+        proposal = _sp.propose_fix(
+            skill_name, identity, old_text, new_text, reason, file_path, title
+        )
+    except ValueError as exc:
+        return f"ERROR: proposal ditolak: {exc}"
+    return (
+        f"Proposal {proposal['id']} tercatat untuk skill '{proposal['skill_name']}' "
+        f"({proposal['file_path']}). Belum ada file yang berubah — terapkan lewat "
+        f"apply_skill_proposal setelah operator menyetujui."
+    )
+
+
+def _apply_skill_proposal(identity: str, proposal_id: str) -> str:
+    """Wrapper tool ``apply_skill_proposal``: terapkan proposal yang disetujui.
+
+    Dipanggil HANYA setelah approval operator (tool ini risk INSTALL sehingga
+    approval_question selalu bertanya dan menampilkan diff persis).
+    """
+    from zeline import skill_proposals as _sp
+
+    try:
+        result = _sp.apply_proposal(proposal_id, identity)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    return (
+        f"Proposal {result['id']} diterapkan ke '{result['skill_name']}' "
+        f"({result['file_path']}). Rollback via rollback_skill_change."
+    )
+
+
+#: Rencana review yang terakhir ditampilkan di pertanyaan approval, per
+#: identitas: ``{identity: (timestamp, plan)}``. Anti-TOCTOU: handler
+#: ``apply_skill_review`` mengeksekusi PERSIS rencana yang operator lihat
+#: (bukan hitung ulang diam-diam). Entri kedaluwarsa setelah
+#: ``_REVIEW_PLAN_TTL_S`` detik — tanpa rencana segar yang disetujui,
+#: handler menolak (fail-closed, termasuk untuk cron unattended yang
+#: tidak pernah melewati approval_question).
+_REVIEW_PLAN_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_REVIEW_PLAN_TTL_S = 600
+
+
+def _review_skills(identity: str) -> str:
+    """Wrapper tool ``review_skills``: rencana review (dry-run, tidak mengubah)."""
+    from zeline import skill_review as _sr
+
+    plan = _sr.review_skills(identity, apply=False)
+    if not plan:
+        return "Review skill: tidak ada rekomendasi saat ini."
+    lines = [f"- {item['skill']}: {item['action']} — {item['reason']}" for item in plan]
+    lines.append("")
+    lines.append(
+        "Ini hanya rencana (tidak ada yang berubah). "
+        "Terapkan lewat apply_skill_review — perlu approval operator."
+    )
+    return "\n".join(lines)
+
+
+def _apply_skill_review(identity: str) -> str:
+    """Wrapper tool ``apply_skill_review``: terapkan rencana yang disetujui.
+
+    HANYA mengeksekusi rencana yang terakhir tampil di pertanyaan approval
+    (``_REVIEW_PLAN_CACHE``) — tidak pernah menghitung ulang diam-diam.
+    Tanpa rencana segar yang disetujui (termasuk dari cron unattended),
+    menolak dengan pesan jelas alih-alih menebak.
+    """
+    from zeline import skill_review as _sr
+
+    cached = _REVIEW_PLAN_CACHE.get(identity)
+    if cached is None or time.time() - cached[0] > _REVIEW_PLAN_TTL_S:
+        return (
+            "Review skill DITOLAK: tidak ada rencana yang disetujui dan "
+            "masih berlaku. Jalankan review_skills untuk melihat rencana "
+            "terbaru, lalu apply_skill_review (perlu approval operator)."
+        )
+    _, plan = cached
+    if not plan:
+        return "Review skill: tidak ada rekomendasi saat ini."
+    applied = _sr.apply_plan(identity, plan)
+    lines = [f"Review diterapkan ({len(applied)} aksi):"]
+    lines.extend(
+        f"- {item['skill']}: {item['action']} — {item['reason']}" for item in applied
+    )
+    lines.append(
+        "Semua perubahan tercatat dan bisa di-rollback via rollback_skill_change."
+    )
+    return "\n".join(lines)
+
+
+def _rollback_skill_change(identity: str, change_id: str) -> str:
+    """Wrapper tool ``rollback_skill_change``: batalkan satu perubahan tercatat.
+
+    Id proposal diawali "p-" (rollback proposal); selain itu dianggap change id
+    dari review ledger. Terbatas pada state yang tercatat — bukan konten bebas.
+    """
+    cid = (change_id or "").strip()
+    if not cid:
+        return "ERROR: change_id kosong."
+    try:
+        if cid.startswith("p-"):
+            from zeline import skill_proposals as _sp
+
+            result = _sp.rollback_proposal(cid, identity)
+            return (
+                f"Proposal {result['id']} di-rollback: "
+                f"'{result['skill_name']}' kembali seperti sebelum apply."
+            )
+        from zeline import skill_review as _sr
+
+        return _sr.rollback_change(cid, identity)
+    except Exception as exc:  # noqa: BLE001 — tool tidak boleh meledak
+        return f"ERROR: rollback gagal: {exc}"
+
+
 def _connector_tool(cid: str, method: str, **kwargs) -> str:
     """Call a connector operation; the import stays lazy so startup stays light.
 
@@ -3450,6 +8317,277 @@ def _connector_tool(cid: str, method: str, **kwargs) -> str:
         return str(exc)
     except Exception as exc:  # never leak tracebacks to the model
         return f"ERROR: {label} {method} failed ({exc})."
+
+
+#: Capability floor for cron jobs created without an explicit declaration:
+#: read anything the profile allows, write only inside the session workspace.
+#: Anything beyond this (shell, network sends, installs) needs a declared
+#: grant the operator approved once at creation time.
+DEFAULT_JOB_GRANTS: dict[str, list[str]] = {"tools": [], "risk": [ToolRisk.READ, ToolRisk.WRITE]}
+
+
+def normalize_job_grants(grants: object) -> dict[str, list[str]]:
+    """Coerce a grants declaration into canonical shape.
+
+    Defensive on purpose: grants arrive from jobs.json, which operators edit
+    by hand and which older versions wrote without the field at all. Garbage
+    in must never crash the scheduler and must never widen into more
+    capability — unknown risk names are dropped, non-list values are
+    ignored, and an explicitly empty declaration stays empty (fail closed).
+    Anything that is not a dict at all falls back to the default minimal
+    grants.
+    """
+    if not isinstance(grants, dict):
+        return {"tools": [], "risk": list(DEFAULT_JOB_GRANTS["risk"])}
+    raw_tools = grants.get("tools")
+    raw_risk = grants.get("risk")
+    tools = (
+        sorted({str(item).strip() for item in raw_tools if str(item).strip()})
+        if isinstance(raw_tools, (list, tuple))
+        else []
+    )
+    risks = (
+        sorted(
+            {
+                str(item).strip().lower()
+                for item in raw_risk
+                if str(item).strip().lower() in TOOL_RISKS
+            }
+        )
+        if isinstance(raw_risk, (list, tuple))
+        else []
+    )
+    return {"tools": tools, "risk": risks}
+
+
+class ApprovalPolicy:
+    """Decides whether a single tool call may run.
+
+    The policy is the *context* half of the approval choke point; the other
+    half is ``ToolExecutor.run()``, which consults exactly one policy for
+    every model-requested tool call — chat turns, reflection, sub-agents,
+    parallel branches, and cron runs alike. ``decide`` returns a raw answer
+    string; ``run()`` interprets it with ``approvals.parse_verdict`` (the one
+    sanctioned parser): "allow"/"allow once" runs once, "allow_session"/
+    "allow sesi ini" records a session allow, anything else denies.
+
+    ``on_tool`` is an optional renderer hook ``on_tool("ask_user", args)``.
+    When set (interactive turns) the operator's picker renders exactly like
+    a model-initiated question; when unset (unattended runs) the tool runs
+    headless and a missing operator degrades to denial, never to approval.
+    """
+
+    on_tool: Callable[[str, dict[str, Any]], None] | None = None
+
+    def decide(self, executor: "ToolExecutor", name: str, args: dict[str, Any]) -> str:
+        """Return the operator-answer string for this call.
+
+        Must not raise: a policy that raises is treated as "deny" by the
+        gate (fail closed).
+        """
+        raise NotImplementedError
+
+
+class InteractiveApprovalPolicy(ApprovalPolicy):
+    """Approval for attended turns: chat, reflect(), sub-agents.
+
+    This is the former agent-loop gate moved verbatim into the choke point:
+
+    When ``config.APPROVAL_AUTO_ALLOW_ALL`` is True, all tool calls are
+    allowed without prompting (agent-style). This is explicitly opt-in
+    via config — the operator accepts the risk of unattended execution.
+
+    ``approval_question`` stays the single decision function (its logic is
+    untouched); the operator is asked through the ``ask_user`` tool so the
+    Telegram picker / CLI prompt renders via ``on_tool`` exactly as before.
+    "Allow sesi ini" consults the session cache first, so an operator
+    mid-flow is not re-asked for the same tool. For ``spawn_worker`` the
+    cache is keyed by the exact grant declaration approved (see
+    ``_spawn_grants_key``): a session allow for one declaration never
+    covers a different one.
+
+    The session check deliberately lives in THIS policy, not in the generic
+    gate: a leftover "allow sesi ini" from a chat must never widen what an
+    unattended grant-based run may do.
+    """
+
+    def __init__(self, on_tool: Callable[[str, dict[str, Any]], None] | None = None) -> None:
+        self.on_tool = on_tool
+
+    def decide(self, executor: "ToolExecutor", name: str, args: dict[str, Any]) -> str:
+        # Pure allow-all: operator explicitly opted in via config.
+        # No prompts, all tools run. MORE permissive than standard agents.
+        try:
+            from zeline import config as _cfg
+            if getattr(_cfg, "APPROVAL_AUTO_ALLOW_ALL", False):
+                return "allow"
+        except Exception:
+            pass
+        # agent-like tiered approval (default when auto_allow_all is False):
+        # - READ/WRITE/NETWORK: routine operations, auto-allow (no prompt)
+        # - INSTALL/DESTRUCTIVE: dangerous, prompt; fail-closed (deny on
+        #   timeout/no response) just like leading agents.
+        try:
+            _def = next(
+                (d for d in TOOL_DEFS if d.name == name), None)
+            _risk = _def.risk if _def is not None else None
+            if _risk in (ToolRisk.READ, ToolRisk.WRITE, ToolRisk.NETWORK):
+                return "allow"
+            # INSTALL/DESTRUCTIVE/unknown: fall through to prompt below.
+        except Exception:
+            pass
+        # The session cache is grants-aware for spawn_worker (see
+        # _spawn_grants_key): a session allow only fast-paths the exact
+        # declaration the operator approved, never a broader one.
+        if approvals.session_allowed(
+            executor.identity, name, _spawn_grants_key(name, args)
+        ):
+            return "allow"
+        question = executor.approval_question(name, args)
+        if question is None:
+            return "allow"
+        return executor.ask_operator(question, approvals.APPROVAL_OPTIONS)
+
+
+class GrantApprovalPolicy(ApprovalPolicy):
+    """Pre-authorized capability set for unattended runs (cron jobs).
+
+    Why pre-authorization, decided once per job at creation time: at 3 AM
+    nobody can tap a picker. Per-call approval would either hang every run
+    on an ask timeout or force the job to guess - both wrong. A per-job
+    grant is also auditable: ``schedule_task show`` prints exactly what the
+    job may do, and the operator approved that list once, explicitly.
+
+    Why denial is loud instead of fail-open: a silently skipped tool reads
+    as a successful run that did nothing, and the operator only notices
+    weeks later. Every denial is recorded on ``self.denials`` and the
+    scheduler appends it to the job's ``last_status``, so ``cron list``
+    shows what was blocked and why.
+
+    Grants are snapshotted when the run starts (``from_job`` copies the
+    declaration into this object): editing jobs.json mid-run cannot change
+    what the running turn may do — no TOCTOU inside a run. The next run
+    picks up the edited grants.
+
+    Omitting BOTH constructor args gives the default minimal grants (read +
+    workspace-confined write) — the same floor ``add_job`` uses. Partial
+    omission does NOT: ``GrantApprovalPolicy(tools=[...])`` alone grants only
+    the named tools with NO risk classes, and vice versa — the omitted side
+    falls back to empty, not to the default. Pass ``from_job`` — or both args
+    explicitly — for a full grant declaration. Explicitly empty args mean
+    deny-all (fail closed): an explicit empty declaration is a deliberate
+    choice, never silently widened.
+    """
+
+    _USE_DEFAULT: object = object()
+
+    def __init__(
+        self, tools: object = _USE_DEFAULT, risk_classes: object = _USE_DEFAULT
+    ) -> None:
+        if tools is self._USE_DEFAULT and risk_classes is self._USE_DEFAULT:
+            normalized = normalize_job_grants(None)
+        else:
+            normalized = normalize_job_grants(
+                {
+                    "tools": () if tools is self._USE_DEFAULT else tools,
+                    "risk": () if risk_classes is self._USE_DEFAULT else risk_classes,
+                }
+            )
+        self.granted_tools = frozenset(normalized["tools"])
+        self.granted_risks = frozenset(normalized["risk"])
+        self.denials: list[tuple[str, str]] = []
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_job(cls, job: object) -> "GrantApprovalPolicy":
+        """Snapshot a job's declared grants into a policy for one run."""
+        grants = normalize_job_grants(getattr(job, "grants", None))
+        return cls(tools=grants["tools"], risk_classes=grants["risk"])
+
+    def decide(self, executor: "ToolExecutor", name: str, args: dict[str, Any]) -> str:
+        if name in self.granted_tools:
+            return "allow"
+        if name == "ask_user":
+            # An unattended run can never get an answer: deny fast instead of
+            # blocking the worker thread on a futile wait for the ask timeout.
+            # (Timeout/no-user is deny anyway; this just skips the wait. An
+            # explicit name grant still wins — the operator's word is literal.)
+            return self._deny(name, "unattended run — nobody can answer a question")
+        risk = executor.risk_of(name)
+        if risk is None:
+            # Not a native tool (MCP/custom/OpenAPI): approval_question
+            # cannot classify it, so fail closed — the operator can still
+            # allowlist it by exact name in the job's tool grants.
+            return self._deny(name, "not a native tool; grant it by name explicitly")
+        if risk not in self.granted_risks:
+            return self._deny(name, f"risk class '{risk}' is not granted to this job")
+        if risk == ToolRisk.WRITE and executor.writes_outside_workspace(name, args):
+            return self._deny(name, "write escapes the job workspace")
+        return "allow"
+
+    def _deny(self, name: str, reason: str) -> str:
+        with self._lock:
+            self.denials.append((name, reason))
+        return "deny"
+
+
+def _approval_denied_message(name: str) -> str:
+    """What the model sees when the gate denies a call.
+
+    Kept byte-identical to the pre-choke-point agent loop text so existing
+    transcripts and tests read the same.
+    """
+    return (
+        f"ERROR: tool '{name}' was not approved by the "
+        "operator and was not executed. Either ask the "
+        "operator what to do, or use a safer tool."
+    )
+
+
+def _format_worker_status(status: dict[str, Any]) -> str:
+    """One-line compact rendering of a worker record for the model."""
+    task = str(status.get("task") or "")
+    line = f"• {status.get('id')} [{status.get('status')}] — {task[:80]}"
+    attempts = status.get("attempts") or 0
+    if attempts:
+        line += f" (attempts: {attempts})"
+    if status.get("status") == "failed" and status.get("error"):
+        line += f" — {str(status['error'])[:120]}"
+    return line
+
+
+class _WorkflowToolAgent:
+    """Duck-typed agent for ``workflows.execute_workflow``.
+
+    Each task node runs as a FRESH Zeline sub-agent turn (no cross-node
+    history leaking between DAG nodes; the DAG itself is the memory).
+    Lazy imports inside ``send``: agent -> tools would cycle at module
+    top-level.
+    """
+
+    def __init__(self, executor: "ToolExecutor"):
+        self._executor = executor
+
+    def send(self, text: str) -> str:
+        from zeline.agent import Zeline
+
+        ex = self._executor
+        sub = Zeline(
+            identity=f"{ex.identity}:wfnode",
+            tool_profile=ex.profile,
+            workspace=str(ex.workspace),
+            system_extra=(
+                "\n\nYou are executing ONE task node of a user-authored "
+                "visual workflow. Do exactly what the task says, then reply "
+                "with a concise, self-contained result. You run UNATTENDED: "
+                "nobody can answer questions, so `ask_user` is disabled — "
+                "decide and act on your own."
+            ),
+            depth=ex.depth + 1,
+        )
+        # Default minimal grants (read + workspace-confined write), the same
+        # floor cron jobs use: background work never gets interactive pickers.
+        return sub.send(text, approval_policy=GrantApprovalPolicy())
 
 
 class ToolExecutor:
@@ -3475,6 +8613,10 @@ class ToolExecutor:
         max_depth = int(getattr(config, "MAX_SUBAGENT_DEPTH", getattr(config, "DEFAULT_MAX_SUBAGENT_DEPTH", 1)))
         if self.depth >= max_depth:
             disabled.add("delegate_task")
+            # Worker di kedalaman maksimal tidak boleh melahirkan worker lagi:
+            # rantai spawn tak berbatas akan menghabiskan thread & kuota
+            # provider tanpa pernah kembali ke operator.
+            disabled.add("spawn_worker")
         self._disabled_tools = frozenset(disabled)
         self._native_defs = tuple(
             definition
@@ -3524,17 +8666,74 @@ class ToolExecutor:
         # is the expensive part (the server indexes the project), so they are
         # kept for the executor's lifetime.
         self._lsp: Any | None = None
+        # The approval choke point: every model-requested tool
+        # call passes _approval_gate() inside run(). Each context installs
+        # the policy it needs — Zeline.send() installs InteractiveApprovalPolicy
+        # per turn, cron installs GrantApprovalPolicy per run. None means no
+        # enforcement (unit tests, one-shot CLI introspection); every
+        # production turn installs one.
+        self.approval_policy: ApprovalPolicy | None = None
+        # Reentrancy guard for the gate: the approval machinery itself calls
+        # back into run() (ask_user). Thread-local because the parallel tool
+        # branch runs executor.run() on pool threads.
+        self._approval_tls = threading.local()
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
             "add_memory": self.memory.add,
             "remove_memory": self.memory.remove,
+            "restore_memory": self.memory.restore,
             "list_memory": self.memory.formatted,
+            "episode_add": lambda title, events: _episode_add(self.identity, title, events),
+            "episode_list": lambda limit=10: _episode_list(self.identity, limit),
+            "search_sessions": lambda query, limit=5: _search_sessions(query, limit),
+            "learn_skill": lambda name, description, content: _learn_skill(name, description, content),
+            "list_learned_skills": lambda: _list_learned_skills(),
+            "improve_skill": lambda slug, addition: _improve_skill(slug, addition),
+            "user_model_set": lambda dimension, key, value, confidence, evidence="": _user_model_set(dimension, key, value, confidence, evidence),
+            "user_model_get": lambda dimension=None: _user_model_get(dimension),
+            "skill_pack": lambda skill_name: _skill_pack(skill_name),
+            "skill_install": lambda source: _skill_install(source),
+            "clawhub_search": lambda query, limit=10: _clawhub_search(query, limit),
+            "clawhub_install": lambda slug: _clawhub_install(slug),
+            "workflow_execute": lambda workflow_id, node_timeout=300, approval_timeout=1800: self._workflow_execute(
+                workflow_id, node_timeout=node_timeout, approval_timeout=approval_timeout
+            ),
+            "workflow_pause": lambda exec_id: self._workflow_pause(exec_id),
+            "workflow_resume": lambda exec_id, approved=True: self._workflow_resume(exec_id, approved=approved),
+            "workflow_status": lambda exec_id: self._workflow_status(exec_id),
+            "email_send": lambda to, subject, body: _email_send(to, subject, body),
+            "peer_send": lambda peer, message: _peer_send(peer, message),
+            "gepa_drafts": lambda status=None: _gepa_drafts(status),
+            "gepa_learn": lambda: _gepa_learn(),
             "consolidate_memory": lambda: self._consolidate_memory(),
-            "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
+            "goal_add": lambda title, target, deadline=None, milestones=None, parent_id=None: _goal_add(
+                self.identity, title, target, deadline, milestones, parent_id
+            ),
+            "goal_update": lambda goal_id, progress=None, status=None, milestone=None, title=None, target=None, deadline=None: _goal_update(
+                self.identity,
+                goal_id,
+                progress=progress,
+                status=status,
+                milestone=milestone,
+                title=title,
+                target=target,
+                deadline=deadline,
+            ),
+            "goal_list": lambda status=None: _goal_list(self.identity, status),
+            "goal_get": lambda goal_id: _goal_get(self.identity, goal_id),
+            "sync_memory": lambda: _sync_memory(self.identity),
+            "load_skill": lambda name: self._load_skill_recorded(name),
+            "propose_skill_fix": lambda skill_name, old_text, new_text, reason, title="", file_path="SKILL.md": _propose_skill_fix(
+                self.identity, skill_name, old_text, new_text, reason, title, file_path
+            ),
+            "apply_skill_proposal": lambda proposal_id: _apply_skill_proposal(self.identity, proposal_id),
+            "review_skills": lambda: _review_skills(self.identity),
+            "apply_skill_review": lambda: _apply_skill_review(self.identity),
+            "rollback_skill_change": lambda change_id: _rollback_skill_change(self.identity, change_id),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
             "network_route": network_routes.tool,
-            "deep_research": lambda query: _deep_research(query),
+            "deep_research": lambda query, max_hops=2: _deep_research(query, max_hops=max_hops),
             "analyze_media": lambda path_or_url, question="": _analyze_media(path_or_url, question, self.workspace),
             "generate_image": lambda prompt, path, size="1024x1024": _generate_image(prompt, path, self.workspace, size),
             "edit_image": lambda image, prompt, path, mask="", size="1024x1024": _edit_image(
@@ -3545,6 +8744,12 @@ class ToolExecutor:
             ),
             "text_to_speech": lambda text, path, voice="alloy", model="tts-1": _text_to_speech(
                 text, path, self.workspace, voice, model
+            ),
+            "voice_transcribe": lambda audio_path, model="tiny", language=None: _voice_transcribe(
+                audio_path, self.workspace, model, language
+            ),
+            "voice_speak": lambda text, path="", voice="id": _voice_speak(
+                text, path, self.workspace, voice
             ),
             "qr_code": lambda text, path, size=10: _qr_code(text, path, self.workspace, size),
             "transcribe_audio": lambda audio, language="", prompt="": _transcribe_audio(
@@ -3560,8 +8765,9 @@ class ToolExecutor:
             "git": lambda action, path="", message="", ref="", staged=False, limit=10: _git(
                 action, self.workspace, path=path, message=message, ref=ref, staged=staged, limit=limit
             ),
-            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="": _schedule_task(
-                action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver
+            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="", grants=None: _schedule_task(
+                action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver,
+                grants=grants, ask=self.ask_operator,
             ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
@@ -3593,6 +8799,12 @@ class ToolExecutor:
             "delegate_task": lambda goal="", context="", role="", tasks=None, verify=False: self._delegate_task(
                 goal, context, role, tasks, verify
             ),
+            "spawn_worker": lambda task="", grants=None, accept_if="", depends_on=None: self._spawn_worker(
+                task, grants=grants, accept_if=accept_if, depends_on=depends_on
+            ),
+            "worker_status": lambda worker_id="": self._worker_status(worker_id),
+            "worker_result": lambda worker_id="": self._worker_result(worker_id),
+            "steer_worker": lambda worker_id, instruction: self._steer_worker(worker_id, instruction),
             "recall_history": lambda query="": self._recall_history(query),
             "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
             "github_repos": lambda limit=10: _connector_tool("github", "list_repos", limit=limit),
@@ -3632,6 +8844,293 @@ class ToolExecutor:
             "whatsapp_template": lambda to, template, language="en_US": _connector_tool(
                 "whatsapp", "send_template", to=to, template=template, language=language
             ),
+            "slack_list_channels": lambda limit=10: _connector_tool(
+                "slack", "list_channels", limit=limit
+            ),
+            "slack_send_message": lambda channel, text: _connector_tool(
+                "slack", "send_message", channel=channel, text=text
+            ),
+            "slack_read_history": lambda channel, limit=10: _connector_tool(
+                "slack", "read_history", channel=channel, limit=limit
+            ),
+            "notion_search": lambda query, limit=10: _connector_tool(
+                "notion", "search", query=query, limit=limit
+            ),
+            "notion_query_database": lambda database_id, limit=10: _connector_tool(
+                "notion", "query_database", database_id=database_id, limit=limit
+            ),
+            "notion_create_page": lambda parent_page_id, title, content="": _connector_tool(
+                "notion", "create_page", parent_page_id=parent_page_id, title=title, content=content
+            ),
+            "linear_list_issues": lambda limit=10: _connector_tool(
+                "linear", "list_issues", limit=limit
+            ),
+            "linear_create_issue": lambda team_id, title, description="": _connector_tool(
+                "linear", "create_issue", team_id=team_id, title=title, description=description
+            ),
+            "gitlab_list_projects": lambda limit=10: _connector_tool(
+                "gitlab", "list_projects", limit=limit
+            ),
+            "gitlab_list_mrs": lambda state="opened", limit=10: _connector_tool(
+                "gitlab", "list_merge_requests", state=state, limit=limit
+            ),
+            "gitlab_list_issues": lambda state="opened", limit=10: _connector_tool(
+                "gitlab", "list_issues", state=state, limit=limit
+            ),
+            "trello_list_boards": lambda limit=10: _connector_tool(
+                "trello", "list_boards", limit=limit
+            ),
+            "trello_list_cards": lambda board_id, limit=20: _connector_tool(
+                "trello", "list_cards", board_id=board_id, limit=limit
+            ),
+            "trello_create_card": lambda list_id, name, desc="": _connector_tool(
+                "trello", "create_card", list_id=list_id, name=name, desc=desc
+            ),
+            "todoist_list_tasks": lambda limit=10: _connector_tool(
+                "todoist", "list_tasks", limit=limit
+            ),
+            "todoist_add_task": lambda content, description="", priority=1: _connector_tool(
+                "todoist", "add_task", content=content, description=description, priority=priority
+            ),
+            "airtable_list_records": lambda base_id, table_id, limit=10: _connector_tool(
+                "airtable", "list_records", base_id=base_id, table_id=table_id, limit=limit
+            ),
+            "airtable_create_record": lambda base_id, table_id, fields: _connector_tool(
+                "airtable", "create_record", base_id=base_id, table_id=table_id, fields=fields
+            ),
+            "jira_search": lambda jql, limit=10: _connector_tool(
+                "jira", "search", jql=jql, limit=limit
+            ),
+            "jira_create_issue": lambda project_key, summary, description="", issue_type="Task": _connector_tool(
+                "jira", "create_issue", project_key=project_key, summary=summary,
+                description=description, issue_type=issue_type
+            ),
+            "discord_list_channels": lambda guild_id, limit=20: _connector_tool(
+                "discord", "list_channels", guild_id=guild_id, limit=limit
+            ),
+            "discord_send_message": lambda channel_id, content: _connector_tool(
+                "discord", "send_message", channel_id=channel_id, content=content
+            ),
+            "telegram_bot_get_me": lambda: _connector_tool(
+                "telegram_bot", "get_me"
+            ),
+            "telegram_bot_send_message": lambda chat_id, text: _connector_tool(
+                "telegram_bot", "send_message", chat_id=chat_id, text=text
+            ),
+            "teams_send_message": lambda text: _connector_tool(
+                "teams", "send_message", text=text
+            ),
+            "twilio_send_sms": lambda from_number, to_number, body: _connector_tool(
+                "twilio", "send_sms", from_number=from_number, to_number=to_number, body=body
+            ),
+            "twilio_list_messages": lambda limit=10: _connector_tool(
+                "twilio", "list_messages", limit=limit
+            ),
+            "sendgrid_send_email": lambda to_email, subject, body, from_email: _connector_tool(
+                "sendgrid", "send_email", to_email=to_email, subject=subject, body=body, from_email=from_email
+            ),
+            "pushover_send_notification": lambda message, title="", priority=0: _connector_tool(
+                "pushover", "send_notification", message=message, title=title, priority=priority
+            ),
+            "asana_list_tasks": lambda limit=10, assignee="me": _connector_tool(
+                "asana", "list_tasks", limit=limit, assignee=assignee
+            ),
+            "asana_create_task": lambda name, notes="", workspace="": _connector_tool(
+                "asana", "create_task", name=name, notes=notes, workspace=workspace
+            ),
+            "clickup_list_tasks": lambda list_id, limit=10: _connector_tool(
+                "clickup", "list_tasks", list_id=list_id, limit=limit
+            ),
+            "clickup_create_task": lambda list_id, name, description="": _connector_tool(
+                "clickup", "create_task", list_id=list_id, name=name, description=description
+            ),
+            "monday_list_boards": lambda limit=10: _connector_tool(
+                "monday", "list_boards", limit=limit
+            ),
+            "monday_list_items": lambda board_id, limit=10: _connector_tool(
+                "monday", "list_items", board_id=board_id, limit=limit
+            ),
+            "bitbucket_list_repos": lambda limit=10: _connector_tool(
+                "bitbucket", "list_repos", limit=limit
+            ),
+            "bitbucket_list_prs": lambda workspace, repo_slug, limit=10: _connector_tool(
+                "bitbucket", "list_prs", workspace=workspace, repo_slug=repo_slug, limit=limit
+            ),
+            "sentry_list_issues": lambda limit=10, project_slug="": _connector_tool(
+                "sentry", "list_issues", limit=limit, project_slug=project_slug
+            ),
+            "pagerduty_list_incidents": lambda limit=10, status="triggered": _connector_tool(
+                "pagerduty", "list_incidents", limit=limit, status=status
+            ),
+            "vercel_list_deployments": lambda limit=10: _connector_tool(
+                "vercel", "list_deployments", limit=limit
+            ),
+            "cloudflare_list_zones": lambda: _connector_tool(
+                "cloudflare", "list_zones"
+            ),
+            "cloudflare_list_dns_records": lambda zone_id: _connector_tool(
+                "cloudflare", "list_dns_records", zone_id=zone_id
+            ),
+            "datadog_list_monitors": lambda limit=10: _connector_tool(
+                "datadog", "list_monitors", limit=limit
+            ),
+            "confluence_search_pages": lambda cql, limit=10: _connector_tool(
+                "confluence", "search_pages", cql=cql, limit=limit
+            ),
+            "confluence_get_page": lambda page_id: _connector_tool(
+                "confluence", "get_page", page_id=page_id
+            ),
+            "dropbox_list_files": lambda path="", limit=10: _connector_tool(
+                "dropbox", "list_files", path=path, limit=limit
+            ),
+            "dropbox_get_metadata": lambda path: _connector_tool(
+                "dropbox", "get_metadata", path=path
+            ),
+            "hubspot_list_contacts": lambda limit=10: _connector_tool(
+                "hubspot", "list_contacts", limit=limit
+            ),
+            "hubspot_create_contact": lambda email, firstname="", lastname="": _connector_tool(
+                "hubspot", "create_contact", email=email, firstname=firstname, lastname=lastname
+            ),
+            "zendesk_list_tickets": lambda limit=10: _connector_tool(
+                "zendesk", "list_tickets", limit=limit
+            ),
+            "zendesk_create_ticket": lambda subject, comment, priority="normal": _connector_tool(
+                "zendesk", "create_ticket", subject=subject, comment=comment, priority=priority
+            ),
+            "intercom_list_conversations": lambda limit=10: _connector_tool(
+                "intercom", "list_conversations", limit=limit
+            ),
+            "calendly_list_events": lambda limit=10: _connector_tool(
+                "calendly", "list_events", limit=limit
+            ),
+            "stripe_list_charges": lambda limit=10: _connector_tool(
+                "stripe", "list_charges", limit=limit
+            ),
+            "stripe_list_customers": lambda limit=10: _connector_tool(
+                "stripe", "list_customers", limit=limit
+            ),
+            "x_api_post_tweet": lambda text: _connector_tool("x_api", "post_tweet", text=text),
+            "x_api_read_timeline": lambda username, limit=10: _connector_tool("x_api", "read_timeline", username=username, limit=limit),
+            "reddit_list_posts": lambda subreddit, sort="hot", limit=10: _connector_tool("reddit", "list_subreddit_posts", subreddit=subreddit, sort=sort, limit=limit),
+            "reddit_search": lambda query, subreddit="", limit=10: _connector_tool("reddit", "search", query=query, subreddit=subreddit, limit=limit),
+            "hackernews_top_stories": lambda limit=10: _connector_tool("hackernews", "top_stories", limit=limit),
+            "hackernews_get_item": lambda item_id: _connector_tool("hackernews", "get_item", item_id=item_id),
+            "mastodon_post_toot": lambda text, visibility="public": _connector_tool("mastodon", "post_toot", text=text, visibility=visibility),
+            "mastodon_read_timeline": lambda limit=10: _connector_tool("mastodon", "read_timeline", limit=limit),
+            "bluesky_post": lambda text: _connector_tool("bluesky", "post", text=text),
+            "bluesky_read_timeline": lambda limit=10: _connector_tool("bluesky", "read_timeline", limit=limit),
+            "devto_list_articles": lambda limit=10, tag="": _connector_tool("devto", "list_articles", limit=limit, tag=tag),
+            "devto_create_article": lambda title, body_markdown, published=False: _connector_tool("devto", "create_article", title=title, body_markdown=body_markdown, published=published),
+            "mailgun_send_email": lambda from_addr, to, subject, text: _connector_tool("mailgun", "send_email", from_addr=from_addr, to=to, subject=subject, text=text),
+            "mailgun_list_messages": lambda limit=10: _connector_tool("mailgun", "list_messages", limit=limit),
+            "resend_send_email": lambda from_addr, to, subject, html: _connector_tool("resend", "send_email", from_addr=from_addr, to=to, subject=subject, html=html),
+            "vonage_send_sms": lambda to, from_name, text: _connector_tool("vonage", "send_sms", to=to, from_name=from_name, text=text),
+            "onesignal_send_push": lambda title, message: _connector_tool("onesignal", "send_push", title=title, message=message),
+            "wrike_list_tasks": lambda limit=10: _connector_tool("wrike", "list_tasks", limit=limit),
+            "wrike_create_task": lambda title, folder_id, description="": _connector_tool("wrike", "create_task", title=title, folder_id=folder_id, description=description),
+            "teamwork_list_projects": lambda limit=10: _connector_tool("teamwork", "list_projects", limit=limit),
+            "teamwork_list_tasks": lambda limit=10: _connector_tool("teamwork", "list_tasks", limit=limit),
+            "shortcut_list_stories": lambda limit=10: _connector_tool("shortcut", "list_stories", limit=limit),
+            "shortcut_create_story": lambda name, description="", story_type="feature": _connector_tool("shortcut", "create_story", name=name, description=description, story_type=story_type),
+            "height_list_tasks": lambda limit=10: _connector_tool("height", "list_tasks", limit=limit),
+            "npm_registry_package_info": lambda name: _connector_tool("npm_registry", "package_info", name=name),
+            "npm_registry_search": lambda query, limit=10: _connector_tool("npm_registry", "search", query=query, limit=limit),
+            "pypi_registry_package_info": lambda name: _connector_tool("pypi_registry", "package_info", name=name),
+            "rubygems_package_info": lambda name: _connector_tool("rubygems", "package_info", name=name),
+            "rubygems_search": lambda query, limit=10: _connector_tool("rubygems", "search", query=query, limit=limit),
+            "jenkins_list_jobs": lambda : _connector_tool("jenkins", "list_jobs", ),
+            "jenkins_job_status": lambda job_name: _connector_tool("jenkins", "job_status", job_name=job_name),
+            "opsgenie_list_alerts": lambda limit=10: _connector_tool("opsgenie", "list_alerts", limit=limit),
+            "render_list_services": lambda limit=10: _connector_tool("render", "list_services", limit=limit),
+            "render_list_deploys": lambda service_id, limit=10: _connector_tool("render", "list_deploys", service_id=service_id, limit=limit),
+            "typeform_list_forms": lambda limit=10: _connector_tool("typeform", "list_forms", limit=limit),
+            "typeform_get_responses": lambda form_id, limit=10: _connector_tool("typeform", "get_responses", form_id=form_id, limit=limit),
+            "tally_list_forms": lambda limit=10: _connector_tool("tally", "list_forms", limit=limit),
+            "jotform_list_forms": lambda limit=10: _connector_tool("jotform", "list_forms", limit=limit),
+            "jotform_get_submissions": lambda form_id, limit=10: _connector_tool("jotform", "get_submissions", form_id=form_id, limit=limit),
+            "surveymonkey_list_surveys": lambda limit=10: _connector_tool("surveymonkey", "list_surveys", limit=limit),
+            "openweathermap_current_weather": lambda city: _connector_tool("openweathermap", "current_weather", city=city),
+            "openweathermap_forecast": lambda city, limit=8: _connector_tool("openweathermap", "forecast", city=city, limit=limit),
+            "coinbase_list_accounts": lambda limit=10: _connector_tool("coinbase", "list_accounts", limit=limit),
+            "coinbase_spot_price": lambda pair="BTC-USD": _connector_tool("coinbase", "spot_price", pair=pair),
+            "wise_list_profiles": lambda : _connector_tool("wise", "list_profiles", ),
+            "wise_get_rate": lambda source="USD", target="EUR": _connector_tool("wise", "get_rate", source=source, target=target),
+            "paypal_list_invoices": lambda limit=10: _connector_tool("paypal", "list_invoices", limit=limit),
+            "paypal_get_order": lambda order_id: _connector_tool("paypal", "get_order", order_id=order_id),
+            "linkedin_get_profile": lambda : _connector_tool("linkedin", "get_profile", ),
+            "linkedin_share_post": lambda text: _connector_tool("linkedin", "share_post", text=text),
+            "producthunt_todays_hunts": lambda limit=10: _connector_tool("producthunt", "todays_hunts", limit=limit),
+            "producthunt_search_posts": lambda query, limit=10: _connector_tool("producthunt", "search_posts", query=query, limit=limit),
+            "gitbook_list_spaces": lambda limit=10: _connector_tool("gitbook", "list_spaces", limit=limit),
+            "gitbook_list_content": lambda space_id, limit=10: _connector_tool("gitbook", "list_content", space_id=space_id, limit=limit),
+            "ghost_list_posts": lambda limit=10: _connector_tool("ghost", "list_posts", limit=limit),
+            "ghost_create_post": lambda title, html="": _connector_tool("ghost", "create_post", title=title, html=html),
+            "zoho_crm_list_contacts": lambda limit=10: _connector_tool("zoho_crm", "list_contacts", limit=limit),
+            "zoho_crm_create_contact": lambda first_name, last_name, email="": _connector_tool("zoho_crm", "create_contact", first_name=first_name, last_name=last_name, email=email),
+            "pipedrive_list_deals": lambda limit=10: _connector_tool("pipedrive", "list_deals", limit=limit),
+            "pipedrive_create_deal": lambda title, value="": _connector_tool("pipedrive", "create_deal", title=title, value=value),
+            "freshdesk_list_tickets": lambda limit=10: _connector_tool("freshdesk", "list_tickets", limit=limit),
+            "freshdesk_create_ticket": lambda subject, description, email="", priority=1, status=2: _connector_tool("freshdesk", "create_ticket", subject=subject, description=description, email=email, priority=priority, status=status),
+            "close_list_leads": lambda limit=10: _connector_tool("close", "list_leads", limit=limit),
+            "close_create_lead": lambda name: _connector_tool("close", "create_lead", name=name),
+            "chargebee_list_customers": lambda limit=10: _connector_tool("chargebee", "list_customers", limit=limit),
+            "chargebee_list_subscriptions": lambda limit=10: _connector_tool("chargebee", "list_subscriptions", limit=limit),
+            "paddle_list_customers": lambda limit=10: _connector_tool("paddle", "list_customers", limit=limit),
+            "paddle_list_transactions": lambda limit=10: _connector_tool("paddle", "list_transactions", limit=limit),
+            "box_list_files": lambda folder_id="0", limit=10: _connector_tool("box", "list_files", folder_id=folder_id, limit=limit),
+            "box_get_file_info": lambda file_id: _connector_tool("box", "get_file_info", file_id=file_id),
+            "webflow_list_sites": lambda limit=10: _connector_tool("webflow", "list_sites", limit=limit),
+            "webflow_list_collections": lambda site_id, limit=10: _connector_tool("webflow", "list_collections", site_id=site_id, limit=limit),
+            "n8n_list_workflows": lambda limit=10: _connector_tool("n8n", "list_workflows", limit=limit),
+            "n8n_get_workflow": lambda workflow_id: _connector_tool("n8n", "get_workflow", workflow_id=workflow_id),
+            "n8n_execute_workflow": lambda workflow_id, data=None: _connector_tool("n8n", "execute_workflow", workflow_id=workflow_id, data=data),
+            "mailchimp_list_audiences": lambda limit=10: _connector_tool("mailchimp", "list_audiences", limit=limit),
+            "mailchimp_list_campaigns": lambda limit=10: _connector_tool("mailchimp", "list_campaigns", limit=limit),
+            "activecampaign_list_contacts": lambda limit=10: _connector_tool("activecampaign", "list_contacts", limit=limit),
+            "activecampaign_create_contact": lambda email, first_name="", last_name="": _connector_tool("activecampaign", "create_contact", email=email, first_name=first_name, last_name=last_name),
+            "convertkit_list_subscribers": lambda limit=10: _connector_tool("convertkit", "list_subscribers", limit=limit),
+            "beehiiv_list_posts": lambda limit=10: _connector_tool("beehiiv", "list_posts", limit=limit),
+            "buffer_list_profiles": lambda : _connector_tool("buffer", "list_profiles", ),
+            "buffer_create_post": lambda text, profile_ids: _connector_tool("buffer", "create_post", text=text, profile_ids=profile_ids),
+            "railway_list_projects": lambda limit=10: _connector_tool("railway", "list_projects", limit=limit),
+            "flyio_list_apps": lambda limit=10: _connector_tool("flyio", "list_apps", limit=limit),
+            "heroku_list_apps": lambda limit=10: _connector_tool("heroku", "list_apps", limit=limit),
+            "digitalocean_list_droplets": lambda limit=10: _connector_tool("digitalocean", "list_droplets", limit=limit),
+            "hetzner_list_servers": lambda limit=10: _connector_tool("hetzner", "list_servers", limit=limit),
+            "vultr_list_instances": lambda limit=10: _connector_tool("vultr", "list_instances", limit=limit),
+            "betterstack_list_monitors": lambda limit=10: _connector_tool("betterstack", "list_monitors", limit=limit),
+            "healthchecks_list_checks": lambda limit=10: _connector_tool("healthchecks", "list_checks", limit=limit),
+            "cronitor_list_monitors": lambda limit=10: _connector_tool("cronitor", "list_monitors", limit=limit),
+            "plausible_list_sites": lambda : _connector_tool("plausible", "list_sites", ),
+            "plausible_site_stats": lambda site_id, period="7d": _connector_tool("plausible", "site_stats", site_id=site_id, period=period),
+            "fathom_list_sites": lambda limit=10: _connector_tool("fathom", "list_sites", limit=limit),
+            "algolia_list_indexes": lambda : _connector_tool("algolia", "list_indexes", ),
+            "algolia_search_index": lambda index, query, limit=10: _connector_tool("algolia", "search_index", index=index, query=query, limit=limit),
+            "meilisearch_list_indexes": lambda limit=10: _connector_tool("meilisearch", "list_indexes", limit=limit),
+            "meilisearch_search_index": lambda index_uid, query, limit=10: _connector_tool("meilisearch", "search_index", index_uid=index_uid, query=query, limit=limit),
+            "typesense_list_collections": lambda : _connector_tool("typesense", "list_collections", ),
+            "typesense_search_collection": lambda collection, query, query_by="*": _connector_tool("typesense", "search_collection", collection=collection, query=query, query_by=query_by),
+            "lemlist_list_campaigns": lambda limit=10: _connector_tool("lemlist", "list_campaigns", limit=limit),
+            "lemlist_campaign_stats": lambda campaign_id: _connector_tool("lemlist", "campaign_stats", campaign_id=campaign_id),
+            "apollo_people_search": lambda query, limit=10: _connector_tool("apollo", "people_search", query=query, limit=limit),
+            "apollo_enrich_person": lambda email: _connector_tool("apollo", "enrich_person", email=email),
+            "hunter_domain_search": lambda domain, limit=10: _connector_tool("hunter", "domain_search", domain=domain, limit=limit),
+            "hunter_verify_email": lambda email: _connector_tool("hunter", "verify_email", email=email),
+            "bitly_shorten": lambda long_url: _connector_tool("bitly", "shorten", long_url=long_url),
+            "bitly_list_links": lambda limit=10: _connector_tool("bitly", "list_links", limit=limit),
+            "cloudinary_list_resources": lambda resource_type="image", limit=10: _connector_tool("cloudinary", "list_resources", resource_type=resource_type, limit=limit),
+            "cloudinary_resource_info": lambda public_id, resource_type="image": _connector_tool("cloudinary", "resource_info", public_id=public_id, resource_type=resource_type),
+            "bunnycdn_list_pull_zones": lambda limit=10: _connector_tool("bunnycdn", "list_pull_zones", limit=limit),
+            "bunnycdn_list_storage_zones": lambda limit=10: _connector_tool("bunnycdn", "list_storage_zones", limit=limit),
+            "polar_list_products": lambda limit=10: _connector_tool("polar", "list_products", limit=limit),
+            "polar_list_orders": lambda limit=10: _connector_tool("polar", "list_orders", limit=limit),
+            "lemon_squeezy_list_customers": lambda limit=10: _connector_tool("lemon_squeezy", "list_customers", limit=limit),
+            "lemon_squeezy_list_orders": lambda limit=10: _connector_tool("lemon_squeezy", "list_orders", limit=limit),
+            "crates_io_crate_info": lambda name: _connector_tool("crates_io", "crate_info", name=name),
+            "crates_io_search_crates": lambda query, limit=10: _connector_tool("crates_io", "search_crates", query=query, limit=limit),
+            "packagist_package_info": lambda vendor, package: _connector_tool("packagist", "package_info", vendor=vendor, package=package),
+            "packagist_search_packages": lambda query, limit=10: _connector_tool("packagist", "search_packages", query=query, limit=limit),
         }
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
@@ -3786,6 +9285,24 @@ class ToolExecutor:
         except lsp_module.LspError as exc:
             return f"ERROR code_intel: {exc}"
 
+    def _load_skill_recorded(self, name: str) -> str:
+        """load_skill + pencatatan telemetri pemakaian skill.
+
+        Telemetri fail-safe: kegagalan pencatatan tidak boleh merusak load.
+        Identitas dinormalisasi ke owner (kupas suffix ::wkr/::sub worker).
+        """
+        content = skills.load_skill(
+            name, include_private=self._can_read_private_skills
+        )
+        try:
+            from zeline import skill_telemetry as _st
+
+            _st.record_load(name, _st.owner_identity(self.identity))
+            _st.note_used(name)
+        except Exception:
+            pass
+        return content
+
     def _consolidate_memory(self) -> str:
         """Rapikan memory jangka panjang: buang fakta duplikat & kedaluwarsa.
 
@@ -3805,7 +9322,8 @@ class ToolExecutor:
             return f"ERROR: consolidate_memory returned unexpected result: {result!r}"
         return (
             f"Consolidated memory: {dup} duplicates removed, "
-            f"{exp} expired removed, {kept} kept."
+            f"{exp} expired removed, {kept} kept. "
+            f"{dup + exp} moved to trash (restorable via restore_memory)."
         )
 
     def _recall_history(self, query: str = "") -> str:
@@ -3918,22 +9436,32 @@ class ToolExecutor:
     def _spawn_subagent(self, brief: str, system_extra: str, suffix: str) -> str:
         """Run one sub-agent to completion and return its final summary.
 
-        Each sub-agent gets a DISTINCT identity. They share nothing, but each
-        constructs a MemoryStore keyed by identity, so reusing one identity
-        across parallel workers would have them writing the same memory file at
-        the same time.
+        Each sub-agent gets a DISTINCT identity — a per-run unique suffix is
+        appended so the identity is never reused, even across separate
+        ``delegate_task`` calls. This matters for two stores keyed by
+        identity: session-scoped approval allows (a stale "Allow sesi ini"
+        from run N must never fast-path a tool in run N+1) and the
+        MemoryStore file (unrelated sub-tasks must not share one memory
+        file in parallel). When the sub-agent finishes, its session allows
+        are cleared: the identity is unique, so the cleanup cannot touch
+        any other run's state — it only keeps the in-memory allow cache
+        from growing without bound.
         """
         # Import inside the function to avoid a circular import (agent → tools).
         from zeline.agent import Zeline
 
-        sub = Zeline(
-            identity=f"{self.identity}::sub{suffix}",
-            tool_profile=self.profile,
-            workspace=str(self.workspace),
-            system_extra=system_extra,
-            depth=self.depth + 1,
-        )
-        return sub.send(brief)
+        sub_identity = f"{self.identity}::sub{suffix}-{uuid.uuid4().hex[:8]}"
+        try:
+            sub = Zeline(
+                identity=sub_identity,
+                tool_profile=self.profile,
+                workspace=str(self.workspace),
+                system_extra=system_extra,
+                depth=self.depth + 1,
+            )
+            return sub.send(brief)
+        finally:
+            approvals.clear_session_allows(sub_identity)
 
     def _delegate_task(
         self,
@@ -3997,6 +9525,272 @@ class ToolExecutor:
             return delegation.render(results, verified=False)
         return delegation.render(results, verification=verdict)
 
+    def _spawn_worker(
+        self,
+        task: str = "",
+        grants: Any = None,
+        accept_if: str = "",
+        depends_on: Any = None,
+    ) -> str:
+        """Tool ``spawn_worker``: start a background worker, return its id at once.
+
+        The worker runs on its own thread under a non-interactive grant
+        policy (the interactive picker would hang a background thread).
+        Every tool call it makes still passes the single
+        ``ToolExecutor.run()`` choke point — spawning changes the policy,
+        never bypasses approval.
+
+        The grants are exactly the ones declared in this call — nothing is
+        inherited and nothing is widened:
+
+        - Interactive turns: the spawn itself always asks (Install-class),
+          and the approval question shows the exact grant declaration. A
+          session allow ("Allow sesi ini") only repeats for an identical
+          declaration; any change asks again.
+        - Grant-policy contexts (cron jobs, workers spawning workers): the
+          spawn is allowed without a prompt only when the spawn itself is
+          inside the context's pre-approved grants, AND the worker's grants
+          must fit inside the caller's grants — privilege may stay the same
+          or shrink, never grow. Anything beyond the caller's grants is
+          rejected loudly here, before the worker starts, instead of being
+          silently trimmed (a narrowed worker would do different work than
+          the caller asked for).
+        """
+        # Import lazy: zeline.supervisor tidak mengimpor tools/agent di
+        # top-level, tapi pola ini menjaga startup tetap ringan dan konsisten
+        # dengan wrapper lain di file ini.
+        from zeline import supervisor as supervisor_module
+
+        try:
+            worker_pool = supervisor_module.get_supervisor(self.identity)
+            cap_error = self._worker_grant_cap_error(grants)
+            if cap_error is not None:
+                return f"ERROR: {cap_error}"
+            # Bind the CURRENT executor context before every spawn: the
+            # registry caches one Supervisor per identity, so context passed
+            # only at first creation would be silently ignored on later
+            # calls (worker running in the wrong workspace / stale depth).
+            # bind() replaces the runner context under the lock — the
+            # caller's context is never dropped silently.
+            worker_pool.bind(
+                profile=self.profile,
+                workspace=str(self.workspace),
+                depth=self.depth,
+            )
+            wid = worker_pool.spawn(
+                task, grants=grants, accept_if=accept_if,
+                depends_on=depends_on if isinstance(depends_on, list) else None,
+            )
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        except Exception as exc:  # noqa: BLE001 — never leak tracebacks to the model
+            return f"ERROR: spawn_worker failed ({exc})."
+        return (
+            f"Worker {wid} started in the background (non-blocking). Its "
+            "completion or failure will be reported automatically at the start "
+            "of a later turn — do NOT poll worker_status repeatedly. Use "
+            "worker_result only if you need the outcome inside this turn."
+        )
+
+    def _worker_grant_cap_error(self, grants: Any) -> str | None:
+        """Reject a worker grant declaration that exceeds the caller's own.
+
+        Returns an error string when the declared worker grants go beyond
+        what this executor's context may do, ``None`` when they fit.
+
+        - Interactive turns: the operator approves the exact declaration
+          per call (the approval question shows the grants), so the
+          operator's own judgment is the cap — nothing more to check here.
+        - ``GrantApprovalPolicy`` (cron jobs, workers): the cap is the
+          policy's granted tools and risk classes, checked exactly the way
+          the policy itself decides — a tool name counts as covered when
+          granted by name, or when its risk class is granted. Unknown tool
+          names (``risk_of`` → ``None``) must be granted by name, mirroring
+          the policy's own fail-closed rule.
+        - No policy, or a policy kind this check cannot audit: fail closed.
+          (In practice the gate already denied the spawn before this runs;
+          this is the backstop for direct ``_dispatch`` callers.)
+        """
+        policy = self.approval_policy
+        if isinstance(policy, InteractiveApprovalPolicy):
+            return None
+        if not isinstance(policy, GrantApprovalPolicy):
+            return (
+                "spawn_worker denied: cannot verify the caller's capability "
+                "under this approval policy (fail closed)."
+            )
+        from zeline import supervisor as supervisor_module  # lazy: avoid the import cycle
+
+        requested = supervisor_module.Supervisor._normalize_grants(grants)
+        over_tools = [
+            tool
+            for tool in requested["tools"]
+            if tool not in policy.granted_tools
+            and self.risk_of(tool) not in policy.granted_risks
+        ]
+        over_risks = [
+            risk for risk in requested["risk"] if risk not in policy.granted_risks
+        ]
+        if not over_tools and not over_risks:
+            return None
+        return (
+            "spawn_worker denied: the requested worker grants exceed this "
+            "context's grants "
+            f"(tools beyond cap: {over_tools or 'none'}; risk classes beyond "
+            f"cap: {over_risks or 'none'}). A worker may only use capabilities "
+            "its spawner already has — narrow the 'grants' declaration, or "
+            "widen the caller's grants first."
+        )
+
+    def _worker_status(self, worker_id: str = "") -> str:
+        """Tool ``worker_status``: one worker's compact status, or list all."""
+        from zeline import supervisor as supervisor_module
+
+        worker_pool = supervisor_module.get_supervisor(self.identity)
+        wid = str(worker_id or "").strip()
+        if wid:
+            status = worker_pool.get_status(wid)
+            if status is None:
+                return f"ERROR: unknown worker id {wid!r}."
+            return _format_worker_status(status)
+        workers = worker_pool.list_workers()
+        if not workers:
+            return "No background workers."
+        return "\n".join(_format_worker_status(item) for item in workers)
+
+    def _steer_worker(self, worker_id: str, instruction: str) -> str:
+        """Tool ``steer_worker``: send mid-flight instruction to a running worker."""
+        from zeline import supervisor as supervisor_module
+
+        worker_pool = supervisor_module.get_supervisor(self.identity)
+        wid = str(worker_id or "").strip()
+        if not wid:
+            return "ERROR: worker_id required."
+        if not (instruction or "").strip():
+            return "ERROR: instruction required."
+        ok = worker_pool.steer_worker(wid, instruction)
+        if not ok:
+            return (
+                f"ERROR: cannot steer worker {wid!r} — "
+                "not found or not running."
+            )
+        return (
+            f"Steering instruction sent to worker {wid}. "
+            "It will pick it up at its next iteration (no restart)."
+        )
+
+    def _workflow_execute(
+        self,
+        workflow_id: str,
+        node_timeout: float = 300,
+        approval_timeout: float = 1800,
+    ) -> str:
+        """Tool ``workflow_execute``: run a saved visual workflow in background."""
+        from zeline import workflows as workflows_module
+
+        wid = str(workflow_id or "").strip()
+        if not wid:
+            return "ERROR: workflow_id required."
+        try:
+            exec_id = workflows_module.execute_workflow(
+                wid,
+                _WorkflowToolAgent(self),
+                node_timeout=float(node_timeout or 300),
+                approval_timeout=float(approval_timeout or 1800),
+            )
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        except Exception as exc:  # noqa: BLE001 - surfaced, never silent
+            return f"ERROR: {type(exc).__name__}: {exc}"
+        return (
+            f"Workflow execution started: {exec_id}. Poll workflow_status "
+            f"for progress; approval gates pause the run until workflow_resume."
+        )
+
+    def _workflow_pause(self, exec_id: str = "") -> str:
+        """Tool ``workflow_pause``: pause a running workflow execution."""
+        from zeline import workflows as workflows_module
+
+        eid = str(exec_id or "").strip()
+        if not eid:
+            return "ERROR: exec_id required."
+        if workflows_module.pause_workflow(eid):
+            return f"Execution {eid} paused (takes effect between nodes)."
+        return (
+            f"ERROR: cannot pause {eid!r} — not found or not running."
+        )
+
+    def _workflow_resume(self, exec_id: str = "", approved: bool = True) -> str:
+        """Tool ``workflow_resume``: resume a paused execution or resolve an
+        approval gate (approved=False cancels the run)."""
+        from zeline import workflows as workflows_module
+
+        eid = str(exec_id or "").strip()
+        if not eid:
+            return "ERROR: exec_id required."
+        if workflows_module.resume_workflow(eid, approved=bool(approved)):
+            return (
+                f"Execution {eid} resumed"
+                f"({'approved' if approved else 'denied'})."
+            )
+        return (
+            f"ERROR: cannot resume {eid!r} — not found, not paused, "
+            "and no approval waiting."
+        )
+
+    def _workflow_status(self, exec_id: str = "") -> str:
+        """Tool ``workflow_status``: snapshot of a workflow execution."""
+        from zeline import workflows as workflows_module
+
+        eid = str(exec_id or "").strip()
+        if not eid:
+            return "ERROR: exec_id required."
+        ex = workflows_module.get_execution(eid)
+        if ex is None:
+            return f"ERROR: execution {eid!r} not found."
+        lines = [
+            f"Execution {ex['exec_id']} [{ex['status']}] "
+            f"workflow '{ex.get('wf_name', ex.get('wf_id', ''))}'"
+        ]
+        for nid, n in ex.get("nodes", {}).items():
+            extra = ""
+            if n.get("status") == "failed" and n.get("error"):
+                extra = f" — {n['error'][:120]}"
+            elif n.get("status") == "done" and n.get("result"):
+                extra = f" — {str(n['result'])[:120]}"
+            lines.append(f"  • {nid} ({n.get('type')}) [{n.get('status')}]"
+                         f" {n.get('label', '')[:60]}{extra}")
+        return "\n".join(lines)
+
+    def _worker_result(self, worker_id: str = "") -> str:
+        """Tool ``worker_result``: full result of a finished worker."""
+        from zeline import supervisor as supervisor_module
+
+        wid = str(worker_id or "").strip()
+        if not wid:
+            return "ERROR: worker_result needs a worker id (see worker_status)."
+        worker_pool = supervisor_module.get_supervisor(self.identity)
+        record = worker_pool.get_result(wid)
+        if record is None:
+            return f"ERROR: unknown worker id {wid!r}."
+        if record["status"] in ("queued", "running"):
+            return (
+                f"Worker {wid} is still {record['status']} — no result yet. Its "
+                "completion will be reported automatically at the start of a "
+                "later turn."
+            )
+        if record["status"] == "failed":
+            return f"Worker {wid} failed: {record['error'] or 'no reason recorded'}"
+        if record["status"] == "interrupted":
+            return (
+                f"Worker {wid} was interrupted before finishing: "
+                f"{record['error'] or 'no reason recorded'}"
+            )
+        body = str(record.get("result") or "").strip()
+        if not body:
+            return f"Worker {wid} finished with an empty result."
+        return f"Worker {wid} result:\n{body}"
+
     def _enabled_native_defs(self) -> tuple[ToolDef, ...]:
         return self._native_defs
 
@@ -4059,6 +9853,254 @@ class ToolExecutor:
             self._lazy_index.all = current
         return self._lazy_index
 
+    def approval_question(self, name: str, args: dict[str, Any]) -> str | None:
+        """Return the operator approval question for this call, or ``None``.
+
+        Decision-only: never blocks, never asks anything itself. The caller
+        (the agent loop) performs the actual approval through the ``ask_user``
+        tool, which is what renders the Telegram picker / CLI prompt — so a
+        future async supervisor can intercept or override the approval flow
+        at that single seam instead of inside this module.
+
+        This is the ONE place the ask/don't-ask decision lives. The table:
+
+        - native Install / Destructive / Network → ask. Network asks because
+          the class now means *mutating* network use (send/upload/state-
+          changing API): the channel crossing is the point of no return.
+        - native Write → ask only when the call targets a path outside the
+          session workspace.
+        - native Read → never asks (pure reads, including read-only network
+          fetch — risk is the effect, not the channel).
+        - ``spawn_worker`` is Install-class, so it always asks; the question
+          shows the exact worker grant declaration being approved, and a
+          session allow only repeats for an identical declaration — a
+          different declaration asks again.
+        - registered non-native tool (MCP ``mcp__*``, custom ``custom_*``,
+          OpenAPI ``api_*``) → risk defaults to Destructive (fail closed:
+          Zeline cannot audit what an external tool really does, so an
+          unclassified tool must never run silently). Lowered only by an
+          explicit per-server ``trust.risk_cap`` in the operator's config
+          file — never from chat, and an invalid cap value fails closed too.
+        - a name registered nowhere → ``None`` (``_dispatch`` reports it as
+          an error; there is nothing to approve).
+        """
+        definition = next(
+            (item for item in self._native_defs if item.name == name), None
+        )
+        if definition is not None:
+            risk = definition.risk
+            non_native: tuple[str, str, bool] | None = None
+        else:
+            non_native = self._non_native_risk(name)
+            if non_native is None:
+                return None
+            risk = non_native[0]
+        if risk == ToolRisk.INSTALL:
+            reason = "installs something persistent (job, route, skill)"
+            if name == "spawn_worker":
+                reason = (
+                    "starts a persistent background worker that keeps "
+                    "acting unattended after this turn"
+                )
+        elif risk == ToolRisk.DESTRUCTIVE:
+            if non_native is None:
+                reason = "can irreversibly destroy data or act externally"
+            elif non_native[2]:
+                reason = (
+                    f"{non_native[1]} tool, trusted at the operator's "
+                    "configured risk cap 'destructive'"
+                )
+            else:
+                reason = (
+                    f"unclassified {non_native[1]} tool — default-deny: "
+                    "treated as destructive until trusted in the config file"
+                )
+        elif risk == ToolRisk.NETWORK:
+            reason = "mutating network action — sends data out / changes external state"
+        elif risk == ToolRisk.WRITE and self._writes_outside_workspace(name, args):
+            reason = "writes outside the session workspace"
+        else:
+            return None
+        grant_block = ""
+        if name == "spawn_worker":
+            # The operator is not approving a single opaque call: they are
+            # approving the exact unattended capability set the worker will
+            # run with. Show the normalized declaration (what spawn() will
+            # actually enforce), not the raw arg dict.
+            granted_tools, granted_risks = _declared_worker_grants(args)
+            grant_block = (
+                "\nWorker grants — exactly what this background worker may "
+                "use unattended:\n"
+                f"  tools: {', '.join(granted_tools) or '(none by name)'}\n"
+                f"  risk: {', '.join(granted_risks) or '(none — deny-all)'}\n"
+                "Anything outside this grant is denied at run time, and the "
+                "worker can never ask the operator a question.\n"
+                '"Allow sesi ini" covers only this exact grant declaration — '
+                "a different declaration will be asked again.\n"
+            )
+        elif name == "apply_skill_proposal":
+            # The operator approves an exact, re-verified diff — show it.
+            # Fail-safe: never let a lookup error break the approval decision.
+            try:
+                from zeline import skill_proposals as _sp
+
+                proposal = _sp.get_proposal(
+                    str(args.get("proposal_id", "")), self.identity
+                )
+            except Exception:
+                proposal = None
+            if proposal is None:
+                grant_block = "Proposal tidak dikenal — tool akan menolak.\n"
+            else:
+                diff = (
+                    f"--- {proposal['skill_name']}/{proposal['file_path']}\n"
+                    f"- {proposal['old_text']}\n"
+                    f"+ {proposal['new_text']}"
+                )
+                if len(diff) > 1500:
+                    diff = diff[:1500] + "\n…(dipotong)"
+                # Quote tiap baris: konten proposal berasal dari file skill dan
+                # bisa meniru chrome UI approval ("Pick one: …") bila mentah.
+                quoted = "\n".join(f"> {line}" for line in diff.splitlines())
+                grant_block = (
+                    f"Skill: {proposal['skill_name']}\n"
+                    f"File: {proposal['file_path']}\n"
+                    f"Alasan: {proposal['reason']}\n"
+                    f"Diff yang akan diterapkan:\n{quoted}\n"
+                )
+        elif name == "apply_skill_review":
+            # Show the dry-run plan so the operator approves something concrete.
+            # The shown plan is cached: the handler executes EXACTLY this plan
+            # (anti-TOCTOU — never silently recomputed between approval and
+            # execution).
+            try:
+                from zeline import skill_review as _sr
+
+                plan = _sr.review_skills(self.identity, apply=False)
+            except Exception:
+                plan = None
+            _REVIEW_PLAN_CACHE[self.identity] = (time.time(), plan or [])
+            if not plan:
+                grant_block = "Tidak ada rekomendasi review saat ini.\n"
+            else:
+                lines = [
+                    f"- {item['skill']}: {item['action']} — {item['reason']}"
+                    for item in plan[:20]
+                ]
+                if len(plan) > 20:
+                    lines.append(f"…dan {len(plan) - 20} lagi")
+                grant_block = (
+                    "Rencana review yang akan diterapkan:\n"
+                    + "\n".join(lines)
+                    + "\n"
+                )
+        elif name == "rollback_skill_change":
+            # INSTALL: rollback proposal me-rewrite konten skill — operator
+            # harus tahu persis perubahan apa yang dibatalkan.
+            try:
+                cid = str(args.get("change_id", "")).strip()
+                if cid.startswith("p-"):
+                    from zeline import skill_proposals as _sp
+
+                    proposal = _sp.get_proposal(cid, self.identity)
+                    desc = (
+                        f"proposal {cid} pada skill "
+                        f"'{proposal['skill_name']}' "
+                        f"({proposal['file_path']}) — konten kembali seperti "
+                        "sebelum proposal diterapkan"
+                        if proposal
+                        else f"proposal {cid} (tidak dikenal — tool akan menolak)"
+                    )
+                else:
+                    from zeline import skill_review as _sr
+
+                    entry = next(
+                        (
+                            e
+                            for e in _sr.get_change_log(self.identity)
+                            if e.get("id") == cid
+                        ),
+                        None,
+                    )
+                    desc = (
+                        f"perubahan review '{entry.get('action')}' pada skill "
+                        f"'{entry.get('skill')}'"
+                        if entry
+                        else f"change id {cid} (tidak dikenal — tool akan menolak)"
+                    )
+            except Exception:
+                desc = "tidak bisa dibaca — tool akan menolak dengan aman"
+            grant_block = f"Yang akan di-rollback: {desc}.\n"
+        return (
+            f"Allow tool '{name}'? Risk: {risk} — {reason}.\n"
+            f"{_summarize_call_args(args)}\n"
+            f"{grant_block}"
+            "Pick one:\n"
+            "- Allow once — run this single call only. You will be asked again next time.\n"
+            f"- Allow sesi ini — allow '{name}' for the rest of this session, no more "
+            "asking. Cleared automatically when the session ends.\n"
+            "- Deny — do not run it."
+        )
+
+    def _non_native_risk(self, name: str) -> tuple[str, str, bool] | None:
+        """Risk class for a registered non-native tool.
+
+        Returns ``(risk, origin, via_cap)`` — the effective risk class, a
+        short human label of where the tool comes from, and whether the risk
+        was lowered by an explicit config trust cap. Returns ``None`` when
+        the name is not a registered MCP/custom/OpenAPI tool at all (the
+        dispatcher reports those as errors; approval has nothing to decide).
+
+        Fail-closed by construction: anything unclassified is Destructive,
+        and only a valid per-server ``trust.risk_cap`` in the operator's
+        config file can lower that — an unknown or mistyped cap value keeps
+        the Destructive default instead of silently widening permissions.
+        """
+        if self.mcp is not None:
+            parsed = mcp_module.parse_tool_name(name)
+            if parsed is not None:
+                server_name, _tool = parsed
+                if not self.mcp.has_tool(name):
+                    return None
+                cap = self.mcp.risk_cap_for(server_name)
+                if cap in TOOL_RISKS:
+                    return cap, f"MCP server '{server_name}'", True
+                return ToolRisk.DESTRUCTIVE, f"MCP server '{server_name}'", False
+        if self.custom is not None and name.startswith(custom_tools.TOOL_PREFIX):
+            if not self.custom.has_tool(name):
+                return None
+            return ToolRisk.DESTRUCTIVE, "custom", False
+        if self.openapi is not None and name.startswith(openapi_tools.TOOL_PREFIX):
+            if not self.openapi.has_tool(name):
+                return None
+            return ToolRisk.DESTRUCTIVE, "OpenAPI", False
+        return None
+
+    def _writes_outside_workspace(self, name: str, args: dict[str, Any]) -> bool:
+        """True when a Write-class call targets a path outside the workspace."""
+        keys = _WRITE_PATH_ARGS.get(name, ())
+        if not keys or not isinstance(args, dict):
+            return False
+        root = self.workspace.resolve(strict=False)
+        for key in keys:
+            value = args.get(key)
+            candidates = value if isinstance(value, (list, tuple)) else [value]
+            for candidate in candidates:
+                if not isinstance(candidate, str):
+                    continue
+                for part in candidate.split(","):
+                    item = part.strip()
+                    if not item or "://" in item:
+                        continue  # URL, not a filesystem path
+                    path = Path(item).expanduser()
+                    if not path.is_absolute():
+                        path = self.workspace / path
+                    try:
+                        path.resolve(strict=False).relative_to(root)
+                    except ValueError:
+                        return True
+        return False
+
     def run(self, name: str, args: dict[str, Any]) -> str:
         """Execute a tool, wrapped in the operator's plugin hooks if any.
 
@@ -4067,7 +10109,15 @@ class ToolExecutor:
         The same point records an audit event for every MUTATING call, so a side
         effect is on record even if the turn later fails (session history is only
         saved after a successful turn; the audit row is written at tool time).
+
+        Approval is enforced here too, before anything else: _approval_gate()
+        consults the installed ApprovalPolicy (chat/reflect/sub-agent turns
+        get the interactive one, cron runs get a grant-based one). A denied
+        call returns an error string and never reaches plugins or _dispatch.
         """
+        denied = self._approval_gate(name, args)
+        if denied is not None:
+            return denied
         if self.plugins is None:
             result = self._dispatch(name, args)
             self._audit(name, args, result)
@@ -4082,6 +10132,139 @@ class ToolExecutor:
         result = self.plugins.after(name, outcome.args, result)
         self._audit(name, outcome.args, result)
         return result
+
+    def _approval_gate(self, name: str, args: dict[str, Any]) -> str | None:
+        """The single approval choke point.
+
+        Every model-requested tool call — serial branch, parallel branch,
+        reflect(), sub-agents, cron turns — funnels through here, because
+        they all funnel through run(). Returns the denial message when the
+        call may not run, ``None`` when it may.
+
+        Ordering notes, each deliberate:
+
+        - The gate runs BEFORE plugin hooks. A denied call must not trigger
+          plugin side effects (before-hooks can rewrite args or touch the
+          network); operator consent is the outermost layer.
+        - The reentrancy guard short-circuits tools the approval machinery
+          itself invokes (ask_user). Without it, asking for approval would
+          ask for approval to ask, forever.
+        - Denials are NOT audit-logged: the audit trail records side effects,
+          and a denied call has none. (Cron denials are recorded loudly on
+          the grant policy instead, and surface in the job's last_status.)
+        - A policy that raises is treated as "deny" — fail closed, never
+          fail open.
+        - No installed policy at all is also fail-closed: mutating tools
+          (Write/Network/Install/Destructive) are denied, pure reads still
+          run. See ``_no_policy_fallback``.
+        """
+        name = str(name or "")
+        if not name:
+            return None  # _dispatch reports unknown/empty names itself
+        if getattr(self._approval_tls, "in_policy", False):
+            # Inside policy.decide(): this is the machinery's own call
+            # (ask_user). It must not re-enter the gate.
+            return None
+        policy = self.approval_policy
+        if policy is None:
+            # Fail-closed fallback (hardening, verdict owner): tidak ada
+            # enforcement context yang terpasang — mis. reflect() dipanggil
+            # tanpa send() dulu. Tool mutasi di-DENY; read murni tetap jalan
+            # (dibutuhkan untuk introspeksi dan tidak punya efek samping).
+            # Turn produksi selalu memasang policy di send(); unit test
+            # memasangnya eksplisit bila menguji tool mutasi.
+            return self._no_policy_fallback(name)
+        safe_args = args if isinstance(args, dict) else {}
+        self._approval_tls.in_policy = True
+        try:
+            verdict = policy.decide(self, name, safe_args)
+        except Exception:
+            verdict = "deny"  # fail closed
+        finally:
+            self._approval_tls.in_policy = False
+        decision = approvals.parse_verdict(verdict)
+        if decision == "deny":
+            return _approval_denied_message(name)
+        if decision == "session":
+            # Grants-aware (spawn_worker / apply_skill_proposal /
+            # rollback_skill_change): the session allow is recorded against
+            # the exact thing the operator approved (see _spawn_grants_key);
+            # "" for every other tool = unchanged.
+            approvals.grant_session_allow(
+                self.identity, name, _spawn_grants_key(name, safe_args)
+            )
+        return None
+
+    #: Kelas risiko yang dianggap "mutasi" oleh fallback tanpa policy:
+    #: apa pun yang bisa mengubah state (lokal maupun eksternal) di-deny.
+    _NO_POLICY_MUTATING = frozenset(
+        {ToolRisk.WRITE, ToolRisk.NETWORK, ToolRisk.INSTALL, ToolRisk.DESTRUCTIVE}
+    )
+
+    def _no_policy_fallback(self, name: str) -> str | None:
+        """Deny-all fallback saat tidak ada approval policy yang terpasang.
+
+        Fail-closed, bukan fail-open: absennya policy adalah kondisi yang
+        tidak seharusnya terjadi di produksi (send() selalu memasang satu),
+        jadi satu-satunya respons aman adalah menolak tool yang bisa
+        bermutasi. Read murni tetap diizinkan — introspeksi (list tool,
+        baca file, web search) tidak punya efek samping dan sering
+        dibutuhkan justru untuk mendiagnosis kenapa policy tidak ada.
+
+        Nama yang tidak terdaftar di mana pun dilewatkan (``None``) supaya
+        ``_dispatch`` melaporkannya sebagai error seperti biasa — tidak ada
+        yang perlu di-approve dari tool yang tidak ada.
+        """
+        definition = next(
+            (item for item in self._native_defs if item.name == name), None
+        )
+        if definition is not None:
+            risk = definition.risk
+        else:
+            non_native = self._non_native_risk(name)
+            if non_native is None:
+                return None
+            risk = non_native[0]
+        if risk in self._NO_POLICY_MUTATING:
+            return _approval_denied_message(name)
+        return None
+
+    def ask_operator(self, question: str, options: object = None) -> str:
+        """Ask the operator through the ask_user tool, with picker rendering.
+
+        The single seam for every question the machinery asks itself (tool
+        approvals, cron capability grants): when the installed policy carries
+        an ``on_tool`` renderer (interactive turns), the Telegram picker /
+        CLI prompt renders exactly like a model-initiated ask_user. Returns
+        the raw verdict string; callers interpret it with
+        ``approvals.parse_verdict``.
+
+        ask_user is READ-risk, so this never needs approval itself — and the
+        reentrancy guard in _approval_gate would short-circuit it anyway.
+        """
+        args = {
+            "question": question,
+            "options": list(options) if options else ["Allow", "Deny"],
+        }
+        renderer = getattr(self.approval_policy, "on_tool", None)
+        if callable(renderer):
+            renderer("ask_user", args)
+        return self.run("ask_user", args)
+
+    def risk_of(self, name: str) -> str | None:
+        """Risk class of a native tool, or ``None`` for anything else.
+
+        Read-only accessor over the same definitions approval_question uses;
+        it never alters the decision logic (that stays Worker A's).
+        """
+        definition = next(
+            (item for item in self._native_defs if item.name == name), None
+        )
+        return definition.risk if definition is not None else None
+
+    def writes_outside_workspace(self, name: str, args: dict[str, Any]) -> bool:
+        """Public delegate of the workspace-escape check approval_question uses."""
+        return self._writes_outside_workspace(name, args)
 
     def _audit(self, name: str, args: dict[str, Any], result: str) -> None:
         """Record a mutating tool call to the append-only event log.

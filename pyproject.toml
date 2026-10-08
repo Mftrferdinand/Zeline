@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeline"
-version = "0.3.8"
+version = "0.3.9"
 description = "Zeline — an open-source agentic AI framework by Zerolinear."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,6 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "ruff>=0.16"]
+embeddings = ["fastembed>=0.8"]
 
 [project.scripts]
 zeline = "zeline.cli:main"

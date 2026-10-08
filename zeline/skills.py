@@ -29,6 +29,7 @@ from zeline import checkpoints, config
 SKILLS_ROOT = config.DATA_DIR / "skills"
 PUBLIC_SKILLS_DIR = SKILLS_ROOT / "public"
 PRIVATE_SKILLS_DIR = SKILLS_ROOT / "private"
+LEARNED_SKILLS_DIR = SKILLS_ROOT / "learned"
 MIGRATION_MARKER = SKILLS_ROOT / ".scope-migrated-v1"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -370,7 +371,7 @@ def _migrate_legacy_root() -> None:
 
 
 def _ensure_dirs() -> None:
-    for directory in (SKILLS_ROOT, PUBLIC_SKILLS_DIR, PRIVATE_SKILLS_DIR):
+    for directory in (SKILLS_ROOT, PUBLIC_SKILLS_DIR, PRIVATE_SKILLS_DIR, LEARNED_SKILLS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
         _chmod_private(directory)
     _migrate_legacy_root()
@@ -576,6 +577,7 @@ def list_skill_entries(include_private: bool = True) -> list[tuple[str, str, str
     locations: list[tuple[str, Path]] = [("public", PUBLIC_SKILLS_DIR)]
     if include_private:
         locations.append(("private", PRIVATE_SKILLS_DIR))
+        locations.append(("learned", LEARNED_SKILLS_DIR))
     for scope, directory in locations:
         for name, skill_md in _iter_skill_units(directory):
             text = skill_md.read_text(encoding="utf-8", errors="replace")
@@ -1024,11 +1026,30 @@ def _trigger_suffix(load_when: str, limit: int = 80) -> str:
     return f" | trigger: {triggers}"
 
 
-def skills_block(include_private: bool = False) -> str:
-    """Daftar token-cheap untuk system prompt sesuai otorisasi session."""
+def skills_block(include_private: bool = False, identity: str | None = None) -> str:
+    """Daftar token-cheap untuk system prompt sesuai otorisasi session.
+
+    Bila ``identity`` diberikan, urutan diurutkan menurut prioritas hasil
+    review skill (zeline.skill_review): skill yang terbukti membantu muncul
+    duluan. Import lazy untuk menghindari circular import
+    (skill_review -> curator -> skills).
+    """
     available = list_skill_entries(include_private=include_private)
     if not available:
         return ""
+    if identity:
+        try:
+            from zeline import skill_review as _review
+
+            order = _review.ranked_order(
+                [name for _, name, _, _, _ in available], identity
+            )
+            position = {name: index for index, name in enumerate(order)}
+            available = sorted(
+                available, key=lambda entry: position.get(entry[1], len(position))
+            )
+        except Exception:
+            pass
     lines = "\n".join(
         f"- {name}: {_short_desc(description)}{_trigger_suffix(load_when)}" if scope == "public" else f"- {name} [private]: {_short_desc(description)}{_trigger_suffix(load_when)}"
         for scope, name, _title, description, load_when in available

@@ -1,13 +1,11 @@
 ---
 name: voice-reply
 description: |
-  Balas pakai voice note (VN) suara cewe anime bahasa Indonesia. User kirim VN
-  → Zeline transcribe (denger) → proses → jawabannya diubah jadi suara (TTS
-  edge-tts) → dikirim balik sebagai audio. Mirror mode: kalau user kirim VN,
-  balas VN; kalau ketik, balas teks. Suara bisa dipilih (preset emma-anime,
-  ava-anime, gadis-anime, gadis, ana, nanami) via /voice. Load saat user minta
-  "balas pakai suara", "bales vn", "suara anime", "voice reply", atau kirim VN
-  dan mau dibalas VN.
+  Balas pakai voice note (VN) suara cewe anime bahasa Indonesia. Kini
+  ini fitur CORE, bukan sekadar script: gateway Telegram otomatis transcribe
+  VN masuk dan bisa membalas dengan VN per-chat (/voice mirror, /voice always).
+  Load saat user minta "balas pakai suara", "bales vn", "suara anime",
+  "voice reply", atau kirim VN dan mau dibalas VN.
 metadata:
   zeline:
     tags: [voice, vn, tts, edge-tts, anime, indonesia, audio, mirror]
@@ -16,45 +14,42 @@ metadata:
 
 # Voice Reply — balas VN dengan suara cewe anime (Indonesia)
 
-User kirim VN → Zeline denger (transcribe, sudah built-in) → jawab → suara
-jawaban dikirim balik. Script: `scripts/voice_reply.py` (edge-tts + ffmpeg opus).
+**Status: fitur core** (`zeline/voice.py` + `zeline/voice_prefs.py`). Skill ini
+tinggal dokumentasi + CLI wrapper; tidak ada logika ganda.
 
-## Alur (mirror mode)
+## Cara pakai (per chat, via Telegram)
 
-```
-User kirim VN  → transcribe (built-in analyze_media) → proses → TTS → kirim audio balik
-User ketik teks → jawab teks biasa (TIDAK auto-VN)
-```
+| Perintah | Efek |
+|---|---|
+| `/voice` | lihat mode & suara aktif chat ini |
+| `/voice mirror` | **VN masuk → VN keluar**, teks masuk → teks keluar (aturan mirror) |
+| `/voice always` | semua balasan diusahakan jadi VN (bila muat di batas) |
+| `/voice text` | kembali ke teks biasa (default) |
+| `/voice style <nama>` | ganti preset suara tetap chat ini |
+| `/voice voices` | daftar preset suara yang tersedia |
 
-Aturan: **input VN → output VN; input teks → output teks.** Kalau user eksplisit
-minta "balas pakai suara" walau dia ngetik, boleh VN.
+Preferensi tersimpan per chat (`~/.zeline/voice-prefs/`, 0600).
+
+## Alur otomatis (tanpa tool agent)
+
+1. User kirim VN → gateway transcribe langsung via provider
+   (`/audio/transcriptions`) → transkrip jadi pesan user.
+   Kalau transcribe gagal / belum dikonfigurasi → fallback ke alur lama
+   (agent diminta transcribe via `analyze_media`).
+2. Agent menjawab seperti biasa.
+3. Bila mode voice aktif untuk chat itu dan balasan ≤ 600 karakter (tanpa blok
+   kode) → teks disintesis (edge-tts → ogg/opus) → dikirim sebagai **voice
+   bubble** (`sendVoice`; fallback `sendAudio`).
+4. Bila TTS gagal → balasan dikirim sebagai **teks** + catatan singkat
+   (tidak pernah diam). Balasan > 600 karakter → selalu teks.
 
 ## Prasyarat
 
 - `edge-tts` (`pip install edge-tts`) — gratis, neural, banyak suara
-- `ffmpeg` — convert mp3 → ogg/opus (biar jadi voice, bukan file mentah)
+- `ffmpeg` — convert mp3 → ogg/opus (biar jadi voice bubble, bukan attachment)
 - Termux: `pip install edge-tts && pkg install ffmpeg`
-
-## Perintah script
-
-```bash
-SC=~/.zeline/skills/.../voice_reply.py
-
-# lihat preset suara
-python3 "$SC" voices
-
-# hasilkan VN dari teks (default: emma-anime, bisa Indonesia)
-python3 "$SC" say "Halo, aku Zeline! Gimana kabar kamu?" --out ~/.zeline/voice-out/reply
-
-# pilih preset lain
-python3 "$SC" say "teks..." --style gadis-anime
-python3 "$SC" say "teks..." --style ava-anime
-
-# tuning manual (override preset)
-python3 "$SC" say "teks..." --voice id-ID-GadisNeural --pitch "+40Hz" --rate "+15%"
-```
-
-Script cetak `FILE: <path.ogg>` + `VOICE: <voice> (style ...)`.
+- Untuk transcribe VN masuk: provider terkonfigurasi + transcription model
+  (`ZELINE_AUDIO_MODEL`, mis. `whisper-1`).
 
 ## Preset suara (cewe)
 
@@ -70,37 +65,31 @@ Script cetak `FILE: <path.ogg>` + `VOICE: <voice> (style ...)`.
 Multilingual (emma/ava) bisa ngomong Indonesia dengan suara premium + tuning
 pitch tinggi → paling "anime tapi ngerti Indonesia".
 
-## Cara agent kirim VN
+## CLI manual (opsional)
 
-Setelah script hasilkan `.ogg`, kirim ke chat pakai tool `send_file` dengan path
-itu — Zeline kirim sebagai audio yang bisa langsung diputar:
+`scripts/voice_reply.py` — thin wrapper di atas `zeline.voice`, antarmuka lama
+tetap jalan:
 
+```bash
+SC=zeline/skills/voice-reply/scripts/voice_reply.py
+python3 "$SC" voices                                   # daftar preset
+python3 "$SC" say "Halo, aku Zeline!"                  # -> ~/.zeline/voice-out/reply.ogg
+python3 "$SC" say "teks..." --style gadis-anime --out /tmp/vn
 ```
-1. python3 SC say "<jawaban>" --out ~/.zeline/voice-out/reply
-2. baca FILE: dari output
-3. send_file(path=<file.ogg>)   → user dengar jawaban
-```
 
-## Ganti suara default (opsional)
-
-Kalau user minta ganti suara tetap (mis. "pakai gadis-anime terus"), catat
-preferensi itu — panggil `say` dengan `--style` yang dipilih di semua balasan
-VN berikutnya. Untuk sampel banding, generate beberapa preset lalu kirim
-supaya user pilih.
+Cetak `FILE: <path>` + `VOICE: <voice> (style ...)`.
 
 ## Pitfalls
 
-- **Voice bubble vs audio attachment**: `.ogg/opus` dikirim via `send_file` muncul
-  sebagai audio playable. Kalau mau bubble VN "asli" (waveform), gateway perlu
-  `sendVoice` — belum wajib; audio attachment sudah cukup untuk dengar jawaban.
-- **edge-tts online**: butuh koneksi (ambil suara dari server Microsoft). Kalau
-  offline, gagal — fallback: kirim teks biasa + kasih tau user.
-- **Teks kepanjangan**: VN panjang = file besar + lama generate. Untuk jawaban
-  panjang, ringkas dulu ke inti (2-4 kalimat) sebelum TTS, atau kirim teks +
-  VN ringkasan.
+- **edge-tts online**: butuh koneksi (ambil suara dari server Microsoft).
+  Kalau offline → gagal → fallback teks + catatan.
+- **Teks kepanjangan**: batas TTS 600 karakter. Balasan panjang otomatis jadi
+  teks (gateway tidak memotong diam-diam).
+- **Blok kode tidak di-TTS**: balasan berisi ``` fence → dikirim sebagai teks
+  (kode yang dibacakan terdengar berantakan).
 - **Pitch kelewat tinggi** (>+45Hz) mulai pecah/robotik. Sweet spot anime Indo:
   +30 s/d +40Hz.
 - **Karakter non-Latin / emoji** di teks: edge-tts baca yang bisa, skip emoji.
-  Bersihkan emoji dari teks sebelum TTS kalau mau bersih.
-- **ffmpeg tak ada**: script fallback kirim mp3 (tetap bisa diputar), tapi bukan
-  format voice. Pasang ffmpeg untuk hasil terbaik.
+- **ffmpeg tak ada**: `zeline.voice.synthesize` menolak dengan pesan jelas
+  (tidak ada fallback mp3 diam-diam di core; CLI lama yang masih mencetak
+  WARN bila konversi opus gagal).

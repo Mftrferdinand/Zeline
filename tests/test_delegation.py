@@ -307,9 +307,18 @@ class BriefTests(DelegationBase):
 
 class ExecutorTests(DelegationBase):
     def executor(self, profile: str = "full", depth: int = 0):
-        return self.tools.ToolExecutor(
+        executor = self.tools.ToolExecutor(
             identity="cli:local", profile=profile, workspace=str(self.home), depth=depth
         )
+        # The approval choke point is fail-closed: without an installed
+        # policy every mutating tool — delegate_task included — is denied.
+        # These tests exercise delegate_task itself, so they pre-authorize
+        # exactly that tool by name, using the same GrantApprovalPolicy
+        # pattern production unattended runs use
+        # (see tests/test_approval_chokepoint.py). The policy grants nothing
+        # else, so the safety model is unchanged.
+        executor.approval_policy = self.tools.GrantApprovalPolicy(tools=["delegate_task"])
+        return executor
 
     def spawned(self, executor, outputs=None, fail_on=None):
         """Replace real sub-agents with a recorder, keeping the real plumbing."""
@@ -352,6 +361,7 @@ class ExecutorTests(DelegationBase):
         executor = self.executor()
         calls = self.spawned(executor)
         executor.run("delegate_task", {"tasks": [{"goal": "a"}, {"goal": "b"}]})
+        self.assertGreater(len(calls), 0)  # guard against vacuous pass
         suffixes = [call["suffix"] for call in calls]
         self.assertEqual(len(set(suffixes)), len(suffixes))
 
@@ -420,6 +430,7 @@ class ExecutorTests(DelegationBase):
         executor = self.executor()
         calls = self.spawned(executor, fail_on=lambda brief, suffix: suffix != "-verify")
         executor.run("delegate_task", {"tasks": [{"goal": "a"}, {"goal": "b"}], "verify": True})
+        self.assertGreater(len(calls), 0)  # guard against vacuous pass
         self.assertNotIn("-verify", [call["suffix"] for call in calls])
 
     def test_malformed_tasks_are_reported_before_spawning_anything(self):
@@ -470,6 +481,43 @@ class ExecutorTests(DelegationBase):
         self.assertTrue(all("::sub" in item for item in identities))
         self.assertTrue(all(item["depth"] == 1 for item in built))
         self.assertTrue(all(item["tool_profile"] == "full" for item in built))
+
+    def test_subagent_session_allows_do_not_leak_across_runs(self):
+        """n9: setiap _spawn_subagent memakai identity UNIK per run, dan izin
+        sesi identity itu dibersihkan saat sub-agent selesai.
+
+        Tanpa ini, "Allow sesi ini" yang diketuk operator di dalam sub-agent
+        run N tetap berlaku untuk sub-agent run N+1 (identity ::sub yang
+        deterministik dipakai ulang) — izin basi yang memperlebar otoritas
+        run berikutnya tanpa sepengetahuan operator.
+        """
+        approvals = importlib.import_module("zeline.approvals")
+        executor = self.executor()
+        built: list[dict] = []
+
+        class FakeZeline:
+            def __init__(self, **kwargs):
+                self.identity = kwargs["identity"]
+                built.append(kwargs)
+
+            def send(self, brief):
+                # Simulasi: operator mengetuk "Allow sesi ini" untuk sebuah
+                # tool write di DALAM sub-agent.
+                approvals.grant_session_allow(self.identity, "write_file")
+                assert approvals.session_allowed(self.identity, "write_file")
+                return "ok"
+
+        with mock.patch("zeline.agent.Zeline", FakeZeline):
+            executor.run("delegate_task", {"goal": "satu"})
+            executor.run("delegate_task", {"goal": "dua"})
+
+        identities = [item["identity"] for item in built]
+        # Identity unik per run: tidak ada yang dipakai ulang.
+        self.assertEqual(len(set(identities)), 2)
+        self.assertTrue(all("::sub" in item for item in identities))
+        # Izin sesi tiap run dibersihkan saat sub-agent selesai.
+        for identity in identities:
+            self.assertFalse(approvals.session_allowed(identity, "write_file"))
 
 
 if __name__ == "__main__":

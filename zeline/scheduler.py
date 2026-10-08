@@ -194,6 +194,24 @@ def parse_schedule(text: str) -> Schedule:
 
 
 # --------------------------------------------------------------------- jobs
+def _default_grants() -> dict:
+    """Minimal capability floor for jobs without an explicit declaration.
+
+    The import stays lazy: scheduler must never risk a hard import cycle
+    with zeline.tools (which imports the scheduler lazily itself).
+    """
+    from zeline import tools as tools_module
+
+    return {"tools": [], "risk": list(tools_module.DEFAULT_JOB_GRANTS["risk"])}
+
+
+def _normalize_job_grants(grants: object) -> dict:
+    """Canonicalize a job's grants; see tools.normalize_job_grants."""
+    from zeline import tools as tools_module
+
+    return tools_module.normalize_job_grants(grants)
+
+
 @dataclass
 class Job:
     id: str
@@ -201,10 +219,12 @@ class Job:
     prompt: str
     deliver: str = "local"
     # Identitas agent turn untuk job ini. Kosong = terisolasi sebagai
-    # ``cron:<id>``. Hanya boleh diisi operator lewat CLI untuk job miliknya
-    # sendiri (mis. proactive briefing yang butuh memory chat user) — jangan
-    # pernah diisi dari prompt/teks yang datang dari chat, supaya sebuah job
-    # tidak bisa menyamar menjadi identitas chat lain.
+    # ``cron:<id>``. Hanya boleh diisi operator dengan MENGEDIT jobs.json
+    # secara langsung (tidak ada flag CLI untuk ini — deliberate friction)
+    # untuk job miliknya sendiri (mis. proactive briefing yang butuh memory
+    # chat user) — jangan pernah diisi dari prompt/teks yang datang dari
+    # chat, supaya sebuah job tidak bisa menyamar menjadi identitas chat
+    # lain.
     run_as: str = ""
     enabled: bool = True
     next_run: float = 0.0
@@ -217,6 +237,15 @@ class Job:
     # count is how an operator learns the job cannot keep up with its schedule.
     skips: int = 0
     created_at: float = field(default_factory=time.time)
+    # Capability pre-authorization: what this job may do while
+    # nobody is watching, approved once by the operator at creation time.
+    # Canonical shape: {"tools": [...names...], "risk": [...classes...]}.
+    # Normalized in __post_init__; jobs written before this field existed
+    # get the minimal default (read + workspace-confined write).
+    grants: dict = field(default_factory=_default_grants)
+
+    def __post_init__(self) -> None:
+        self.grants = _normalize_job_grants(self.grants)
 
     def parsed(self) -> Schedule:
         return parse_schedule(self.schedule)
@@ -227,6 +256,47 @@ class Job:
         if self.skips:
             line += f"  [{self.skips} skipped: runs longer than its interval]"
         return line
+
+
+def describe_grants(job: Job) -> str:
+    """One-line summary of a job's capability grants, for list/show output."""
+    grants = job.grants if isinstance(job.grants, dict) else {}
+    tools = ", ".join(grants.get("tools") or []) or "—"
+    risks = ", ".join(grants.get("risk") or []) or "—"
+    return f"tools: {tools} · risk: {risks}"
+
+
+def capability_question(job: Job) -> str:
+    """The one-time pre-authorization question for a new cron job.
+
+    Asked through ask_user (picker) right after creation, before the job is
+    armed. States exactly what the job may do unattended — and that anything
+    else is denied loudly at run time, never silently skipped.
+    """
+    try:
+        schedule_text = f"{job.schedule} ({job.parsed().describe()})"
+    except Exception:
+        schedule_text = job.schedule
+    grants = job.grants if isinstance(job.grants, dict) else {}
+    tool_list = ", ".join(grants.get("tools") or []) or "(none)"
+    risk_list = ", ".join(grants.get("risk") or []) or "(none)"
+    lines = [
+        f"Allow cron job '{job.id}' to run UNATTENDED with these capabilities?",
+        f"  schedule : {schedule_text}",
+        f"  task     : {job.prompt[:200]}",
+        f"  delivers : {job.deliver}",
+        f"  tools    : {tool_list}",
+        f"  risk     : {risk_list}  (writes stay inside the workspace)",
+        "",
+        "At run time nobody can answer a question, so the job runs on these",
+        "grants alone — any other tool call is DENIED and recorded in the",
+        "job's status. Grants can be changed later by editing jobs.json;",
+        "the next run picks them up.",
+    ]
+    if not (grants.get("tools") or grants.get("risk")):
+        lines.append("WARNING: no capabilities granted — every tool call will be denied.")
+    lines.append("Pick one: Allow = create and arm the job · Deny = discard it.")
+    return "\n".join(lines)
 
 
 def _read_jobs() -> list[Job]:
@@ -291,7 +361,14 @@ def _new_id(existing: list[Job]) -> str:
     raise CronError("too many jobs.")
 
 
-def add_job(schedule: str, prompt: str, deliver: str = "local", run_as: str = "") -> Job:
+def add_job(
+    schedule: str,
+    prompt: str,
+    deliver: str = "local",
+    run_as: str = "",
+    grants: object = None,
+    enabled: bool = True,
+) -> Job:
     parsed = parse_schedule(schedule)   # validate before writing anything
     prompt = (prompt or "").strip()
     if not prompt:
@@ -305,6 +382,11 @@ def add_job(schedule: str, prompt: str, deliver: str = "local", run_as: str = ""
             deliver=(deliver or "local").strip() or "local",
             run_as=(run_as or "").strip(),
             next_run=parsed.next_after(time.time()),
+            # None = no explicit declaration → minimal default (normalized in
+            # __post_init__). An explicitly empty dict stays empty: fail
+            # closed, never silently widened.
+            grants=_default_grants() if grants is None else grants,
+            enabled=enabled,
         )
         jobs.append(job)
         _write_jobs(jobs)
@@ -495,7 +577,8 @@ def _job_identity(job: Job) -> str:
     """Identity agent turn untuk job ini.
 
     Default-nya terisolasi (``cron:<id>``). ``run_as`` hanya boleh diisi
-    operator lewat CLI untuk job miliknya sendiri — lihat catatan di field
+    operator dengan mengedit jobs.json secara langsung (tidak ada flag CLI
+    untuk ini) untuk job miliknya sendiri — lihat catatan di field
     ``Job.run_as``.
     """
     run_as = (job.run_as or "").strip()
@@ -611,13 +694,21 @@ class Scheduler:
     def _execute(self, job: Job, moment: float) -> None:
         status = "ok"
         try:
-            text = self._run_agent(job)
+            text, denials = self._run_agent(job)
             path = save_output(job, text)
             delivered, detail = deliver(job, text)
             status = f"ok: {detail}" if delivered else f"ok (undelivered: {detail})"
             if not delivered:
                 # The work exists; say where, so nothing has to be redone.
                 status += f" — saved {path.name}"
+            if denials:
+                # Deny-loud: a blocked tool must show up in the
+                # job's status, never as a silent no-op the operator discovers
+                # weeks later.
+                blocked = "; ".join(f"{name} ({reason})" for name, reason in denials[:3])
+                if len(denials) > 3:
+                    blocked += f" (+{len(denials) - 3} more)"
+                status += f" — {len(denials)} tool call(s) DENIED by job grants: {blocked}"
         except Exception as exc:  # noqa: BLE001 — arbitrary agent failure
             status = f"error: {exc.__class__.__name__}: {exc}"
         finally:
@@ -631,7 +722,7 @@ class Scheduler:
             with self._lock:
                 self._running.discard(job.id)
 
-    def _run_agent(self, job: Job) -> str:
+    def _run_agent(self, job: Job) -> tuple[str, list[tuple[str, str]]]:
         """Run the job prompt as its own agent turn.
 
         A dedicated identity per job keeps cron work out of the operator's chat
@@ -640,12 +731,20 @@ class Scheduler:
         genuinely need the operator's context (e.g. proactive briefing) set
         ``run_as`` explicitly; see ``_job_identity``.
 
+        The turn runs under a grant-based approval policy: the
+        job's declared capabilities, snapshotted at run start, decide every
+        tool call — no picker, no per-call prompt. Anything outside the grants
+        is denied, and each denial comes back in the second tuple element so
+        the caller can record it loudly in the job's status.
+
         A file the job produces is delivered through the job's own target, for the
         duration of the run only. Without this a scheduled job that renders a chart
         could create the PNG and have no way to hand it over: `send_file` looks up
         the calling identity, and `cron:<id>` is not a chat. The channel is released
         in `finally` so a later turn cannot push a file through a finished job.
         """
+        from zeline import tools as tools_module
+
         extra = (
             "\n\nThis is a SCHEDULED run with nobody watching. Nobody can answer a "
             "question, so never ask one — decide and act. Produce the finished "
@@ -660,12 +759,17 @@ class Scheduler:
                     chat, path, caption, kind
                 ),
             )
+        # Snapshot the grants NOW: a jobs.json edit mid-run must not change
+        # what the running turn may do. The next run picks up the new grants.
+        policy = tools_module.GrantApprovalPolicy.from_job(job)
         try:
-            return self.sessions.send(
+            text = self.sessions.send(
                 identity=identity,
                 text=job.prompt,
                 tool_profile=str(getattr(config, "CLI_TOOL_PROFILE", "full")),
                 system_extra=extra,
+                approval_policy=policy,
             )
         finally:
             delivery.unregister_channel(identity)
+        return text, list(policy.denials)

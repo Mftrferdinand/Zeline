@@ -42,6 +42,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from zeline import config
+from zeline.memory import RETRIEVAL_MIN_SCORE, score_text
 
 _LOCK = threading.Lock()
 
@@ -54,6 +55,11 @@ MAX_LESSONS_PER_IDENTITY = 50
 
 #: Lessons older than this (seconds) with no resolution are expired.
 LESSON_TTL = 30 * 24 * 3600  # 30 days
+
+#: Scored retrieval: berapa pelajaran yang disuntik ke
+#: system prompt per turn saat retrieval dipakai. Nilai ini = limit lama
+#: ``prompt_block`` (8), jadi perilaku tanpa query byte-identical dengan dulu.
+LESSONS_RETRIEVAL_TOP_K = 8
 
 #: Max length of the error/fix text stored — keep it short, it goes into
 #: the prompt.
@@ -347,7 +353,71 @@ class LessonsStore:
             for r in rows
         ]
 
-    def prompt_block(self, identity: str) -> str:
+    def retrieve(
+        self, identity: str, query: str, k: int = LESSONS_RETRIEVAL_TOP_K
+    ) -> list[dict[str, Any]]:
+        """Top-K resolved lessons yang paling relevan dengan ``query``.
+
+        Teks yang di-skor = tool + args_sig + error + fix; recency dari
+        ``resolved_ts`` (jatuh ke ``ts`` bila kosong); confidence selalu 1.0 —
+        pelajaran yang resolved adalah panduan tepercaya, bukan tebakan.
+        Matematika skor sama dengan memory (``zeline.memory.score_text``).
+
+        [] bila tak ada pelajaran resolved, query tanpa token signifikan, atau
+        DB error — pemanggil fallback ke blok tanpa filter. Best-effort: tak
+        pernah raise.
+        """
+        try:
+            lessons = self.resolved(identity, limit=MAX_LESSONS_PER_IDENTITY)
+            now = time.time()
+            scored = []
+            for lesson in lessons:
+                text = " ".join(
+                    str(lesson.get(part, "")) for part in ("tool", "args_sig", "error", "fix")
+                )
+                ts = float(lesson.get("resolved_ts") or lesson.get("ts") or 0.0)
+                score = score_text(query, text, ts, 1.0, now)
+                if score >= RETRIEVAL_MIN_SCORE:
+                    scored.append((score, ts, lesson))
+            scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            return [lesson for _, _, lesson in scored[: max(0, int(k))]]
+        except Exception:
+            return []
+
+    def _select_lessons(
+        self, identity: str, query: str | None
+    ) -> list[dict[str, Any]]:
+        """Pelajaran untuk prompt: top-K retrieval bila query-nya produktif.
+
+        Kontrak backward-compatible: query kosong/None, retrieval gagal, atau
+        nol hit → semua resolved lessons (limit lama), persis perilaku
+        ``prompt_block()`` sebelum retrieval ada.
+        """
+        if query and query.strip():
+            try:
+                hits = self.retrieve(identity, query, k=LESSONS_RETRIEVAL_TOP_K)
+            except Exception:
+                hits = []
+            if hits:
+                return hits
+        return self.resolved(identity, limit=LESSONS_RETRIEVAL_TOP_K)
+
+    @staticmethod
+    def _format_lesson(lesson: dict[str, Any]) -> str:
+        """Satu baris koreksi — SATU-SATUNYA tempat format baris didefinisikan.
+
+        Baik jalur lama (semua resolved) maupun jalur retrieval (top-K) memakai
+        ini, jadi format yang dilihat gateway tidak pernah berubah apa pun
+        jalurnya.
+        """
+        err_short = _redact_text(lesson["error"])[:120]
+        fix_short = _redact_text(lesson["fix"])[:120]
+        err_safe = _escape_prompt_text(err_short)
+        fix_safe = _escape_prompt_text(fix_short)
+        tool_safe = _escape_prompt_text(str(lesson["tool"]))
+        return f'- {tool_safe}: DON\'T repeat "{err_safe}" → DO: {fix_safe}'
+
+    def prompt_block(self, identity: str, query: str | None = None) -> str:
         """Inject resolved lessons as corrections — 'DO this / DON'T do that.'
 
         Framed distinctly from memory's prompt_block: memory is *facts*,
@@ -357,21 +427,18 @@ class LessonsStore:
         All stored error/fix text is treated as untrusted: it is escaped
         so that tokens like ``</lessons>``, ``<system>``, or instruction-
         shaped phrases cannot break out of the data framing.
+
+        ``query`` (opsional): bila diisi — biasanya pesan
+        user terakhir — hanya top-K pelajaran yang paling relevan (``retrieve``)
+        yang disuntik, dalam FORMAT YANG SAMA PERSIS seperti tanpa query. Bila
+        query kosong/None, retrieval gagal, atau tidak ada hit yang lolos
+        ambang, fallback ke perilaku lama: semua resolved lessons (limit lama).
+        Pemanggil lama tanpa argumen tidak merasakan perubahan apa pun.
         """
-        lessons = self.resolved(identity, limit=8)
+        lessons = self._select_lessons(identity, query)
         if not lessons:
             return ""
-        lines = []
-        for lesson in lessons:
-            err_short = _redact_text(lesson["error"])[:120]
-            fix_short = _redact_text(lesson["fix"])[:120]
-            err_safe = _escape_prompt_text(err_short)
-            fix_safe = _escape_prompt_text(fix_short)
-            tool_safe = _escape_prompt_text(str(lesson["tool"]))
-            lines.append(
-                f"- {tool_safe}: DON'T repeat \"{err_safe}\" → DO: {fix_safe}"
-            )
-        corrections = "\n".join(lines)
+        corrections = "\n".join(self._format_lesson(lesson) for lesson in lessons)
         return (
             "\n\n## Lessons from past failures (behavioral corrections)\n"
             "These are mistakes you made in previous sessions and the fixes "
@@ -469,10 +536,10 @@ def resolve_lesson(
     return "OK, lesson resolved and will guide future sessions."
 
 
-def lessons_block(identity: str = "cli:local") -> str:
+def lessons_block(identity: str = "cli:local", query: str | None = None) -> str:
     """Prompt block of resolved lessons for the given identity."""
     try:
-        return _get_store().prompt_block(identity)
+        return _get_store().prompt_block(identity, query=query)
     except Exception:
         return ""
 

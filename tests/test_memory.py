@@ -134,6 +134,55 @@ class MemoryRecordTests(unittest.TestCase):
         self.assertEqual(len(store.list()), 50)
 
 
+class SanitizerFormatCharTests(unittest.TestCase):
+    """Sanitasi prompt-boundary: zero-width/format chars + HTML entities.
+
+    Karakter format Unicode (kategori Cf: \\u200b zero-width space, \\u200c,
+    \\u200d, \\ufeff BOM) bisa disisipkan ke dalam nama tag untuk mengelabui
+    regex delimiter — sanitasi harus menghapusnya SEBELUM pencocokan.
+    HTML entities SENGAJA tidak di-decode (keputusan eksplisit di docstring):
+    tidak ada langkah decode di pipeline ini, jadi entity tetap teks
+    literal inert.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name) / "home"
+        self.old_home = os.environ.get("ZELINE_HOME")
+        self.memory = _fresh(self.home)
+
+    def tearDown(self):
+        if self.old_home is None:
+            os.environ.pop("ZELINE_HOME", None)
+        else:
+            os.environ["ZELINE_HOME"] = self.old_home
+        self.temp.cleanup()
+
+    def test_zero_width_chars_around_and_inside_tags(self):
+        clean = self.memory._sanitize_prompt_text
+        self.assertEqual(clean("</go\u200bals>"), "")
+        self.assertEqual(clean("</go\u200cals>"), "")
+        self.assertEqual(clean("<\u200dself_corrections\u200d>"), "")
+        self.assertEqual(clean("\ufeff</user_memory>\ufeff"), "")
+        # Cf + rekonstruksi bersarang: dua bypass sekaligus tetap tertutup
+        self.assertEqual(clean("x</g\u200bo<goals>als>y"), "xy")
+
+    def test_cf_chars_stripped_even_without_tags(self):
+        self.assertEqual(self.memory._sanitize_prompt_text("a\u200bb"), "ab")
+
+    def test_html_entity_not_decoded_into_tag(self):
+        self.assertEqual(
+            self.memory._sanitize_prompt_text("&lt;goals&gt;"),
+            "&lt;goals&gt;",
+        )
+
+    def test_benign_text_preserved(self):
+        self.assertEqual(
+            self.memory._sanitize_prompt_text("self_corrections itu konsep"),
+            "self_corrections itu konsep",
+        )
+
+
 class SessionEvictionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -163,6 +212,146 @@ class SessionEvictionTests(unittest.TestCase):
         with store._lock:  # noqa: SLF001 - white-box check of the map
             keys = list(store._sessions.keys())
         self.assertIn("telegram:oldest", keys, "a running session was evicted")
+
+
+class EmbeddingPruneTests(unittest.TestCase):
+    """Temuan audit MINOR: remove()/consolidate() harus mem-prune vektor yatim."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name) / "home"
+        self.old_home = os.environ.get("ZELINE_HOME")
+        self.memory = _fresh(self.home)
+        # Memo global harus bersih antar test (keyed per identity, tapi
+        # isolasi penuh lebih aman).
+        with self.memory._EMBEDDING_MEMO_GUARD:
+            self.memory._EMBEDDING_MEMO.clear()
+
+    def tearDown(self):
+        with self.memory._EMBEDDING_MEMO_GUARD:
+            self.memory._EMBEDDING_MEMO.clear()
+        if self.old_home is None:
+            os.environ.pop("ZELINE_HOME", None)
+        else:
+            os.environ["ZELINE_HOME"] = self.old_home
+        self.temp.cleanup()
+
+    # ------------------------------------------------------------- helpers
+    def _seed_vectors(self, identity, records, slug="test-model"):
+        """Tulis sidecar + memo palsu untuk tiap record + satu kunci yatim."""
+        mem = self.memory
+        identity_hash = mem._key(identity)
+        keys = [mem._embedding_key(r) for r in records]
+        mapping = {k: [0.1, 0.2, 0.3] for k in keys}
+        mapping["yatim-tanpa-record"] = [0.9, 0.9, 0.9]
+        mem._write_embeddings_sidecar(identity, slug, mapping)
+        for key, vector in mapping.items():
+            mem._memo_set(mem._memo_key(identity_hash, slug, key), vector)
+        return keys
+
+    def _sidecar_keys(self, identity, slug="test-model"):
+        return set(self.memory._read_embeddings_sidecar(identity, slug))
+
+    def _memo_keys(self, identity):
+        prefix = f"{self.memory._key(identity)}:"
+        with self.memory._EMBEDDING_MEMO_GUARD:
+            return {k for k in self.memory._EMBEDDING_MEMO if k.startswith(prefix)}
+
+    # ------------------------------------------------------------------ test
+    def test_remove_prunes_orphan_vectors(self):
+        identity = "test:prune-remove"
+        store = self.memory.MemoryStore(identity)
+        store.add("User suka kopi tubruk.")
+        store.add("User tidak suka teh manis.")
+        records = store.records()
+        keys = self._seed_vectors(identity, records)
+
+        store.remove("kopi")
+
+        # Sidecar: hanya kunci record yang masih hidup.
+        self.assertEqual(self._sidecar_keys(identity), {keys[1]})
+        # Memo: hanya entri record yang masih hidup (untuk identitas ini).
+        remaining = self._memo_keys(identity)
+        self.assertEqual(len(remaining), 1)
+        self.assertTrue(remaining.pop().endswith(keys[1]))
+        # Fakta yang tersisa tetap utuh.
+        self.assertEqual(store.list(), ["User tidak suka teh manis."])
+
+    def test_remove_prunes_across_model_slugs(self):
+        identity = "test:prune-slugs"
+        store = self.memory.MemoryStore(identity)
+        store.add("Satu fakta.")
+        records = store.records()
+        self._seed_vectors(identity, records, slug="model-a")
+        self._seed_vectors(identity, records, slug="model-b")
+
+        store.remove("Satu")
+
+        self.assertEqual(self._sidecar_keys(identity, "model-a"), set())
+        self.assertEqual(self._sidecar_keys(identity, "model-b"), set())
+        self.assertEqual(self._memo_keys(identity), set())
+
+    def test_remove_without_match_prunes_nothing(self):
+        identity = "test:prune-noop"
+        store = self.memory.MemoryStore(identity)
+        store.add("Fakta abadi.")
+        records = store.records()
+        keys = self._seed_vectors(identity, records)
+
+        store.remove("tidak-ada-yang-cocok")
+
+        self.assertEqual(self._sidecar_keys(identity), set(keys) | {"yatim-tanpa-record"})
+        self.assertEqual(len(self._memo_keys(identity)), 2)  # 1 record + 1 yatim
+
+    def test_consolidate_prunes_duplicate_vectors(self):
+        identity = "test:prune-consolidate"
+        store = self.memory.MemoryStore(identity)
+        store.add("Nama  saya Budi")
+        store.add("nama saya budi")  # duplikat-varian -> dibuang consolidate
+        store.add("Fakta lain.")
+        records = store.records()
+        keys = self._seed_vectors(identity, records)
+
+        result = store.consolidate()
+        self.assertEqual(result["removed_duplicates"], 1)
+
+        # Kunci duplikat (index 1) + kunci yatim ikut ter-prune.
+        self.assertEqual(self._sidecar_keys(identity), {keys[0], keys[2]})
+        remaining = self._memo_keys(identity)
+        self.assertEqual(len(remaining), 2)
+
+    def test_add_prunes_vectors_of_expired_facts(self):
+        # Temuan audit MINOR: add() membuang fakta expired dari file tapi
+        # tidak mem-prune vektor yatimnya — sidecar/memo menumpuk.
+        identity = "test:prune-add"
+        store = self.memory.MemoryStore(identity)
+        mem = self.memory
+        now = time.time()
+        mem._write(store.path, [
+            {"text": "Fakta basi.", "kind": "fact", "source": "user",
+             "confidence": 1.0, "created_at": now - 3600,
+             "expires_at": now - 60},
+            {"text": "Fakta hidup.", "kind": "fact", "source": "user",
+             "confidence": 1.0, "created_at": now - 30, "expires_at": None},
+        ])
+        records = store.records(include_expired=True)
+        keys = self._seed_vectors(identity, records)
+        # keys[0] = fakta expired, keys[1] = fakta hidup, + kunci yatim.
+
+        store.add("Fakta baru.")
+
+        live = store.records()
+        self.assertEqual([r["text"] for r in live],
+                         ["Fakta hidup.", "Fakta baru."])
+        # Sidecar: hanya kunci fakta yang masih hidup DAN punya vektor
+        # terseed (keys[1]); kunci fakta expired (keys[0]) dan kunci yatim
+        # ikut ter-prune. Fakta baru tidak punya vektor terseed — tidak
+        # ada yang perlu dipertahankan/dihapus untuknya.
+        self.assertEqual(self._sidecar_keys(identity), {keys[1]})
+        # Memo: hanya entri record yang masih hidup untuk identitas ini.
+        remaining = self._memo_keys(identity)
+        self.assertEqual(len(remaining), 1)
+        self.assertTrue(remaining.pop().endswith(keys[1]))
 
 
 if __name__ == "__main__":

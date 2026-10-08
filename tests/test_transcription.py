@@ -294,15 +294,15 @@ class VoicePromptTests(unittest.TestCase):
     def test_the_feed_says_transcribing_for_audio_and_looking_for_images(self):
         self.assertEqual(
             self.telegram._tool_progress_text("analyze_media", {"path_or_url": "/x/voice.ogg"}),
-            "🎧 Transcribing audio",
+            "🎧 Transcribing audio <code>/x/voice.ogg</code>",
         )
         self.assertEqual(
             self.telegram._tool_progress_text("analyze_media", {"path_or_url": "/x/clip.mp4"}),
-            "🎧 Transcribing audio",
+            "🎧 Transcribing audio <code>/x/clip.mp4</code>",
         )
         self.assertEqual(
             self.telegram._tool_progress_text("analyze_media", {"path_or_url": "/x/shot.png"}),
-            "🖼 Looking at image",
+            "🖼 Looking at image <code>/x/shot.png</code>",
         )
 
 

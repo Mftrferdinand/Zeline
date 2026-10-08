@@ -24,6 +24,20 @@ class FakeResponse:
         self.encoding = "utf-8"
 
 
+class _AllowAllPolicy:
+    """Test-only: policy asing untuk menguji reflect() tidak mewarisinya.
+
+    Sejak reflect() memasang InteractiveApprovalPolicy fresh sendiri,
+    helper ini hanya dipakai sebagai "policy sisa turn terakhir" yang
+    harus diganti — bukan sebagai simulasi produksi.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
+
 class AgentLoopTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -215,7 +229,18 @@ class AgentLoopTests(unittest.TestCase):
             "Ini public read-only. Gue lanjut lewat network/browser route dan solver yang sesuai."
         )}}]}
         agent = self.agent_module.Zeline(identity="telegram:ftmo-correct", tool_profile="full")
-        with mock.patch.object(agent.executor, "run", return_value="location: https://ftmo.com/block/ID.html"), \
+
+        def fake_run(name, args):
+            # Risk approval: run_shell is Destructive,
+            # so the agent loop asks for approval through the ask_user tool
+            # before running it. This blanket mock predates that gate; make it
+            # approval-aware so the test still exercises its real subject —
+            # the cloudflare refusal interception — with the operator approving.
+            if name == "ask_user":
+                return "Allow"
+            return "location: https://ftmo.com/block/ID.html"
+
+        with mock.patch.object(agent.executor, "run", side_effect=fake_run), \
              mock.patch.object(self.agent_module.skills, "load_skill", return_value="GENERIC SOLVER"), \
              mock.patch.object(self.agent_module.requests, "post", side_effect=[
                  FakeResponse(first), FakeResponse(refusal), FakeResponse(corrected),
@@ -599,9 +624,115 @@ class AgentLoopTests(unittest.TestCase):
         tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
         self.assertEqual([m["tool_call_id"] for m in tool_msgs], ["call-a", "call-b"])
 
+    def test_parallel_load_skill_attributes_to_active_scope(self):
+        # Regresi: tool paralel jalan di thread pool yang tidak mewarisi
+        # ContextVar — note_used() di dalamnya harus tetap teratribusi ke
+        # scope aktif thread pengirim (bukan no-op diam-diam).
+        from zeline import skill_telemetry
+        first = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [
+                    {"id": "call-a", "type": "function",
+                     "function": {"name": "load_skill", "arguments": '{"name": "SkillA"}'}},
+                    {"id": "call-b", "type": "function",
+                     "function": {"name": "load_skill", "arguments": '{"name": "SkillB"}'}},
+                ],
+            }}],
+        }
+        second = {"choices": [{"message": {"role": "assistant", "content": "beres"}}]}
+        agent = self.agent_module.Zeline(identity="telegram:tele", tool_profile="safe")
+        with mock.patch.object(
+            self.agent_module.skills, "load_skill", return_value="SKILL CONTENT"
+        ), mock.patch.object(
+            self.agent_module.requests, "post",
+            side_effect=[FakeResponse(first), FakeResponse(second)],
+        ), skill_telemetry.usage_scope():
+            reply = agent.send("load dua skill")
+            seen = skill_telemetry.skills_in_scope()
+        self.assertEqual(reply, "beres")
+        self.assertEqual(seen, frozenset({"skilla", "skillb"}))
+
+    def test_parallel_tool_failure_becomes_error_result_not_crash(self):
+        # Perilaku error tidak berubah: _dispatch mengubah exception tool
+        # menjadi string "ERROR ..." — turn lanjut normal, hasil terikat ke
+        # tool_call_id yang benar, sama seperti jalur serial.
+        first = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [
+                    {"id": "call-a", "type": "function",
+                     "function": {"name": "load_skill", "arguments": '{"name": "SkillA"}'}},
+                    {"id": "call-b", "type": "function",
+                     "function": {"name": "load_skill", "arguments": '{"name": "SkillB"}'}},
+                ],
+            }}],
+        }
+        second = {"choices": [{"message": {"role": "assistant", "content": "beres"}}]}
+        agent = self.agent_module.Zeline(identity="telegram:exc", tool_profile="safe")
+        def boom(name, include_private=False):
+            if name == "SkillA":
+                raise RuntimeError("ledakan")
+            return "OK"
+        with mock.patch.object(
+            self.agent_module.skills, "load_skill", side_effect=boom
+        ), mock.patch.object(
+            self.agent_module.requests, "post",
+            side_effect=[FakeResponse(first), FakeResponse(second)],
+        ):
+            reply = agent.send("load dua skill")
+        self.assertEqual(reply, "beres")
+        tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
+        self.assertEqual([m["tool_call_id"] for m in tool_msgs], ["call-a", "call-b"])
+        self.assertEqual(tool_msgs[0]["content"], "ERROR running load_skill: ledakan")
+        self.assertEqual(tool_msgs[1]["content"], "OK")
+
+    def test_parallel_tasks_have_isolated_context_copies(self):
+        # Tiap task paralel mendapat salinannya sendiri: mutasi ContextVar
+        # di satu task tidak boleh bocor ke task paralel lain.
+        import contextvars
+        import threading
+        probe = contextvars.ContextVar("zeline_test_probe", default="main")
+        first = {
+            "choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [
+                    {"id": "call-a", "type": "function",
+                     "function": {"name": "runtime_info", "arguments": '{"marker": "writer"}'}},
+                    {"id": "call-b", "type": "function",
+                     "function": {"name": "runtime_info", "arguments": "{}"}},
+                ],
+            }}],
+        }
+        second = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+        agent = self.agent_module.Zeline(identity="telegram:ctx", tool_profile="safe")
+        written = threading.Event()
+        def fake_run(name, args):
+            if args.get("marker") == "writer":
+                probe.set("writer-value")
+                written.set()
+                return "wrote"
+            self.assertTrue(written.wait(timeout=10), "writer task never ran")
+            return probe.get()
+        with mock.patch.object(agent.executor, "run", side_effect=fake_run), \
+             mock.patch.object(self.agent_module.requests, "post",
+                               side_effect=[FakeResponse(first), FakeResponse(second)]):
+            reply = agent.send("uji konteks")
+        self.assertEqual(reply, "done")
+        tool_msgs = [m for m in agent.messages if m.get("role") == "tool"]
+        self.assertEqual([m["content"] for m in tool_msgs], ["wrote", "main"])
+
     def test_reflect_saves_skill_on_substantial_session_and_is_noop_when_light(self):
         # Sesi berbobot (>=5 tool call) → reflect boleh memanggil manage_skill.
         agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
+        # Kontrak baru: reflect() memasang InteractiveApprovalPolicy FRESH.
+        # Simulasi produksi = policy itu + izin sesi yang sudah diketuk
+        # operator untuk tool yang dipakai reflect (tanpa ini ask_user
+        # memblokir menunggu jawaban yang tak pernah datang).
+        agent.executor.approval_policy = self.agent_module.InteractiveApprovalPolicy()
+        approvals = importlib.import_module("zeline.approvals")
+        approvals.grant_session_allow("cli:local", "manage_skill")
+        self.addCleanup(approvals.clear_session_allows, "cli:local")
         agent.last_turn_tool_calls = 6
         reflect_first = {
             "choices": [{"message": {
@@ -645,6 +776,12 @@ class AgentLoopTests(unittest.TestCase):
         """
         self.assertGreaterEqual(self.agent_module.REFLECTION_TOOL_ROUNDS, 4)
         agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
+        # Kontrak baru: reflect() memasang InteractiveApprovalPolicy FRESH
+        # (lihat test di atas untuk alasannya).
+        agent.executor.approval_policy = self.agent_module.InteractiveApprovalPolicy()
+        approvals = importlib.import_module("zeline.approvals")
+        approvals.grant_session_allow("cli:local", "manage_skill")
+        self.addCleanup(approvals.clear_session_allows, "cli:local")
         agent.last_turn_tool_calls = 9
 
         def round_with(call_id: str, arguments: str) -> dict:
@@ -683,6 +820,12 @@ class AgentLoopTests(unittest.TestCase):
         the store's default source around the reflection window.
         """
         agent = self.agent_module.Zeline(identity="cli:reflect-mem", tool_profile="full")
+        # Kontrak baru: reflect() memasang InteractiveApprovalPolicy FRESH
+        # (lihat test di atas untuk alasannya).
+        agent.executor.approval_policy = self.agent_module.InteractiveApprovalPolicy()
+        approvals = importlib.import_module("zeline.approvals")
+        approvals.grant_session_allow("cli:reflect-mem", "add_memory")
+        self.addCleanup(approvals.clear_session_allows, "cli:reflect-mem")
         agent.last_turn_tool_calls = 7
         save = {"choices": [{"message": {
             "role": "assistant", "content": "",
@@ -700,6 +843,38 @@ class AgentLoopTests(unittest.TestCase):
         # And the store is restored to user-sourced writes afterwards, so a
         # normal turn on the same session does not keep tagging as reflection.
         self.assertEqual(agent.executor.memory.default_source, "user")
+
+    def test_reflect_installs_fresh_interactive_policy_and_restores(self):
+        """reflect() must not inherit the previous turn's approval policy.
+
+        A leftover GrantApprovalPolicy (e.g. from a cron run) would gate
+        reflection tool calls by job grants instead of asking the operator.
+        reflect() installs a FRESH InteractiveApprovalPolicy for its own
+        window — carrying over only the on_tool RENDERER (a UI hook, not a
+        security decision) so approval questions still reach the operator —
+        and restores the previous policy afterwards.
+        """
+        agent = self.agent_module.Zeline(identity="cli:reflect-policy", tool_profile="full")
+        foreign = _AllowAllPolicy()
+        sentinel_renderer = object()
+        foreign.on_tool = sentinel_renderer
+        agent.executor.approval_policy = foreign
+        agent.last_turn_tool_calls = 6
+        seen = {}
+
+        def fake_call_llm(*args, **kwargs):
+            seen["policy"] = agent.executor.approval_policy
+            return {"content": "NO_ACTION"}
+
+        with mock.patch.object(agent, "_call_llm", side_effect=fake_call_llm):
+            agent.reflect(min_tool_calls=5)
+        policy = seen.get("policy")
+        self.assertIsInstance(policy, self.agent_module.InteractiveApprovalPolicy)
+        self.assertIsNot(policy, foreign)
+        # Renderer diwariskan (picker tetap tampil), policy-nya fresh.
+        self.assertIs(policy.on_tool, sentinel_renderer)
+        # Setelah reflect selesai, policy sisa turn terakhir dikembalikan.
+        self.assertIs(agent.executor.approval_policy, foreign)
 
     def test_web_search_uses_bing_serp_and_includes_urls(self):
         # web_search must try the Bing SERP engine first and return title+URL
@@ -952,3 +1127,54 @@ class StreamingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class IsErrorTextTests(unittest.TestCase):
+    """Helper bersama deteksi error framework di zeline.agent.
+
+    Konvensi emitter di tools.py: uppercase "ERROR: ..." / "ERROR <kata>
+    ..." — case-sensitive, menuntut ':' atau spasi tepat setelah ERROR.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._temp = tempfile.TemporaryDirectory()
+        cls._old_home = os.environ.get("ZELINE_HOME")
+        os.environ["ZELINE_HOME"] = str(Path(cls._temp.name) / "state")
+        for module_name in list(sys.modules):
+            if module_name == "zeline" or module_name.startswith("zeline."):
+                sys.modules.pop(module_name, None)
+        cls.agent_module = importlib.import_module("zeline.agent")
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._old_home is None:
+            os.environ.pop("ZELINE_HOME", None)
+        else:
+            os.environ["ZELINE_HOME"] = cls._old_home
+        cls._temp.cleanup()
+
+    def test_error_colon_is_error(self):
+        self.assertTrue(self.agent_module.is_error_text("ERROR: empty fact."))
+
+    def test_error_space_is_error(self):
+        self.assertTrue(self.agent_module.is_error_text("ERROR something failed"))
+
+    def test_errors_count_is_not_error(self):
+        # "ERRORS: 0" adalah keluaran sukses — tidak boleh terlabeli gagal.
+        self.assertFalse(self.agent_module.is_error_text("ERRORS: 0"))
+
+    def test_plain_text_is_not_error(self):
+        self.assertFalse(self.agent_module.is_error_text("all good"))
+        self.assertFalse(self.agent_module.is_error_text(""))
+        self.assertFalse(self.agent_module.is_error_text("error: lowercase"))
+
+    def test_error_not_at_start_is_not_error(self):
+        self.assertFalse(self.agent_module.is_error_text("x ERROR: y"))
+
+    def test_from_zeline_agent_importable(self):
+        # Kontrak untuk zeline.cli: from zeline.agent import is_error_text
+        from zeline.agent import is_error_text
+
+        self.assertTrue(is_error_text("ERROR: boom"))
+        self.assertFalse(is_error_text("ERRORS: 0"))

@@ -113,12 +113,25 @@ def build_export(
     }
 
 
-def write_export(path: str | Path, payload: dict[str, Any]) -> Path:
-    """Write an export to disk with private permissions."""
+def write_export(path: str | Path, payload: dict[str, Any], *, overwrite: bool = False) -> Path:
+    """Write an export to disk with private permissions.
+
+    Never overwrites silently: if the resolved target already exists and
+    ``overwrite`` is False (the default), raises ``FileExistsError`` with a
+    clear message instead of destroying the existing file. Pass
+    ``overwrite=True`` only after an explicit operator decision — this
+    mirrors the codebase's refuse-by-default convention (``session import``
+    refuses without ``--replace``; ``init`` refuses without ``--force``).
+    """
     target = Path(path).expanduser()
     if target.is_dir():
         target = target / "zeline-session.json"
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not overwrite:
+        raise FileExistsError(
+            f"refusing to overwrite existing export file: {target} "
+            "(pass overwrite=True to overwrite it)"
+        )
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     try:
         os.chmod(target, 0o600)

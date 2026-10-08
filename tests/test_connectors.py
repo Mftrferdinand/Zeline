@@ -50,7 +50,6 @@ class StoreTests(unittest.TestCase):
         store.save("github", {"token": "abc", "login": "octo"})
         self.assertEqual(store.load("github"), {"token": "abc", "login": "octo"})
 
-    @unittest.skipIf(os.name == "nt", "POSIX permission bits don't apply on Windows")
     def test_chmod_600(self):
         path = store.save("github", {"token": "abc"})
         mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -117,38 +116,17 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(data["access_token"], "new-at")
         self.assertEqual(data["refresh_token"], "old-rt")
 
-    @unittest.skipIf(
-        sys.platform == "darwin",
-        "GitHub macOS runners blackhole loopback TCP connects "
-        "(SYNs to 127.0.0.1 get no response at all); covered on Linux/Windows CI.",
-    )
     def test_run_local_callback(self):
-        import http.client
-
         port = _free_port()
         result: dict = {}
         thread = threading.Thread(
-            target=lambda: result.update(code=oauth.run_local_callback(port, timeout=30)),
+            target=lambda: result.update(code=oauth.run_local_callback(port, timeout=15)),
             daemon=True,
         )
         thread.start()
-        # Poll until the loopback listener accepts: some CI runners (notably
-        # macOS) are slow to bring it up, and urllib honours proxy env/system
-        # settings which can blackhole localhost. http.client bypasses all of
-        # that machinery.
-        deadline = time.monotonic() + 25
-        while True:
-            try:
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                conn.request("GET", "/?code=abc123")
-                conn.getresponse().read()
-                conn.close()
-                break
-            except OSError:
-                if time.monotonic() > deadline:
-                    raise
-                time.sleep(0.3)
-        thread.join(35)
+        time.sleep(0.7)
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/?code=abc123", timeout=5).read()
+        thread.join(20)
         self.assertEqual(result.get("code"), "abc123")
 
     def test_session_valid_token_no_refresh_needed(self):

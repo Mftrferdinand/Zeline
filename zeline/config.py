@@ -564,6 +564,10 @@ def _defaults() -> dict[str, Any]:
             # Simpan history percakapan ke ~/.zeline/sessions.db supaya restart
             # gateway tidak menghapus konteks (bot tidak "tiba-tiba lupa").
             "persist_sessions": True,
+            # SuperContext: research sweep sebelum model baca pesan user
+            # (memory, skills, goals, user model). Local reads, <500ms.
+            "supercontext": True,
+            "supercontext_max_chars": 2000,
         },
         "tools": {
             # CLI dimiliki operator lokal; gateway publik harus safe secara default.
@@ -648,6 +652,13 @@ def _defaults() -> dict[str, Any]:
                 "token": "",
                 "tool_profile": "safe",
             },
+            "webchat": {
+                "enabled": False,
+                "host": "127.0.0.1",
+                "port": 8787,
+                "token": "",
+                "tool_profile": "safe",
+            },
             # Adapter yang terdaftar di gateways.GATEWAYS WAJIB punya default di
             # sini. `zeline gateway enable <name>` memakai defaults ini sebagai
             # template; tanpa entry, perintah itu melempar ValueError padahal
@@ -658,10 +669,30 @@ def _defaults() -> dict[str, Any]:
                 "allowed": [],
                 "tool_profile": "safe",
             },
+            "slack": {
+                "enabled": False,
+                "token": "",
+                "allowed": [],
+                "tool_profile": "safe",
+            },
+            "email": {
+                "enabled": False,
+                "imap_host": "",
+                "imap_user": "",
+                "imap_pass": "",
+                "smtp_host": "",
+                "smtp_user": "",
+                "smtp_pass": "",
+                "allowed_senders": [],
+                "tool_profile": "safe",
+            },
         },
         # MCP server eksternal. Tiap entry: {transport, command|url, headers, env, enabled}.
         # Hanya operator yang boleh menambah (server stdio menjalankan perintah lokal).
         "mcp": {"servers": {}},
+        # Peer bot-to-bot: shared secret + named peers.
+        # {"secret": "<shared>", "peers": {"other": {"url": "http://host:8788", "secret": "<shared>"}}}
+        "peer": {"secret": "", "peers": {}},
     }
 
 
@@ -714,6 +745,11 @@ def _apply_environment(cfg: dict[str, Any]) -> dict[str, Any]:
     name = os.environ.get("ZELINE_NAME")
     if name:
         cfg["name"] = name
+    peer_secret = os.environ.get("ZELINE_PEER_SECRET")
+    if peer_secret:
+        if not isinstance(cfg.get("peer"), dict):
+            cfg["peer"] = {}
+        cfg["peer"]["secret"] = peer_secret
     return cfg
 
 
@@ -811,10 +847,15 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MAX_PARALLEL_SUBAGENTS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
+    global APPROVAL_AUTO_ALLOW_ALL
+    global EXECUTION_BACKEND, DOCKER_IMAGE, SSH_HOST, SSH_USER, SSH_KEY, SSH_PORT, SSH_WORKDIR
     global MAX_TURN_SECONDS
     global STREAM_INACTIVITY_SECONDS
     global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, OPENAPI_TOOLS, PLUGINS, TOOL_SEARCH
     global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS, CRON
+    global PEER_SECRET, PEERS
+    global SUPERCONTEXT_ENABLED, SUPERCONTEXT_MAX_CHARS
+    global VAULT_PATH
     PROVIDER = cfg["provider"]
     PROTOCOL = str(PROVIDER.get("protocol", "openai"))
     BASE_URL = str(PROVIDER.get("base_url", "")).rstrip("/")
@@ -878,6 +919,31 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
+    # agent-style: when True, all tool calls auto-allow without prompting.
+    # Explicit opt-in only — the operator accepts unattended execution risk.
+    APPROVAL_AUTO_ALLOW_ALL = bool(cfg.get("approval", {}).get("auto_allow_all", False))
+    # Execution backend: local (default), docker, ssh, or sandbox.
+    _exec = cfg.get("execution", {})
+    EXECUTION_BACKEND = str(_exec.get("backend", "local")).lower()
+    DOCKER_IMAGE = str(_exec.get("docker_image", "python:3.12-slim"))
+    SSH_HOST = str(_exec.get("ssh_host", ""))
+    SSH_USER = str(_exec.get("ssh_user", "") or "")
+    SSH_KEY = str(_exec.get("ssh_key", "") or "")
+    try:
+        SSH_PORT = int(_exec.get("ssh_port", 22))
+    except (TypeError, ValueError):
+        SSH_PORT = 22
+    # S9 fix: load ssh_workdir from config (was never read)
+    SSH_WORKDIR = str(_exec.get("ssh_workdir", "") or "")
+    # Peer bot-to-bot: shared secret + named peers {name: {url, secret}}
+    _peer = cfg.get("peer", {}) if isinstance(cfg.get("peer", {}), dict) else {}
+    PEER_SECRET = str(_peer.get("secret", "") or "")
+    _peers_raw = _peer.get("peers", {})
+    PEERS = {
+        str(k): {"url": str(v.get("url", "")), "secret": str(v.get("secret", ""))}
+        for k, v in _peers_raw.items()
+        if isinstance(v, dict) and str(v.get("url", ""))
+    } if isinstance(_peers_raw, dict) else {}
     FORMAT_ON_WRITE = bool(cfg.get("tools", {}).get("format_on_write", True))
     raw_formatters = cfg.get("tools", {}).get("formatters", {})
     FORMATTERS = dict(raw_formatters) if isinstance(raw_formatters, dict) else {}
@@ -891,6 +957,13 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     BROWSER_BINARY = str(cfg.get("tools", {}).get("browser_binary", "") or "")
     LSP = bool(cfg.get("tools", {}).get("lsp", True))
     CRON = bool(cfg.get("tools", {}).get("cron", True))
+    SUPERCONTEXT_ENABLED = bool(cfg.get("agent", {}).get("supercontext", True))
+    try:
+        SUPERCONTEXT_MAX_CHARS = int(cfg.get("agent", {}).get("supercontext_max_chars", 2000))
+    except (TypeError, ValueError):
+        SUPERCONTEXT_MAX_CHARS = 2000
+    SUPERCONTEXT_MAX_CHARS = max(200, min(SUPERCONTEXT_MAX_CHARS, 8000))
+    VAULT_PATH = str(cfg.get("memory", {}).get("vault_path", "") or "").strip()
     raw_lsp = cfg.get("tools", {}).get("lsp_servers", {})
     LSP_SERVERS = dict(raw_lsp) if isinstance(raw_lsp, dict) else {}
     USAGE_TRACKING = bool(cfg.get("agent", {}).get("usage_tracking", True))

@@ -9,7 +9,10 @@ from __future__ import annotations
 import io
 import html
 import json
+import queue
 import re
+import shutil
+import tempfile
 import threading
 import time
 import zipfile
@@ -24,6 +27,11 @@ from zeline import delivery
 from zeline import mcp as mcp_module
 from zeline import skill_publish
 from zeline import interaction
+from zeline import voice as _voice_mod
+from zeline import voice_prefs as _voice_prefs
+from zeline.transcribe import TranscribeError as _TranscribeError
+from zeline.transcribe import configured as _transcribe_configured
+from zeline.transcribe import transcribe as _transcribe_audio
 from zeline.agent import CANCELLED_REPLY as _CANCELLED_SENTINEL
 from zeline.agent import PROVIDER_STATUS_PREFIX
 from zeline.agent import ZelineError
@@ -290,6 +298,7 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "steer", "description": "Steer the running task mid-turn"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
+        {"command": "voice", "description": "Voice-note replies: text/mirror/always"},
         {"command": "version", "description": "Show version and check for updates"},
         {"command": "update", "description": "Update Zeline to the latest release"},
     ]
@@ -418,12 +427,105 @@ def _short_host(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+#: Keys prioritized when auto-appending argument details to generic labels.
+#: Most informative first — a query or name says more than a limit/offset.
+_DETAIL_KEY_PRIORITY = (
+    "query", "q", "search", "keyword", "question",
+    "name", "title", "subject", "topic",
+    "path", "file", "file_path", "filename", "url", "link",
+    "code", "command", "text", "content", "prompt", "message", "body",
+    "id", "message_id", "issue_id",
+)
+
+
+def _smart_truncate(text: str, limit: int = 60) -> str:
+    """Truncate at a word boundary with ellipsis (no mid-word cuts)."""
+    text = " ".join(text.split())  # collapse whitespace/newlines
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit - 1)
+    if cut < limit // 2:  # no good word boundary; hard cut
+        cut = limit - 1
+    return text[:cut] + "…"
+
+
+def _smart_detail(arguments: dict[str, Any]) -> str:
+    """Pick the most informative argument values for a progress label.
+
+    Returns an HTML-safe ``<code>...</code>`` snippet (or "" when nothing
+    useful). Used to enrich generic labels like "🐍 Running code".
+    """
+    if not isinstance(arguments, dict) or not arguments:
+        return ""
+    # Priority keys first, in declared order.
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for key in _DETAIL_KEY_PRIORITY:
+        if key in arguments:
+            ordered.append(key)
+            seen.add(key)
+    for key in arguments:
+        if key not in seen:
+            ordered.append(key)
+    parts: list[str] = []
+    for key in ordered:
+        val = arguments[key]
+        if val is None or val is False:
+            continue
+        text = str(val).strip()
+        if not text or text in {"0", "[]", "{}"}:
+            continue
+        # Skip boring pagination/flag args.
+        if key in {"limit", "offset", "page", "per_page", "background"} and len(text) < 4:
+            continue
+        parts.append(html.escape(_smart_truncate(text), quote=False))
+        if len(parts) >= 2:
+            break
+    if not parts:
+        return ""
+    return " ".join(f"<code>{p}</code>" for p in parts)
+
+
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     """Render one distinct HTML-safe progress message per real tool call.
 
     Format ringkas: pendek, bersih, tanpa kata berlebih.
     Verb langsung + preview singkat. Emoji dipertahankan.
+
+    Labels that don't already embed argument details get the most
+    informative arguments auto-appended (e.g. "🐍 Running code" becomes
+    "🐍 Running code <code>print('hi')</code>").
     """
+    label = _tool_progress_text_inner(name, arguments)
+    # Enrich generic labels: if no argument value made it into the label,
+    # append the smart detail. Skip for web_fetch (URLs hidden by design).
+    if name == "web_fetch":
+        return label
+    if isinstance(arguments, dict) and arguments:
+        haystack = re.sub(r"<[^>]+>", "", label)
+        has_detail = False
+        for val in arguments.values():
+            if val is None or val is False:
+                continue
+            text = str(val).strip()
+            if len(text) < 4:
+                continue
+            # Check full value, tail (for paths shown as basename), and
+            # significant words — catches "x.txt" when value is "/tmp/x.txt".
+            candidates = {text[:40], text[-25:], text.split("/")[-1][:40]}
+            candidates.update(w for w in re.split(r"\W+", text) if len(w) >= 5)
+            if any(c and c in haystack for c in candidates):
+                has_detail = True
+                break
+        if not has_detail:
+            detail = _smart_detail(arguments)
+            if detail:
+                label = f"{label} {detail}"
+    return label
+
+
+def _tool_progress_text_inner(name: str, arguments: dict[str, Any]) -> str:
+    """Original per-tool label rendering (see _tool_progress_text)."""
     if name == "load_skill":
         return f"📚 Reading skill {html.escape(str(arguments.get('name', ''))[:60])}"
     if name == "run_shell":
@@ -465,6 +567,18 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return "🧠 Updating memory"
     if name == "remove_memory":
         return "🧠 Updating memory"
+    if name == "restore_memory":
+        return "🧠 Restoring memory from trash"
+    if name == "goal_add":
+        return "🎯 Creating goal"
+    if name == "goal_update":
+        return "🎯 Updating goal"
+    if name == "goal_list":
+        return "🎯 Listing goals"
+    if name == "goal_get":
+        return "🎯 Reading goal"
+    if name == "sync_memory":
+        return "🔄 Syncing memory"
     if name == "system_env":
         return "🧰 Checking system environment"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
@@ -579,7 +693,387 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "whatsapp_template":
         template = html.escape(str(arguments.get("template", "")).strip()[:40], quote=False)
         return f"💬 Sending WhatsApp template {template} ..." if template else "💬 Sending WhatsApp template ..."
-
+    if name == "slack_list_channels":
+        return "💬 Listing Slack channels"
+    if name == "slack_send_message":
+        channel = html.escape(str(arguments.get("channel", "")).strip()[:40], quote=False)
+        return f"💬 Sending Slack message to {channel} ..." if channel else "💬 Sending Slack message ..."
+    if name == "slack_read_history":
+        channel = html.escape(str(arguments.get("channel", "")).strip()[:40], quote=False)
+        return f"💬 Reading Slack history in {channel}" if channel else "💬 Reading Slack history"
+    if name == "notion_search":
+        return "📝 Searching Notion"
+    if name == "notion_query_database":
+        return "📝 Querying Notion database"
+    if name == "notion_create_page":
+        title = html.escape(str(arguments.get("title", "")).strip()[:60], quote=False)
+        return f"📝 Creating Notion page {title}" if title else "📝 Creating Notion page"
+    if name == "linear_list_issues":
+        return "🔷 Listing Linear issues"
+    if name == "linear_create_issue":
+        title = html.escape(str(arguments.get("title", "")).strip()[:60], quote=False)
+        return f"🔷 Creating Linear issue {title}" if title else "🔷 Creating Linear issue"
+    if name == "gitlab_list_projects":
+        return "🦊 Listing GitLab projects"
+    if name == "gitlab_list_mrs":
+        return "🦊 Listing GitLab merge requests"
+    if name == "gitlab_list_issues":
+        return "🦊 Listing GitLab issues"
+    if name == "trello_list_boards":
+        return "📌 Listing Trello boards"
+    if name == "trello_list_cards":
+        return "📌 Listing Trello cards"
+    if name == "trello_create_card":
+        card_name = html.escape(str(arguments.get("name", "")).strip()[:60], quote=False)
+        return f"📌 Creating Trello card {card_name}" if card_name else "📌 Creating Trello card"
+    if name == "todoist_list_tasks":
+        return "✅ Listing Todoist tasks"
+    if name == "todoist_add_task":
+        content = html.escape(str(arguments.get("content", "")).strip()[:60], quote=False)
+        return f"✅ Adding Todoist task {content}" if content else "✅ Adding Todoist task"
+    if name == "airtable_list_records":
+        return "🗃️ Listing Airtable records"
+    if name == "airtable_create_record":
+        return "🗃️ Creating Airtable record"
+    if name == "jira_search":
+        return "🎯 Searching Jira"
+    if name == "jira_create_issue":
+        summary = html.escape(str(arguments.get("summary", "")).strip()[:60], quote=False)
+        return f"🎯 Creating Jira issue {summary}" if summary else "🎯 Creating Jira issue"
+    if name == "discord_list_channels":
+        return "🎮 Listing Discord channels"
+    if name == "discord_send_message":
+        return "🎮 Sending Discord message ..."
+    if name == "telegram_bot_get_me":
+        return "✈️ Checking Telegram bot"
+    if name == "telegram_bot_send_message":
+        return "✈️ Sending Telegram bot message ..."
+    if name == "teams_send_message":
+        return "👥 Sending Teams message ..."
+    if name == "twilio_send_sms":
+        return "📱 Sending SMS ..."
+    if name == "twilio_list_messages":
+        return "📱 Listing messages"
+    if name == "sendgrid_send_email":
+        return "📧 Sending email via SendGrid ..."
+    if name == "pushover_send_notification":
+        return "🔔 Sending push notification ..."
+    if name == "asana_list_tasks":
+        return "📋 Listing Asana tasks"
+    if name == "asana_create_task":
+        return "📋 Creating Asana task ..."
+    if name == "clickup_list_tasks":
+        return "☑️ Listing ClickUp tasks"
+    if name == "clickup_create_task":
+        return "☑️ Creating ClickUp task ..."
+    if name == "monday_list_boards":
+        return "🟦 Listing monday boards"
+    if name == "monday_list_items":
+        return "🟦 Listing monday items"
+    if name == "bitbucket_list_repos":
+        return "🪣 Listing Bitbucket repos"
+    if name == "bitbucket_list_prs":
+        return "🪣 Listing Bitbucket PRs"
+    if name == "sentry_list_issues":
+        return "🚨 Listing Sentry issues"
+    if name == "pagerduty_list_incidents":
+        return "🚑 Listing PagerDuty incidents"
+    if name == "vercel_list_deployments":
+        return "▲ Listing Vercel deployments"
+    if name == "cloudflare_list_zones":
+        return "☁️ Listing Cloudflare zones"
+    if name == "cloudflare_list_dns_records":
+        return "☁️ Listing DNS records"
+    if name == "datadog_list_monitors":
+        return "🐶 Listing Datadog monitors"
+    if name == "confluence_search_pages":
+        return "📄 Searching Confluence"
+    if name == "confluence_get_page":
+        return "📄 Reading Confluence page"
+    if name == "dropbox_list_files":
+        return "📦 Listing Dropbox files"
+    if name == "dropbox_get_metadata":
+        return "📦 Reading Dropbox metadata"
+    if name == "hubspot_list_contacts":
+        return "🧲 Listing HubSpot contacts"
+    if name == "hubspot_create_contact":
+        return "🧲 Creating HubSpot contact ..."
+    if name == "zendesk_list_tickets":
+        return "🎫 Listing Zendesk tickets"
+    if name == "zendesk_create_ticket":
+        return "🎫 Creating Zendesk ticket ..."
+    if name == "intercom_list_conversations":
+        return "💬 Listing Intercom conversations"
+    if name == "calendly_list_events":
+        return "📅 Listing Calendly events"
+    if name == "stripe_list_charges":
+        return "💳 Listing Stripe charges"
+    if name == "stripe_list_customers":
+        return "💳 Listing Stripe customers"
+    if name == "x_api_post_tweet":
+        return "🐦 Posting tweet ..."
+    if name == "x_api_read_timeline":
+        val = html.escape(str(arguments.get("username", "")).strip()[:40], quote=False)
+        return f"🐦 Reading X timeline {val} ..." if val else "🐦 Reading X timeline ..."
+    if name == "reddit_list_posts":
+        val = html.escape(str(arguments.get("subreddit", "")).strip()[:40], quote=False)
+        return f"🤖 Listing subreddit posts {val} ..." if val else "🤖 Listing subreddit posts ..."
+    if name == "reddit_search":
+        val = html.escape(str(arguments.get("query", "")).strip()[:40], quote=False)
+        return f"🤖 Searching Reddit {val} ..." if val else "🤖 Searching Reddit ..."
+    if name == "hackernews_top_stories":
+        return "📰 Reading Hacker News top stories"
+    if name == "hackernews_get_item":
+        return "📰 Reading Hacker News item"
+    if name == "mastodon_post_toot":
+        return "🐘 Posting toot ..."
+    if name == "mastodon_read_timeline":
+        return "🐘 Reading Mastodon timeline"
+    if name == "bluesky_post":
+        return "🦋 Posting on Bluesky ..."
+    if name == "bluesky_read_timeline":
+        return "🦋 Reading Bluesky timeline"
+    if name == "devto_list_articles":
+        return "📝 Listing dev.to articles"
+    if name == "devto_create_article":
+        val = html.escape(str(arguments.get("title", "")).strip()[:40], quote=False)
+        return f"📝 Publishing dev.to article {val} ..." if val else "📝 Publishing dev.to article ..."
+    if name == "mailgun_send_email":
+        return "📧 Sending email via Mailgun ..."
+    if name == "mailgun_list_messages":
+        return "📧 Listing Mailgun events"
+    if name == "resend_send_email":
+        return "📧 Sending email via Resend ..."
+    if name == "vonage_send_sms":
+        return "📱 Sending SMS via Vonage ..."
+    if name == "onesignal_send_push":
+        return "🔔 Sending push notification ..."
+    if name == "wrike_list_tasks":
+        return "📋 Listing Wrike tasks"
+    if name == "wrike_create_task":
+        val = html.escape(str(arguments.get("title", "")).strip()[:40], quote=False)
+        return f"📋 Creating Wrike task {val} ..." if val else "📋 Creating Wrike task ..."
+    if name == "teamwork_list_projects":
+        return "🏗️ Listing Teamwork projects"
+    if name == "teamwork_list_tasks":
+        return "🏗️ Listing Teamwork tasks"
+    if name == "shortcut_list_stories":
+        return "📖 Listing Shortcut stories"
+    if name == "shortcut_create_story":
+        val = html.escape(str(arguments.get("name", "")).strip()[:40], quote=False)
+        return f"📖 Creating Shortcut story {val} ..." if val else "📖 Creating Shortcut story ..."
+    if name == "height_list_tasks":
+        return "📐 Listing Height tasks"
+    if name == "npm_registry_package_info":
+        val = html.escape(str(arguments.get("name", "")).strip()[:40], quote=False)
+        return f"📦 Reading npm package info {val} ..." if val else "📦 Reading npm package info ..."
+    if name == "npm_registry_search":
+        val = html.escape(str(arguments.get("query", "")).strip()[:40], quote=False)
+        return f"📦 Searching npm {val} ..." if val else "📦 Searching npm ..."
+    if name == "pypi_registry_package_info":
+        val = html.escape(str(arguments.get("name", "")).strip()[:40], quote=False)
+        return f"🐍 Reading PyPI package info {val} ..." if val else "🐍 Reading PyPI package info ..."
+    if name == "rubygems_package_info":
+        val = html.escape(str(arguments.get("name", "")).strip()[:40], quote=False)
+        return f"💎 Reading RubyGem info {val} ..." if val else "💎 Reading RubyGem info ..."
+    if name == "rubygems_search":
+        val = html.escape(str(arguments.get("query", "")).strip()[:40], quote=False)
+        return f"💎 Searching RubyGems {val} ..." if val else "💎 Searching RubyGems ..."
+    if name == "jenkins_list_jobs":
+        return "🏭 Listing Jenkins jobs"
+    if name == "jenkins_job_status":
+        val = html.escape(str(arguments.get("job_name", "")).strip()[:40], quote=False)
+        return f"🏭 Checking Jenkins job {val} ..." if val else "🏭 Checking Jenkins job ..."
+    if name == "opsgenie_list_alerts":
+        return "🚨 Listing Opsgenie alerts"
+    if name == "render_list_services":
+        return "☁️ Listing Render services"
+    if name == "render_list_deploys":
+        return "☁️ Listing Render deploys"
+    if name == "typeform_list_forms":
+        return "📝 Listing Typeform forms"
+    if name == "typeform_get_responses":
+        return "📝 Reading Typeform responses"
+    if name == "tally_list_forms":
+        return "📝 Listing Tally forms"
+    if name == "jotform_list_forms":
+        return "📝 Listing Jotform forms"
+    if name == "jotform_get_submissions":
+        return "📝 Reading Jotform submissions"
+    if name == "surveymonkey_list_surveys":
+        return "📝 Listing SurveyMonkey surveys"
+    if name == "openweathermap_current_weather":
+        val = html.escape(str(arguments.get("city", "")).strip()[:40], quote=False)
+        return f"🌤️ Checking weather {val} ..." if val else "🌤️ Checking weather ..."
+    if name == "openweathermap_forecast":
+        val = html.escape(str(arguments.get("city", "")).strip()[:40], quote=False)
+        return f"🌤️ Checking weather forecast {val} ..." if val else "🌤️ Checking weather forecast ..."
+    if name == "coinbase_list_accounts":
+        return "🪙 Listing Coinbase accounts"
+    if name == "coinbase_spot_price":
+        val = html.escape(str(arguments.get("pair", "")).strip()[:40], quote=False)
+        return f"🪙 Checking crypto price {val} ..." if val else "🪙 Checking crypto price ..."
+    if name == "wise_list_profiles":
+        return "💸 Listing Wise profiles"
+    if name == "wise_get_rate":
+        return "💸 Checking Wise rate"
+    if name == "paypal_list_invoices":
+        return "💰 Listing PayPal invoices"
+    if name == "paypal_get_order":
+        val = html.escape(str(arguments.get("order_id", "")).strip()[:40], quote=False)
+        return f"💰 Reading PayPal order {val} ..." if val else "💰 Reading PayPal order ..."
+    if name == "linkedin_get_profile":
+        return "💼 Reading LinkedIn profile"
+    if name == "linkedin_share_post":
+        return "💼 Sharing LinkedIn post"
+    if name == "producthunt_todays_hunts":
+        return "🚀 Reading today's hunts"
+    if name == "producthunt_search_posts":
+        val = html.escape(str(arguments.get("query", "")).strip()[:40], quote=False)
+        return f"🚀 Searching Product Hunt {val} ..." if val else "🚀 Searching Product Hunt ..."
+    if name == "gitbook_list_spaces":
+        return "📖 Listing GitBook spaces"
+    if name == "gitbook_list_content":
+        return "📖 Reading GitBook content"
+    if name == "ghost_list_posts":
+        return "👻 Listing Ghost posts"
+    if name == "ghost_create_post":
+        val = html.escape(str(arguments.get("title", "")).strip()[:40], quote=False)
+        return f"👻 Creating Ghost draft {val} ..." if val else "👻 Creating Ghost draft ..."
+    if name == "zoho_crm_list_contacts":
+        return "👥 Listing Zoho contacts"
+    if name == "zoho_crm_create_contact":
+        val = html.escape(str(arguments.get("last_name", "")).strip()[:40], quote=False)
+        return f"👥 Creating Zoho contact {val} ..." if val else "👥 Creating Zoho contact ..."
+    if name == "pipedrive_list_deals":
+        return "🤝 Listing Pipedrive deals"
+    if name == "pipedrive_create_deal":
+        val = html.escape(str(arguments.get("title", "")).strip()[:40], quote=False)
+        return f"🤝 Creating Pipedrive deal {val} ..." if val else "🤝 Creating Pipedrive deal ..."
+    if name == "freshdesk_list_tickets":
+        return "🎫 Listing Freshdesk tickets"
+    if name == "freshdesk_create_ticket":
+        val = html.escape(str(arguments.get("subject", "")).strip()[:40], quote=False)
+        return f"🎫 Creating Freshdesk ticket {val} ..." if val else "🎫 Creating Freshdesk ticket ..."
+    if name == "close_list_leads":
+        return "🎯 Listing Close leads"
+    if name == "close_create_lead":
+        val = html.escape(str(arguments.get("name", "")).strip()[:40], quote=False)
+        return f"🎯 Creating Close lead {val} ..." if val else "🎯 Creating Close lead ..."
+    if name == "chargebee_list_customers":
+        return "💳 Listing Chargebee customers"
+    if name == "chargebee_list_subscriptions":
+        return "💳 Listing Chargebee subscriptions"
+    if name == "paddle_list_customers":
+        return "💳 Listing Paddle customers"
+    if name == "paddle_list_transactions":
+        return "💳 Listing Paddle transactions"
+    if name == "box_list_files":
+        return "📦 Listing Box files"
+    if name == "box_get_file_info":
+        return "📦 Reading Box file info"
+    if name == "webflow_list_sites":
+        return "🌐 Listing Webflow sites"
+    if name == "webflow_list_collections":
+        return "🌐 Listing Webflow collections"
+    if name == "n8n_list_workflows":
+        return "🔄 Listing n8n workflows"
+    if name == "n8n_get_workflow":
+        return "🔄 Reading n8n workflow"
+    if name == "n8n_execute_workflow":
+        return "🔄 Executing n8n workflow"
+    if name == "mailchimp_list_audiences":
+        return "📧 Listing Mailchimp audiences"
+    if name == "mailchimp_list_campaigns":
+        return "📧 Listing Mailchimp campaigns"
+    if name == "activecampaign_list_contacts":
+        return "📇 Listing ActiveCampaign contacts"
+    if name == "activecampaign_create_contact":
+        return "📇 Creating ActiveCampaign contact"
+    if name == "convertkit_list_subscribers":
+        return "📝 Listing ConvertKit subscribers"
+    if name == "beehiiv_list_posts":
+        return "📰 Listing Beehiiv posts"
+    if name == "buffer_list_profiles":
+        return "📤 Listing Buffer profiles"
+    if name == "buffer_create_post":
+        return "📤 Posting to Buffer"
+    if name == "railway_list_projects":
+        return "🚂 Listing Railway projects"
+    if name == "flyio_list_apps":
+        return "🛫 Listing Fly.io apps"
+    if name == "heroku_list_apps":
+        return "🟣 Listing Heroku apps"
+    if name == "digitalocean_list_droplets":
+        return "🌊 Listing DigitalOcean droplets"
+    if name == "hetzner_list_servers":
+        return "🖥️ Listing Hetzner servers"
+    if name == "vultr_list_instances":
+        return "☁️ Listing Vultr instances"
+    if name == "betterstack_list_monitors":
+        return "✅ Listing Better Stack monitors"
+    if name == "healthchecks_list_checks":
+        return "💚 Listing Healthchecks checks"
+    if name == "cronitor_list_monitors":
+        return "⏱️ Listing Cronitor monitors"
+    if name == "plausible_list_sites":
+        return "📊 Listing Plausible sites"
+    if name == "plausible_site_stats":
+        return "📊 Reading Plausible site stats"
+    if name == "fathom_list_sites":
+        return "📈 Listing Fathom sites"
+    if name == "algolia_list_indexes":
+        return "🔍 Listing Algolia indexes"
+    if name == "algolia_search_index":
+        return "🔍 Searching Algolia index"
+    if name == "meilisearch_list_indexes":
+        return "🔎 Listing Meilisearch indexes"
+    if name == "meilisearch_search_index":
+        return "🔎 Searching Meilisearch index"
+    if name == "typesense_list_collections":
+        return "🔍 Listing Typesense collections"
+    if name == "typesense_search_collection":
+        return "🔍 Searching Typesense collection"
+    if name == "lemlist_list_campaigns":
+        return "📧 Listing Lemlist campaigns"
+    if name == "lemlist_campaign_stats":
+        return "📧 Reading Lemlist campaign stats"
+    if name == "apollo_people_search":
+        return "🔍 Searching Apollo people"
+    if name == "apollo_enrich_person":
+        return "🔍 Enriching person via Apollo"
+    if name == "hunter_domain_search":
+        return "🔍 Searching Hunter domain"
+    if name == "hunter_verify_email":
+        return "🔍 Verifying email via Hunter"
+    if name == "bitly_shorten":
+        return "🔗 Shortening URL via Bitly"
+    if name == "bitly_list_links":
+        return "🔗 Listing Bitly links"
+    if name == "cloudinary_list_resources":
+        return "🖼️ Listing Cloudinary resources"
+    if name == "cloudinary_resource_info":
+        return "🖼️ Reading Cloudinary resource info"
+    if name == "bunnycdn_list_pull_zones":
+        return "🐰 Listing BunnyCDN pull zones"
+    if name == "bunnycdn_list_storage_zones":
+        return "🐰 Listing BunnyCDN storage zones"
+    if name == "polar_list_products":
+        return "🧊 Listing Polar products"
+    if name == "polar_list_orders":
+        return "🧊 Listing Polar orders"
+    if name == "lemon_squeezy_list_customers":
+        return "🍋 Listing Lemon Squeezy customers"
+    if name == "lemon_squeezy_list_orders":
+        return "🍋 Listing Lemon Squeezy orders"
+    if name == "crates_io_crate_info":
+        return "📦 Reading crates.io crate info"
+    if name == "crates_io_search_crates":
+        return "📦 Searching crates.io crates"
+    if name == "packagist_package_info":
+        return "📦 Reading Packagist package info"
+    if name == "packagist_search_packages":
+        return "📦 Searching Packagist packages"
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":
@@ -603,10 +1097,21 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:80], quote=False)
         return f"🤝 Delegating {goal}" if goal else "🤝 Delegating"
+    if name == "spawn_worker":
+        task = html.escape(str(arguments.get("task", ""))[:60], quote=False)
+        return f"🚀 Spawning worker {task}" if task else "🚀 Spawning worker"
+    if name == "worker_status":
+        return "📊 Checking worker"
+    if name == "worker_result":
+        return "📥 Reading worker result"
     if name == "runtime_info":
         return "🪪 Checking runtime"
     if name == "list_memory":
         return "🧠 Reading memory"
+    if name == "episode_add":
+        return "📖 Recording episode"
+    if name == "episode_list":
+        return "📖 Reading episodes"
     if name == "consolidate_memory":
         return "🧠 Consolidating memory"
     if name == "generate_video":
@@ -694,11 +1199,80 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if path:
             return f"📥 Downloading <code>{path}</code>"
         return f"📥 Downloading from {host}" if host else "📥 Downloading"
+    if name == "review_skills":
+        return "🔍 Reviewing skill usage"
+    if name == "apply_skill_review":
+        return "📦 Applying skill review plan"
+    if name == "rollback_skill_change":
+        cid = html.escape(str(arguments.get("change_id", ""))[:32], quote=False)
+        return f"↩️ Rolling back skill change <code>{cid}</code>" if cid else "↩️ Rolling back skill change"
+    if name == "propose_skill_fix":
+        skill = html.escape(str(arguments.get("skill_name", ""))[:60], quote=False)
+        return f"📝 Drafting fix for <code>{skill}</code>" if skill else "📝 Drafting skill fix"
+    if name == "apply_skill_proposal":
+        pid = html.escape(str(arguments.get("proposal_id", ""))[:32], quote=False)
+        return f"🎬 Applying skill fix <code>{pid}</code>" if pid else "🎬 Applying skill fix"
     if name.startswith(mcp_module.MCP_TOOL_PREFIX):
         parts = name[len(mcp_module.MCP_TOOL_PREFIX):].split("__", 1)
         server = html.escape(parts[0].replace("_", " ")[:40], quote=False)
         remote = html.escape((parts[1] if len(parts) > 1 else "tool").replace("_", " ")[:60], quote=False)
         return f"🧩 {remote} via {server}"
+    # New tools: designed labels
+    if name == "search_sessions":
+        q = html.escape(str(arguments.get("query", ""))[:60], quote=False)
+        return f"🔎 Searching sessions for {q}" if q else "🔎 Searching sessions"
+    if name == "learn_skill":
+        n = html.escape(str(arguments.get("name", ""))[:60], quote=False)
+        return f"💡 Learning skill <code>{n}</code>" if n else "💡 Learning skill"
+    if name == "list_learned_skills":
+        return "🗂 Listing learned skills"
+    if name == "improve_skill":
+        n = html.escape(str(arguments.get("name", ""))[:60], quote=False)
+        return f"📝 Improving skill <code>{n}</code>" if n else "📝 Improving skill"
+    if name == "user_model_set":
+        return "👤 Updating user model"
+    if name == "user_model_get":
+        return "👤 Reading user model"
+    if name == "skill_pack":
+        return "📦 Packing skill"
+    if name == "skill_install":
+        return "📦 Installing skill"
+    if name == "gepa_drafts":
+        return "🧬 Listing GEPA drafts"
+    if name == "gepa_learn":
+        return "🧬 Running GEPA learning"
+    if name == "steer_worker":
+        return "🎯 Steering worker"
+    if name == "clawhub_search":
+        query = html.escape(str(arguments.get("query", "")).strip()[:60], quote=False)
+        return f"🔍 Mencari skill {query} ..." if query else "🔍 Mencari skill ..."
+    if name == "clawhub_install":
+        slug = html.escape(str(arguments.get("slug", "")).strip()[:60], quote=False)
+        return f"📦 Menginstall skill <code>{slug}</code>" if slug else "📦 Menginstall skill"
+    if name == "workflow_execute":
+        wid = html.escape(str(arguments.get("workflow_id", "")).strip()[:40], quote=False)
+        return f"▶️ Menjalankan workflow <code>{wid}</code>" if wid else "▶️ Menjalankan workflow"
+    if name == "workflow_pause":
+        eid = html.escape(str(arguments.get("exec_id", "")).strip()[:40], quote=False)
+        return f"⏸️ Menjeda workflow <code>{eid}</code>" if eid else "⏸️ Menjeda workflow"
+    if name == "workflow_resume":
+        eid = html.escape(str(arguments.get("exec_id", "")).strip()[:40], quote=False)
+        return f"▶️ Melanjutkan workflow <code>{eid}</code>" if eid else "▶️ Melanjutkan workflow"
+    if name == "workflow_status":
+        eid = html.escape(str(arguments.get("exec_id", "")).strip()[:40], quote=False)
+        return f"📊 Mengecek status workflow <code>{eid}</code>" if eid else "📊 Mengecek status workflow"
+    if name == "peer_send":
+        peer = html.escape(str(arguments.get("peer", "")).strip()[:40], quote=False)
+        return f"🤖 Mengirim pesan ke peer {peer} ..." if peer else "🤖 Mengirim pesan ke peer ..."
+    if name == "email_send":
+        to = html.escape(str(arguments.get("to", "")).strip()[:60], quote=False)
+        return f"📧 Mengirim email ke {to} ..." if to else "📧 Mengirim email ..."
+    if name == "voice_transcribe":
+        target = html.escape(_short_path(str(arguments.get("audio_path", "")))[:80], quote=False)
+        return f"🎧 Mentranskripsi audio <code>{target}</code>" if target else "🎧 Mentranskripsi audio"
+    if name == "voice_speak":
+        text = html.escape(str(arguments.get("text", "")).strip()[:60], quote=False)
+        return f"🔊 Mengubah teks jadi suara {text} ..." if text else "🔊 Mengubah teks jadi suara ..."
     # Fallback: verb + first arg preview, clean.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
@@ -838,22 +1412,39 @@ _PROVIDER_WAIT_NOTE_SECONDS = 20.0
 PROVIDER_WAIT_NOTE = ", waiting for provider response - streaming"
 
 
+#: Status states for the live progress header (generic, like Muse).
+#: - "thinking": waiting for the model, no tools yet
+#: - "working": tools are running
+#: - "awaiting": blocked on ask_user, waiting for the user's answer
+STATUS_THINKING = "thinking"
+STATUS_WORKING = "working"
+STATUS_AWAITING = "awaiting"
+
+_STATUS_ICONS = {
+    STATUS_THINKING: ("💭", "Thinking"),
+    STATUS_WORKING: (WORKING_ICON, "Working"),
+    STATUS_AWAITING: ("🙋", "Waiting for your answer"),
+}
+
+
 def _working_status_text(
     elapsed_seconds: float,
     *,
     iteration: int | None = None,
     maximum: int | None = None,
     remaining_seconds: float | None = None,
-    working: bool = True,
+    state: str = STATUS_WORKING,
+    activity: str | None = None,
     provider_wait_seconds: float | None = None,
 ) -> str:
     """Header status live: bukti agent MASIH kerja, bukan menggantung diam.
 
-    Format satu baris: waktu jalan + bahwa /stop tersedia.
+    Format: status + waktu jalan + (aktivitas saat ini) + /stop.
 
-    ``working=False`` dipakai saat NOL tool sudah jalan: labelnya "Thinking",
-    bukan "Working". Menyebut sapaan yang lambat sebagai "Working" itu salah —
-    tidak ada pekerjaan yang dilakukan, yang lama adalah provider.
+    States:
+    - "thinking": NOL tool sudah jalan, lagi nunggu provider. Bukan "Working".
+    - "working": tool sedang jalan. Menyebutkan aktivitas terakhir bila ada.
+    - "awaiting": terblokir di ask_user, nunggu jawaban user. Bukan "Working".
 
     ``provider_wait_seconds`` = lama fase menunggu provider yang sedang berjalan.
     Kalau melewati ``_PROVIDER_WAIT_NOTE_SECONDS``, baris statusnya menyebutkan
@@ -867,8 +1458,14 @@ def _working_status_text(
     # Keep the user-facing heartbeat deliberately minimal. Iteration/remaining
     # are still tracked internally for turn control, but exposing them makes
     # every ordinary chat look like a noisy job runner.
-    icon, label = (WORKING_ICON, "Working") if working else (THINKING_ICON, "Thinking")
-    line = f"{icon} {label} — {clock} · /stop to cancel"
+    icon, label = _STATUS_ICONS.get(state, _STATUS_ICONS[STATUS_WORKING])
+    line = f"{icon} {label} — {clock}"
+    if state == STATUS_WORKING and activity:
+        # Strip HTML for the plain-text activity preview.
+        plain = re.sub(r"<[^>]+>", "", activity).strip()
+        if plain:
+            line += f" · {_smart_truncate(plain, 50)}"
+    line += " · /stop to cancel"
     if provider_wait_seconds is not None and provider_wait_seconds >= _PROVIDER_WAIT_NOTE_SECONDS:
         line += PROVIDER_WAIT_NOTE
     return line
@@ -914,6 +1511,8 @@ class _LiveStatus:
         self.maximum: int | None = None
         self._last_text: str | None = None
         self._last_edit_at: float = 0.0  # monotonic saat terakhir edit progres dikirim
+        self._awaiting_user: bool = False  # True saat terblokir di ask_user
+        self._current_activity: str | None = None  # label tool terakhir
         self._lock = threading.Lock()
 
     def _header(self) -> str:
@@ -923,11 +1522,18 @@ class _LiveStatus:
         jalan (sapaan/tanya ringan), yang terjadi hanyalah menunggu provider:
         itu diberi ambang lebih longgar dan label "Thinking". Begitu tool
         pertama jalan, statusnya jadi "Working" dengan ambang normal.
+        Kalau terblokir di ask_user, statusnya "Waiting for your answer".
         """
         elapsed = time.monotonic() - self.turn_started
-        working = bool(self.lines)
-        threshold = _STATUS_AFTER_SECONDS if working else _THINKING_AFTER_SECONDS
-        if elapsed < threshold:
+        # Determine state: awaiting > working > thinking.
+        if self._awaiting_user:
+            state = STATUS_AWAITING
+        elif self.lines:
+            state = STATUS_WORKING
+        else:
+            state = STATUS_THINKING
+        threshold = _STATUS_AFTER_SECONDS if state == STATUS_WORKING else _THINKING_AFTER_SECONDS
+        if elapsed < threshold and state != STATUS_AWAITING:
             return ""
         budget = float(getattr(config, "MAX_TURN_SECONDS", 0) or 0)
         remaining = (budget - elapsed) if budget else None
@@ -941,9 +1547,17 @@ class _LiveStatus:
             iteration=self.iteration,
             maximum=self.maximum,
             remaining_seconds=remaining,
-            working=working,
+            state=state,
+            activity=self._current_activity,
             provider_wait_seconds=provider_wait,
         )
+
+    def set_awaiting_user(self, awaiting: bool = True) -> None:
+        """Mark the turn as blocked waiting for the user's answer (ask_user)."""
+        with self._lock:
+            self._awaiting_user = awaiting
+            if awaiting:
+                self._push_locked(allow_create=True)
 
     def set_iteration(self, current: int | None, maximum: int | None) -> None:
         with self._lock:
@@ -1025,6 +1639,8 @@ class _LiveStatus:
         with self._lock:
             self.phase = "tool"
             self.phase_started = time.monotonic()
+            self._current_activity = line
+            self._awaiting_user = False  # tool jalan = tidak lagi nunggu user
             category = _progress_category(line)
             if category is not None:
                 # Collapse: cukup SATU baris per kategori (mis. semua Searching
@@ -1115,6 +1731,8 @@ class _LiveStatus:
             self._last_text = None
             self.phase = "waiting"
             self.phase_started = time.monotonic()
+            self._awaiting_user = False
+            self._current_activity = None
 
 
 def _start_working_heartbeat(
@@ -1919,8 +2537,10 @@ def _handle_command_update(
                 "/lessons — View self-learning lessons\n"
                 "/steer <prompt> — Steer the running task\n"
                 "/stop — Stop the active turn\n"
-                "/new — Start a new session\n\n"
-                "Send a message to start a task"
+                "/new — Start a new session\n"
+                "/voice — Voice-note replies (text/mirror/always)\n\n"
+                "Send a message to start a task\n"
+                "Unknown /commands are answered locally and never sent to the model."
             ),
         )
         return True
@@ -2064,6 +2684,13 @@ def _handle_command_update(
             )
         sessions.reset(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=_new_session_text())
+        return True
+    if command == "/voice":
+        # /voice mengubah mode balasan suara per chat — permukaan operator,
+        # jadi di-gate owner persis seperti /undo, /stats, /events, /lessons.
+        refusal = _owner_only_reply("/voice", chat_id, allowed)
+        text = refusal if refusal is not None else _voice_command_reply(identity, args)
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
         return True
     return False
 
@@ -2230,7 +2857,19 @@ def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
     supaya cocok dengan balasan teks ("2") maupun tap tombol. Tanpa opsi: hint
     bebas supaya user tahu bisa mengetik jawabannya. Dua jalur (klik & ketik)
     selalu hidup, jadi user tidak pernah terjebak kalau tombolnya tidak nyaman.
+
+    When the question was truncated for the picker, the full text goes first
+    as a code block so the operator inspects the real thing — e.g. the full
+    shell command behind an approval — before tapping Allow.
     """
+    full = getattr(entry, "full_text", "") or ""
+    if full:
+        for chunk in interaction.detail_chunks(full):
+            _api_call(
+                api, "sendMessage", chat_id=chat_id,
+                text=f"📄 <b>Full detail</b> (picker shows a summary):\n<pre>{html.escape(chunk, quote=False)}</pre>",
+                parse_mode="HTML",
+            )
     text = f"❓ {entry.question}"
     if entry.options:
         rows = [
@@ -2956,6 +3595,15 @@ def _download_document(api: str, token: str, document: dict[str, Any]) -> tuple[
 
 
 def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | None:
+    """Jawab command yang tidak butuh payload Telegram; None = tidak dikenal.
+
+    Command yang tidak dikenal SENGAJA ditelan di sini — pemanggil membalas
+    "Unknown command. Use /start." secara lokal dan TIDAK meneruskannya ke
+    model sebagai pesan user. Ini disengaja, bukan bug: command adalah
+    control-plane; typo seperti /tatus tidak boleh membakar token model
+    atau mengacaukan alur percakapan. User justru diberi tahu format yang
+    benar lewat balasan lokal tersebut.
+    """
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
@@ -3018,12 +3666,19 @@ def _download_media_file(api: str, token: str, file_id: str, suffix: str) -> tup
             return None, "Could not download the media safely."
     except requests.RequestException as exc:
         return None, f"Could not download the media: {exc.__class__.__name__}."
+    dest: Path | None = None
     try:
         MEDIA_INBOX.mkdir(parents=True, exist_ok=True)
         ext = Path(file_path).suffix or suffix
         dest = MEDIA_INBOX / f"{file_id[:24]}{ext}"
         dest.write_bytes(response.content)
     except OSError as exc:
+        if dest is not None:
+            try:
+                # Jangan tinggalkan file setengah-tulis di media-inbox.
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
         return None, f"Could not save the media: {exc.__class__.__name__}."
     return dest, None
 
@@ -3062,7 +3717,426 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> None:
+#: Batas antrean transkripsi voice note per chat. Banjir VN (atau client
+#: bermasalah) tidak boleh menumpuk unduhan + janji transkripsi tanpa batas;
+#: pengirim yang melebihi batas diminta menunggu sebentar.
+_VOICE_MAX_PENDING = 4
+
+#: Worker yang tidak menerima job selama ini keluar sendiri dan menghapus
+#: entrinya dari registry — thread tidak menumpuk untuk chat yang sudah lama
+#: diam. Enqueue berikutnya membuat worker baru bila perlu (self-healing di
+#: _enqueue_voice_job).
+_VOICE_WORKER_IDLE_SECS = 30 * 60
+
+#: Hasil _enqueue_voice_job — pemanggil wajib menyampaikannya jujur ke user.
+_VOICE_ENQUEUED = "enqueued"
+_VOICE_QUEUE_FULL = "queue_full"
+_VOICE_WORKER_BROKEN = "worker_broken"
+
+#: Worker transkripsi serial per chat: chat_id -> (queue.Queue, threading.Thread).
+#: Unduhan + transkripsi STT (jaringan + model) bisa makan waktu puluhan detik;
+#: dulu keduanya berjalan sinkron di loop polling sehingga SELURUH gateway diam
+#: — pesan lain tidak diterima dan /stop tidak jalan sampai selesai. Sekarang
+#: tiap chat punya satu worker thread yang memproses voice note secara FIFO:
+#: - loop polling tidak pernah terblokir oleh unduhan/transkripsi;
+#: - voice note dalam satu chat SELALU diproses sesuai urutan kedatangan
+#:   (worker serial: VN pendek tidak menyalip VN panjang);
+#: - error pada satu item tidak mematikan worker (ditangkap per item, bahkan
+#:   BaseException — lihat _voice_worker);
+#: - worker yang idle > 30 menit keluar sendiri (idle-cleanup, bukan thread
+#:   abadi).
+#: Ini sekaligus rate limit STT per chat yang sederhana: maksimal 1 transkripsi
+#: berjalan per chat dalam satu waktu; sisanya antre (dibatasi
+#: _VOICE_MAX_PENDING). Chat yang berbeda tidak saling menunggu.
+_VOICE_WORKERS: dict[int, tuple["queue.Queue", threading.Thread]] = {}
+_VOICE_WORKERS_LOCK = threading.Lock()
+
+
+def _voice_worker(chat_id: int, work: "queue.Queue") -> None:
+    """Proses antrean voice note satu chat FIFO; keluar sendiri bila idle lama.
+
+    Daemon thread: ikut mati bersama proses. Loop ini TIDAK BISA mati oleh
+    job — bahkan BaseException (SystemExit/KeyboardInterrupt) dari job, atau
+    dari error-handler-nya sendiri (mis. stdout rusak), ditangkap, dilaporkan
+    best-effort, lalu worker lanjut ke item berikutnya. Satu-satunya jalan
+    keluar normal adalah idle timeout: tidak ada job selama
+    _VOICE_WORKER_IDLE_SECS → hapus diri dari registry, keluar tertib.
+    """
+    while True:
+        try:
+            job = work.get(timeout=_VOICE_WORKER_IDLE_SECS)
+        except queue.Empty:
+            # Idle terlalu lama → keluar dengan tertib, tapi HANYA bila entry
+            # ini masih milik thread ini dan antrean benar-benar kosong
+            # (tutup jendela race dengan enqueue yang datang bersamaan).
+            with _VOICE_WORKERS_LOCK:
+                current = _VOICE_WORKERS.get(chat_id)
+                if current is None or current[1] is not threading.current_thread():
+                    return  # entry sudah bukan milik thread ini → keluar diam-diam
+                if current[0].empty():
+                    del _VOICE_WORKERS[chat_id]
+                    return
+            # Jendela race: job masuk di antara timeout dan lock → proses biasa.
+            continue
+        except BaseException:
+            # get() pada queue polos praktis tidak pernah raise; kalaupun
+            # terjadi, loop tidak boleh mati — coba lagi.
+            continue
+        try:
+            job()
+        except BaseException as exc:
+            # Termasuk SystemExit/KeyboardInterrupt: satu job gagal — atau
+            # pelaporan error-nya sendiri yang gagal — tidak boleh membunuh
+            # worker dan melumpuhkan pipeline voice chat ini permanen.
+            try:
+                print(
+                    f"  [telegram] voice worker chat {chat_id} gagal: "
+                    f"{exc.__class__.__name__}: {exc}",
+                    flush=True,
+                )
+            except BaseException:
+                pass  # stdout rusak sekalipun → worker tetap hidup
+        finally:
+            work.task_done()
+
+
+def _spawn_voice_worker_locked(chat_id: int) -> tuple["queue.Queue", threading.Thread]:
+    """Buat antrean + worker daemon baru untuk chat.
+
+    WAJIB dipanggil di bawah _VOICE_WORKERS_LOCK. Melempar bila thread tidak
+    bisa dibuat — pemanggil harus menolak job dengan jujur, bukan janji palsu.
+    """
+    pending: queue.Queue = queue.Queue()
+    worker = threading.Thread(
+        target=_voice_worker,
+        args=(chat_id, pending),
+        daemon=True,
+        name=f"zeline-voice-{chat_id}",
+    )
+    worker.start()
+    return pending, worker
+
+
+def _voice_queue_full(chat_id: int) -> bool:
+    """True bila antrean voice chat sudah mencapai batas — tanpa membuat worker.
+
+    Pre-check murah untuk loop polling (hanya butuh chat_id): voice note yang
+    ditolak rate-limit tidak perlu diunduh dulu (hemat bandwidth). Pengecekan
+    definitif tetap di _enqueue_voice_job untuk menutup jendela race.
+    """
+    with _VOICE_WORKERS_LOCK:
+        entry = _VOICE_WORKERS.get(chat_id)
+        if entry is None:
+            return False
+        pending, worker = entry
+        if not worker.is_alive():
+            return False  # akan di-restart saat enqueue; bukan "penuh"
+        return pending.qsize() >= _VOICE_MAX_PENDING
+
+
+def _enqueue_voice_job(chat_id: int, job) -> str:
+    """Taruh job transkripsi ke antrean serial chat.
+
+    Dipanggil dari loop polling — tidak memblokir. Worker dibuat malas
+    (satu per chat, daemon) saat voice note pertama chat itu tiba.
+
+    Return _VOICE_ENQUEUED / _VOICE_QUEUE_FULL / _VOICE_WORKER_BROKEN.
+    Pemanggil WAJIB menyampaikan status ini jujur ke user: jangan janji
+    "masih mentranskrip" bila yang rusak sebenarnya worker-nya.
+    """
+    with _VOICE_WORKERS_LOCK:
+        entry = _VOICE_WORKERS.get(chat_id)
+        if entry is not None and not entry[1].is_alive():
+            # Self-healing: worker mati di luar dugaan (_voice_worker
+            # dirancang tidak bisa mati — tapi belt-and-braces). Selamatkan
+            # item yang belum terproses ke antrean baru, lalu buat worker baru;
+            # JANGAN accept-buta ke antrean yang takkan terproses.
+            old_pending, _old_worker = entry
+            rescued: list = []
+            while True:
+                try:
+                    rescued.append(old_pending.get_nowait())
+                except queue.Empty:
+                    break
+            try:
+                entry = _spawn_voice_worker_locked(chat_id)
+            except Exception as exc:
+                print(
+                    f"  [telegram] voice worker chat {chat_id} gagal di-restart "
+                    f"({exc.__class__.__name__}); voice note ditolak.",
+                    flush=True,
+                )
+                return _VOICE_WORKER_BROKEN
+            for saved in rescued:
+                entry[0].put(saved)
+            _VOICE_WORKERS[chat_id] = entry
+        if entry is None:
+            try:
+                entry = _spawn_voice_worker_locked(chat_id)
+            except Exception as exc:
+                print(
+                    f"  [telegram] voice worker chat {chat_id} gagal dibuat "
+                    f"({exc.__class__.__name__}); voice note ditolak.",
+                    flush=True,
+                )
+                return _VOICE_WORKER_BROKEN
+            _VOICE_WORKERS[chat_id] = entry
+        pending, _worker = entry
+        if pending.qsize() >= _VOICE_MAX_PENDING:
+            return _VOICE_QUEUE_FULL
+        pending.put(job)
+        return _VOICE_ENQUEUED
+
+
+def _process_inbound_voice(
+    api: str,
+    sessions,
+    *,
+    chat_id: int,
+    identity: str,
+    dest: Path,
+    caption: str,
+    tool_profile: str,
+    reply_to_message_id: int | None,
+    came_from_voice: bool,
+) -> None:
+    """Satu item antrean voice: transkripsi lalu dispatch turn.
+
+    Dijalankan worker serial per chat (bukan loop polling). Kegagalan
+    transkripsi jatuh ke alur lama (prompt analyze_media) karena
+    _transcribe_inbound_voice mengembalikan None saat gagal.
+    """
+    transcript = _transcribe_inbound_voice(dest)
+    if transcript is not None:
+        prompt = _build_voice_transcript_prompt(transcript, caption)
+    else:
+        prompt = _build_media_notice_prompt("audio", dest, caption)
+    _start_agent_reply(
+        api, sessions, chat_id=chat_id, identity=identity, text=prompt,
+        tool_profile=tool_profile, reply_to_message_id=reply_to_message_id,
+        came_from_voice=came_from_voice,
+    )
+
+
+def _process_inbound_voice_download(
+    api: str,
+    token: str,
+    sessions,
+    *,
+    chat_id: int,
+    identity: str,
+    file_id: str,
+    caption: str,
+    tool_profile: str,
+    reply_to_message_id: int | None,
+    came_from_voice: bool,
+) -> None:
+    """Satu item antrean voice: UNDUH media dulu, lalu transkripsi + dispatch.
+
+    Dijalankan di worker serial per chat, BUKAN di loop polling — unduhan yang
+    lambat tidak lagi menahan penerimaan pesan lain, dan voice note yang
+    ditolak rate-limit tidak pernah diunduh (hemat bandwidth). Gagal unduh →
+    pesan jelas ke user; file setengah-unduh dibersihkan (tidak ada yatim di
+    media-inbox). Urutan VN per chat tetap FIFO (worker serial).
+    """
+    dest, error = _download_media_file(api, token, file_id, ".ogg")
+    if error or dest is None:
+        _api_call(
+            api, "sendMessage", chat_id=chat_id,
+            text=f"Voice note tidak bisa diunduh ({error or 'unknown error'}) — coba kirim lagi.",
+        )
+        return
+    _process_inbound_voice(
+        api, sessions, chat_id=chat_id, identity=identity, dest=dest,
+        caption=caption, tool_profile=tool_profile,
+        reply_to_message_id=reply_to_message_id,
+        came_from_voice=came_from_voice,
+    )
+
+
+def _transcribe_inbound_voice(path: Path) -> str | None:
+    """Transkripsi voice note masuk via provider; None bila gagal/tak terkonfigurasi.
+
+    Fail-safe penuh: kegagalan apa pun (termasuk provider belum dikonfigurasi)
+    mengembalikan None supaya pemanggil jatuh ke alur lama (prompt
+    ``analyze_media``) — voice note tidak boleh menjadi jalan buntu.
+
+    Dijalankan di worker serial per chat (lihat _enqueue_voice_job), BUKAN di
+    loop polling: STT yang lambat tidak lagi menahan penerimaan pesan lain.
+    Batas ukuran transcribe.py + batas antrean per chat membatasi risikonya.
+    """
+    if not _transcribe_configured():
+        return None
+    try:
+        text = _transcribe_audio(path)
+    except _TranscribeError as exc:
+        print(f"  [telegram] voice transcription failed: {exc}", flush=True)
+        return None
+    except Exception as exc:  # defensive: transcribe seharusnya hanya raise TranscribeError
+        print(f"  [telegram] voice transcription crashed: {exc.__class__.__name__}", flush=True)
+        return None
+    return text.strip() or None
+
+
+def _build_voice_transcript_prompt(transcript: str, caption: str = "") -> str:
+    """Prompt agen dari transkrip VN: transkrip ditandai sebagai pesan user."""
+    prompt = (
+        "User sent a voice message via Telegram. It has been transcribed below — "
+        "treat the transcript AS THE USER'S MESSAGE and act on it, do not just read it back.\n\n"
+        f'Transcript: "{transcript}"'
+    )
+    ask = caption.strip()
+    if ask:
+        prompt += f"\nCaption/request: {ask}"
+    return prompt
+
+
+def _send_voice(api: str, chat_id: int, path: Path, reply_to_message_id: int | None = None) -> bool:
+    """Kirim file audio sebagai voice bubble Telegram (``sendVoice``).
+
+    ``sendVoice`` merender ogg/opus sebagai bubble voice note asli (waveform),
+    jauh lebih bagus dari audio attachment. Bila Telegram menolaknya, fallback
+    ke ``sendAudio`` — lebih baik terdengar sebagai audio biasa daripada tidak
+    terkirim sama sekali.
+    """
+    data: dict[str, str] = {"chat_id": str(chat_id)}
+    if reply_to_message_id:
+        data["reply_to_message_id"] = str(reply_to_message_id)
+        data["allow_sending_without_reply"] = "true"
+    for method, field in (("sendVoice", "voice"), ("sendAudio", "audio")):
+        try:
+            with path.open("rb") as handle:
+                response = _HTTP.post(
+                    f"{api}/{method}",
+                    data=data,
+                    files={field: (path.name, handle)},
+                    timeout=120,
+                )
+            payload = response.json()
+            if response.ok and payload.get("ok"):
+                return True
+            print(
+                f"  [telegram] {method} rejected {path.name}: "
+                f"{str(payload.get('description'))[:160]}",
+                flush=True,
+            )
+        except (OSError, requests.RequestException, ValueError) as exc:
+            print(f"  [telegram] {method} failed: {exc.__class__.__name__}", flush=True)
+        if method == "sendAudio":
+            break
+    return False
+
+
+def _maybe_send_voice_reply(
+    api: str,
+    chat_id: int,
+    identity: str,
+    reply: str,
+    *,
+    came_from_voice: bool,
+    reply_to_message_id: int | None = None,
+) -> tuple[bool, str]:
+    """Coba kirim balasan sebagai voice note bila mode voice chat mengizinkan.
+
+    Mengembalikan ``(voice_sent, note)``:
+    - ``(True, "")`` — balasan terkirim sebagai VN; pemanggil melewatkan teks.
+    - ``(False, "")`` — voice tidak diminta / balasan tidak memenuhi syarat
+      (kepanjangan, berisi blok kode); kirim teks seperti biasa.
+    - ``(False, note)`` — TTS/pengiriman gagal; kirim teks DENGAN catatan
+      singkat ``note`` di depannya (jangan diam soal kegagalan).
+
+    Syarat VN: mode ``"always"``, atau mode ``"mirror"`` + input turn ini
+    adalah voice note; balasan non-kosong, ≤ ``MAX_TTS_CHARS``, tanpa blok kode
+    (fence ``` yang dibacakan terdengar berantakan).
+    """
+    text = reply.strip() if isinstance(reply, str) else ""
+    if not text:
+        return False, ""
+    if not _voice_prefs.wants_voice_reply(identity, came_from_voice=came_from_voice):
+        return False, ""
+    if len(text) > _voice_mod.MAX_TTS_CHARS or "```" in text:
+        return False, ""
+    _api_call(api, "sendChatAction", chat_id=chat_id, action="record_voice",
+              timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+    tmpdir = Path(tempfile.mkdtemp(prefix="zl-tts-send-"))
+    try:
+        try:
+            path = _voice_mod.synthesize(
+                text, style=_voice_prefs.voice_style(identity), out_dir=tmpdir
+            )
+        except _voice_mod.VoiceError as exc:
+            print(f"  [telegram] voice reply TTS failed: {exc}", flush=True)
+            return False, f"🔇 Balasan suara gagal ({str(exc)[:120]}), dikirim sebagai teks.\n\n"
+        except Exception as exc:  # defensive: synthesize seharusnya hanya raise VoiceError
+            print(f"  [telegram] voice reply TTS crashed: {exc.__class__.__name__}", flush=True)
+            return False, "🔇 Balasan suara gagal (kesalahan tak terduga), dikirim sebagai teks.\n\n"
+        if _send_voice(api, chat_id, path, reply_to_message_id=reply_to_message_id):
+            return True, ""
+        return False, "🔇 Voice note gagal terkirim, dikirim sebagai teks.\n\n"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _voice_command_reply(identity: str, args: str) -> str:
+    """Bangun balasan /voice: lihat/ubah mode & preset suara per chat."""
+    prefs = _voice_prefs.get_prefs(identity)
+    mode, style = prefs["voice_mode"], prefs["voice_style"]
+    arg = (args or "").strip()
+    head, _, rest = arg.partition(" ")
+    head = head.lower()
+
+    def _status_line() -> str:
+        mode_desc = {
+            "text": "teks biasa (default)",
+            "mirror": "VN masuk → VN keluar, teks masuk → teks keluar",
+            "always": "semua balasan diusahakan jadi VN",
+        }[mode]
+        return (
+            f"🎙️ <b>Voice reply chat ini</b>\n"
+            f"├ Mode: <b>{html.escape(mode)}</b> — {mode_desc}\n"
+            f"╰ Suara: <b>{html.escape(style)}</b>"
+        )
+
+    if not head:
+        return (
+            f"{_status_line()}\n\n"
+            "<b>Pakai:</b>\n"
+            "/voice mirror — VN dibalas VN, teks dibalas teks\n"
+            "/voice always — semua balasan jadi VN (bila muat)\n"
+            "/voice text — kembali ke teks biasa\n"
+            "/voice style &lt;nama&gt; — ganti suara tetap\n"
+            "/voice voices — daftar preset suara"
+        )
+    if head in ("text", "mirror", "always"):
+        try:
+            _voice_prefs.set_mode(identity, head)
+        except ValueError as exc:
+            return f"⚠️ {html.escape(str(exc))}"
+        return f"✅ Mode voice: <b>{html.escape(head)}</b> untuk chat ini."
+    if head == "style":
+        name = rest.strip()
+        if not name:
+            return "Pakai: /voice style &lt;nama&gt; — lihat /voice voices."
+        try:
+            _voice_prefs.set_style(identity, name)
+        except ValueError as exc:
+            return f"⚠️ {html.escape(str(exc))}"
+        return f"✅ Suara chat ini: <b>{html.escape(name)}</b>."
+    if head in ("voices", "styles"):
+        lines = ["🎙️ <b>Preset suara:</b>"]
+        for name in _voice_mod.styles():
+            mark = " ← aktif" if name == style else ""
+            lines.append(f"  • <code>{html.escape(name)}</code>{mark}")
+        lines.append("\nGanti: /voice style &lt;nama&gt;")
+        return "\n".join(lines)
+    return (
+        f"⚠️ Argumen '{html.escape(head)}' tidak dikenal.\n\n"
+        "/voice mirror | /voice always | /voice text\n"
+        "/voice style &lt;nama&gt; | /voice voices"
+    )
+
+
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "", came_from_voice: bool = False) -> None:
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
               timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
@@ -3086,6 +4160,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         # tool call terlihat: kalau menunggu on_tool_result, pertanyaan baru
         # muncul setelah jawabannya masuk — terlambat dan bikin user bingung.
         if _name == "ask_user":
+            # Tandai status: nunggu jawaban user (bukan "Working").
+            live.set_awaiting_user(True)
             entry = None
             # Tool berjalan di thread lain; beri jeda singkat sampai entry
             # terdaftar, lalu render. Tanpa polling kecil ini kita bisa
@@ -3245,8 +4321,26 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # balasan ini untuk pertanyaan yang mana — penting saat user mengirim
     # beberapa pertanyaan dalam bubble terpisah. Part berikutnya tanpa reply
     # (biar rantai jawaban tidak menumpuk quote berulang).
+    #
+    # Voice note keluar (opt-in per chat via /voice): bila mode voice aktif dan
+    # balasan memenuhi syarat (pendek, tanpa blok kode), kirim sebagai voice
+    # bubble dan LEWATKAN pengiriman teks. Gagal → teks + catatan singkat.
+    # Defensive: kegagalan tak terduga di jalur voice tidak boleh membunuh
+    # balasan yang sudah jadi — fallback ke teks biasa.
+    try:
+        voice_sent, voice_note = _maybe_send_voice_reply(
+            api, chat_id, identity, reply,
+            came_from_voice=came_from_voice,
+            reply_to_message_id=reply_to_message_id,
+        )
+    except Exception as exc:
+        print(f"  [telegram] voice reply path crashed: {exc.__class__.__name__}", flush=True)
+        voice_sent, voice_note = False, ""
+    if voice_note and not voice_sent:
+        reply = voice_note + reply
     first_part = True
-    for part in _split_message(reply):
+    parts = [] if voice_sent else _split_message(reply)
+    for part in parts:
         if not part.strip():
             continue
         extra: dict[str, Any] = {}
@@ -3292,7 +4386,7 @@ def _maybe_reflect_bg(api: str, sessions, chat_id: int, identity: str) -> None:
     threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
-def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "") -> threading.Thread:
+def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, system_extra: str = "", came_from_voice: bool = False) -> threading.Thread:
     """Jalankan turn di worker agar polling tetap menerima /stop dan /steer.
 
     Kirim 'typing…' SEKETIKA (sinkron, dari loop polling) sebelum worker dimulai.
@@ -3305,6 +4399,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     pesan user — jelas balasan untuk pertanyaan yang mana saat ada beberapa.
     ``system_extra`` menyisipkan catatan runtime sekali-pakai (mis. pengingat
     task tertunda setelah interupsi) ke turn ini tanpa mengubah history.
+    ``came_from_voice`` menandai input turn ini sebagai voice note — dipakai
+    mode voice ``"mirror"`` untuk memutuskan balasan VN atau teks.
     """
     try:
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
@@ -3321,6 +4417,7 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
                 api=api, sessions=sessions, chat_id=chat_id, identity=identity,
                 text=text, tool_profile=tool_profile,
                 reply_to_message_id=reply_to_message_id, system_extra=system_extra,
+                came_from_voice=came_from_voice,
             )
         except Exception as exc:
             print(
@@ -3399,7 +4496,8 @@ def _dispatch_update(
     caption = str(message.get("caption") or "").strip()
     document = message.get("document") or {}
     photos = message.get("photo") or []
-    voice = message.get("voice") or message.get("audio") or {}
+    voice_note = message.get("voice") or {}
+    voice = voice_note or message.get("audio") or {}
     video = message.get("video") or message.get("video_note") or {}
 
     # Reply-to context: ketika user reply ke pesan tertentu (mis. "lanjutin ini"
@@ -3546,12 +4644,53 @@ def _dispatch_update(
         prompt = _build_image_prompt(dest, caption)
         _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
     elif voice:
-        dest, error = _download_media_file(api, token, str(voice.get("file_id") or ""), ".ogg")
-        if error or dest is None:
-            _api_call(api, "sendMessage", chat_id=chat_id_int, text=error or "Could not read the audio.")
+        # Rate-limit DULU — hanya butuh chat_id, tanpa menyentuh jaringan.
+        # Voice note yang ditolak tidak diunduh sama sekali (hemat bandwidth);
+        # unduhan + transkripsi berjalan di worker serial per chat, BUKAN di
+        # loop polling — gateway tetap menerima pesan lain dan /stop selama
+        # STT bekerja. Urutan VN per chat tetap FIFO (lihat _enqueue_voice_job);
+        # gagal / tak terkonfigurasi → fallback ke alur lama (prompt
+        # analyze_media), jangan matikan alur yang sudah jalan.
+        if _voice_queue_full(chat_id_int):
+            _api_call(
+                api, "sendMessage", chat_id=chat_id_int,
+                text="Masih mentranskrip voice note sebelumnya — tunggu sebentar lalu kirim lagi.",
+            )
             return
-        prompt = _build_media_notice_prompt("audio", dest, caption)
-        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=prompt, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
+        file_id = str(voice.get("file_id") or "")
+        if not file_id:
+            _api_call(api, "sendMessage", chat_id=chat_id_int, text="Could not read the audio.")
+            return
+        try:
+            _api_call(api, "sendChatAction", chat_id=chat_id_int, action="typing", timeout=10)
+        except Exception:
+            pass
+        # came_from_voice hanya untuk voice note ASLI Telegram — file audio
+        # biasa (mp3 lagu dsb) tetap ditranskrip tapi tidak memicu mirror mode.
+        # Enqueue menyimpan file_id/metadata; WORKER yang mengunduh.
+        result = _enqueue_voice_job(
+            chat_id_int,
+            lambda: _process_inbound_voice_download(
+                api, token, sessions,
+                chat_id=chat_id_int, identity=identity, file_id=file_id,
+                caption=caption, tool_profile=tool_profile,
+                reply_to_message_id=incoming_message_id,
+                came_from_voice=bool(voice_note),
+            ),
+        )
+        if result == _VOICE_QUEUE_FULL:
+            # Jendela race kecil: antrean penuh tepat setelah pre-check.
+            _api_call(
+                api, "sendMessage", chat_id=chat_id_int,
+                text="Masih mentranskrip voice note sebelumnya — tunggu sebentar lalu kirim lagi.",
+            )
+        elif result == _VOICE_WORKER_BROKEN:
+            # Jujur: jangan janji "masih mentranskrip" bila worker-nya yang
+            # bermasalah — user disuruh coba lagi, bukan menunggu sia-sia.
+            _api_call(
+                api, "sendMessage", chat_id=chat_id_int,
+                text="Worker voice bermasalah — coba kirim lagi sebentar.",
+            )
     elif video:
         dest, error = _download_media_file(api, token, str(video.get("file_id") or ""), ".mp4")
         if error or dest is None:

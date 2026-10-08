@@ -19,17 +19,18 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
-from . import telegram, webhook, whatsapp
+from . import telegram, webchat, webhook, whatsapp
 
 GATEWAYS: dict[str, ModuleType] = {
     "telegram": telegram,
     "whatsapp": whatsapp,
     "webhook": webhook,
+    "webchat": webchat,
 }
 
 # Local WIP adapters: registered only when the module is present in this
 # checkout, so an install without them still imports cleanly.
-for _optional in ("discord",):
+for _optional in ("discord", "slack", "email"):
     try:
         import importlib as _importlib
 
@@ -60,10 +61,11 @@ def _validate_tool_policy(name: str, cfg: dict[str, Any]) -> list[str]:
         return []
     if profile not in {"workspace", "full"}:
         return [f"invalid {name} tool_profile: {profile}"]
-    # A webhook has one bearer token and a caller-controlled chat_id. It cannot
-    # prove an individual owner identity, so keep it safe-only.
-    if name == "webhook":
-        return ["webhook tool_profile must remain safe; use an owner-allowlisted messaging gateway for elevated tools"]
+    # A webhook or webchat has one bearer token and a caller-controlled
+    # chat_id. It cannot prove an individual owner identity, so keep both
+    # safe-only.
+    if name in ("webhook", "webchat"):
+        return [f"{name} tool_profile must remain safe; use an owner-allowlisted messaging gateway for elevated tools"]
     allowed = cfg.get("allowed")
     owner = str(cfg.get("owner_identity", "")).strip()
     if not isinstance(allowed, list) or len(allowed) != 1 or str(allowed[0]).strip() in {"", "*"}:

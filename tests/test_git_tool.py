@@ -28,6 +28,20 @@ def _git_available() -> bool:
 
 
 @unittest.skipUnless(_git_available(), "git is not installed on this runner")
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji perilaku tool git, bukan gate-nya — jadi
+    gate dilewati dengan allow-all. Tanpa policy, fallback fail-closed
+    (verdict owner) akan me-deny git (Write) sebelum tool berjalan.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
+
 class GitToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp(prefix="zl-git-home-"))
@@ -45,6 +59,8 @@ class GitToolTests(unittest.TestCase):
         self.executor = self.tools.ToolExecutor(
             "telegram:4242", profile="workspace", workspace=str(self.repo)
         )
+        # Uji perilaku tool, bukan gate: lewati gate seperti di produksi.
+        self.executor.approval_policy = _AllowAllPolicy()
 
     def tearDown(self) -> None:
         if self._old is None:
@@ -79,9 +95,12 @@ class GitToolTests(unittest.TestCase):
         self.assertIn("On branch", self.git(action="status"))
 
     def test_a_public_safe_gateway_still_has_no_git(self):
-        denied = self.tools.ToolExecutor(
+        ex = self.tools.ToolExecutor(
             "telegram:public", profile="safe", workspace=str(self.repo)
-        ).run("git", {"action": "status"})
+        )
+        # Gate dilewati agar penolakan datang dari profile check tool.
+        ex.approval_policy = _AllowAllPolicy()
+        denied = ex.run("git", {"action": "status"})
         self.assertIn("not allowed for profile", denied.lower())
 
     # -- reads
@@ -219,9 +238,11 @@ class GitToolTests(unittest.TestCase):
     def test_a_directory_that_is_not_a_repository_says_so(self):
         plain = Path(tempfile.mkdtemp(prefix="zl-git-plain-"))
         try:
-            result = self.tools.ToolExecutor(
+            ex = self.tools.ToolExecutor(
                 "telegram:4242", profile="workspace", workspace=str(plain)
-            ).run("git", {"action": "status"})
+            )
+            ex.approval_policy = _AllowAllPolicy()
+            result = ex.run("git", {"action": "status"})
             self.assertIn("not inside a git repository", result)
         finally:
             shutil.rmtree(plain, ignore_errors=True)
@@ -292,8 +313,8 @@ class GitProgressFeedTests(unittest.TestCase):
         cases = {
             ("status", "", ""): "🌿 Checking git status",
             ("diff", "", ""): "🔍 Reading diff",
-            ("log", "", ""): "📜 Reading commit history",
-            ("show", "", ""): "🔎 Reading commit",
+            ("log", "", ""): "📜 Reading commit history <code>log</code>",
+            ("show", "", ""): "🔎 Reading commit <code>show</code>",
             ("branch", "", ""): "🌿 Listing branches",
             ("add", "zeline/tools.py", ""): "➕ Staging <code>tools.py</code>",
             ("commit", "", "feat: a thing\n\nbody"): "💾 Committing feat: a thing",

@@ -106,6 +106,138 @@ class ZelineCliTests(unittest.TestCase):
         result = self.invoke(["gateway", "start"], expected_status=2)
         self.assertIn("no enabled gateway", result.lower())
 
+    def test_setup_webchat_all_interfaces_needs_explicit_confirm(self):
+        # 0.0.0.0 tanpa jawaban "ya" eksplisit → jatuh ke 127.0.0.1; tidak
+        # pernah diam-diam mengikat ke semua interface.
+        cfg: dict = {}
+        with mock.patch.object(self.cli, "_ask", side_effect=["0.0.0.0", "8787"]), \
+             mock.patch.object(self.cli, "input", return_value="n"), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            ok = self.cli._setup_webchat(cfg)
+        self.assertTrue(ok)
+        gateway = cfg["gateways"]["webchat"]
+        self.assertTrue(gateway["enabled"])
+        self.assertEqual(gateway["host"], "127.0.0.1")
+        self.assertIn("WARNING", out.getvalue())
+
+    def test_setup_webchat_all_interfaces_with_explicit_yes(self):
+        # Konfirmasi eksplisit → host dihormati (keputusan sadar operator).
+        cfg: dict = {}
+        with mock.patch.object(self.cli, "_ask", side_effect=["0.0.0.0", "8787"]), \
+             mock.patch.object(self.cli, "input", return_value="y"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            ok = self.cli._setup_webchat(cfg)
+        self.assertTrue(ok)
+        self.assertEqual(cfg["gateways"]["webchat"]["host"], "0.0.0.0")
+
+    def test_setup_webhook_ipv6_all_interfaces_falls_back_on_empty(self):
+        # "::" + Enter kosong (= default aman) → 127.0.0.1.
+        cfg: dict = {}
+        with mock.patch.object(self.cli, "_ask", side_effect=["::", "8765"]), \
+             mock.patch.object(self.cli, "input", return_value=""), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            ok = self.cli._setup_webhook(cfg)
+        self.assertTrue(ok)
+        self.assertEqual(cfg["gateways"]["webhook"]["host"], "127.0.0.1")
+        self.assertIn("WARNING", out.getvalue())
+
+    def test_setup_webchat_loopback_needs_no_confirm(self):
+        # 127.0.0.1 tidak memicu peringatan/konfirmasi sama sekali.
+        cfg: dict = {}
+        with mock.patch.object(self.cli, "_ask", side_effect=["127.0.0.1", "8787"]), \
+             mock.patch.object(self.cli, "input", side_effect=AssertionError("no input expected")), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            ok = self.cli._setup_webchat(cfg)
+        self.assertTrue(ok)
+        self.assertEqual(cfg["gateways"]["webchat"]["host"], "127.0.0.1")
+        self.assertNotIn("WARNING", out.getvalue())
+
+    def test_safe_bind_host_equivalent_unspecified_notations(self):
+        # Notasi ekuivalen 0.0.0.0/:: wajib memicu konfirmasi juga — dulu
+        # lolos pencocokan string eksak.
+        for host in ("0.0.0.0", "::", "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0"):
+            with mock.patch.object(self.cli, "input", return_value="n"), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                result = self.cli._safe_bind_host(host, "webchat")
+            self.assertEqual(result, "127.0.0.1", host)
+            self.assertIn("WARNING", out.getvalue(), host)
+
+    def test_safe_bind_host_equivalent_notation_with_explicit_yes(self):
+        # Konfirmasi eksplisit untuk notasi ekuivalen -> host dihormati.
+        with mock.patch.object(self.cli, "input", return_value="y"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            result = self.cli._safe_bind_host("0:0:0:0:0:0:0:0", "webchat")
+        self.assertEqual(result, "0:0:0:0:0:0:0:0")
+
+    def test_safe_bind_host_mapped_loopback_not_flagged(self):
+        # ::ffff:127.0.0.1 = loopback, bukan semua interface -> tanpa konfirmasi.
+        with mock.patch.object(self.cli, "input",
+                               side_effect=AssertionError("no input expected")), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            result = self.cli._safe_bind_host("::ffff:127.0.0.1", "webchat")
+        self.assertEqual(result, "::ffff:127.0.0.1")
+        self.assertNotIn("WARNING", out.getvalue())
+
+    def test_safe_bind_host_loopback_variants_need_no_confirm(self):
+        for host in ("127.0.0.1", "::1"):
+            with mock.patch.object(self.cli, "input",
+                                   side_effect=AssertionError("no input expected")), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                result = self.cli._safe_bind_host(host, "webchat")
+            self.assertEqual(result, host, host)
+            self.assertNotIn("WARNING", out.getvalue(), host)
+
+    def test_safe_bind_host_invalid_ip_fails_closed(self):
+        # Bukan alamat IP valid -> tolak ke 127.0.0.1 dengan pesan jelas.
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            result = self.cli._safe_bind_host("localhost", "webchat")
+        self.assertEqual(result, "127.0.0.1")
+        self.assertIn("Invalid bind host", out.getvalue())
+
+    def test_is_unspecified_host_empty_string(self):
+        # String kosong = unspecified: server mengikat ke semua interface
+        # bila host kosong — jangan lolos diam-diam.
+        self.assertTrue(self.cli._is_unspecified_host(""))
+        self.assertTrue(self.cli._is_unspecified_host("   "))
+
+    def test_is_unspecified_host_cases(self):
+        for host in ("0.0.0.0", "::", "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0"):
+            self.assertTrue(self.cli._is_unspecified_host(host), host)
+        for host in ("127.0.0.1", "localhost", "::1", "192.168.1.1"):
+            self.assertFalse(self.cli._is_unspecified_host(host), host)
+
+    def test_gateway_enable_rejects_non_numeric_stored_port(self):
+        # Port config "abc" (edit tangan) → pesan jelas, bukan traceback.
+        cfg = self.config.stored_config_copy()
+        cfg["gateways"]["webhook"]["port"] = "abc"
+        self.config.save_config(cfg)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            status = self.cli.cmd_gateway_enable("webhook")
+        self.assertEqual(status, 2)
+        self.assertIn("Invalid port", out.getvalue())
+        self.assertIn("abc", out.getvalue())
+
+    def test_gateway_enable_rejects_out_of_range_stored_port(self):
+        cfg = self.config.stored_config_copy()
+        cfg["gateways"]["webchat"]["port"] = 99999
+        self.config.save_config(cfg)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            status = self.cli.cmd_gateway_enable("webchat")
+        self.assertEqual(status, 2)
+        self.assertIn("Invalid port", out.getvalue())
+        self.assertIn("99999", out.getvalue())
+
+    def test_gateway_enable_accepts_numeric_string_port(self):
+        # String numerik yang valid tetap diterima (kompatibel config lama).
+        cfg = self.config.stored_config_copy()
+        cfg["gateways"]["webhook"]["port"] = "8765"
+        self.config.save_config(cfg)
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = self.cli.cmd_gateway_enable("webhook")
+        self.assertEqual(status, 0)
+        saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["gateways"]["webhook"]["port"], 8765)
+
     def test_gateway_picker_moves_with_arrows_and_selects_one_option(self):
         # raw_mode()/read_key() now live in zeline._termkey so the CLI works on
         # Windows (no termios there). isatty must be True to reach the arrow-key

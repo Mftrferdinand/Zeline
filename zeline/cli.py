@@ -21,26 +21,34 @@ sendiri. Tidak ada token Telegram/WhatsApp bersama dalam paket ini.
 from __future__ import annotations
 
 import argparse
+import atexit
+import contextlib
 import copy
+import ipaddress
 import json
 import os
 import re
+import shlex
 import signal
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 import yaml
 
 from zeline import __version__, config, skills
 from zeline import branding
+from zeline import tui
 from zeline._termkey import raw_mode, read_key, read_menu_key, read_secret
 from zeline.agent import ZelineError
 from zeline.gateways import GATEWAYS, gateway_status, run_all
 from zeline import gateway_service
 from zeline import delivery
+from zeline import approvals
 from zeline import interaction
 from zeline import project_rules
 from zeline.sessions import SessionStore
@@ -185,6 +193,98 @@ def _ask(prompt: str, default: str = "", *, secret: bool = False) -> str:
     return answer or default
 
 
+def _confirm(prompt: str, *, default: bool = False) -> bool:
+    """Tanya ya/tidak; default False (pilihan aman) bila Enter kosong."""
+    hint = "[Y/n]" if default else "[y/N]"
+    answer = input(f"{prompt} {hint}: ").strip().lower()
+    if not answer:
+        return default
+    return answer in ("y", "yes")
+
+
+def _is_unspecified_host(host: str) -> bool:
+    """True bila host adalah alamat IP unspecified (semua interface).
+
+    String kosong juga True: server (uvicorn dsb.) mengikat ke semua
+    interface bila host kosong — jangan biarkan lolos diam-diam.
+    Normalisasi via ipaddress supaya notasi ekuivalen ikut tertangkap —
+    "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0", dsb. — bukan cuma pencocokan string
+    "0.0.0.0"/"::". Host yang bukan alamat IP valid (mis. "localhost") →
+    False (bukan unspecified).
+    """
+    if not host.strip():
+        return True
+    try:
+        addr = ipaddress.ip_address(host.strip())
+    except ValueError:
+        return False
+    if addr.is_unspecified:
+        return True
+    # IPv6-mapped IPv4 unspecified, mis. "::ffff:0.0.0.0" — is_unspecified-nya
+    # False (nilai int-nya bukan 0), jadi dicek via alamat IPv4 petanya.
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return mapped is not None and mapped.is_unspecified
+
+
+def _confirm_all_interfaces(host: str, gateway_name: str) -> bool:
+    """Peringatan eksplisit + konfirmasi sebelum bind ke semua interface.
+
+    True hanya bila operator menjawab ya secara eksplisit; Enter kosong /
+    jawaban lain = tolak (aman). Jangan pernah mengikat diam-diam.
+    """
+    print(
+        f"  ⚠️  WARNING: host {host} exposes the {gateway_name} gateway to the ENTIRE network —\n"
+        "     any device that can reach this machine can open it (bearer token still required).\n"
+        "     Use 127.0.0.1 unless you deliberately need LAN access."
+    )
+    return _confirm(f"  Bind {gateway_name} to all interfaces anyway?")
+
+
+def _safe_bind_host(host: str, gateway_name: str) -> str:
+    """Validasi host bind: alamat unspecified (semua interface) wajib konfirmasi eksplisit.
+
+    Notasi ekuivalen ikut tertangkap via _is_unspecified_host. Host yang bukan
+    alamat IP valid DITOLAK ke 127.0.0.1 yang aman dengan pesan jelas
+    (fail-closed) — bukan diteruskan mentah ke bind server.
+
+    Ditolak → kembali ke 127.0.0.1 yang aman dengan pesan jelas (bukan
+    diam-diam mengikat ke semua interface).
+    """
+    cleaned = host.strip()
+    try:
+        ipaddress.ip_address(cleaned)
+    except ValueError:
+        print(
+            f"  Invalid bind host {cleaned!r}: not an IP address. "
+            "Keeping the safe default: 127.0.0.1."
+        )
+        return "127.0.0.1"
+    if _is_unspecified_host(cleaned) and not _confirm_all_interfaces(cleaned, gateway_name):
+        print("  Keeping the safe default: 127.0.0.1.")
+        return "127.0.0.1"
+    return cleaned
+
+
+def _stored_port(gateway: dict[str, Any], name: str, default: int) -> int | None:
+    """Baca port tersimpan dari config; None + pesan jelas bila tidak valid.
+
+    Config bisa diedit tangan — "port": "abc" atau 99999 tidak boleh meledak
+    menjadi traceback saat `gateway enable`.
+    """
+    raw = gateway.get("port", default)
+    try:
+        port = int(str(raw).strip())
+    except (TypeError, ValueError):
+        port = -1
+    if not 1 <= port <= 65535:
+        print(
+            f"  Invalid port for the {name} gateway: {raw!r}. "
+            f"Fix it with: zeline gateway setup {name}"
+        )
+        return None
+    return port
+
+
 def _model_ids(payload: Any) -> list[str]:
     """Parse model IDs from various provider payload structures (OpenAI, Anthropic, Ollama, vLLM, etc.)."""
     items = []
@@ -288,6 +388,7 @@ GATEWAY_OPTIONS = (
     ("telegram", "Telegram"),
     ("whatsapp", "WhatsApp"),
     ("webhook", "Webhook"),
+    ("webchat", "WebChat UI"),
     ("cancel", "Cancel"),
 )
 
@@ -390,7 +491,10 @@ def _setup_whatsapp(cfg: dict[str, Any]) -> bool:
 
 def _setup_webhook(cfg: dict[str, Any], *, reveal_token: bool = True) -> bool:
     gateway = _gateway_cfg(cfg, "webhook")
-    host = _ask("  Bind host (safe: 127.0.0.1)", str(gateway.get("host", "127.0.0.1")))
+    host = _safe_bind_host(
+        _ask("  Bind host (safe: 127.0.0.1)", str(gateway.get("host", "127.0.0.1"))),
+        "webhook",
+    )
     port = _ask("  Port", str(gateway.get("port", 8765)))
     token = str(gateway.get("token", "")) or config.new_webhook_token()
     try:
@@ -405,6 +509,38 @@ def _setup_webhook(cfg: dict[str, Any], *, reveal_token: bool = True) -> bool:
     if reveal_token:
         print("  Save this token now (shown only during setup):")
         print(f"  {token}")
+    return True
+
+
+def _setup_webchat(cfg: dict[str, Any], *, reveal_token: bool = True) -> bool:
+    try:
+        gateway = _gateway_cfg(cfg, "webchat")
+    except ValueError:
+        # No webchat config section in this build (minimal builds).
+        # Fail friendly, not traceback.
+        print("  WebChat gateway is not available in this build yet.")
+        return False
+    host = _safe_bind_host(
+        _ask("  Bind host (safe: 127.0.0.1)", str(gateway.get("host", "127.0.0.1"))),
+        "webchat",
+    )
+    port = _ask("  Port", str(gateway.get("port", 8787)))
+    token = str(gateway.get("token", "")) or config.new_webhook_token()
+    try:
+        port_number = int(port)
+        if not 1 <= port_number <= 65535:
+            raise ValueError
+    except ValueError:
+        print("  Invalid port; webchat not enabled.")
+        gateway["enabled"] = False
+        return False
+    # WebChat is safe-only: a single shared bearer token cannot prove owner
+    # identity, so elevated tool profiles are rejected by validation.
+    gateway.update({"enabled": True, "host": host, "port": port_number, "token": token, "tool_profile": "safe"})
+    if reveal_token:
+        print("  Save this token now (shown only during setup):")
+        print(f"  {token}")
+        print("  Dashboard: http://{0}:{1}/ (token required).".format(host, port_number))
     return True
 
 
@@ -436,6 +572,7 @@ def cmd_setup(*, reset: bool = False) -> int:
         "telegram": _setup_telegram,
         "whatsapp": _setup_whatsapp,
         "webhook": _setup_webhook,
+        "webchat": _setup_webchat,
     }[selected](cfg)
     if not configured:
         print("Gateway configuration incomplete.")
@@ -973,6 +1110,569 @@ def _run_reflection(sessions: "SessionStore") -> None:
         print(f"\n\033[90m📒 Self-improvement: {summary}\033[0m")
 
 
+# ---------------------------------------------------------------------------
+# Slash commands and TUI wiring for the chat REPL
+# ---------------------------------------------------------------------------
+
+
+def _stdin_is_tty() -> bool:
+    """True when stdin is an interactive terminal (arrow menus are usable)."""
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:  # noqa: BLE001 - a weird stream means "not a tty"
+        return False
+
+
+def _cli_ask(entry: Any) -> str:
+    """Renderer for ``interaction.ask()`` on the local CLI channel.
+
+    In the CLI the operator is right here at the keyboard, so ask_user can be
+    answered SYNCHRONOUSLY — no waiting on an event, no timeout. Registering a
+    renderer that returns a string short-circuits interaction.ask().
+
+    On an interactive terminal options get the shared arrow-key menu
+    (``tui.select``); with redirected stdin the classic numbered list stays,
+    which also accepts a free-text answer — the contract automation relies on.
+    """
+    print()
+    full = getattr(entry, "full_text", "") or ""
+    if full:
+        # Same contract as the Telegram renderer: truncated picker, full
+        # text visible before it — here as an indented block.
+        print(f"  {_label('full detail:')}")
+        for chunk in interaction.detail_chunks(full):
+            for line in chunk.splitlines() or [""]:
+                print(f"    │ {line}")
+    question = f"  {_label('question:')} {entry.question}"
+    options = list(entry.options or [])
+    if options and _stdin_is_tty():
+        choice = tui.select(question, options)
+        if choice == -1:
+            print()
+            return "CANCELLED: the user cancelled this question."
+        return options[choice]
+    print(question)
+    if options:
+        for index, option in enumerate(options, start=1):
+            print(f"    {index}) {option}")
+        print("    (type a number, or your own answer)")
+    try:
+        reply = input("  answer › ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return "CANCELLED: the user cancelled this question."
+    if options and reply.isdigit():
+        choice = int(reply)
+        if 1 <= choice <= len(options):
+            return options[choice - 1]
+    return reply or "(empty answer)"
+
+
+def _slash_help(_args: list[str]) -> str:
+    """Show the slash-command list."""
+    print(tui.command_help())
+    return "handled"
+
+
+def _slash_model(args: list[str]) -> str:
+    """Show the active provider model (switching happens outside the chat)."""
+    verified = bool(config.PROVIDER.get("model_verified", False))
+    tui.print_card(
+        [
+            ("Model", str(config.MODEL or "(empty)")),
+            ("Provider", _provider_display()),
+            ("Verified", "yes" if verified else "no"),
+            ("Tool profile", str(config.CLI_TOOL_PROFILE)),
+        ],
+        title="Model",
+    )
+    if args:
+        print("  To switch models, exit this chat and run: zeline model")
+    return "handled"
+
+
+def _slash_status(_args: list[str]) -> str:
+    """One-screen snapshot: model, token usage today, workers, goals, memory."""
+    rows: list[tuple[str, str]] = [
+        ("Model", str(config.MODEL or "(empty)")),
+        ("Provider", _provider_display()),
+    ]
+    try:
+        from zeline import usage_stats
+
+        totals = usage_stats.UsageStore().totals(usage_stats.since_day_for(1))
+        rows.append(
+            (
+                "Tokens today",
+                f"{usage_stats.format_tokens(totals['total_tokens'])} "
+                f"({totals['calls']} calls)",
+            )
+        )
+    except Exception:  # noqa: BLE001 - a status line must never break the REPL
+        rows.append(("Tokens today", "n/a"))
+    try:
+        from zeline.supervisor import get_supervisor
+
+        workers = get_supervisor("cli:local").list_workers()
+        live = sum(1 for w in workers if w.get("status") in ("running", "queued"))
+        rows.append(("Workers", f"{live} live / {len(workers)} total"))
+    except Exception:  # noqa: BLE001 - a status line must never break the REPL
+        rows.append(("Workers", "n/a"))
+    try:
+        from zeline import goals
+
+        items = goals.list_goals("cli:local")
+        active = sum(1 for g in items if g.get("status") == "active")
+        rows.append(("Goals", f"{active} active / {len(items)} total"))
+    except Exception:  # noqa: BLE001 - a status line must never break the REPL
+        rows.append(("Goals", "n/a"))
+    try:
+        from zeline import memory
+
+        rows.append(("Memories", str(len(memory.MemoryStore("cli:local").records()))))
+    except Exception:  # noqa: BLE001 - a status line must never break the REPL
+        rows.append(("Memories", "n/a"))
+    tui.print_card(rows, title="Status")
+    return "handled"
+
+
+def _slash_goals(_args: list[str]) -> str:
+    """List durable goals and their status."""
+    from zeline import goals
+
+    items = goals.list_goals("cli:local")
+    if not items:
+        print("  No goals yet.")
+        return "handled"
+    print(f"  Goals ({len(items)}):")
+    for item in items:
+        title = str(item.get("title") or item.get("id") or "?")
+        print(f"    - [{item.get('status') or '?'}] {title}")
+    return "handled"
+
+
+def _slash_workers(_args: list[str]) -> str:
+    """List background workers and their state."""
+    from zeline.supervisor import get_supervisor
+
+    workers = get_supervisor("cli:local").list_workers()
+    if not workers:
+        print("  No background workers.")
+        return "handled"
+    print(f"  Workers ({len(workers)}):")
+    for worker in workers:
+        task = str(worker.get("task") or "")
+        if len(task) > 60:
+            task = task[:59] + "…"
+        line = f"    - {worker.get('id', '?')} [{worker.get('status', '?')}]"
+        if task:
+            line += f" {task}"
+        print(line)
+    return "handled"
+
+
+def _slash_memory(args: list[str]) -> str:
+    """List stored memories, or search them when a query is given."""
+    from zeline import memory
+
+    store = memory.MemoryStore("cli:local")
+    if args:
+        query = " ".join(args)
+        hits = store.retrieve(query, k=5)
+        if not hits:
+            print(f"  No memories match {query!r}.")
+            return "handled"
+        print(f"  Memories matching {query!r}:")
+        for hit in hits:
+            print(f"    - {hit.get('text', '')}")
+        return "handled"
+    text = store.formatted()
+    print(text if text.strip() else "  No memories stored yet.")
+    return "handled"
+
+
+def _slash_learn(args: list[str]) -> str:
+    """Trigger sophisticated skill learning (agent-style multi-source)."""
+    global _editor_draft
+    request = " ".join(args).strip() or (
+        "the workflow we just went through in this conversation — review "
+        "the steps taken and distill them into a reusable skill"
+    )
+    prompt = (
+        "[/learn] The user wants you to learn a reusable skill from the "
+        "request below, and save it using the learn_skill tool.\n\n"
+        f"THE REQUEST:\n{request}\n\n"
+        "Do this:\n"
+        "1. Review the conversation history for the workflow/steps described. "
+        "If they mentioned files, URLs, or specific sources, gather them using "
+        "your tools (read_file, web_fetch, etc.).\n"
+        "2. Check existing learned skills with list_learned_skills. If one covers "
+        "this topic, use improve_skill to extend it instead of creating a duplicate.\n"
+        "3. Distill the procedure into a clear, reusable skill with: "
+        "a descriptive name, when to use it, step-by-step instructions, and examples.\n"
+        "4. Save with learn_skill(name, description, content).\n"
+        "Be thorough but concise. The skill should be useful in future sessions."
+    )
+    _editor_draft.append(prompt)
+    return "handled"
+
+
+def _slash_clear(_args: list[str]) -> str:
+    """Clear the screen; the session keeps running."""
+    os.system("cls" if os.name == "nt" else "clear")
+    return "handled"
+
+
+def _slash_undo(args: list[str]) -> str:
+    """Undo the last file change (``--list`` shows the checkpoints)."""
+    cmd_undo(show_list="--list" in args)
+    return "handled"
+
+
+def _slash_exit(_args: list[str]) -> str:
+    """End the chat session (the REPL prints the goodbye)."""
+    return "exit"
+
+
+def _slash_stats(args: list[str]) -> str:
+    """Show the token usage and cost summary."""
+    try:
+        if "--reset" in args:
+            cmd_stats(reset=True)
+        elif "--by-day" in args:
+            cmd_stats(by_day=True)
+        else:
+            cmd_stats()
+    except Exception as exc:  # noqa: BLE001 - a slash command must not raise
+        print(f"  Could not load usage stats: {exc}")
+    return "handled"
+
+
+def _slash_export(args: list[str]) -> str:
+    """Export the current chat session's transcript to a JSON file."""
+    try:
+        path = args[0] if args else None
+        cmd_session_export("cli:local", path)
+    except Exception as exc:  # noqa: BLE001 - a slash command must not raise
+        print(f"  Could not export the session: {exc}")
+    return "handled"
+
+
+def _slash_tools(args: list[str]) -> str:
+    """List the native tools the agent may use (read-only)."""
+    try:
+        if args:
+            print("  /tools takes no arguments; run `zeline tools --help` to change tool settings.")
+            return "handled"
+        cmd_tools("list")
+    except Exception as exc:  # noqa: BLE001 - a slash command must not raise
+        print(f"  Could not list tools: {exc}")
+    return "handled"
+
+
+#: Active SessionStore for the chat REPL (set by cmd_chat). Used by /compact.
+_cli_sessions = None  # type: ignore[assignment]
+
+
+def _slash_compact(args: list[str]) -> str:
+    """Compact the current session: summarize history, keep recent context.
+
+    Uses extractive summarization (no model needed): keeps the first user
+    message (intent), counts tool usage, lists topics, and keeps the last
+    few exchanges. The middle is replaced with a structured summary block.
+    """
+    if _cli_sessions is None:
+        print("  No active session.")
+        return "handled"
+    try:
+        session = _cli_sessions.get_or_create(
+            "cli:local", tool_profile=config.CLI_TOOL_PROFILE
+        )
+        agent = session.agent
+        messages = agent.export_history()
+    except Exception as e:  # noqa: BLE001
+        print(f"  Compact failed: {e}")
+        return "handled"
+
+    # Filter out system messages (preserved by load_history).
+    convo = [m for m in messages if m.get("role") != "system"]
+    if len(convo) < 10:
+        print(f"  Only {len(convo)} messages — nothing to compact yet.")
+        return "handled"
+
+    # Extractive summary.
+    summary_parts = []
+    # 1. First user message = original intent.
+    for m in convo:
+        if m.get("role") == "user":
+            content = str(m.get("content", ""))[:500]
+            if content:
+                summary_parts.append(f"Original request: {content}")
+            break
+    # 2. Tool usage count.
+    tool_count = sum(1 for m in convo if m.get("role") == "tool")
+    if tool_count:
+        summary_parts.append(f"Tools used: {tool_count} calls")
+    # 3. Key topics (from user messages).
+    topics = []
+    for m in convo:
+        if m.get("role") == "user":
+            text = str(m.get("content", ""))[:80].replace("\n", " ")
+            if text and text not in topics:
+                topics.append(text)
+    if topics:
+        summary_parts.append(f"Topics: {'; '.join(topics[:5])}")
+
+    summary_block = (
+        "[Previous conversation compacted — "
+        f"{len(convo)} messages summarized]\n" + "\n".join(summary_parts)
+    )
+
+    # Keep last 6 messages for recent context.
+    keep = convo[-6:]
+    new_history = [
+        {"role": "user", "content": f"[Context summary]\n{summary_block}"},
+        {"role": "assistant", "content": "Understood. Continuing with the summarized context."},
+    ] + keep
+
+    try:
+        # Replace history: keep system prompt, then load compacted history.
+        # (load_history reads self.messages[0] as the system prompt, so we
+        # must NOT clear() before calling it.)
+        agent.load_history(new_history)
+        saved = len(convo) - len(keep)
+        print(f"  Compacted {saved} messages into summary. {len(keep)} recent kept.")
+    except Exception as e:  # noqa: BLE001
+        print(f"  Compact failed: {e}")
+    return "handled"
+
+
+_SLASH_HANDLERS: dict[str, Callable[[list[str]], str]] = {
+    "help": _slash_help,
+    "model": _slash_model,
+    "status": _slash_status,
+    "compact": _slash_compact,
+    "goals": _slash_goals,
+    "workers": _slash_workers,
+    "memory": _slash_memory,
+    "learn": _slash_learn,
+    "clear": _slash_clear,
+    "undo": _slash_undo,
+    "exit": _slash_exit,
+    "stats": _slash_stats,
+    "export": _slash_export,
+    "tools": _slash_tools,
+}
+
+
+def _handle_slash_command(text: str) -> str:
+    """Run a slash command typed in the chat REPL.
+
+    Returns ``"handled"`` when a command ran (the REPL prints a blank line
+    and reads the next input), ``"exit"`` when the session should end, or
+    ``"passthrough"`` when the text is not a slash command at all and should
+    be sent to the model. Unknown ``/words`` are reported locally instead of
+    spending a model turn on a typo.
+    """
+    parsed = tui.parse_command(text)
+    if parsed is None:
+        if text.strip().startswith("/"):
+            print(f"  Unknown command {text.strip().split()[0]!r} — type /help for the list.")
+            return "handled"
+        return "passthrough"
+    spec, args = parsed
+    handler = _SLASH_HANDLERS.get(spec.name)
+    if handler is None:  # registry and table drifted apart; never send to model
+        print(f"  /{spec.name} is not wired up yet.")
+        return "handled"
+    return handler(args)
+
+
+# ---------------------------------------------------------------------------
+# Interactive REPL input layer: readline history, tab completion, multiline
+# ---------------------------------------------------------------------------
+
+#: Max lines read for one turn before trailing-``\`` continuation stops.
+_MULTILINE_LIMIT = 50
+
+#: Readline history length for the chat REPL.
+_CLI_HISTORY_LENGTH = 500
+
+#: Drafts composed via /editor, consumed by the REPL as the next model turn.
+_editor_draft: list[str] = []
+
+
+def _readline_module():  # type: ignore[no-untyped-def]
+    """The readline module, or None on platforms without one."""
+    try:
+        import readline
+
+        return readline
+    except ImportError:
+        return None
+
+
+def _slash_completion_names() -> list[str]:
+    """Slash command names for tab completion, read from the shared registry.
+
+    Pulling from ``tui.DEFAULT_REGISTRY`` keeps completion in sync when new
+    commands are registered — no second list to maintain.
+    """
+    return tui.DEFAULT_REGISTRY.command_names()
+
+
+def _slash_completer(text: str, state: int) -> str | None:
+    """Readline completer for slash commands; only at the start of the line."""
+    readline = _readline_module()
+    if readline is None or readline.get_begidx() != 0:
+        return None
+    matches = [name for name in _slash_completion_names() if name.startswith(text)]
+    return matches[state] if state < len(matches) else None
+
+
+def _drop_blank_from_history(readline: Any) -> None:
+    """Remove a just-entered blank line from readline history, if supported."""
+    try:
+        count = readline.get_current_history_length()
+        if count and not (readline.get_history_item(count) or "").strip():
+            readline.remove_history_item(count - 1)
+    except Exception:  # noqa: BLE001 - cosmetic; never break input
+        pass
+
+
+def _init_readline_history(histfile: Path | str | None = None) -> bool:
+    """Load REPL history and install slash-command tab completion.
+
+    Returns True when readline was configured. Returns False — and leaves
+    plain ``input()`` in place — when readline is unavailable or when
+    stdin/stdout is not an interactive TTY, so piped and one-shot runs never
+    touch the history file.
+    """
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return False
+    readline = _readline_module()
+    if readline is None:
+        return False
+    path = Path(histfile) if histfile is not None else config.DATA_DIR / "cli_history"
+    try:
+        if path.exists():
+            with contextlib.suppress(Exception):
+                readline.read_history_file(str(path))
+        readline.set_history_length(_CLI_HISTORY_LENGTH)
+        # "/" must not split the word being completed: "/he" completes as one.
+        with contextlib.suppress(Exception):
+            readline.set_completer_delims(" \t\n")
+        readline.set_completer(_slash_completer)
+
+        def _save() -> None:
+            with contextlib.suppress(OSError):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                readline.write_history_file(str(path))
+
+        atexit.register(_save)
+    except Exception:  # noqa: BLE001 - history is best-effort
+        return False
+    return True
+
+
+def _read_user_input(
+    prompt: str,
+    *,
+    continuation_prompt: str = "... ",
+    max_lines: int = _MULTILINE_LIMIT,
+) -> str:
+    """Read one REPL turn, joining trailing-``\\`` continuation lines.
+
+    A line whose rstripped form ends in an ODD run of backslashes keeps all
+    but the last one and continues on the next line (prompted with
+    ``continuation_prompt``); an EVEN run (e.g. ``\\\\``) is a literal
+    backslash, not a continuation. At most ``max_lines`` lines are read to
+    keep a runaway continuation from looping. Blank lines are kept out of the
+    readline history. Raises ``EOFError``/``KeyboardInterrupt`` like plain
+    ``input()``.
+    """
+    readline = _readline_module()
+    lines: list[str] = []
+    prompt_now = prompt
+    while True:
+        line = input(prompt_now)
+        if readline is not None:
+            _drop_blank_from_history(readline)
+        stripped = line.rstrip()
+        trailing = len(stripped) - len(stripped.rstrip("\\"))
+        if trailing % 2 == 1 and len(lines) + 1 < max_lines:
+            lines.append(stripped[:-1])  # drop the continuation backslash
+            prompt_now = continuation_prompt
+            continue
+        lines.append(stripped if trailing % 2 == 1 else line)
+        break
+    return "\n".join(lines).strip()
+
+
+def _slash_editor(_args: list[str]) -> str:
+    """Compose a turn in $EDITOR; the draft becomes the next model input.
+
+    An empty draft or a failed/cancelled editor returns to the prompt without
+    sending anything. This also gives a full multiline composition path.
+    """
+    editor = shlex.split(os.environ.get("EDITOR") or "vi")
+    fd, tmp = tempfile.mkstemp(prefix="zeline-", suffix=".md")
+    os.close(fd)
+    try:
+        try:
+            completed = subprocess.run(editor + [tmp])  # noqa: S603 - operator's own editor
+        except FileNotFoundError:
+            print(f"  Editor {editor[0]!r} not found — set $EDITOR to an installed editor.")
+            return "handled"
+        except OSError as exc:
+            print(f"  Could not launch the editor: {exc}")
+            return "handled"
+        if completed.returncode != 0:
+            print("  Editor exited without saving — nothing sent.")
+            return "handled"
+        draft = Path(tmp).read_text(encoding="utf-8").strip()
+        if not draft:
+            print("  Empty draft — nothing sent.")
+            return "handled"
+        _editor_draft.append(draft)
+        return "handled"
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
+# Wired here because the handler is defined after the dispatch table.
+_SLASH_HANDLERS["editor"] = _slash_editor
+
+
+def _expand_mentions_for_turn(text: str) -> str:
+    """Expand ``@file`` mentions before a turn reaches the model.
+
+    ``tui.expand_mentions`` already frames the file content as data-only, and
+    file reads are READ-class (auto-allowed), so this needs no approval. Each
+    warning prints as one dim ``[!]`` line; when every mention fails the
+    original text goes through unchanged (the user may have typed a literal
+    ``@foo``).
+    """
+    if "@" not in text:
+        return text
+    expanded, warnings = tui.expand_mentions(text, base_dir=os.getcwd())
+    for warning in warnings:
+        print(f"  {tui.paint('[!] ' + warning, tui.COLOR_DIM)}")
+    return expanded
+
+
+def _tool_failed(result: object) -> bool:
+    """True bila hasil tool mengikuti konvensi error framework.
+
+    Delegasi ke ``zeline.agent.is_error_text`` — satu definisi bersama agar
+    deteksi error konsisten di semua jalur (helper milik agent.py).
+    """
+    from zeline.agent import is_error_text
+
+    return is_error_text(str(result or ""))
+
+
 def cmd_chat(query: str | None = None) -> int:
     if not config.GATEWAY_SETUP_COMPLETE:
         print("[!] Gateway not set up yet. Run: zeline")
@@ -989,28 +1689,13 @@ def cmd_chat(query: str | None = None) -> int:
     _print_banner()
     _print_session_header()
     sessions = SessionStore(max_sessions=1)
+    global _cli_sessions
+    _cli_sessions = sessions
 
-    # In the CLI the operator is right here at the keyboard, so ask_user can be
-    # answered SYNCHRONOUSLY — no waiting on an event, no timeout. Registering a
-    # renderer that returns a string short-circuits interaction.ask().
-    def _cli_ask(entry: Any) -> str:
-        print()
-        print(f"  {_label('question:')} {entry.question}")
-        if entry.options:
-            for index, option in enumerate(entry.options, start=1):
-                print(f"    {index}) {option}")
-            print("    (type a number, or your own answer)")
-        try:
-            reply = input("  answer › ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return "CANCELLED: the user cancelled this question."
-        if entry.options and reply.isdigit():
-            choice = int(reply)
-            if 1 <= choice <= len(entry.options):
-                return entry.options[choice - 1]
-        return reply or "(empty answer)"
-
+    # _cli_ask (module level): in the CLI the operator is right here at the
+    # keyboard, so ask_user can be answered SYNCHRONOUSLY — no waiting on an
+    # event, no timeout. Registering a renderer that returns a string
+    # short-circuits interaction.ask().
     interaction.register_channel("cli:local", _cli_ask)
 
     # send_file di CLI: tidak ada chat untuk mengunggah, jadi channel-nya
@@ -1025,20 +1710,79 @@ def cmd_chat(query: str | None = None) -> int:
     delivery.register_channel("cli:local", _cli_deliver)
 
     def ask(text: str) -> str:
+        text = _expand_mentions_for_turn(text)
+        # Durasi per tool call — diisi on_tool, dibaca on_tool_result.
+        # FIFO per nama: tool paralel dengan nama sama (mis. dua read_file
+        # dalam satu batch) tidak saling menimpa timestamp.
+        tool_started: dict[str, list[float]] = {}
+
         def on_tool(name: str, arguments: dict[str, Any]) -> None:
             preview = ", ".join(f"{key}={str(value)[:48]}" for key, value in arguments.items())
             print(f"  \033[90m⚙ {name}({preview})\033[0m")
+            tool_started.setdefault(name, []).append(time.monotonic())
 
-        return sessions.send(
-            identity="cli:local",
-            text=text,
-            tool_profile=config.CLI_TOOL_PROFILE,
-            on_tool=on_tool,
+        def on_tool_result(name: str, arguments: dict[str, Any], result: str) -> None:
+            # Deteksi gagal via konvensi "ERROR: ..."/"ERROR <kata> ..." (lihat
+            # _tool_failed) — konsisten dengan emitter di tools.py.
+            starts = tool_started.get(name)
+            started = starts.pop(0) if starts else None
+            elapsed = time.monotonic() - started if started is not None else 0.0
+            if _tool_failed(result):
+                # Ringkasan error: whitespace diratakan jadi satu baris,
+                # dipotong 80 char.
+                summary = " ".join(str(result).split())[:80]
+                line = f"✗ {name} ({elapsed:.1f}s) • {summary}"
+            else:
+                line = f"✓ {name} ({elapsed:.1f}s)"
+            print(f"  \033[90m{line}\033[0m")
+
+        # Streaming hanya masuk akal di stdout TTY; piped/one-shot memakai
+        # jalur non-streaming lama (on_stream_delta=None).
+        renderer: tui.StreamRenderer | None = (
+            tui.StreamRenderer() if tui.supports_stream() else None
         )
+        # Diekspos untuk REPL di bawah: lewati render final bila renderer
+        # sudah menulis incremental (jalur no-rich), dan tandai fase render.
+        ask.last_renderer = renderer  # type: ignore[attr-defined]
+
+        def _stream_sink(delta: str) -> None:
+            # Streaming kosmetik — exception rendering tidak boleh
+            # menggagalkan turn.
+            try:
+                assert renderer is not None
+                renderer.feed(delta)
+            except Exception:
+                pass
+
+        try:
+            return sessions.send(
+                identity="cli:local",
+                text=text,
+                tool_profile=config.CLI_TOOL_PROFILE,
+                on_tool=on_tool,
+                on_tool_result=on_tool_result,
+                on_stream_delta=_stream_sink if renderer is not None else None,
+            )
+        finally:
+            # Live view tidak boleh menggantung saat turn batal/interupsi —
+            # berhenti selalu; exception rendering tetap di-swallow.
+            if renderer is not None:
+                try:
+                    renderer.done()
+                except Exception:
+                    pass
+
+    def _print_turn_footer(turn_started: float) -> None:
+        elapsed = time.monotonic() - turn_started
+        # Token per turn tidak tersedia dari usage log (per-bucket, bukan
+        # per-turn) — footer hanya menampilkan wall time.
+        print(tui.paint(tui.format_turn_footer(elapsed, None), tui.COLOR_DIM))
 
     if query is not None:
         try:
-            print(ask(query))
+            # Same rendering as the interactive REPL (markdown when rich is
+            # installed, plain passthrough otherwise / when piped).
+            tui.print_markdown(ask(query))
             return 0
         except ZelineError as exc:
             print(f"[error] {exc}")
@@ -1048,19 +1792,37 @@ def cmd_chat(query: str | None = None) -> int:
     color = _terminal_color_enabled()
     chevron = branding.prompt_glyph(unicode_ok)
     sep = "\u2022" if unicode_ok else "-"
-    hint = f"Type your message.  {sep}  undo  {sep}  exit"
+    hint = f"Type your message.  {sep}  /help  {sep}  undo  {sep}  exit"
     print(f"{_paint(hint, COLOR_BLUE) if color else hint}\n")
     you_prompt = f"You {chevron}"
     you_rendered = f"{_paint(you_prompt, COLOR_LIGHT_BLUE) if color else you_prompt} "
+    _init_readline_history()  # TTY-only; piped/one-shot runs never touch history
+    # Footer turn hanya di REPL interaktif dengan stdout TTY — piped/non-TTY
+    # tidak melihat kosmetik ANSI.
+    interactive_tty = tui.supports_stream()
     while True:
         try:
-            text = input(you_rendered).strip()
+            text = _read_user_input(you_rendered)
         except (EOFError, KeyboardInterrupt):
             _run_reflection(sessions)
             print("\nGoodbye!")
             return 0
         if not text:
             continue
+        # Split-brain: fast reflex for simple queries (no LLM call needed).
+        # Gated behind config.SPLITBRAIN_REFLEX (default off) to preserve the
+        # standard agent-turn behavior (footer, tool progress, renderer hooks).
+        try:
+            if getattr(config, "SPLITBRAIN_REFLEX", False):
+                from zeline import splitbrain as _sb
+                if _sb.classify(text) == "reflex":
+                    _reflex = _sb.reflex_response(text)
+                    if _reflex:
+                        print(f"  {_reflex}")
+                        print()
+                        continue
+        except Exception:
+            pass
         if text.lower() in {"keluar", "exit", "quit", "q"}:
             _run_reflection(sessions)
             print("Goodbye!")
@@ -1076,16 +1838,145 @@ def cmd_chat(query: str | None = None) -> int:
             cmd_undo(show_list=True)
             print()
             continue
+        # Slash commands run locally in the REPL — never sent to the model.
+        slash_action = _handle_slash_command(text)
+        if slash_action == "exit":
+            _run_reflection(sessions)
+            print("Goodbye!")
+            return 0
+        if slash_action == "handled":
+            if _editor_draft:
+                # /editor composed a turn: skip the blank line and send it.
+                text = _editor_draft.pop(0)
+            else:
+                print()
+                continue
+        rendering_final = False
         try:
+            turn_started = time.monotonic()
             answer = ask(text)
             reply_prompt = f"{config.NAME} {chevron}"
-            print(f"{_paint(reply_prompt, COLOR_DARK_BLUE) if color else reply_prompt} {answer}\n")
+            print(_paint(reply_prompt, COLOR_DARK_BLUE) if color else reply_prompt)
+            # Fase render akhir dimulai di sini: KeyboardInterrupt dari titik
+            # ini berarti turn SUDAH sukses — pesannya netral (#9).
+            rendering_final = True
+            # #8: jalur no-rich sudah menulis incremental ke layar — jangan
+            # render dua kali. getattr(..., False): renderer None atau mock
+            # tanpa properti tetap dirender final (aman: tidak ada output
+            # yang hilang bila ragu).
+            if not getattr(ask.last_renderer, "rendered_incrementally", False):
+                tui.print_markdown(answer)
+            if interactive_tty:
+                _print_turn_footer(turn_started)
+            print()
+        except KeyboardInterrupt:
+            # Ctrl+C ganda: KeyboardInterrupt KEDUA di dalam body handler ini
+            # ditangkap → keluar bersih (#10), bukan traceback.
+            try:
+                # Ctrl+C di tengah turn ATAU saat render akhir: REPL tetap
+                # hidup. (Ctrl+C saat prompt input kosong tetap exit —
+                # ditangani oleh handler _read_user_input di atas, tidak
+                # berubah.) renderer sudah di-done() oleh finally di ask();
+                # stop() memutus tool/ask_user yang masih jalan (no-op bila
+                # turn sudah selesai). cancel_event di-clear lagi oleh send()
+                # berikutnya, jadi turn berikutnya jalan normal.
+                try:
+                    sessions.stop("cli:local")
+                except Exception:
+                    pass  # stop best-effort; jangan bunuh REPL
+                # #9: KI saat render akhir = turn sudah sukses → pesan netral,
+                # bukan "turn dibatalkan" yang menyesatkan.
+                notice = "turn selesai" if rendering_final else "turn dibatalkan"
+                print(f"\n  {tui.paint(notice, tui.COLOR_DIM)}")
+                if interactive_tty:
+                    _print_turn_footer(turn_started)
+                print()
+            except KeyboardInterrupt:
+                print("\nGoodbye!")
+                return 0
+            continue
         except ZelineError as exc:
             print(f"{_paint(f'[error] {exc}', COLOR_RED) if color else f'[error] {exc}'}\n")
+        except Exception as exc:  # noqa: BLE001 - REPL tidak boleh mati oleh turn
+            msg = f"[error] {type(exc).__name__}: {exc}"
+            print(f"{_paint(msg, COLOR_RED) if color else msg}\n")
 
 
-def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "") -> int:
-    """Manage MCP servers: add / list / remove / test."""
+def _parse_risk_classes(raw: str, flag: str) -> list[str]:
+    """Parse daftar kelas risiko dari flag CLI, mis. "write,network".
+
+    Case-insensitive, spasi diabaikan, duplikat dibuang (urutan stabil).
+    Me-raise ValueError dengan pesan jelas bila ada kelas yang tidak
+    dikenal — pemanggil harus menolak tanpa menyimpan apa pun.
+    """
+    from zeline.tools import TOOL_RISKS
+
+    items = [part.strip().lower() for part in (raw or "").split(",")]
+    items = [item for item in items if item]
+    unknown = [item for item in items if item not in TOOL_RISKS]
+    if unknown:
+        raise ValueError(
+            f"{flag} must be a comma-separated list of "
+            f"{', '.join(sorted(TOOL_RISKS))}; unknown: {', '.join(unknown)}."
+        )
+    seen: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.append(item)
+    return seen
+
+
+def cmd_voice(namespace) -> int:
+    """Offline voice commands: transcribe / speak / status / download-model."""
+    from zeline import voice as _voice_mod
+
+    action = namespace.voice_command or "status"
+    if action == "status":
+        status = _voice_mod.voice_status()
+        for key, label in (("stt", "STT (faster-whisper)"), ("tts_local", "TTS lokal"), ("tts_edge", "TTS edge")):
+            info = status[key]
+            mark = "✅" if info["available"] else "❌"
+            backend = info.get("backend") or "-"
+            print(f"{mark} {label}: {backend}")
+            print(f"   {info['detail']}")
+        return 0
+    if action == "transcribe":
+        try:
+            text = _voice_mod.transcribe(namespace.file, model=namespace.model, language=namespace.language)
+        except _voice_mod.VoiceError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(text if text else "(no speech detected)")
+        return 0
+    if action == "speak":
+        import time as _time
+        out = (namespace.output or "").strip() or f"voice-{int(_time.time())}.wav"
+        try:
+            result = _voice_mod.speak(namespace.text, out, voice=namespace.voice, backend=namespace.backend)
+        except _voice_mod.VoiceError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"Saved: {result}")
+        return 0
+    if action == "download-model":
+        try:
+            print(_voice_mod.download_stt_model(namespace.model))
+        except _voice_mod.VoiceError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        return 0
+    print(f"Unknown voice command: {action}")
+    return 1
+
+
+def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "", trust_risk_cap: str = "") -> int:
+    """Manage MCP servers: add / list / remove / test.
+
+    ``trust_risk_cap`` (hanya untuk ``add``) adalah convenience flag CLI
+    untuk ``--trust-risk-cap``: mengisi ``mcp.servers.<nama>.trust.risk_cap``
+    di config. Nilai harus salah satu kelas risiko yang dikenal
+    (case-insensitive); nilai invalid ditolak dan config TIDAK disimpan.
+    """
     from zeline import mcp as mcp_module
 
     if action == "list":
@@ -1098,7 +1989,9 @@ def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", comman
             state = "enabled" if spec.get("enabled", True) else "disabled"
             kind = spec.get("transport") or ("http" if spec.get("url") else "stdio")
             target = spec.get("url") or spec.get("command") or "?"
-            print(f"  - {server_name:<16} [{kind}] {state}  {target}")
+            trust = (spec.get("trust") or {}).get("risk_cap", "") if isinstance(spec.get("trust"), dict) else ""
+            trust_text = f"  trust:{trust}" if trust else "  trust:— (destructive default)"
+            print(f"  - {server_name:<16} [{kind}] {state}  {target}{trust_text}")
         return 0
 
     if action == "add":
@@ -1108,6 +2001,24 @@ def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", comman
         if not command and not url:
             print("Need --command (stdio) or --url (http).")
             return 2
+        cap_raw = (trust_risk_cap or "").strip()
+        cap = ""
+        if cap_raw:
+            # Validasi ketat: tepat SATU kelas risiko yang dikenal.
+            # Nilai invalid/lebih dari satu = error jelas + config tidak
+            # disimpan (fail closed).
+            try:
+                parsed = _parse_risk_classes(cap_raw, "--trust-risk-cap")
+            except ValueError as exc:
+                print(f"ERROR: {exc}")
+                return 2
+            if len(parsed) != 1:
+                print(
+                    "ERROR: --trust-risk-cap takes exactly one risk class "
+                    f"(got {len(parsed)}: {', '.join(parsed)})."
+                )
+                return 2
+            cap = parsed[0]
         cfg = config.stored_config_copy()
         servers = cfg.setdefault("mcp", {}).setdefault("servers", {})
         spec: dict[str, Any] = {"enabled": True}
@@ -1115,9 +2026,21 @@ def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", comman
             spec.update({"transport": "http", "url": url})
         else:
             spec.update({"transport": "stdio", "command": command})
+        if cap:
+            spec["trust"] = {"risk_cap": cap}
         servers[name] = spec
         config.save_config(cfg)
         print(f"MCP server '{name}' added. Test with: zeline mcp test {name}")
+        if cap:
+            print(f"  Trust: ALL tools of '{name}' are capped at risk class '{cap}' —")
+            print("  current and future, permanently, until you change this in the")
+            print("  config file. Re-check tool behavior after every server update —")
+            print("  the cap trusts the server, not individual tools.")
+        else:
+            print("  Trust: none — every tool of this server defaults to")
+            print("  'destructive' (approval required) until you set a cap:")
+            print(f"    zeline mcp add {name} ... --trust-risk-cap read")
+            print("  (or edit mcp.servers.<name>.trust.risk_cap in the config file)")
         return 0
 
     if action == "remove":
@@ -1174,6 +2097,8 @@ def cmd_gateway_setup(name: str | None = None) -> int:
             _setup_whatsapp(cfg)
         elif gateway_name == "webhook":
             _setup_webhook(cfg)
+        elif gateway_name == "webchat":
+            _setup_webchat(cfg)
     config.save_config(cfg)
     print("Gateway configuration saved.")
     return 0
@@ -1187,7 +2112,16 @@ def cmd_gateway_enable(name: str) -> int:
     gateway = _gateway_cfg(cfg, name)
     if name == "webhook":
         # Non-interactive: secret is generated but not printed (safe for automation).
-        gateway.update({"enabled": True, "host": "127.0.0.1", "port": int(gateway.get("port", 8765)), "token": gateway.get("token") or config.new_webhook_token(), "tool_profile": "safe"})
+        port = _stored_port(gateway, name, 8765)
+        if port is None:
+            return 2
+        gateway.update({"enabled": True, "host": "127.0.0.1", "port": port, "token": gateway.get("token") or config.new_webhook_token(), "tool_profile": "safe"})
+    elif name == "webchat":
+        # Same treatment as webhook: generated but not printed; webchat stays safe-only.
+        port = _stored_port(gateway, name, 8787)
+        if port is None:
+            return 2
+        gateway.update({"enabled": True, "host": "127.0.0.1", "port": port, "token": gateway.get("token") or config.new_webhook_token(), "tool_profile": "safe"})
     elif name == "telegram":
         if not gateway.get("token"):
             print("Telegram needs a token. Use: zeline gateway setup telegram")
@@ -1331,6 +2265,15 @@ def cmd_gateway_run(only: list[str] | None = None) -> int:
     if not enabled:
         print("No enabled gateway. Run `zeline gateway setup`.")
         return 2
+    # Config bisa diedit tangan menjadi 0.0.0.0 setelah setup: jangan
+    # diam-diam mengikat ke semua interface — peringatkan eksplisit di sini.
+    for _gw_name, _gw_data in enabled:
+        if _gw_name in ("webchat", "webhook") and _is_unspecified_host(str(_gw_data.get("host", ""))):
+            print(
+                f"  ⚠️  WARNING: the {_gw_name} gateway binds to all interfaces "
+                f"({_gw_data.get('host')}) — reachable from the network. "
+                f"Prefer 127.0.0.1; change with `zeline gateway setup {_gw_name}`."
+            )
     if not config.API_KEY:
         print("API key is empty. Run `zeline setup` before gateway run.")
         return 2
@@ -1537,6 +2480,279 @@ def cmd_connect(service: str | None, code: str = "") -> int:
     if conn is None:
         print(f"Unknown connector '{service}'. Available: {', '.join(connectors_pkg.all_ids())}")
         return 2
+    if service == "trello":
+        # Needs API key + token (two secrets), not the single-token "pat" flow.
+        import getpass
+
+        api_key = getpass.getpass("Trello API key: ").strip()
+        token = getpass.getpass("Trello token: ").strip()
+        print(conn.connect(api_key=api_key, token=token))
+        return 0
+    if service == "jira":
+        # Needs email + API token + site URL, not the single-token "pat" flow.
+        import getpass
+
+        email = input("Jira account email: ").strip()
+        token = getpass.getpass("Jira API token: ").strip()
+        base_url = input("Jira base URL (e.g. https://your-site.atlassian.net): ").strip()
+        print(conn.connect(email=email, token=token, base_url=base_url))
+        return 0
+    if service == "teams":
+        # Needs a webhook URL, not a token.
+        url = input("Teams incoming webhook URL: ").strip()
+        print(conn.connect(url=url))
+        return 0
+    if service == "twilio":
+        # Needs account SID + auth token.
+        import getpass
+
+        account_sid = input("Twilio account SID: ").strip()
+        auth_token = getpass.getpass("Twilio auth token: ").strip()
+        print(conn.connect(account_sid=account_sid, auth_token=auth_token))
+        return 0
+    if service == "sendgrid":
+        # Param is named api_key, not token.
+        import getpass
+
+        api_key = getpass.getpass("SendGrid API key: ").strip()
+        print(conn.connect(api_key=api_key))
+        return 0
+    if service == "pushover":
+        # Needs user key + application token.
+        import getpass
+
+        user_key = getpass.getpass("Pushover user key: ").strip()
+        app_token = getpass.getpass("Pushover application token: ").strip()
+        print(conn.connect(user_key=user_key, app_token=app_token))
+        return 0
+    if service == "datadog":
+        # Needs API key + application key.
+        import getpass
+
+        api_key = getpass.getpass("Datadog API key: ").strip()
+        app_key = getpass.getpass("Datadog application key: ").strip()
+        print(conn.connect(api_key=api_key, app_key=app_key))
+        return 0
+    if service == "confluence":
+        # Needs email + API token + site URL, like Jira.
+        import getpass
+
+        email = input("Confluence account email: ").strip()
+        token = getpass.getpass("Confluence API token: ").strip()
+        base_url = input("Confluence base URL (e.g. https://your-site.atlassian.net): ").strip()
+        print(conn.connect(email=email, token=token, base_url=base_url))
+        return 0
+    if service == "zendesk":
+        # Needs email + API token + subdomain.
+        import getpass
+
+        email = input("Zendesk account email: ").strip()
+        token = getpass.getpass("Zendesk API token: ").strip()
+        subdomain = input("Zendesk subdomain (e.g. mycompany): ").strip()
+        print(conn.connect(email=email, token=token, subdomain=subdomain))
+        return 0
+    if service == "bitbucket":
+        # Needs username + app password (HTTP Basic).
+        import getpass
+
+        username = input("Bitbucket username: ").strip()
+        app_password = getpass.getpass("Bitbucket app password: ").strip()
+        print(conn.connect(username=username, app_password=app_password))
+        return 0
+    if service == "sentry":
+        # Needs token + organization slug.
+        import getpass
+
+        token = getpass.getpass("Sentry auth token: ").strip()
+        organization_slug = input("Sentry organization slug: ").strip()
+        print(conn.connect(token=token, organization_slug=organization_slug))
+        return 0
+    if service == "stripe":
+        # Param is named secret_key, not token.
+        import getpass
+
+        secret_key = getpass.getpass("Stripe secret key: ").strip()
+        print(conn.connect(secret_key=secret_key))
+        return 0
+    if service == "reddit":
+        # Needs app client_id + client_secret + username + password (script OAuth).
+        import getpass
+
+        client_id = input("Reddit app client ID: ").strip()
+        client_secret = getpass.getpass("Reddit app client secret: ").strip()
+        username = input("Reddit username: ").strip()
+        password = getpass.getpass("Reddit password: ").strip()
+        print(conn.connect(client_id=client_id, client_secret=client_secret,
+                           username=username, password=password))
+        return 0
+    if service == "mastodon":
+        # Needs access token + instance URL.
+        import getpass
+
+        access_token = getpass.getpass("Mastodon access token: ").strip()
+        instance = input("Mastodon instance (e.g. https://mastodon.social): ").strip()
+        print(conn.connect(access_token=access_token, instance=instance))
+        return 0
+    if service == "bluesky":
+        # Needs identifier + app password.
+        import getpass
+
+        identifier = input("Bluesky identifier (handle or email): ").strip()
+        app_password = getpass.getpass("Bluesky app password: ").strip()
+        print(conn.connect(identifier=identifier, app_password=app_password))
+        return 0
+    if service == "mailgun":
+        # Needs API key + domain.
+        import getpass
+
+        api_key = getpass.getpass("Mailgun API key: ").strip()
+        domain = input("Mailgun domain: ").strip()
+        print(conn.connect(api_key=api_key, domain=domain))
+        return 0
+    if service == "vonage":
+        # Needs API key + API secret.
+        import getpass
+
+        api_key = input("Vonage API key: ").strip()
+        api_secret = getpass.getpass("Vonage API secret: ").strip()
+        print(conn.connect(api_key=api_key, api_secret=api_secret))
+        return 0
+    if service == "onesignal":
+        # Needs app ID + REST API key.
+        import getpass
+
+        app_id = input("OneSignal app ID: ").strip()
+        api_key = getpass.getpass("OneSignal REST API key: ").strip()
+        print(conn.connect(app_id=app_id, api_key=api_key))
+        return 0
+    if service == "teamwork":
+        # Needs API token + subdomain.
+        import getpass
+
+        api_token = getpass.getpass("Teamwork API token: ").strip()
+        subdomain = input("Teamwork subdomain (e.g. mycompany): ").strip()
+        print(conn.connect(api_token=api_token, subdomain=subdomain))
+        return 0
+    if service == "freshdesk":
+        # Needs API key + subdomain.
+        import getpass
+
+        api_key = getpass.getpass("Freshdesk API key: ").strip()
+        subdomain = input("Freshdesk subdomain (e.g. mycompany): ").strip()
+        print(conn.connect(api_key=api_key, subdomain=subdomain))
+        return 0
+    if service == "chargebee":
+        # Needs API key + site name.
+        import getpass
+
+        api_key = getpass.getpass("Chargebee API key: ").strip()
+        site = input("Chargebee site name (e.g. mycompany): ").strip()
+        print(conn.connect(api_key=api_key, site=site))
+        return 0
+    if service == "ghost":
+        # Needs Admin API key + site URL.
+        import getpass
+
+        api_key = getpass.getpass("Ghost Admin API key (id:secret): ").strip()
+        url = input("Ghost site URL (e.g. https://blog.example.com): ").strip()
+        print(conn.connect(url=url, api_key=api_key))
+        return 0
+    if service == "paypal":
+        # Needs OAuth client ID + secret (exchanged for an access token).
+        import getpass
+
+        client_id = input("PayPal client ID: ").strip()
+        client_secret = getpass.getpass("PayPal client secret: ").strip()
+        print(conn.connect(client_id=client_id, client_secret=client_secret))
+        return 0
+    if service == "jenkins":
+        # Needs username + API token + base URL.
+        import getpass
+
+        username = input("Jenkins username: ").strip()
+        api_token = getpass.getpass("Jenkins API token: ").strip()
+        base_url = input("Jenkins base URL (e.g. https://jenkins.example.com): ").strip()
+        print(conn.connect(username=username, api_token=api_token, base_url=base_url))
+        return 0
+    if service in ("devto", "resend", "height", "opsgenie", "render"):
+        # Param is named api_key, not token.
+        import getpass
+
+        api_key = getpass.getpass("API key: ").strip()
+        print(conn.connect(api_key=api_key))
+        return 0
+    if service == "shortcut":
+        # Param is named api_token, not token.
+        import getpass
+
+        api_token = getpass.getpass("Shortcut API token: ").strip()
+        print(conn.connect(api_token=api_token))
+        return 0
+    if service == "n8n":
+        # Needs API key + self-hosted base URL.
+        import getpass
+
+        api_key = getpass.getpass("n8n API key: ").strip()
+        base_url = input("n8n base URL (e.g. https://n8n.example.com): ").strip()
+        print(conn.connect(api_key=api_key, base_url=base_url))
+        return 0
+    if service == "mailchimp":
+        # Needs API key + datacenter suffix (derived from the key when blank).
+        import getpass
+
+        api_key = getpass.getpass("Mailchimp API key: ").strip()
+        datacenter = input("Mailchimp datacenter (e.g. us1, blank to derive from key): ").strip()
+        print(conn.connect(api_key=api_key, datacenter=datacenter))
+        return 0
+    if service == "activecampaign":
+        # Needs API key + account base URL.
+        import getpass
+
+        api_key = getpass.getpass("ActiveCampaign API key: ").strip()
+        base_url = input("ActiveCampaign base URL (e.g. https://youraccount.api-us1.com): ").strip()
+        print(conn.connect(api_key=api_key, base_url=base_url))
+        return 0
+    if service == "beehiiv":
+        # Needs API key + publication id.
+        import getpass
+
+        api_key = getpass.getpass("Beehiiv API key: ").strip()
+        publication_id = input("Beehiiv publication id: ").strip()
+        print(conn.connect(api_key=api_key, publication_id=publication_id))
+        return 0
+    if service == "algolia":
+        # Needs application ID + API key.
+        import getpass
+
+        app_id = input("Algolia application ID: ").strip()
+        api_key = getpass.getpass("Algolia API key: ").strip()
+        print(conn.connect(app_id=app_id, api_key=api_key))
+        return 0
+    if service == "meilisearch":
+        # Needs master key + host base URL.
+        import getpass
+
+        master_key = getpass.getpass("Meilisearch master key: ").strip()
+        base_url = input("Meilisearch base URL (e.g. http://localhost:7700): ").strip()
+        print(conn.connect(master_key=master_key, base_url=base_url))
+        return 0
+    if service == "typesense":
+        # Needs API key + host base URL.
+        import getpass
+
+        api_key = getpass.getpass("Typesense API key: ").strip()
+        base_url = input("Typesense base URL (e.g. http://localhost:8108): ").strip()
+        print(conn.connect(api_key=api_key, base_url=base_url))
+        return 0
+    if service == "cloudinary":
+        # Needs cloud name + API key + API secret.
+        import getpass
+
+        cloud_name = input("Cloudinary cloud name: ").strip()
+        api_key = getpass.getpass("Cloudinary API key: ").strip()
+        api_secret = getpass.getpass("Cloudinary API secret: ").strip()
+        print(conn.connect(cloud_name=cloud_name, api_key=api_key, api_secret=api_secret))
+        return 0
     if conn.auth_kind == "pat":
         import getpass
 
@@ -1777,7 +2993,12 @@ def cmd_session_export(identity: str, path: str | None = None, *, include_archiv
         return 2
     archive = store.recent_archive(identity, limit=500) if include_archive else []
     payload = session_transfer.build_export(identity, messages, title, archive)
-    target = session_transfer.write_export(path or f"zeline-session-{int(time.time())}.json", payload)
+    try:
+        target = session_transfer.write_export(path or f"zeline-session-{int(time.time())}.json", payload)
+    except FileExistsError as exc:
+        print(f"[!] {exc}")
+        print("    Give a different path, or delete the existing file first.")
+        return 1
     print(f"Exported {len(messages)} messages to {target}")
     if archive:
         print(f"  plus {len(archive)} archived turns")
@@ -2153,8 +3374,16 @@ def cmd_cron(
     prompt: str | None = None,
     deliver: str | None = None,
     job_id: str | None = None,
+    grants: str | None = None,
 ) -> int:
-    """Manage scheduled jobs."""
+    """Manage scheduled jobs.
+
+    ``grants`` (hanya untuk ``add``) adalah convenience flag CLI untuk
+    ``--grants``: daftar kelas risiko yang dipisah koma (mis.
+    ``"write,network"``). Mengetik flag ini adalah consent eksplisit, jadi
+    job langsung aktif dengan grants tersebut tanpa picker tambahan.
+    Tanpa flag, job dibuat paused dan kapabilitas di-approve interaktif.
+    """
     from zeline import scheduler as cron_module
 
     if action == "list":
@@ -2180,24 +3409,93 @@ def cmd_cron(
 
     if action == "add":
         if not schedule or not prompt:
-            print("Usage: zeline cron add <schedule> <prompt> [--deliver telegram:<chat_id>]")
+            print("Usage: zeline cron add <schedule> <prompt> [--deliver telegram:<chat_id>] [--grants write,network]")
             return 2
+
+        def _print_created(job: object) -> None:
+            print(
+                f"Created {job.id} — {job.parsed().describe()}, "
+                f"first run {cron_module.format_time(job.next_run)}"
+            )
+            if job.deliver in ("local", "", "none"):
+                print(f"  Results are saved to {cron_module.output_dir()}")
+                print("  To have them sent to you: --deliver telegram:<chat_id>")
+            else:
+                print(f"  Results will be delivered to {job.deliver}")
+            if not cron_module.enabled():
+                print("  NOTE: tools.cron is false, so nothing will run until it is enabled.")
+
+        declared = (grants or "").strip()
+        if declared:
+            # --grants = consent eksplisit yang diketik operator: job langsung
+            # aktif dengan grants tersebut, TANPA picker tambahan. Validasi
+            # dulu — kelas invalid = tolak, job tidak dibuat sama sekali.
+            try:
+                risk_classes = _parse_risk_classes(declared, "--grants")
+            except ValueError as exc:
+                print(f"ERROR: {exc}")
+                return 2
+            try:
+                job = cron_module.add_job(
+                    schedule,
+                    prompt,
+                    deliver or "local",
+                    grants={"tools": [], "risk": risk_classes},
+                    enabled=True,
+                )
+            except cron_module.CronError as exc:
+                print(f"ERROR: {exc}")
+                return 1
+            _print_created(job)
+            print(f"  Granted via --grants (no picker asked): {cron_module.describe_grants(job)}")
+            print("  Anything beyond these grants is DENIED at run time and")
+            print(f"  recorded in the job's status. Review with: zeline cron show {job.id}")
+            return 0
+
         try:
-            job = cron_module.add_job(schedule, prompt, deliver or "local")
+            # Created paused: the capability grant below decides whether this
+            # job ever arms after pre-authorization.
+            job = cron_module.add_job(schedule, prompt, deliver or "local", enabled=False)
         except cron_module.CronError as exc:
             print(f"ERROR: {exc}")
             return 1
-        print(
-            f"Created {job.id} — {job.parsed().describe()}, "
-            f"first run {cron_module.format_time(job.next_run)}"
-        )
-        if job.deliver in ("local", "", "none"):
-            print(f"  Results are saved to {cron_module.output_dir()}")
-            print("  To have them sent to you: --deliver telegram:<chat_id>")
-        else:
-            print(f"  Results will be delivered to {job.deliver}")
-        if not cron_module.enabled():
-            print("  NOTE: tools.cron is false, so nothing will run until it is enabled.")
+        # The chat loop registers its own synchronous asker; a bare
+        # `zeline cron add` has none, so ask here over stdin. Scoped to this
+        # call — never left registered.
+        def _cron_ask(entry: object) -> str:
+            question = getattr(entry, "question", "")
+            options = list(getattr(entry, "options", ()) or ())
+            print()
+            print("A cron job runs UNATTENDED — approve what it may do, once:")
+            print(question)
+            if options:
+                for index, option in enumerate(options, start=1):
+                    print(f"  {index}) {option}")
+            try:
+                reply = input("  answer › ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return "CANCELLED: the user cancelled this question."
+            if options and reply.isdigit():
+                idx = int(reply) - 1
+                if 0 <= idx < len(options):
+                    return options[idx]
+            return reply or "CANCELLED: the user cancelled this question."
+
+        interaction.register_channel("cli:local", _cron_ask)
+        try:
+            verdict = interaction.ask(
+                "cli:local", cron_module.capability_question(job), ["Allow", "Deny"]
+            )
+        finally:
+            interaction.unregister_channel("cli:local")
+        if approvals.parse_verdict(verdict) == "deny":
+            cron_module.remove_job(job.id)
+            print("Denied — job not created.")
+            return 1
+        cron_module.set_enabled(job.id, True)
+        _print_created(job)
+        print(f"  Granted (via picker): {cron_module.describe_grants(job)}")
         return 0
 
     if action in {"remove", "pause", "resume", "run", "show"}:
@@ -2225,6 +3523,7 @@ def cmd_cron(
         print(f"  Schedule : {job.schedule}  ({job.parsed().describe()})")
         print(f"  State    : {'enabled' if job.enabled else 'paused'}")
         print(f"  Deliver  : {job.deliver}")
+        print(f"  Grants   : {cron_module.describe_grants(job)}")
         print(f"  Runs     : {job.runs} ({job.failures} failed)")
         if job.last_status:
             print(f"  Last     : {job.last_status}")
@@ -2384,6 +3683,113 @@ def cmd_plugins(action: str = "list", *, name: str | None = None) -> int:
     return 0
 
 
+def cmd_hooks(
+    action: str = "list",
+    *,
+    name: str | None = None,
+    event: str | None = None,
+    hook_command: str | None = None,
+) -> int:
+    """Manage event-driven automation hooks (zeline/hooks.py)."""
+    from zeline import hooks as hook_bus
+
+    if action == "list":
+        info = hook_bus.describe()
+        print(f"Hooks {'enabled' if info['enabled'] else 'DISABLED'} — {info['config']}")
+        print(f"Events: {', '.join(info['events'])}")
+        print(f"Built-ins: {', '.join(info['builtin_hooks'])}")
+        print()
+        if info["persistent_hooks"]:
+            print(f"{len(info['persistent_hooks'])} persistent hook(s):")
+            for h in info["persistent_hooks"]:
+                status = "on " if h.get("enabled", True) else "off"
+                extra = f" [{h.get('type')}]"
+                cmd = f" :: {h['command'][:60]}" if h.get("command") else ""
+                print(f"  [{status}] {h.get('name')} @ {h.get('event')}{extra}{cmd}")
+        else:
+            print("No persistent hooks.")
+        cbs = info["registered_callbacks"]
+        if cbs:
+            print(f"\n{len(cbs)} in-process callback(s):")
+            for c in cbs:
+                print(f"  * {c['name']} @ {c['event']}")
+        errs = info["recent_errors"]
+        if errs:
+            print(f"\n{len(errs)} recent failure(s):")
+            for e in errs[-5:]:
+                print(f"  ! {e['hook']} @ {e['event']}: {e['error'][:80]}")
+        print()
+        print("  zeline hooks add <name> <event> --command \"<shell>\"")
+        print("  zeline hooks remove <name>    |  zeline hooks errors")
+        return 0
+
+    if action == "add":
+        if not name or not event or not hook_command:
+            print("Usage: zeline hooks add <name> <event> --command \"<shell>\"")
+            return 2
+        try:
+            entry = hook_bus.add_hook_def(name, event, hook_command)
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"Added hook '{entry['name']}' on {entry['event']}.")
+        print("  Event JSON is piped to stdin; HOOK_EVENT/HOOK_NAME in env.")
+        print("  WARNING: this command runs with YOUR FULL user privileges (no sandbox)")
+        print("  on every matching event. Only add commands you wrote and understand.")
+        print("  Never paste hook commands from the web/chat/email. Review with")
+        print("  'zeline hooks list' periodically.")
+        return 0
+
+    if action == "remove":
+        if not name:
+            print("Usage: zeline hooks remove <name>")
+            return 2
+        if hook_bus.remove_hook_def(name):
+            print(f"Removed hook '{name}'.")
+            return 0
+        print(f"No hook named '{name}'.")
+        return 1
+
+    if action == "errors":
+        import datetime
+
+        errs = hook_bus.hook_errors()
+        if not errs:
+            print("No hook failures recorded.")
+            return 0
+        for e in errs[-20:]:
+            ts = datetime.datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S")
+            print(f"  [{ts}] {e['hook']} @ {e['event']}: {e['error'][:100]}")
+        return 0
+
+    print(f"Unknown hooks action: {action}")
+    return 2
+
+
+def cmd_vault(
+    action: str = "export",
+    *,
+    path: str | None = None,
+    identity: str = "cli:local",
+) -> int:
+    """Export/sync memory to an Obsidian-compatible vault (zeline/memory_tree.py)."""
+    from zeline import memory_tree
+
+    if action == "export":
+        stats = memory_tree.export_vault(identity, path)
+        print(f"Exported {stats['files']} files to {stats['path']}")
+        print(f"  daily: {stats['daily']}, topics: {stats['topics']}, skills: {stats['skills']}")
+        return 0
+
+    if action == "sync":
+        stats = memory_tree.sync_vault(identity, path)
+        print(f"Synced {stats['path']}: {stats['changed']} changed, {stats['removed']} removed")
+        return 0
+
+    print(f"Unknown vault action: {action}")
+    return 2
+
+
 def _native_tool_names() -> list[str]:
     from zeline.tools import TOOL_DEFS
 
@@ -2511,6 +3917,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat = subparsers.add_parser("chat", help="chat in the terminal")
     chat.add_argument("-q", "--query", help="single query, no interactive mode")
+    subparsers.add_parser("acp", help="start ACP server for IDE integration (VS Code/Zed/JetBrains)")
+    peer = subparsers.add_parser("peer", help="bot-to-bot communication with other Zeline instances")
+    peer_sub = peer.add_subparsers(dest="peer_command")
+    p_serve = peer_sub.add_parser("serve", help="start peer server (receive messages)")
+    p_serve.add_argument("--port", type=int, default=8788, help="listen port (default: 8788)")
+    p_serve.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
+    p_send = peer_sub.add_parser("send", help="send a message to a peer")
+    p_send.add_argument("url", help="peer base URL (e.g. http://other-host:8788)")
+    p_send.add_argument("message", help="message text to send")
+    peer_sub.add_parser("keygen", help="generate a new peer shared secret")
+    voice = subparsers.add_parser("voice", help="offline voice: speech-to-text and text-to-speech")
+    voice_sub = voice.add_subparsers(dest="voice_command")
+    v_transcribe = voice_sub.add_parser("transcribe", help="transcribe an audio file to text (local faster-whisper)")
+    v_transcribe.add_argument("file", help="audio file path (wav/mp3/ogg/m4a)")
+    v_transcribe.add_argument("--model", default="tiny", help="whisper model size (default: tiny)")
+    v_transcribe.add_argument("--language", default=None, help="language code, e.g. id, en (default: auto)")
+    v_speak = voice_sub.add_parser("speak", help="speak text to a WAV file (local piper/espeak)")
+    v_speak.add_argument("text", help="text to speak (max 5000 chars)")
+    v_speak.add_argument("-o", "--output", default="", help="output .wav path (default: voice-<ts>.wav in cwd)")
+    v_speak.add_argument("--voice", default="id", help="espeak voice code (default: id)")
+    v_speak.add_argument("--backend", default=None, help="force backend: piper, espeak-ng, espeak")
+    voice_sub.add_parser("status", help="show which voice backends are available")
+    v_dl = voice_sub.add_parser("download-model", help="download a faster-whisper STT model (explicit, one-time)")
+    v_dl.add_argument("model", nargs="?", default="tiny", help="model size (default: tiny)")
     subparsers.add_parser("model", help="change provider/model without re-running gateway setup")
     keys = subparsers.add_parser("keys", help="manage provider API key pool (auto-rotates on 401/403/429)")
     keys_sub = keys.add_subparsers(dest="keys_command")
@@ -2549,6 +3979,17 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_add.add_argument("name")
     mcp_add.add_argument("--command", dest="mcp_cmd", default="", help="stdio server command, e.g. 'npx -y @modelcontextprotocol/server-filesystem ~/'")
     mcp_add.add_argument("--url", default="", help="streamable HTTP server URL")
+    mcp_add.add_argument(
+        "--trust-risk-cap",
+        dest="trust_risk_cap",
+        default="",
+        help="trust this server's tools at most at this risk class "
+        "(read/write/network/install/destructive). The cap applies to EVERY "
+        "tool the server exposes — current and future — permanently, until "
+        "you change or remove it in the config file: it is trust in the "
+        "SERVER, not in a single tool. Without it, every tool of the "
+        "server defaults to destructive (fail closed).",
+    )
     mcp_sub.add_parser("list", help="list MCP servers")
     mcp_remove = mcp_sub.add_parser("remove", help="remove an MCP server")
     mcp_remove.add_argument("name")
@@ -2662,6 +4103,14 @@ def build_parser() -> argparse.ArgumentParser:
     cron_add.add_argument("schedule", help="interval ('30m', 'every 2h', '1d') or daily time ('09:00')")
     cron_add.add_argument("prompt", help="what the agent should do")
     cron_add.add_argument("--deliver", help="where to send results, e.g. telegram:12345 (default: save locally)")
+    cron_add.add_argument(
+        "--grants",
+        default="",
+        help="pre-authorize capabilities, e.g. --grants write,network. The job is "
+        "created ACTIVE with these grants and no picker question (typing the "
+        "flag is explicit consent). Without it, the job is created paused and "
+        "you approve capabilities interactively.",
+    )
     for verb, help_text in (
         ("show", "show one job in detail"),
         ("run", "run a job on the next tick"),
@@ -2685,6 +4134,29 @@ def build_parser() -> argparse.ArgumentParser:
     plugins_init = plugins_sub.add_parser("init", help="create a starter plugin file")
     plugins_init.add_argument("name", nargs="?", help="file name (default: 10-policy.py)")
     plugins_sub.add_parser("path", help="print the plugins directory")
+
+    hooks_parser = subparsers.add_parser("hooks", help="event-driven automation hooks")
+    hooks_sub = hooks_parser.add_subparsers(dest="hooks_command")
+    hooks_sub.add_parser("list", help="list hooks and their status")
+    hooks_add = hooks_sub.add_parser("add", help="add a shell-command hook")
+    hooks_add.add_argument("name", help="hook name (letters, digits, _,-)")
+    hooks_add.add_argument(
+        "event",
+        help="event: on_tool_call, on_tool_result, on_turn_start, on_turn_end, on_error, on_skill_learned",
+    )
+    hooks_add.add_argument("--command", dest="hook_command", required=True, help="shell command (event JSON on stdin)")
+    hooks_rm = hooks_sub.add_parser("remove", help="remove a hook")
+    hooks_rm.add_argument("name", help="hook name")
+    hooks_sub.add_parser("errors", help="show recent hook failures")
+
+    vault_parser = subparsers.add_parser("vault", help="Obsidian-compatible memory vault")
+    vault_sub = vault_parser.add_subparsers(dest="vault_command")
+    vault_export = vault_sub.add_parser("export", help="export memory to Obsidian vault")
+    vault_export.add_argument("--path", default=None, help="vault path (default ~/zeline-vault)")
+    vault_export.add_argument("--identity", default="cli:local", help="identity to export")
+    vault_sync = vault_sub.add_parser("sync", help="incremental sync memory to vault")
+    vault_sync.add_argument("--path", default=None, help="vault path (default ~/zeline-vault)")
+    vault_sync.add_argument("--identity", default="cli:local", help="identity to sync")
 
     for alias, alias_help in (
         ("start", "alias: start enabled gateways"),
@@ -2751,6 +4223,26 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_setup_center()
     if command == "chat":
         return cmd_chat(namespace.query)
+    if command == "acp":
+        from zeline import acp as acp_mod
+        acp_mod.main()
+        return 0
+    if command == "peer":
+        from zeline import peer as peer_mod
+        action = namespace.peer_command or "serve"
+        if action == "keygen":
+            print(peer_mod.generate_secret())
+            return 0
+        if action == "serve":
+            return peer_mod.main_serve(
+                host=getattr(namespace, "host", "127.0.0.1") or "127.0.0.1",
+                port=getattr(namespace, "port", 8788) or 8788,
+            )
+        if action == "send":
+            return peer_mod.main_send(namespace.url, namespace.message)
+        return 1
+    if command == "voice":
+        return cmd_voice(namespace)
     if command == "model":
         return cmd_model()
     if command == "gateway":
@@ -2841,6 +4333,7 @@ def main(argv: list[str] | None = None) -> int:
             getattr(namespace, "name", None),
             command=getattr(namespace, "mcp_cmd", ""),
             url=getattr(namespace, "url", ""),
+            trust_risk_cap=getattr(namespace, "trust_risk_cap", ""),
         )
     if command in {"skills", "skill"}:
         return cmd_skills()
@@ -2879,6 +4372,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt=getattr(namespace, "prompt", None),
             deliver=getattr(namespace, "deliver", None),
             job_id=getattr(namespace, "job_id", None),
+            grants=getattr(namespace, "grants", None),
         )
     if command == "toolsearch":
         return cmd_toolsearch(getattr(namespace, "action", None) or "status")
@@ -2886,6 +4380,19 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_plugins(
             getattr(namespace, "plugins_command", None) or "list",
             name=getattr(namespace, "name", None),
+        )
+    if command == "hooks":
+        return cmd_hooks(
+            getattr(namespace, "hooks_command", None) or "list",
+            name=getattr(namespace, "name", None),
+            event=getattr(namespace, "event", None),
+            hook_command=getattr(namespace, "hook_command", None),
+        )
+    if command == "vault":
+        return cmd_vault(
+            getattr(namespace, "vault_command", None) or "export",
+            path=getattr(namespace, "path", None),
+            identity=getattr(namespace, "identity", None) or "cli:local",
         )
     if command == "tools":
         action = namespace.tools_command or "list"

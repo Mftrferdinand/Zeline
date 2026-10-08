@@ -44,6 +44,20 @@ def _fresh(home: Path):
     )
 
 
+
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji perilaku tool, bukan gate-nya — jadi gate
+    dilewati dengan allow-all. Tanpa policy, fallback fail-closed (verdict
+    owner) akan me-deny tool mutasi sebelum tool berjalan.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
 class EventLogTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -111,6 +125,7 @@ class EventLogTests(unittest.TestCase):
         home = self.home / "ws"
         home.mkdir(parents=True, exist_ok=True)
         ex = self.tools.ToolExecutor("telegram:owner", profile="full", workspace=str(home))
+        ex.approval_policy = _AllowAllPolicy()
         ex.run("write_file", {"path": "note.txt", "content": "hi"})
         log = self.events.EventLog()
         rows = log.recent("telegram:owner")
@@ -122,6 +137,7 @@ class EventLogTests(unittest.TestCase):
         home = self.home / "ws2"
         home.mkdir(parents=True, exist_ok=True)
         ex = self.tools.ToolExecutor("telegram:owner", profile="full", workspace=str(home))
+        ex.approval_policy = _AllowAllPolicy()
         # edit_file on a missing file returns ERROR; the attempt must still be
         # recorded so a failed side effect is visible, not silently gone.
         ex.run("edit_file", {"path": "missing.txt", "old_text": "a", "new_text": "b"})
@@ -138,6 +154,7 @@ class EventLogTests(unittest.TestCase):
 
     def test_memory_write_is_logged_as_side_effect(self):
         ex = self.tools.ToolExecutor("telegram:owner", profile="safe", workspace=str(self.home))
+        ex.approval_policy = _AllowAllPolicy()
         ex.run("add_memory", {"fact": "User prefers dark mode"})
         rows = self.events.EventLog().recent("telegram:owner")
         self.assertEqual(len(rows), 1)

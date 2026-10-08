@@ -160,6 +160,40 @@ class ExportFileTests(TransferBase):
         target = self.transfer.write_export(self.home, payload)
         self.assertEqual(target.name, "zeline-session.json")
 
+
+class ExportOverwriteTests(TransferBase):
+    def test_write_export_refuses_to_overwrite_by_default(self):
+        # Temuan audit MINOR: export menimpa file target tanpa peringatan.
+        # Default harus menolak, bukan menimpa diam-diam.
+        payload = self.transfer.build_export("x", [], None)
+        target = self.home / "out.json"
+        target.write_text("data lama", encoding="utf-8")
+        with self.assertRaises(FileExistsError):
+            self.transfer.write_export(target, payload)
+        # file lama tidak tersentuh
+        self.assertEqual(target.read_text(encoding="utf-8"), "data lama")
+
+    def test_write_export_overwrites_only_with_explicit_flag(self):
+        payload = self.transfer.build_export("x", [], None)
+        target = self.home / "out.json"
+        target.write_text("data lama", encoding="utf-8")
+        result = self.transfer.write_export(target, payload, overwrite=True)
+        self.assertEqual(result, target)
+        self.assertIn("zeline_session", target.read_text(encoding="utf-8"))
+
+    def test_write_export_to_fresh_target_still_works(self):
+        payload = self.transfer.build_export("x", [], None)
+        target = self.transfer.write_export(self.home / "new.json", payload)
+        self.assertTrue(target.is_file())
+
+    def test_write_export_refusal_message_is_actionable(self):
+        payload = self.transfer.build_export("x", [], None)
+        target = self.home / "out.json"
+        target.write_text("data lama", encoding="utf-8")
+        with self.assertRaises(FileExistsError) as ctx:
+            self.transfer.write_export(target, payload)
+        self.assertIn("overwrite", str(ctx.exception))
+
     def test_read_export_rejects_non_json(self):
         bad = self.home / "bad.json"
         bad.write_text("not json at all", encoding="utf-8")

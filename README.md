@@ -9,6 +9,8 @@
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
   <a href="docs/README.id.md"><img src="https://img.shields.io/badge/Lang-ID-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="docs/README.zh.md"><img src="https://img.shields.io/badge/Lang-中文-0A84FF?style=flat&labelColor=334155"></a>
+  <a href="docs/README.es.md"><img src="https://img.shields.io/badge/Lang-ES-1D4ED8?style=flat&labelColor=334155"></a>
+  <a href="docs/README.ur.md"><img src="https://img.shields.io/badge/Lang-اردو-0A84FF?style=flat&labelColor=334155"></a>
   <br>
   <strong>— by Zerolinear, an AI research lab.</strong>
 </p>
@@ -160,6 +162,28 @@ zeline
 zeline chat -q "What can you do?"
 ```
 
+### Chat slash commands
+
+Inside the interactive chat you can use:
+
+| Command | What it does |
+|---|---|
+| `/help` | List all chat commands |
+| `/model` | Show the active provider model |
+| `/status` | Model, today's token usage, background workers, session |
+| `/goals` | List durable goals and progress |
+| `/workers` | List background workers and their state |
+| `/memory [query]` | Memory stats, or search stored memories |
+| `/clear` | Clear the screen (session keeps running) |
+| `/undo` | Undo the last file change |
+| `/editor` | Compose a message in your `$EDITOR`; the draft becomes the next model input |
+| `/stats [--by-day] [--reset]` | Show token usage and cost summary |
+| `/export [path]` | Export this session's transcript to a JSON file |
+| `/tools` | List the native tools the agent may use (read-only) |
+| `/exit` | End the chat session |
+
+Install `rich` (`pip install rich`) for Markdown rendering, panels, and spinners in the terminal; without it the CLI falls back to plain output.
+
 ## Connect a platform
 
 ### Telegram
@@ -285,10 +309,75 @@ zeline disconnect github
 Phase 1 ships the framework plus GitHub (list repos/issues/PRs, create issues,
 comment). Phase 2 adds Google (Gmail search/read/send, Calendar, Sheets,
 Drive) via the OAuth2 helpers in `zeline/connectors/oauth.py`. Phase 3 adds
-WhatsApp (send text/template messages) via the Business Cloud API. The five
-`github_*`, six `gmail_search`/`gmail_read`/`gmail_send`/`google_calendar`/
-`sheets_read`/`drive_list`, and two `whatsapp_send`/`whatsapp_template` native
-tools are owner-gated (`workspace`/`full` profiles).
+WhatsApp (send text/template messages) via the Business Cloud API. Phase 4
+(wave 1) adds ten more: Slack, Notion, Linear, GitLab, Trello, Todoist,
+Airtable, Jira, Discord, and a Telegram bot. Phase 4 (wave 2) adds twenty
+more: Teams, Twilio, SendGrid, Pushover, Asana, ClickUp, monday.com, Bitbucket,
+Sentry, PagerDuty, Vercel, Cloudflare, Datadog, Confluence, Dropbox, HubSpot,
+Zendesk, Intercom, Calendly, and Stripe. The five `github_*`, six
+`gmail_search`/`gmail_read`/`gmail_send`/`google_calendar`/`sheets_read`/
+`drive_list`, two `whatsapp_send`/`whatsapp_template`, 24 wave-1 native
+tools (`slack_*`, `notion_*`, `linear_*`, `gitlab_*`, `trello_*`, `todoist_*`,
+`airtable_*`, `jira_*`, `discord_*`, `telegram_bot_*`), and 31 wave-2 native
+tools (`teams_*`, `twilio_*`, `sendgrid_*`, `pushover_*`, `asana_*`,
+`clickup_*`, `monday_*`, `bitbucket_*`, `sentry_*`, `pagerduty_*`, `vercel_*`,
+`cloudflare_*`, `datadog_*`, `confluence_*`, `dropbox_*`, `hubspot_*`,
+`zendesk_*`, `intercom_*`, `calendly_*`, `stripe_*`) are owner-gated
+(`workspace`/`full` profiles). Phase 4 (wave 3) adds twenty more: X API,
+Reddit, Hacker News, Mastodon, Bluesky, dev.to, Mailgun, Resend, Vonage,
+OneSignal, Wrike, Teamwork, Shortcut, Height, npm registry, PyPI, RubyGems,
+Jenkins, Opsgenie, and Render — with 34 native tools (`x_api_*`, `reddit_*`,
+`hackernews_*`, `mastodon_*`, `bluesky_*`, `devto_*`, `mailgun_*`,
+`resend_*`, `vonage_*`, `onesignal_*`, `wrike_*`, `teamwork_*`,
+`shortcut_*`, `height_*`, `npm_registry_*`, `pypi_registry_*`,
+`rubygems_*`, `jenkins_*`, `opsgenie_*`, `render_*`), also owner-gated. Phase 4
+(wave 4) adds twenty more: Typeform, Tally, Jotform, SurveyMonkey,
+OpenWeatherMap, Coinbase, Wise, PayPal, LinkedIn, Product Hunt, GitBook,
+Ghost, Zoho CRM, Pipedrive, Freshdesk, Close, Chargebee, Paddle, Box, and
+Webflow — with 38 native tools (`typeform_*`, `tally_*`, `jotform_*`,
+`surveymonkey_*`, `openweathermap_*`, `coinbase_*`, `wise_*`, `paypal_*`,
+`linkedin_*`, `producthunt_*`, `gitbook_*`, `ghost_*`, `zoho_crm_*`,
+`pipedrive_*`, `freshdesk_*`, `close_*`, `chargebee_*`, `paddle_*`, `box_*`,
+`webflow_*`), also owner-gated. Phase 4 (wave 5) adds twenty more: n8n,
+Mailchimp, ActiveCampaign, ConvertKit, Beehiiv, Buffer, Railway, Fly.io,
+Heroku, DigitalOcean, Hetzner Cloud, Vultr, Better Stack, Healthchecks,
+Cronitor, Plausible, Fathom, Algolia, Meilisearch, and Typesense — with 29
+native tools (`n8n_*`, `mailchimp_*`, `activecampaign_*`, `convertkit_*`,
+`beehiiv_*`, `buffer_*`, `railway_*`, `flyio_*`, `heroku_*`,
+`digitalocean_*`, `hetzner_*`, `vultr_*`, `betterstack_*`,
+`healthchecks_*`, `cronitor_*`, `plausible_*`, `fathom_*`, `algolia_*`,
+`meilisearch_*`, `typesense_*`), also owner-gated. Phase 4 (wave 6) adds ten
+more: Lemlist, Apollo, Hunter, Bitly, Cloudinary, BunnyCDN, Polar, Lemon
+Squeezy, crates.io, and Packagist — with 20 native tools (`lemlist_*`,
+`apollo_*`, `hunter_*`, `bitly_*`, `cloudinary_*`, `bunnycdn_*`, `polar_*`,
+`lemon_squeezy_*`, `crates_io_*`, `packagist_*`), also owner-gated.
+
+Most connectors take a single token: `zeline connect <id>` prompts for it and
+validates it before storing. Several need more than one credential or a
+differently-named one: Twilio (account SID + auth token), Pushover (user key
++ app token), Datadog (API key + app key), Confluence (email + API token +
+base URL), Zendesk (email + API token + subdomain), Bitbucket (username + app
+password), Sentry (token + organization slug), Trello (API key + token), Jira
+(email + API token + base URL), Teams (webhook URL instead of a token),
+Stripe (secret key), SendGrid (API key). Reddit (app client ID + client
+secret + username + password), Mastodon (access token + instance URL),
+Bluesky (identifier + app password), Mailgun (API key + domain), Vonage
+(API key + API secret), OneSignal (app ID + REST API key), Teamwork (API
+token + subdomain), Jenkins (username + API token + base URL), dev.to /
+Resend / Height / Opsgenie / Render (API key), Shortcut (API token).
+Hacker News, npm registry, PyPI, and RubyGems need no key at all —
+`zeline connect <id>` just verifies the public API is reachable. Wave 4
+multi-credential connectors: Freshdesk (API key + subdomain), Chargebee (API
+key + site), Ghost (Admin API key + site URL), PayPal (client ID + secret),
+Wise (API token), Jotform (API key). Wave 5 multi-credential connectors:
+n8n (API key + base URL), Mailchimp (API key + datacenter, derived from the
+key when blank), ActiveCampaign (API key + base URL), Beehiiv (API key +
+publication id), Algolia (application ID + API key), Meilisearch (master key
++ base URL), Typesense (API key + base URL). Wave 6 multi-credential
+connectors: Cloudinary (cloud name + API key + API secret). crates.io and
+Packagist need no key — `zeline connect <id>` just verifies the public API
+is reachable.
+`zeline connect <id>` prompts for each in turn:
 
 ### Google connector setup
 
@@ -331,6 +420,29 @@ register. Messaging any other number requires either an approved message
 template (`whatsapp_template`) or a verified business number inside the
 24-hour conversation window. The token lives in
 `~/.zeline/connectors/whatsapp.json` (mode 0600) and is never logged.
+
+### Trello connector setup
+
+`zeline connect trello` asks for two secrets: the **API key** and the
+**token** (one-time):
+
+1. Open <https://trello.com/app-key> while logged in — copy your **API key**.
+2. Click the *Token* link on that page and allow access — copy the **token**.
+3. Run `zeline connect trello` and paste both. The pair is validated (via
+   `/members/me`) before anything is stored in
+   `~/.zeline/connectors/trello.json` (mode 0600).
+
+### Jira connector setup
+
+`zeline connect jira` asks for three values: **email**, **API token**, and the
+**base URL** of your Jira site (one-time):
+
+1. Create an API token at <https://id.atlassian.com/manage-profile/security/api-tokens>.
+2. Run `zeline connect jira`, enter the email of your Atlassian account, paste
+   the token, and type your site's base URL (e.g.
+   `https://your-site.atlassian.net`). The credentials are validated
+   (`/rest/api/3/myself`) before they are stored in
+   `~/.zeline/connectors/jira.json` (mode 0600).
 
 On first launch, Zeline requires one gateway selected from an arrow-key picker:
 Telegram, WhatsApp, Webhook, or Cancel. It configures only the selected gateway,

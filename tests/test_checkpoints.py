@@ -262,10 +262,25 @@ class ToolIntegrationTests(CheckpointBase):
         self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
 
 
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji perilaku tool undo_file, bukan gate-nya —
+    jadi gate dilewati dengan allow-all. Tanpa policy, fallback fail-closed
+    (verdict owner) akan me-deny undo_file (Write) sebelum tool berjalan.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
+
 class AgentUndoTests(CheckpointBase):
     def test_agent_can_list_preview_and_restore_its_workspace_checkpoint(self):
         target = self.file("a.py", "before\n")
         executor = self.tools.ToolExecutor("telegram:owner", profile="workspace", workspace=str(self.work))
+        executor.approval_policy = _AllowAllPolicy()
         self.assertTrue(self.tools._write_file("a.py", "after\n", self.work).startswith("OK"))
 
         listed = executor.run("undo_file", {"action": "list"})
@@ -285,6 +300,7 @@ class AgentUndoTests(CheckpointBase):
         checkpoint_id = self.checkpoints.snapshot(target)
         target.write_text("changed\n", encoding="utf-8")
         executor = self.tools.ToolExecutor("telegram:owner", profile="workspace", workspace=str(self.work))
+        executor.approval_policy = _AllowAllPolicy()
 
         listed = executor.run("undo_file", {"action": "list"})
         self.assertIn("no checkpoints", listed)
@@ -294,6 +310,8 @@ class AgentUndoTests(CheckpointBase):
 
     def test_undo_file_is_not_exposed_to_the_public_safe_profile(self):
         executor = self.tools.ToolExecutor("telegram:public", profile="safe", workspace=str(self.work))
+        # Gate dilewati agar penolakan datang dari profile check tool.
+        executor.approval_policy = _AllowAllPolicy()
         denied = executor.run("undo_file", {"action": "list"})
         self.assertIn("not allowed for profile", denied)
 

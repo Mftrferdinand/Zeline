@@ -160,7 +160,9 @@ class ConsolidateMemoryToolTests(_DigestFixture):
         }
         out = ex._handlers["consolidate_memory"]()
         self.assertEqual(
-            out, "Consolidated memory: 2 duplicates removed, 1 expired removed, 15 kept."
+            out,
+            "Consolidated memory: 2 duplicates removed, 1 expired removed, "
+            "15 kept. 3 moved to trash (restorable via restore_memory).",
         )
 
     def test_binding_reports_errors_without_crashing(self):

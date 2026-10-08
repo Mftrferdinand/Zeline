@@ -23,6 +23,21 @@ from pathlib import Path
 from unittest import mock
 
 
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji flow internal tool schedule_task, bukan
+    gate-nya — jadi gate dilewati dengan allow-all. Tanpa policy, fallback
+    fail-closed (verdict owner) akan me-deny schedule_task (Install)
+    sebelum flow internalnya berjalan.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
+
 class ScheduleTaskToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp(prefix="zl-sched-"))
@@ -37,6 +52,8 @@ class ScheduleTaskToolTests(unittest.TestCase):
         self.chat = self.tools.ToolExecutor(
             "telegram:4242", profile="full", workspace=str(self.workspace)
         )
+        # Uji flow internal tool, bukan gate: lewati gate seperti di produksi.
+        self.chat.approval_policy = _AllowAllPolicy()
 
     def tearDown(self) -> None:
         import shutil
@@ -50,7 +67,11 @@ class ScheduleTaskToolTests(unittest.TestCase):
             sys.modules.pop(name, None)
 
     def run_tool(self, **kwargs) -> str:
-        return self.chat.run("schedule_task", kwargs)
+        # Creating a job now asks the operator to approve its capability
+        # grants once (pre-authorized); approve in these contract tests so they
+        # exercise the flow below the picker. Denial paths get their own tests.
+        with mock.patch("zeline.interaction.ask", return_value="Allow"):
+            return self.chat.run("schedule_task", kwargs)
 
     # -- registration
     def test_the_tool_is_owner_only(self):
@@ -60,9 +81,12 @@ class ScheduleTaskToolTests(unittest.TestCase):
         self.assertEqual(definition.schema()["function"]["parameters"]["required"], ["action"])
         for profile in ("safe", "workspace"):
             with self.subTest(profile=profile):
-                denied = self.tools.ToolExecutor(
+                ex = self.tools.ToolExecutor(
                     "telegram:public", profile=profile, workspace=str(self.workspace)
-                ).run("schedule_task", {"action": "list"})
+                )
+                # Gate dilewati agar penolakan datang dari profile check tool.
+                ex.approval_policy = _AllowAllPolicy()
+                denied = ex.run("schedule_task", {"action": "list"})
                 self.assertIn("not allowed for profile", denied.lower())
 
     # -- the decision that matters most
@@ -85,7 +109,10 @@ class ScheduleTaskToolTests(unittest.TestCase):
         executor = self.tools.ToolExecutor(
             "cli:local", profile="full", workspace=str(self.workspace)
         )
-        executor.run("schedule_task", {"action": "add", "schedule": "1h", "prompt": "x"})
+        # Gate dilewati seperti di produksi (send memasang policy).
+        executor.approval_policy = _AllowAllPolicy()
+        with mock.patch("zeline.interaction.ask", return_value="Allow"):
+            executor.run("schedule_task", {"action": "add", "schedule": "1h", "prompt": "x"})
         self.assertEqual(self.cron.list_jobs()[0].deliver, "local")
 
     def test_an_explicit_other_chat_is_kept(self):
@@ -205,13 +232,16 @@ class CronFileDeliveryTests(unittest.TestCase):
 
     def _scheduler(self, capture: list):
         class Sessions:
-            def send(_self, *, identity, text, tool_profile, system_extra=""):
+            def send(
+                _self, *, identity, text, tool_profile, system_extra="", approval_policy=None
+            ):
                 capture.append(
                     {
                         "identity": identity,
                         "has_channel": self.delivery.has_channel(identity),
                         "profile": tool_profile,
                         "system_extra": system_extra,
+                        "approval_policy": approval_policy,
                     }
                 )
                 return "done"
@@ -276,7 +306,7 @@ class ProgressFeedTests(unittest.TestCase):
     def test_each_action_gets_its_own_line_not_a_generic_tool_label(self):
         cases = {
             ("add", "09:00", ""): "⏰ Scheduling 09:00",
-            ("list", "", ""): "⏰ Checking scheduled jobs",
+            ("list", "", ""): "⏰ Checking scheduled jobs <code>list</code>",
             ("pause", "", "job1"): "⏸ Pausing scheduled job job1",
             ("resume", "", "job1"): "▶️ Resuming scheduled job job1",
             ("run", "", "job2"): "⚡ Running scheduled job job2",

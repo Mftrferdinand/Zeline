@@ -37,6 +37,10 @@ MAX_ANSWER_CHARS = 2000
 MAX_QUESTION_CHARS = 500
 MAX_OPTIONS = 6
 MAX_OPTION_CHARS = 80
+#: Ceiling for the full-detail text delivered ahead of a truncated question
+#: picker. One Telegram message holds 4096 chars; staying under it keeps the
+#: detail to a single message, so a long command never spams the chat.
+MAX_DETAIL_CHARS = 3900
 
 
 @dataclass
@@ -48,6 +52,24 @@ class PendingQuestion:
     event: threading.Event = field(default_factory=threading.Event)
     answer: str = ""
     cancelled: bool = False
+    #: The untruncated question text, set only when ``question`` was cut down
+    #: to ``MAX_QUESTION_CHARS``. Renderers deliver this as a code block
+    #: *before* the picker so the operator can inspect the full text —
+    #: notably the full shell command behind an approval — before deciding.
+    #: Empty when nothing was truncated.
+    full_text: str = ""
+
+
+def detail_chunks(text: str) -> list[str]:
+    """Split over-long detail text into single-message chunks.
+
+    Normally one chunk: the approval summary already caps its first argument
+    at ``MAX_DETAIL_CHARS``. Chunking is the backstop for a model calling
+    ``ask_user`` directly with an unbounded question.
+    """
+    if len(text) <= MAX_DETAIL_CHARS:
+        return [text]
+    return [text[i : i + MAX_DETAIL_CHARS] for i in range(0, len(text), MAX_DETAIL_CHARS)]
 
 
 _LOCK = threading.Lock()
@@ -109,10 +131,19 @@ def ask(identity: str, question: str, options: object = None) -> str:
     Never raises: a failed question must not kill the turn.
     """
     key = identity or "cli:local"
-    text = str(question or "").strip()[:MAX_QUESTION_CHARS]
-    if not text:
+    full = str(question or "").strip()
+    if not full:
         return "ERROR ask_user: question is empty."
     choices = normalize_options(options)
+    if len(full) > MAX_QUESTION_CHARS:
+        # Picker shows a summary; the full text rides along on the entry so
+        # the renderer can deliver it as a code block BEFORE the picker.
+        # The "…" marks the summary as truncated — a silent cut is exactly
+        # what makes blind approvals possible.
+        text = full[: MAX_QUESTION_CHARS - 1] + "…"
+        full_text = full
+    else:
+        text, full_text = full, ""
 
     with _LOCK:
         if key in _PENDING:
@@ -120,7 +151,9 @@ def ask(identity: str, question: str, options: object = None) -> str:
                 "ERROR ask_user: a question is already awaiting the user's answer. "
                 "Wait for it instead of asking again."
             )
-        entry = PendingQuestion(identity=key, question=text, options=choices)
+        entry = PendingQuestion(
+            identity=key, question=text, options=choices, full_text=full_text
+        )
         _PENDING[key] = entry
 
     timeout = _timeout_seconds()
@@ -231,13 +264,58 @@ def unregister_channel(identity: str) -> None:
         _CHANNELS.pop(identity or "cli:local", None)
 
 
-def _deliver(entry: PendingQuestion) -> str | None:
+#: Marker suffix for worker sub-session identities: "{parent}::wkr<id>".
+#: A worker spawned from a WebChat session asks under
+#: "webchat:<chat_id>::wkr<id>", while the fail-fast deny renderer is
+#: registered per turn for the parent identity "webchat:<chat_id>" only.
+_WORKER_MARKER = "::wkr"
+
+#: Fail-closed verdict returned when a channel renderer raises. A broken
+#: channel must never strand the tool on the event wait (the hang the
+#: WebChat approval work removed): "deny" is the only safe default.
+#: approvals.parse_verdict maps anything outside allow/allow-session to
+#: "deny"; the leading "Deny" makes the verdict obvious to the model too.
+_RENDERER_FAILURE_DENY = (
+    "Deny — the approval channel failed before the question reached the "
+    "operator (renderer error), so the request is DENIED rather than left "
+    "waiting for an answer that may never arrive. Route the request "
+    "through a working channel to get a real answer."
+)
+
+
+def _channel_for(identity: str) -> object | None:
+    """Resolve the renderer for an identity, worker-prefix aware.
+
+    Exact identity first. For a WebChat worker identity
+    ``webchat:<chat_id>::wkr<...>``, fall back to the parent identity
+    ``webchat:<chat_id>`` so the worker gets the same fail-fast renderer
+    registered for its parent turn. Unknown identities return None and the
+    caller takes the async wait path.
+    """
     with _LOCK:
-        renderer = _CHANNELS.get(entry.identity)
+        renderer = _CHANNELS.get(identity)
+        if renderer is not None:
+            return renderer
+        if identity.startswith("webchat:") and _WORKER_MARKER in identity:
+            return _CHANNELS.get(identity.split(_WORKER_MARKER, 1)[0])
+        return None
+
+
+def _deliver(entry: PendingQuestion) -> str | None:
+    renderer = _channel_for(entry.identity)
     if renderer is None:
         return None
     try:
         return renderer(entry)  # type: ignore[operator]
-    except Exception:  # noqa: BLE001 — a broken renderer must never strand the tool
-        # Fall back to waiting so a plain text reply still works.
-        return None
+    except Exception as exc:  # noqa: BLE001 — fail closed, never strand the tool
+        # A renderer that raises cannot deliver the question and can no
+        # longer be trusted to wake this wait either: falling back to
+        # event.wait would hang the session on a dead channel. Deny instead
+        # (fail-closed). The identity is logged for debugging; no question
+        # content is included (it may hold a full shell command).
+        print(
+            f"  [interaction] renderer for {entry.identity!r} raised "
+            f"{type(exc).__name__}; failing closed (deny)",
+            flush=True,
+        )
+        return _RENDERER_FAILURE_DENY

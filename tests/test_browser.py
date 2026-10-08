@@ -383,9 +383,19 @@ class ProtocolTests(BrowserBase):
 
 class ToolRoutingTests(BrowserBase):
     def executor(self, profile: str = "full"):
-        return self.tools.ToolExecutor(
+        executor = self.tools.ToolExecutor(
             identity="cli:local", profile=profile, workspace=str(self.home)
         )
+        # The approval choke point is fail-closed: without an installed
+        # policy the browser tool (Destructive) is denied before dispatch.
+        # These tests pin the tool's internal routing (actions, arguments,
+        # error paths), so they pre-authorize exactly the browser tool by
+        # name — the same GrantApprovalPolicy pattern production unattended
+        # runs use (see tests/test_approval_chokepoint.py). Nothing else is
+        # granted, and profile gating still applies in _dispatch, so the
+        # safety model is unchanged.
+        executor.approval_policy = self.tools.GrantApprovalPolicy(tools=["browser"])
+        return executor
 
     def test_safe_profile_cannot_browse(self):
         """It runs a local binary and executes JS in logged-in sessions."""

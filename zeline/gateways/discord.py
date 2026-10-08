@@ -42,6 +42,51 @@ def _send_message(token: str, channel_id: str, text: str) -> None:
         response.raise_for_status()
 
 
+def _send_with_buttons(
+    token: str,
+    channel_id: str,
+    text: str,
+    options: list[str],
+    custom_prefix: str,
+) -> str:
+    """Send a message with Discord button components. Returns message ID.
+
+    ``options``: button labels. ``custom_prefix``: prefix for custom_id
+    (used to route the click back to the pending question).
+    """
+    buttons = []
+    for i, label in enumerate(options[:5]):  # Discord max 5 buttons per row
+        buttons.append({
+            "type": 2,  # BUTTON
+            "style": 1,  # PRIMARY (blurple)
+            "label": str(label)[:80],
+            "custom_id": f"{custom_prefix}:{i}",
+        })
+    payload = {
+        "content": text[:MESSAGE_LIMIT],
+        "components": [{"type": 1, "components": buttons}],  # ACTION_ROW
+    }
+    response = requests.post(
+        f"{API}/channels/{channel_id}/messages",
+        headers=_headers(token), json=payload, timeout=30,
+    )
+    response.raise_for_status()
+    return str(response.json().get("id", ""))
+
+
+def _ack_interaction(token: str, interaction_id: str, interaction_token: str) -> None:
+    """Acknowledge a button click (type 6 = deferred update, no visible response)."""
+    try:
+        requests.post(
+            f"{API}/interactions/{interaction_id}/{interaction_token}/callback",
+            headers=_headers(token),
+            json={"type": 6},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def _verify_bot(token: str) -> str:
     response = requests.get(f"{API}/users/@me", headers=_headers(token), timeout=30)
     response.raise_for_status()
@@ -92,6 +137,9 @@ def start(sessions, cfg: dict[str, Any], stop_event, ready=None) -> None:
     profile = str(cfg.get("tool_profile", "safe"))
     workspace = cfg.get("workspace")
     allowed = {str(value) for value in cfg.get("allowed", []) if str(value)}
+    # Pending ask_user questions: custom_prefix -> [event, answer_list].
+    # Button clicks resolve the waiting ask_user call.
+    pending_asks: dict[str, list] = {}
     if ready:
         ready.set()
 
@@ -123,7 +171,33 @@ def start(sessions, cfg: dict[str, Any], stop_event, ready=None) -> None:
                     state["sequence"] = int(payload["s"])
                 if payload.get("op") == 7:
                     break
-                if payload.get("op") != 0 or payload.get("t") != "MESSAGE_CREATE":
+                if payload.get("op") != 0:
+                    continue
+                event_type = payload.get("t")
+                # Button clicks for ask_user.
+                if event_type == "INTERACTION_CREATE":
+                    data = payload.get("d") or {}
+                    if data.get("type") == 3:  # MESSAGE_COMPONENT
+                        comp_data = data.get("data") or {}
+                        custom_id = str(comp_data.get("custom_id", ""))
+                        if ":" in custom_id:
+                            prefix, idx_str = custom_id.rsplit(":", 1)
+                            if prefix in pending_asks:
+                                try:
+                                    idx = int(idx_str)
+                                    event, answers = pending_asks.pop(prefix)
+                                    answers.append(idx)
+                                    event.set()
+                                except (ValueError, IndexError):
+                                    pass
+                        # Ack the interaction (no visible response).
+                        _ack_interaction(
+                            token,
+                            str(data.get("id", "")),
+                            str(data.get("token", "")),
+                        )
+                    continue
+                if event_type != "MESSAGE_CREATE":
                     continue
                 message = payload.get("d") or {}
                 author = message.get("author") or {}

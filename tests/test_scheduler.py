@@ -496,11 +496,18 @@ class LoopTests(CronBase):
 
 
 class CliTests(CronBase):
+    def _add(self, **kwargs):
+        # Creating a job now asks the operator to approve its capability
+        # grants once (pre-authorized); approve here so the tests exercise the
+        # CLI flow below the picker.
+        with mock.patch("zeline.interaction.ask", return_value="Allow"):
+            return self.cli.cmd_cron("add", **kwargs)
+
     def test_list_on_an_empty_store_explains_the_syntax(self):
         self.assertEqual(self.cli.cmd_cron("list"), 0)
 
     def test_add_then_list_then_remove(self):
-        self.assertEqual(self.cli.cmd_cron("add", schedule="09:00", prompt="morning report"), 0)
+        self.assertEqual(self._add(schedule="09:00", prompt="morning report"), 0)
         self.assertEqual(self.cli.cmd_cron("list"), 0)
         self.assertEqual(self.cli.cmd_cron("show", job_id="job1"), 0)
         self.assertEqual(self.cli.cmd_cron("remove", job_id="job1"), 0)
@@ -523,7 +530,7 @@ class CliTests(CronBase):
                 self.assertEqual(self.cli.cmd_cron(action), 2)
 
     def test_pause_and_resume_change_state(self):
-        self.cli.cmd_cron("add", schedule="30m", prompt="x")
+        self._add(schedule="30m", prompt="x")
         self.cli.cmd_cron("pause", job_id="job1")
         self.assertFalse(self.cron.find_job("job1").enabled)
         self.cli.cmd_cron("resume", job_id="job1")
@@ -533,7 +540,7 @@ class CliTests(CronBase):
         self.assertEqual(self.cli.cmd_cron("teleport"), 2)
 
     def test_add_with_delivery_records_the_target(self):
-        self.cli.cmd_cron("add", schedule="30m", prompt="x", deliver="telegram:555")
+        self._add(schedule="30m", prompt="x", deliver="telegram:555")
         self.assertEqual(self.cron.find_job("job1").deliver, "telegram:555")
 
     def test_cli_exposes_the_subcommands(self):

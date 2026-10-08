@@ -21,6 +21,20 @@ import unittest
 from pathlib import Path
 
 
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji perilaku tool/board, bukan gate-nya — jadi
+    gate dilewati dengan allow-all. Tanpa policy, fallback fail-closed
+    (verdict owner) akan me-deny tool mutasi.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
+
 class TaskBoardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.home = Path(tempfile.mkdtemp(prefix="zl-tasks-"))
@@ -35,6 +49,8 @@ class TaskBoardTests(unittest.TestCase):
         self.executor = self.tools.ToolExecutor(
             "telegram:4242", profile="full", workspace=str(self.workspace)
         )
+        # Uji perilaku tool, bukan gate: lewati gate seperti di produksi.
+        self.executor.approval_policy = _AllowAllPolicy()
 
     def tearDown(self) -> None:
         if self._old is None:
@@ -160,9 +176,11 @@ class TaskBoardTests(unittest.TestCase):
     # -- isolation and limits
     def test_two_identities_never_share_a_board(self):
         self.call("chat A work", "pending")
-        self.tools.ToolExecutor(
+        other = self.tools.ToolExecutor(
             "telegram:999", profile="full", workspace=str(self.workspace)
-        ).run("update_task", {"task": "chat B work", "status": "pending"})
+        )
+        other.approval_policy = _AllowAllPolicy()
+        other.run("update_task", {"task": "chat B work", "status": "pending"})
         self.assertEqual(len(self.tasks.load("telegram:4242")), 1)
         self.assertEqual(len(self.tasks.load("telegram:999")), 1)
         self.assertEqual(self.tasks.load("telegram:999")[0]["task"], "chat B work")
@@ -235,9 +253,12 @@ class TaskBoardTests(unittest.TestCase):
     def test_a_public_gateway_cannot_touch_the_board(self):
         for profile in ("safe", "workspace"):
             with self.subTest(profile=profile):
-                denied = self.tools.ToolExecutor(
+                ex = self.tools.ToolExecutor(
                     "telegram:public", profile=profile, workspace=str(self.workspace)
-                ).run("update_task", {"task": "x", "status": "pending"})
+                )
+                # Gate dilewati agar penolakan datang dari profile check tool.
+                ex.approval_policy = _AllowAllPolicy()
+                denied = ex.run("update_task", {"task": "x", "status": "pending"})
                 self.assertIn("not allowed for profile", denied.lower())
 
 

@@ -36,6 +36,20 @@ def fresh(home: Path):
     return config, openapi
 
 
+
+class _AllowAllPolicy:
+    """Test-only: mensimulasikan policy yang dipasang send() di produksi.
+
+    Test-test di bawah menguji perilaku tool, bukan gate-nya — jadi gate
+    dilewati dengan allow-all. Tanpa policy, fallback fail-closed (verdict
+    owner) akan me-deny tool mutasi sebelum tool berjalan.
+    """
+
+    on_tool = None
+
+    def decide(self, executor, name, args):
+        return "allow"
+
 class OpenApiDiscoveryTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -319,6 +333,7 @@ paths:
         )
         tools_module = importlib.import_module("zeline.tools")
         executor = tools_module.ToolExecutor("cli:local", "full", self.home)
+        executor.approval_policy = _AllowAllPolicy()
         response = mock.Mock(status_code=204, reason="No Content", text="")
         response.headers = {"Content-Type": ""}
 
@@ -368,7 +383,12 @@ paths:
 
         with mock.patch.object(agent_module.requests, "post", side_effect=[first, final]) as provider, mock.patch.object(
             openapi, "_is_internal_host", return_value=False
-        ), mock.patch.object(openapi.requests, "request", return_value=response):
+        ), mock.patch.object(openapi.requests, "request", return_value=response), mock.patch(
+            # Verdict 5: unclassified OpenAPI tools default to Destructive and
+            # need approval. This test exercises the tool plumbing, not the
+            # gate, so the operator approves.
+            "zeline.interaction.ask", return_value="Allow"
+        ):
             reply = agent.send("ping the configured API")
 
         self.assertEqual(reply, "API says pong.")

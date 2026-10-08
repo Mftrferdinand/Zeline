@@ -9,6 +9,8 @@
   <a href="../README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
   <a href="README.id.md"><img src="https://img.shields.io/badge/Lang-ID-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="README.zh.md"><img src="https://img.shields.io/badge/Lang-中文-0A84FF?style=flat&labelColor=334155"></a>
+  <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-ES-1D4ED8?style=flat&labelColor=334155"></a>
+  <a href="README.ur.md"><img src="https://img.shields.io/badge/Lang-اردو-0A84FF?style=flat&labelColor=334155"></a>
   <br>
   <strong>Zeline Agentic AI</strong> — 由 Zerolinear 打造，一个 AI 研究实验室。
 </p>

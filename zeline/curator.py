@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -173,6 +174,31 @@ def _append_ledger(ledger_path: Path, record: dict) -> None:
     record = {"ts": datetime.now(timezone.utc).isoformat(), **record}
     with ledger_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def log_action(
+    action: str,
+    name: str,
+    details: dict | None = None,
+    ledger_path: Path | str | None = None,
+) -> dict:
+    """Catat satu aksi perubahan ke ledger JSONL dan kembalikan record-nya.
+
+    Bungkus tipis di atas ``_append_ledger``: menambahkan ``id`` unik supaya
+    tiap perubahan bisa dirujuk (mis. untuk rollback), lalu mengembalikan
+    record persis seperti yang ditulis. ``details`` boleh berisi ``reason``
+    dan ``previous_state`` — dipakai mesin review (``zeline.skill_review``)
+    supaya keadaan sebelum mutasi selalu bisa ditelusuri kembali.
+    """
+    record = {
+        "id": uuid.uuid4().hex[:12],
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "skill": name,
+        **(details or {}),
+    }
+    _append_ledger(_resolve_ledger_path(ledger_path), record)
+    return record
 
 
 def _archive_root(skills_dir: Path) -> Path:
