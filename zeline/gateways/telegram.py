@@ -1312,6 +1312,22 @@ def _tool_progress_text_inner(name: str, arguments: dict[str, Any]) -> str:
     if name == "image_generate_local":
         prompt = html.escape(str(arguments.get("prompt", "")).strip()[:60], quote=False)
         return f"🎨 Membuat gambar {prompt} ..." if prompt else "🎨 Membuat gambar ..."
+    if name == "skillforge":
+        action = html.escape(str(arguments.get("action", "")).strip()[:40], quote=False)
+        return f"🔨 SkillForge {action}" if action else "🔨 SkillForge"
+    if name == "cost_report":
+        period = html.escape(str(arguments.get("period", "day")).strip()[:20], quote=False)
+        return f"💰 Cost report ({period})"
+    if name == "cost_today":
+        return "💰 Checking today's cost"
+    if name == "trigger_add":
+        event = html.escape(str(arguments.get("event", "")).strip()[:40], quote=False)
+        return f"⚡ Adding trigger {event}" if event else "⚡ Adding trigger"
+    if name == "trigger_list":
+        return "⚡ Listing triggers"
+    if name == "trigger_remove":
+        tid = html.escape(str(arguments.get("trigger_id", "")).strip()[:40], quote=False)
+        return f"⚡ Removing trigger {tid}" if tid else "⚡ Removing trigger"
     # Fallback: verb + first arg preview, clean.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
@@ -1375,7 +1391,7 @@ def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str 
         # membocorkan nama skill private tanpa alasan.
         if str(arguments.get("action", "")).strip().lower() in {"list", "inventory"}:
             return None
-        return f"📒 {html.escape(result[:1000], quote=False)}"
+        return f"📒 Improvement: {html.escape(result[:1000], quote=False)}"
     return None
 
 

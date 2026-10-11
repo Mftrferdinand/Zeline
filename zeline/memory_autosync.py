@@ -483,12 +483,6 @@ def status() -> dict[str, Any]:
     }
 
 
-def _stamp_date(source: str) -> None:
-    state = _load_state()
-    state.setdefault(source, {})["last_date"] = _today_str()
-    _save_state(state)
-
-
 # ---------------------------------------------------------------------------
 # CLI: attaches to the existing `zeline memory` parser in zeline/cli.py.
 #

@@ -447,7 +447,7 @@ class SkillForgeRegressionTest(unittest.TestCase):
         )
         procs = [
             subprocess.Popen([sys.executable, "-c", helper],
-                             cwd="/home/hatch/workspace/zeline-roadmap")
+                             cwd=str(Path(__file__).resolve().parents[1]))
             for _ in range(4)
         ]
         for p in procs:

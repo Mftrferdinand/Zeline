@@ -1,4 +1,4 @@
-## Zeline v0.3.8
+## Zeline v0.3.9
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
@@ -17,7 +17,7 @@ Then `zeline setup`.
 One line on every POSIX platform — Termux, Linux, macOS, iSH:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.8/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.9/install.sh && bash install.sh
 ```
 
 The installer downloads the versioned wheel and verifies it against
@@ -62,7 +62,7 @@ credentials.
 
 ### Installation
 
-See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.8/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.8/CHANGELOG.md) for the full list of changes.
+See the [installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.3.9/docs/installation.md) for install commands on every supported platform, and the [changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.3.9/CHANGELOG.md) for the full list of changes.
 
 ### Assets
 

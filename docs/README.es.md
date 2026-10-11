@@ -59,7 +59,7 @@ Luego `zeline setup`.
 ### Linux, macOS, Termux
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.5/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.9/install.sh && bash install.sh
 ```
 
 Luego `zeline setup`.
@@ -67,7 +67,7 @@ Luego `zeline setup`.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.5/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.3.9/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Luego `zeline setup`.

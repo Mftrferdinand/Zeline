@@ -1,4 +1,28 @@
 # Changelog
+## [0.3.9] — 2026-10-11
+
+### Added
+- **Visual workflow builder backend** (`workflows.py`): DAG-based workflows with task, approval, and note nodes. Background execution engine with pause/resume/cancel, topological sort, per-node timeouts, and atomic state persistence.
+- **Event-driven hooks engine** (`hooks.py`): `on_tool_call`, `on_tool_result`, `on_turn_start`, `on_turn_end`, `on_error`, `on_skill_learned` events with built-in command-logger and session-memory hooks. Per-hook 5s timeout, secret redaction on disk logs.
+- **Peer bot-to-bot communication** (`peer.py`): shared-secret authenticated HTTP protocol for cross-instance message delegation. SSRF guard, rate limiting, concurrent turn semaphore.
+- **OAuth2 framework** (`oauth.py`): one-click authorization-code + PKCE S256 flow for GitHub, Google, Slack, Discord, Notion, Linear, GitLab, Spotify, X. Localhost-only redirect, single-use state tokens, 0600 credential storage.
+- **SuperContext pre-message research** (`supercontext.py`): identity-scoped sweep of episodic memory, learned skills, active goals, and user model traits. Injection-filter backstop drops tainted lines before system prompt.
+- **Memory autosync** (`memory_autosync.py`): scheduled pull from Gmail, GitHub, and Calendar connectors into episodic memory. Privacy-first (metadata only, master switch OFF by default).
+- **104 connector integrations**: ActiveCampaign, Airtable, Algolia, Apollo, Asana, and 99 more third-party service connectors with standardized connect/status/operations interface.
+- **New tools**: `skillforge`, `cost_report`, `cost_today`, `trigger_add`, `trigger_list`, `trigger_remove`.
+- **Memory tree vault export** (`memory_tree.py`): Obsidian-compatible vault rendering from memory/episodes.
+- **Voice preferences per chat** (`voice_prefs.py`): TTS mode and preset selection per identity.
+- **Cost tracking** (`cost.py`): per-identity LLM and tool cost journal with reporting.
+
+### Changed
+- Version bump from 0.3.8 to 0.3.9 across all installers, docs, and package metadata.
+
+### Fixed
+- Fixed duplicate `_stamp_date()` definition in `memory_autosync.py`.
+- Fixed missing Telegram progress labels for 6 new tools.
+- Fixed progress label prefix regression for skill improvement feedback.
+- Fixed hardcoded developer path in `test_skillforge.py`.
+- Fixed voice test mock setup for Telegram transcription flow.
 
 ## [0.3.8] — 2026-10-02
 
@@ -58,6 +82,7 @@
 - **classify_steer**: context-aware (HARD vs SHORT patterns) — "jangan" in long refinement no longer triggers false interrupt ([#290]).
 - **_consume_stop**: actually consumes entry so next turn not blocked ([#290]).
 - **on_narration guard**: skip send if cancel_event set ([#290]).
+
 
 ## [0.3.5] — 2026-09-29
 
@@ -404,10 +429,12 @@ release's documented one-liner keeps working after a newer release ships.
 Release notes for 0.2.5 and earlier are on the
 [releases page](https://github.com/Mftrferdinand/Zeline/releases).
 
-[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.8...main
+[Unreleased]: https://github.com/Mftrferdinand/Zeline/compare/v0.3.9...main
+[0.3.9]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.9
 [0.3.8]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.8
 [0.3.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.7
 [0.3.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.6
+
 [0.3.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.5
 [0.3.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.4
 [0.3.3]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.3.3
