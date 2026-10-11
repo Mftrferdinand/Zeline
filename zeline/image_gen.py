@@ -442,5 +442,3 @@ def generate_image(
         "atau jalankan Stable Diffusion web UI di 127.0.0.1:7860. "
         "Alternatif: tool `generate_image` memakai provider chat yang sudah dikonfigurasi."
     )
-
-
