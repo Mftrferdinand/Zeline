@@ -1192,6 +1192,18 @@ def _tool_progress_text_inner(name: str, arguments: dict[str, Any]) -> str:
         if action == "servers":
             return "🩺 Checking language servers"
         return f"🧭 Asking language server{where}"
+    if name in {"lsp_definition", "lsp_references", "lsp_hover"}:
+        where = f" <code>{path}</code>" if path else ""
+        try:
+            line_no = int(arguments.get("line", 0) or 0)
+        except (TypeError, ValueError):
+            line_no = 0
+        at = f"{where} L{line_no}" if (where and line_no > 0) else where
+        if name == "lsp_definition":
+            return f"🧭 Finding definition{at}" if at else "🧭 Finding definition"
+        if name == "lsp_references":
+            return f"🧭 Finding references{at}" if at else "🧭 Finding references"
+        return f"💬 Inspecting type{at}" if at else "💬 Inspecting type"
     if name == "download_file":
         host = html.escape(_short_host(str(arguments.get("url", "")))[:80], quote=False)
         if path and host:
@@ -1264,6 +1276,30 @@ def _tool_progress_text_inner(name: str, arguments: dict[str, Any]) -> str:
     if name == "peer_send":
         peer = html.escape(str(arguments.get("peer", "")).strip()[:40], quote=False)
         return f"🤖 Mengirim pesan ke peer {peer} ..." if peer else "🤖 Mengirim pesan ke peer ..."
+    if name == "kanban_create":
+        title = html.escape(str(arguments.get("title", "")).strip()[:60], quote=False)
+        return f"📌 Membuat kartu kanban <code>{title}</code>" if title else "📌 Membuat kartu kanban"
+    if name == "kanban_move":
+        cid = html.escape(str(arguments.get("card_id", "")).strip()[:20], quote=False)
+        col = html.escape(str(arguments.get("to_column", "")).strip()[:20], quote=False)
+        return f"↔️ Memindah kartu ke <code>{col}</code>" if col else "↔️ Memindah kartu kanban"
+    if name == "kanban_list":
+        return "📋 Melihat papan kanban"
+    if name == "meeting_join":
+        raw = str(arguments.get("url", "")).strip()[:120]
+        try:
+            from zeline import meeting as _mtg
+            url = _mtg.redact_url(raw)
+        except Exception:
+            url = raw.split("?")[0]
+        url = html.escape(url[:60], quote=False)
+        return f"📹 Join meeting {url} ..." if url else "📹 Join meeting ..."
+    if name == "meeting_notes":
+        mid = html.escape(str(arguments.get("meeting_id", "")).strip()[:40], quote=False)
+        return f"📝 Mencatat notulen {mid}" if mid else "📝 Mencatat notulen meeting"
+    if name == "meeting_leave":
+        mid = html.escape(str(arguments.get("meeting_id", "")).strip()[:40], quote=False)
+        return f"👋 Meninggalkan meeting {mid}" if mid else "👋 Meninggalkan meeting"
     if name == "email_send":
         to = html.escape(str(arguments.get("to", "")).strip()[:60], quote=False)
         return f"📧 Mengirim email ke {to} ..." if to else "📧 Mengirim email ..."
@@ -1273,6 +1309,9 @@ def _tool_progress_text_inner(name: str, arguments: dict[str, Any]) -> str:
     if name == "voice_speak":
         text = html.escape(str(arguments.get("text", "")).strip()[:60], quote=False)
         return f"🔊 Mengubah teks jadi suara {text} ..." if text else "🔊 Mengubah teks jadi suara ..."
+    if name == "image_generate_local":
+        prompt = html.escape(str(arguments.get("prompt", "")).strip()[:60], quote=False)
+        return f"🎨 Membuat gambar {prompt} ..." if prompt else "🎨 Membuat gambar ..."
     # Fallback: verb + first arg preview, clean.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
@@ -1336,7 +1375,7 @@ def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str 
         # membocorkan nama skill private tanpa alasan.
         if str(arguments.get("action", "")).strip().lower() in {"list", "inventory"}:
             return None
-        return f"📒 Improvement: {html.escape(result[:1000], quote=False)}"
+        return f"📒 {html.escape(result[:1000], quote=False)}"
     return None
 
 
@@ -2677,11 +2716,19 @@ def _handle_command_update(
         except Exception:
             summary = None
         if summary:
-            _api_call(
-                api, "sendMessage", chat_id=chat_id,
-                text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
-                parse_mode="HTML",
-            )
+            # Kirim tiap kategori sebagai pesan terpisah (1/1).
+            _summaries = summary if isinstance(summary, list) else [summary]
+            for _s in _summaries:
+                try:
+                    if not isinstance(_s, str):
+                        continue
+                    _api_call(
+                        api, "sendMessage", chat_id=chat_id,
+                        text=f"{html.escape(_s[:1500], quote=False)}",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
         sessions.reset(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=_new_session_text())
         return True
@@ -4378,11 +4425,19 @@ def _maybe_reflect_bg(api: str, sessions, chat_id: int, identity: str) -> None:
         except Exception:
             summary = None
         if summary:
-            _api_call(
-                api, "sendMessage", chat_id=chat_id,
-                text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
-                parse_mode="HTML",
-            )
+            # Kirim tiap kategori sebagai pesan terpisah (1/1), paling akhir.
+            _summaries = summary if isinstance(summary, list) else [summary]
+            for _s in _summaries:
+                try:
+                    if not isinstance(_s, str):
+                        continue
+                    _api_call(
+                        api, "sendMessage", chat_id=chat_id,
+                        text=f"{html.escape(_s[:1500], quote=False)}",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
     threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
@@ -4621,7 +4676,21 @@ def _dispatch_update(
                         )
                         _steer_ack_ts[identity] = _now
                     return
-            _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
+            # Jika turn sebelumnya di-stop via /stop, beri tahu agent agar TIDAK
+            # auto-continue task yang sudah dibatalkan. User harus eksplisit.
+            _stop_note = ""
+            try:
+                _sess = sessions.get(identity) if hasattr(sessions, "get") else None
+                if _sess is not None and getattr(_sess, "was_stopped", False):
+                    _stop_note = (
+                        "[SYSTEM: The previous task was stopped by /stop. "
+                        "Do NOT auto-continue it. Treat this message as a new request. "
+                        "Only continue the previous task if the user explicitly asks.]"
+                    )
+                    _sess.was_stopped = False
+            except Exception:
+                pass
+            _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id, system_extra=_stop_note)
     elif document:
         filename = _document_filename(document)
         file_content, error = _download_document(api, token, document)

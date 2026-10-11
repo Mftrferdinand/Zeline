@@ -275,3 +275,120 @@ Speech-to-text dan text-to-speech offline — semua backend opsional, dideteksi 
 **Catatan:** tidak ada download model otomatis (berat); `transcribe` pakai `local_files_only=True` — gagal jujur jika model belum ada. Teks ke TTS lewat stdin (bukan argv) — aman dari injeksi; nilai voice/rate/pitch yang diawali `-` ditolak.
 
 **Keterbatasan:** butuh backend terinstall (`pip install faster-whisper` / piper / espeak). Tanpa backend, perintah gagal dengan pesan yang jelas.
+
+## 17. Image Generation (lokal)
+
+Generate gambar dari teks memakai backend di luar provider chat — pasangan offline dari tool `generate_image` (provider), sama seperti `voice_speak` vs `text_to_speech`.
+
+**Backend (semua opsional, deteksi saat runtime):**
+- `openai` — API DALL-E langsung, butuh `OPENAI_API_KEY` (model via `IMAGE_GEN_MODEL`, default `dall-e-3`)
+- `sd` — Stable Diffusion lokal: library `diffusers`+`torch` dengan checkpoint di `SD_MODEL_DIR` (tidak pernah auto-download), atau web UI (AUTOMATIC1111) di `SD_WEBUI_URL` (default `http://127.0.0.1:7860`)
+
+**CLI:**
+- `zeline image "<prompt>" -o cat.png [--backend openai|sd] [--size 1024x1024]`
+- `zeline image --status` — lihat backend yang tersedia. Mapping label: `openai` → `dall-e`, `sd` → `diffusers`/`webui`
+
+**Python API (`zeline/image_gen.py`):**
+- `generate_image(prompt, output_path, backend=None, size="1024x1024")` — backend `None` = auto (openai dulu, lalu sd)
+- `openai_available()` / `sd_available()` — cek backend tanpa generate
+- `image_gen_status()` — dict status deteksi backend (dipakai `zeline image --status`)
+
+**Tools:** `image_generate_local` (risk write) — path di-contain ke workspace.
+
+**Catatan:** tanpa backend, gagal jujur dengan pesan yang menjelaskan cara memasang. Untuk text-to-video, pakai tool `generate_video` (Veo, butuh Gemini API key).
+
+## 18. Meeting Agents (Zoom/Meet/Teams)
+
+Join meeting otomatis via headless browser, catat notulen, lalu keluar. Platform terdeteksi dari URL (`zoom.us`, `meet.google.com`, `teams.microsoft.com`).
+
+**Alur (nama tool vs fungsi Python — tool tanpa prefix `meeting_`, fungsi Python tanpa prefix sama):**
+- Tool `meeting_join` → fungsi `join_meeting(url, name)` — klik "Join from Your Browser" → isi nama → join. Jujur: kalau butuh login/CAPTCHA/ruang tunggu, status `waiting`, tidak pernah di-fake sebagai joined.
+- Tool `meeting_notes` → fungsi `take_notes(meeting_id, audio_path=None)` — ambil live captions via JS + opsional transkrip audio (faster-whisper lokal). Notulen timestamped ke `~/.zeline/meetings/<id>.md`.
+- Tool `meeting_leave` → fungsi `leave_meeting(meeting_id)` — stop browser, notulen tetap tersimpan.
+
+**Utilitas publik lain:**
+- `detect_platform(url)` — kembalikan `zoom`/`meet`/`teams`/dst dari URL, raise `MeetingError` kalau tidak dikenal
+- `redact_url(url)` — tutupi `?pwd=...`/`passcode`/`token` di URL (dipakai di semua output, log, dan state)
+- `list_meetings()` — daftar semua meeting (termasuk status joined/waiting/left)
+
+**Security:** `?pwd=...` dan param sensitif di-redact di semua output/log/state; SSRF guard (hanya `https`, tolak loopback/private host); state dir `0700`, file `0600`.
+
+**CLI:**
+- `zeline meeting join <url> [--name]`
+- `zeline meeting notes <id> [--audio]`
+- `zeline meeting leave <id>`
+- `zeline meeting list`
+
+**Tools:** `meeting_join` (risk network), `meeting_notes` (risk read, audio dikurung ke workspace), `meeting_leave` (risk write).
+
+## 19. Kanban Board
+
+Papan todo/doing/done sederhana untuk track task. Simpan di `~/.zeline/kanban.json` (atomic write tmp+rename, chmod 0600, thread-safe; file corrupt di-backup ke `.json.bak` sebelum reset).
+
+**CLI:** `zeline kanban list`, `zeline kanban add "title" [--column todo] [--description]`, `zeline kanban move <id> <todo|doing|done>`, `zeline kanban delete <id>`
+
+**Tools:** `kanban_create` (risk write), `kanban_move` (risk write), `kanban_list` (risk read).
+
+**Python API (`zeline/kanban.py`):**
+- `create_card(title, description="", column="todo")` → id kartu
+- `get_card(card_id)` — satu kartu atau `None`
+- `move_card(card_id, to_column)`, `delete_card(card_id)` → bool
+- `list_cards(column=None)` — semua kartu (opsional filter kolom)
+- `board_summary()` — hitungan per kolom + total
+
+**Dashboard:** `GET /api/kanban` dan `POST /api/kanban` (action: create/move/delete) di webchat.
+
+## 20. LSP Integration
+
+Code intelligence via Language Server Protocol (JSON-RPC over stdio) memakai server yang sudah terinstall — bukan implementasi dari nol.
+
+**Bahasa yang didukung:** Python (pylsp/pyright), TypeScript (typescript-language-server), Go (gopls), Rust (rust-analyzer). Tanpa server → error jelas dengan install hint.
+
+**API (`zeline/lsp.py`):**
+- `start_lsp_server(language, workspace_path)` — start/reuse server per project-root (walk-up via `.git`, `pyproject.toml`, `go.mod`, `Cargo.toml`)
+- `goto_definition(file, line, col)`, `find_references(file, line, col)`, `hover(file, line, col)`
+- `stop_lsp_servers()`
+
+**Security:** frame `Content-Length` dibatasi 50MB — server jahat tidak bisa memaksa alokasi memori tak terbatas (proses langsung di-stop).
+
+**CLI:** `zeline lsp start --lang python --path .`, `zeline lsp servers`, `zeline lsp stop`, `zeline lsp definition|references|hover <file> <line> [--character <col>]`
+
+**Utilitas deteksi (`zeline/lsp.py`):**
+- `enabled()` — LSP di-enable di config (`tools.lsp`)
+- `language_for(path)` — tebak bahasa dari ekstensi file, `None` kalau tidak dikenal
+- `find_server(language)` — tuple command server atau `None` kalau binary tidak ada
+- `available()` — dict bahasa → server command/`None`
+
+**Tools:** `lsp_definition`, `lsp_references`, `lsp_hover` (risk read).
+
+## 21. One-click OAuth
+
+Framework OAuth2 generik (`zeline/oauth.py`) — tambah provider baru = tambah entry config, bukan kode baru. Provider: github, google, slack, discord.
+
+**Alur CLI:** `zeline connect <id>` → cek/prompt app credentials (disimpan `~/.zeline/oauth-apps/`, 0600) → print auth URL → one-shot localhost callback server → tukar code → simpan token via connector store (0600).
+
+**Security:**
+- PKCE S256 selalu dipakai
+- `state` random single-use, TTL 10 menit (anti CSRF)
+- `redirect_uri` divalidasi: hanya `http://127.0.0.1:` / `http://localhost:`
+- Bind port sekali — tidak ada TOCTOU race antara probe dan server callback
+- Token response >1MB ditolak; kredensial tidak pernah di-log
+
+**Dashboard:** `GET /oauth/callback` di webchat (tanpa webchat token — state pending adalah kredensial CSRF-nya).
+
+**Fungsi publik lain (`zeline/oauth.py`):**
+- `supports_oauth(connector_id)` — apakah connector ini punya flow OAuth
+- `app_credentials(provider)` → `(client_id, client_secret|None)` — baca dari file 0600 atau env `ZELINE_OAUTH_<PROV>_CLIENT_ID/_CLIENT_SECRET`
+- `save_app_credentials(provider, client_id, client_secret)` — simpan app credentials (0600)
+- `refresh_if_needed(connector_id)` — refresh token otomatis kalau expired
+- `callback_html(ok, message)` — halaman HTML hasil callback (XSS-escaped)
+
+## 22. ACP Streaming
+
+`session/prompt` di `zeline/acp.py` sekarang streaming: selama agent turn berjalan, server meng-emit notifikasi JSON-RPC `session/update` ke stdout *sebelum* respons final (mekanisme streaming native ACP over stdio):
+
+- `agent_message_chunk` — setiap text delta dari model
+- `agent_thought_chunk` — narrasi agent
+- `tool_call` / `tool_call_update` — tiap tool dipanggil/selesai (pairing 1:1, termasuk batch paralel)
+
+**Kompatibilitas:** respons final `session/prompt` tidak berubah — klien yang tidak paham notifikasi mengabaikannya per JSON-RPC. Broken pipe mid-turn → turn auto-cancel (tidak bakar token sia-sia). Approval path tidak berubah.

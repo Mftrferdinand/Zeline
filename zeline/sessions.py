@@ -53,6 +53,10 @@ class Session:
     # Disimpan terpisah dari title karena title bisa stuck di pesan pertama.
     last_topic: str = ""
     last_topic_at: float = 0.0
+    # Flag: True jika turn terakhir di-stop via /stop. Dipakai untuk mencegah
+    # agent auto-continue task yang sudah di-stop saat user kirim pesan ambigu.
+    # Di-clear saat turn baru dimulai.
+    was_stopped: bool = False
 
 
 class SessionStore:
@@ -272,9 +276,25 @@ class SessionStore:
             approvals.clear_session_allows(identity)
         except Exception:
             pass
+        # /stop juga membatalkan SEMUA background workers untuk identity ini.
+        # Tanpa ini, worker yang masih jalan akan menginjeksi hasilnya ke turn
+        # berikutnya dan agent terlihat "ngeyel" melanjutkan task yang sudah di-stop.
+        try:
+            from zeline.supervisor import get_supervisor
+            get_supervisor(identity).cancel_all()
+        except Exception:
+            pass
+        # Tandai session sebagai "was_stopped" agar turn berikutnya TIDAK
+        # auto-continue task yang sudah di-stop. User harus eksplisit minta
+        # lanjut kalau memang mau.
+        with self._lock:
+            session = self._sessions.get(identity)
+            if session is not None:
+                session.was_stopped = True
+                session.held_task = None
         return True
 
-    def reflect(self, identity: str, min_tool_calls: int = 5) -> str | None:
+    def reflect(self, identity: str, min_tool_calls: int = 5) -> list[str] | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
 
         Dipanggil di akhir sesi penting. Aman: mengembalikan None bila sesi tidak

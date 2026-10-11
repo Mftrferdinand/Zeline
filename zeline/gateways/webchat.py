@@ -60,6 +60,7 @@ import hmac
 import json
 import threading
 import time
+import urllib.parse
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
@@ -1234,6 +1235,20 @@ def start(
             if path == "/health":
                 self._json(200, {"ok": True, "service": "zeline-webchat"})
                 return
+            if path == "/oauth/callback":
+                # Provider redirect after the operator approves OAuth.
+                # No webchat token needed: the pending-flow ``state`` is the
+                # CSRF credential (single-use, 10-minute TTL).
+                from zeline import oauth as _oauth
+
+                query = urllib.parse.urlparse(self.path).query
+                params = urllib.parse.parse_qs(query)
+                code = (params.get("code") or [None])[0]
+                state = (params.get("state") or [None])[0]
+                err = (params.get("error") or [None])[0]
+                ok, message = _oauth.handle_oauth_callback(code, state, err)
+                self._html(200 if ok else 400, _oauth.callback_html(ok, message))
+                return
             if path == "/":
                 if _is_authorized(self.headers, token):
                     self._html(200, _CHAT_HTML)
@@ -1298,6 +1313,17 @@ def start(
                     return
                 self._json(200, _goals_payload())
                 return
+            if path == "/api/kanban":
+                if not _is_authorized(self.headers, token):
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                try:
+                    from zeline import kanban as _kb
+                    self._json(200, {"ok": True, "cards": _kb.list_cards(),
+                                     "summary": _kb.board_summary()})
+                except Exception as exc:
+                    self._json(500, {"error": str(exc)})
+                return
             if path == "/api/sessions":
                 if not _is_authorized(self.headers, token):
                     self._json(401, {"error": "unauthorized"})
@@ -1320,6 +1346,45 @@ def start(
                 self._json(429, {"error": "rate limited, try again later"})
                 return
             _post_path = self.path.split("?", 1)[0].rstrip("/")
+            if _post_path == "/api/kanban":
+                if not _is_authorized(self.headers, token):
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self._json(400, {"error": "invalid content length"})
+                    return
+                if not 0 < length <= MAX_BODY_BYTES:
+                    self._json(413, {"error": f"body must be 1–{MAX_BODY_BYTES} bytes"})
+                    return
+                try:
+                    body = json.loads(self.rfile.read(length))
+                except Exception:
+                    self._json(400, {"error": "invalid JSON"})
+                    return
+                try:
+                    from zeline import kanban as _kb
+                    action = str(body.get("action", "create")).strip().lower()
+                    if action == "create":
+                        cid = _kb.create_card(
+                            str(body.get("title", "")),
+                            str(body.get("description", "")),
+                            str(body.get("column", "todo")),
+                        )
+                        self._json(200, {"ok": True, "id": cid})
+                    elif action == "move":
+                        card = _kb.move_card(str(body.get("card_id", "")),
+                                             str(body.get("to_column", "")))
+                        self._json(200, {"ok": True, "card": card})
+                    elif action == "delete":
+                        ok = _kb.delete_card(str(body.get("card_id", "")))
+                        self._json(200, {"ok": ok})
+                    else:
+                        self._json(400, {"error": f"unknown action: {action}"})
+                except Exception as exc:
+                    self._json(400, {"error": str(exc)})
+                return
             if _post_path == "/api/workflows":
                 if not _is_authorized(self.headers, token):
                     self._json(401, {"error": "unauthorized"})

@@ -747,7 +747,8 @@ class AgentLoopTests(unittest.TestCase):
         with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(reflect_first), FakeResponse(reflect_done)]):
             summary = agent.reflect(min_tool_calls=5)
         self.assertIsNotNone(summary)
-        self.assertIn("demo-flow", summary)
+        self.assertIsInstance(summary, list)
+        self.assertIn("demo-flow", "\n".join(summary))
         # History utama tidak boleh tercemar jejak refleksi.
         self.assertTrue(all("REFLEKSI" not in str(m.get("content") or "") for m in agent.messages))
 
@@ -803,12 +804,14 @@ class AgentLoopTests(unittest.TestCase):
             summary = agent.reflect(min_tool_calls=5)
 
         self.assertIsNotNone(summary)
+        self.assertIsInstance(summary, list)
+        _joined = "\n".join(summary)
         # The listing must not be surfaced as an improvement…
-        self.assertNotIn("skills:", summary)
+        self.assertNotIn("skills:", _joined)
         # …while every real write is, including the merge in the final round.
-        self.assertIn("umbrella-flow/SKILL.md", summary)
-        self.assertIn("umbrella-flow/references/detail.md", summary)
-        self.assertIn("absorbed into 'umbrella-flow'", summary)
+        self.assertIn("umbrella-flow/SKILL.md", _joined)
+        self.assertIn("references/detail.md", _joined)
+        self.assertIn("absorbed into 'umbrella-flow'", _joined)
 
     def test_reflection_memory_writes_are_tagged_as_autonomous_inference(self):
         """A fact the model saves DURING reflection is not user-stated.

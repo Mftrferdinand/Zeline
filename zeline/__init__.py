@@ -1,5 +1,5 @@
-"""Zeline — open-source agentic AI framework by Zerolinear.
+"""Zeline — autonomous AI agent framework by Zerolinear.
 
 The internal ``zeline`` import path remains temporarily for compatibility.
 """
-__version__ = "0.3.8"
+__version__ = "0.3.9"

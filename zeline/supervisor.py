@@ -936,6 +936,32 @@ class Supervisor:
             self._check_timeouts_locked()
             return [record.summary() for record in self._records.values()]
 
+    def cancel_all(self) -> int:
+        """Cancel all workers for this identity. Returns count cancelled.
+
+        Called by /stop: workers are marked cancelled, their events are
+        discarded (not injected into next turn), and running workers get
+        their cancel flag set.
+        """
+        cancelled = 0
+        with self._lock:
+            for record in self._records.values():
+                if record.status in ("queued", "running"):
+                    record.status = "cancelled"
+                    record.finished_at = time.time()
+                    record.error = "Cancelled by /stop"
+                    cancelled += 1
+            # Discard pending events so cancelled workers don't inject
+            # results into the next turn
+            self._events = [
+                e for e in self._events
+                if self._records.get(e.worker_id, None) is None
+                or self._records[e.worker_id].status != "cancelled"
+            ]
+            if cancelled:
+                self._persist_locked()
+        return cancelled
+
     # ------------------------------------------------------------------
     # persistence
     # ------------------------------------------------------------------

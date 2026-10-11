@@ -14,6 +14,7 @@ State hanya menyimpan PID milik child Python yang Zeline spawn sendiri, di
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import shutil
 import signal
@@ -354,7 +355,11 @@ def _process_matches_state(state: dict[str, Any]) -> bool:
     expected_token = str(state.get("start_token", ""))
     if expected_token:
         actual_token = _process_start_token(pid)
-        return actual_token is not None and actual_token == expected_token
+        # compare_digest: cegah timing attack saat membandingkan token.
+        return (
+            actual_token is not None
+            and hmac.compare_digest(actual_token, expected_token)
+        )
     expected_ticks = str(state.get("start_ticks", ""))
     if expected_ticks:
         actual_ticks = _process_start_ticks(pid)

@@ -176,6 +176,19 @@ How you work:
 - Never claim an action/execution is done before a tool result confirms it.
   Fabricating output, tx hashes, or fake results is forbidden — if something
   fails, report the blocker honestly and offer an alternative path.
+- DELEGASI (team work): when the user gives a HEAVY or BRANCHING task
+  (multi-step, multi-file, research + implement, parallel investigations),
+  break it into independent sub-tasks and delegate via spawn_worker.
+  This is the DEFAULT for complex work — do not try to do everything
+  yourself in one turn. Stay responsive in chat while workers run in
+  background — do NOT block waiting. Worker results arrive automatically
+  at the start of a later turn. Only skip delegation for simple single-step
+  tasks. Always declare the MINIMAL grants the worker needs (default
+  read-only). Never grant write/network unless the sub-task truly requires
+  it. If the user says "jangan delegasi" or "kerja sendiri", do everything
+  directly without spawning workers. Treat paraphrases the same:
+  "kerjakan langsung", "jangan pakai tim", "don't delegate",
+  "do it yourself", "no workers" — all mean the same opt-out.
 
 Memory sources — pick the RIGHT one, never guess (CRITICAL):
 - The user refers to the PAST ("lanjutin yang tadi", "file tadi", "yang barusan",
@@ -551,6 +564,10 @@ def _defaults() -> dict[str, Any]:
             "max_turn_seconds": DEFAULT_MAX_TURN_SECONDS,
             # Catat token usage dari provider ke ~/.zeline/usage.db untuk
             # `zeline stats`. Hanya angka token; tidak ada isi percakapan.
+            # Delegasi tim: true = Zeline boleh pecah tugas besar ke workers
+            # via spawn_worker sambil tetap responsif di chat. false = kerja
+            # sendiri langsung tanpa delegasi.
+            "delegasi": True,
             "usage_tracking": True,
             # Harga per 1.000.000 token, diisi operator sendiri:
             #   {"gpt-4o": {"input": 2.5, "output": 10.0}}
@@ -978,7 +995,32 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     except (TypeError, ValueError):
         MAX_PARALLEL_SUBAGENTS = DEFAULT_MAX_PARALLEL_SUBAGENTS
     MCP_SERVERS = cfg.get("mcp", {}).get("servers", {})
-    SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(name=NAME, soul=SOUL)
+    _delegasi = bool(cfg.get("agent", {}).get("delegasi", True))
+    _prompt = SYSTEM_PROMPT_TEMPLATE.format(name=NAME, soul=SOUL)
+    if not _delegasi:
+        # Hapus section DELEGASI dari prompt jika dimatikan.
+        # Fail-closed: kalau regex tidak menemukan section (template berubah),
+        # raise agar delegasi tidak diam-diam tetap aktif.
+        import re
+        _prompt, _n = re.subn(
+            r"- DELEGASI \(team work\):.*?(?=\n- |\n\n)",
+            "", _prompt, flags=re.DOTALL,
+        )
+        if _n == 0 and "DELEGASI" in _prompt:
+            raise RuntimeError(
+                "config: agent.delegasi=false but the DELEGASI section could "
+                "not be stripped from the system prompt (template changed?). "
+                "Refusing to start with delegation silently enabled."
+            )
+        # Verifikasi tambahan: pastikan tidak ada sisa instruksi delegasi
+        # (partial-match regex) — misal section terpotong setengah.
+        if "spawn_worker" in _prompt and "DELEGASI" in _prompt:
+            raise RuntimeError(
+                "config: agent.delegasi=false but delegation instructions "
+                "appear to remain in the system prompt (partial strip?). "
+                "Refusing to start with delegation silently enabled."
+            )
+    SYSTEM_PROMPT = _prompt
 
 
 config = load_config()

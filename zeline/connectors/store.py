@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 
@@ -17,19 +18,30 @@ def _dir() -> Path:
     return path
 
 
+_CID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
 def store_path(cid: str) -> Path:
     """Path of the credential file for connector *cid*."""
+    if not _CID_RE.match(cid or ""):
+        raise ValueError(f"connector id tidak valid: {cid!r}")
     return _dir() / f"{cid}.json"
 
 
 def save(cid: str, data: dict) -> Path:
-    """Write *data* for *cid*, creating the directory, chmod 0600."""
+    """Write *data* for *cid*, creating the directory, chmod 0600.
+
+    Atomic: tulis ke file tmp yang sudah 0600, lalu rename — tidak ada
+    jendela di mana kredensial terlihat dengan permission longgar.
+    """
     path = store_path(cid)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     try:
-        os.chmod(path, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
+    os.replace(tmp, path)
     return path
 
 

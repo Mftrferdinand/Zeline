@@ -835,6 +835,23 @@ def _create_skill(name: str, content: str, category: str) -> str:
         return f"ERROR skill: content too long (maximum {MAX_SKILL_CHARS:,} characters)."
     if category and not re.fullmatch(r"[a-z0-9][a-z0-9/_-]{0,63}", category):
         return "ERROR skill: category harus huruf kecil, angka, - _ atau /."
+    # SkillForge: cegah duplikat sebelum menyimpan. Kalau mirip banget dengan
+    # skill yang sudah ada, tolak dan arahkan ke patch/merge.
+    try:
+        from zeline import skillforge as _sf
+
+        # Ambil deskripsi singkat dari baris pertama content untuk cek duplikat.
+        first_lines = content.strip().splitlines()
+        desc = first_lines[1].lstrip("> ").strip() if len(first_lines) > 1 else ""
+        dup = _sf.check_duplicate(name, desc or content[:200])
+        if dup and dup["action"] == "merge":
+            return (
+                f"ERROR skill: near-duplicate of existing skill '{dup['slug']}' "
+                f"(similarity {dup['similarity']}). Use manage_skill action='patch' "
+                f"to enrich it instead of creating a duplicate."
+            )
+    except Exception:
+        pass  # duplicate check is best-effort; never block creation on error
     skill_dir = _private_skill_dir(name)
     skill_dir.mkdir(parents=True, exist_ok=True)
     _chmod_private(skill_dir)

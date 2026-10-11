@@ -1710,16 +1710,18 @@ class Zeline:
             "Coba pecah pertanyaannya jadi bagian lebih kecil."
         )
 
-    def reflect(self, min_tool_calls: int = 5) -> str | None:
-        """Self-improvement review di akhir sesi penting (profile full saja).
+    def reflect(self, min_tool_calls: int = 5) -> list[str] | None:
+        """Forge: skill-forging review at the end of significant sessions (full profile only).
 
         Menyuruh model meninjau percakapan yang baru saja terjadi lalu, bila ada
         prosedur reusable / pelajaran nyata, MENYIMPAN atau MEMPERBAIKI skill via
         tool manage_skill dan menyelesaikan lessons yang memang sudah diperbaiki.
-        Ambang dihitung kumulatif lintas turn supaya beberapa langkah pendek tetap
-        dipelajari, tetapi review hanya dijalankan untuk profile full agar skill
-        operator tidak ditulis oleh gateway publik. Mengembalikan ringkasan
-        tindakan, atau None bila tidak ada yang perlu disimpan / sesi terlalu ringan.
+        Skill baru difilter otomatis oleh SkillForge (cek duplikat lintas private
+        + learned, skor efektivitas). Ambang dihitung kumulatif lintas turn supaya
+        beberapa langkah pendek tetap dipelajari, tetapi review hanya dijalankan
+        untuk profile full agar skill operator tidak ditulis oleh gateway publik.
+        Mengembalikan ringkasan tindakan, atau None bila tidak ada yang perlu
+        disimpan / sesi terlalu ringan.
         """
         if self.executor.profile != "full":
             return None
@@ -1736,13 +1738,15 @@ class Zeline:
         # ``on_tool`` (bukan keputusan approval, hanya cara picker
         # dirender) diwariskan supaya pertanyaan approval selama refleksi
         # tetap tampil ke operator seperti biasa.
+        # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
+        # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
+        # NOTE: deepcopy dilakukan SEBELUM mengubah executor state supaya kalau
+        # deepcopy raise, policy/source tidak bocor (tidak masuk try/finally).
+        saved_messages = copy.deepcopy(self.messages)
         previous_policy = self.executor.approval_policy
         self.executor.approval_policy = InteractiveApprovalPolicy(
             on_tool=getattr(previous_policy, "on_tool", None)
         )
-        # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
-        # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
-        saved_messages = copy.deepcopy(self.messages)
         pending_lessons = lessons.unresolved_lessons(self.identity, limit=8)
         pending_context = ""
         if pending_lessons:
@@ -1763,22 +1767,18 @@ class Zeline:
             {
                 "role": "user",
                 "content": (
-                    "REFLEKSI SELF-IMPROVEMENT (internal, jangan tampilkan ke user). "
+                    "REFLEKSI FORGE (internal, jangan tampilkan ke user). "
                     "Tinjau singkat percakapan barusan. "
                     "(A) Apakah ada prosedur reusable, alur kerja non-trivial, atau "
                     "error tricky yang berhasil diatasi dan layak jadi skill? "
-                    "Kalau YA, WAJIB mulai dengan manage_skill action='list' untuk "
-                    "melihat skill yang sudah ada — jangan menyimpan nama baru untuk "
-                    "pelajaran yang sudah punya skill. "
-                    "- Sudah ada skill yang seintent (walau namanya beda): pakai "
-                    "manage_skill action='patch' untuk memperkaya skill itu; kalau ada "
-                    "beberapa skill yang tumpang tindih, gabungkan ke satu lalu "
-                    "manage_skill action='delete' dengan absorbed_into='<skill induk>'. "
-                    "- Belum ada: manage_skill action='create' (isi: kapan dipakai, "
-                    "langkah bernomor + command persis, pitfalls). Detail panjang "
-                    "(referensi API, log, contoh output) taruh di file terpisah lewat "
-                    "manage_skill action='write_file' file_path='references/<topik>.md' "
-                    "lalu tunjuk dari SKILL.md — jangan menumpuk semua di satu file. "
+                    "Kalau YA, WAJIB mulai dengan skillforge action='find' query='<deskripsi tugas>' "
+                    "untuk melihat skill yang sudah ada — jangan menyimpan duplikat. "
+                    "Kalau ada yang cocok, pakai skillforge action='feedback' slug='<slug>' success=true/false "
+                    "setelah memakainya supaya skornya akurat. "
+                    "Kalau belum ada yang cocok: skillforge action='register' (name, description, content: "
+                    "kapan dipakai, langkah bernomor + command persis, pitfalls). "
+                    "Duplikat terdeteksi otomatis dan digabung, bukan diduplikasi. "
+                    "Alternatif manual: manage_skill action='list' lalu 'create'/'patch'. "
                     "(B) Apakah user MENGOREKSI kamu berulang tentang hal yang sama "
                     "(mis. edit/revisi yang katanya 'masih sama/nggak berubah', font/warna/"
                     "layout yang harus lebih presisi, atau kamu menimpa file dgn versi lama)? "
@@ -1800,6 +1800,13 @@ class Zeline:
             }
         )
         actions: list[str] = []
+        # Kategorisasi untuk label Telegram:
+        # - Self-Improvement: skill BARU yang dibuat (kemampuan baru)
+        # - Refinements: skill LAMA yang diperbaiki (patch/merge/version bump)
+        # - Enhancements: non-skill (lesson resolved, memory, GEPA drafts)
+        _cat_new: list[str] = []
+        _cat_refine: list[str] = []
+        _cat_enhance: list[str] = []
         # Anything the model saves to memory DURING reflection is an autonomous
         # inference, not something the user stated. Tag it as source=reflection
         # (lower confidence) so a later prune can tell self-writes from the
@@ -1837,8 +1844,33 @@ class Zeline:
                         and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}
                     )
                     is_lesson_change = name == "resolve_lesson"
-                    if (is_skill_change or is_lesson_change) and not result.startswith("ERROR"):
-                        actions.append(result)
+                    is_memory_change = name == "add_memory"
+                    is_forge_new = (
+                        name == "skillforge"
+                        and str(args.get("action", "")).strip().lower() == "register"
+                        and "[forge:merged]" not in result
+                    )
+                    is_forge_refine = (
+                        name == "skillforge"
+                        and str(args.get("action", "")).strip().lower()
+                        in {"register", "feedback"}
+                        and not is_forge_new
+                    )
+                    if (is_skill_change or is_lesson_change or is_memory_change) and not result.startswith("ERROR"):
+                        # Kategorisasi: create/patch dibedakan dari action arg.
+                        _act = str(args.get("action", "")).strip().lower()
+                        if name == "manage_skill" and _act == "create":
+                            _cat_new.append(result)
+                        elif name == "manage_skill" and _act in {"patch", "write_file", "delete"}:
+                            _cat_refine.append(result)
+                        elif is_lesson_change or is_memory_change:
+                            _cat_enhance.append(result)
+                        else:
+                            actions.append(result)
+                    if is_forge_new and not result.startswith("ERROR"):
+                        _cat_new.append(result)
+                    elif is_forge_refine and not result.startswith("ERROR"):
+                        _cat_refine.append(result)
                     self.messages.append(
                         {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}
                     )
@@ -1863,14 +1895,40 @@ class Zeline:
                     from zeline import gepa as _gepa
                     _new_drafts = _gepa.auto_learn()
                     if _new_drafts:
-                        actions.append(
+                        _cat_enhance.append(
                             f"GEPA: {len(_new_drafts)} skill draft(s) created "
                             f"from observed patterns."
                         )
                 except Exception:
                     pass
+                # SkillForge: time-based score decay (at most once per hour).
+                # Keeps effectiveness scores honest without slowing every turn.
+                try:
+                    from zeline import skillforge as _sf
+                    import time as _time
+                    _last = getattr(self, "_skillforge_last_decay", 0.0)
+                    if _time.time() - _last > 3600:
+                        self._skillforge_last_decay = _time.time()
+                        _decayed = _sf.apply_decay()
+                        if _decayed:
+                            _cat_refine.append(
+                                f"SkillForge: decay applied to {_decayed} skill(s)."
+                            )
+                except Exception:
+                    pass
             # A reflection may have changed memory, lessons, or skills. Make the
             # next ordinary turn see the new knowledge immediately.
             self._refresh_system_prompt()
-        return "\n".join(actions) if actions else None
+        # Build labeled output: each category is a separate message.
+        # The gateway sends them 1-by-1 so nothing gets mixed.
+        _sections: list[str] = []
+        if _cat_new:
+            _sections.append("📒 Self-Improvement review:\n" + "\n".join(_cat_new))
+        if _cat_refine:
+            _sections.append("📘 Refinements review:\n" + "\n".join(_cat_refine))
+        if _cat_enhance:
+            _sections.append("📗 Enhancements review:\n" + "\n".join(_cat_enhance))
+        if actions:  # uncategorized fallback
+            _sections.append("\n".join(actions))
+        return _sections if _sections else None
 

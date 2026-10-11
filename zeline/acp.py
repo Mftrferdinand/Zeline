@@ -8,7 +8,11 @@ Protocol: https://agentclientprotocol.com/
 Supported methods:
 - initialize: handshake, returns agent capabilities
 - session/new: create a new session
-- session/prompt: send a user prompt, returns response (blocking)
+- session/prompt: send a user prompt, returns response. While the agent
+  works, the server streams ``session/update`` notifications
+  (``agent_message_chunk`` / ``agent_thought_chunk`` / ``tool_call`` /
+  ``tool_call_update``) so IDEs can render progress live. The final
+  ``session/prompt`` response shape is unchanged (blocking-compatible).
 - session/cancel: cancel ongoing prompt
 """
 
@@ -30,9 +34,33 @@ class ACPSession:
 
 
 class ACPServer:
-    def __init__(self):
+    def __init__(self, out=None):
         self.sessions: dict[str, ACPSession] = {}
         self._lock = threading.Lock()
+        # Output stream for JSON-RPC frames (stdout in production,
+        # injectable for tests). Guarded by _write_lock so notifications
+        # emitted mid-turn never interleave.
+        self._out = out if out is not None else sys.stdout
+        self._write_lock = threading.Lock()
+
+    def _notify(self, method: str, params: dict) -> bool:
+        """Emit a JSON-RPC notification frame (no ``id``).
+
+        Returns False when the client is gone (broken pipe / closed
+        stream); callers should stop producing further updates.
+        """
+        frame = {"jsonrpc": "2.0", "method": method, "params": params}
+        try:
+            line = json.dumps(frame)
+        except (TypeError, ValueError):
+            return False
+        with self._write_lock:
+            try:
+                self._out.write(line + "\n")
+                self._out.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                return False
+        return True
 
     def handle(self, msg: dict) -> dict | None:
         # H-1 fix: guard non-dict frames
@@ -72,7 +100,8 @@ class ACPServer:
         except Exception as exc:
             if is_notification:
                 return None
-            return self._error(msg_id, -32603, str(exc))
+            # Jangan bocorkan detail internal (path, dsb) ke klien.
+            return self._error(msg_id, -32603, "Internal error")
 
     def _error(self, msg_id: Any, code: int, message: str) -> dict:
         return {
@@ -92,7 +121,7 @@ class ACPServer:
             },
             "agentInfo": {
                 "name": "Zeline",
-                "version": "0.3.5",
+                "version": "0.4.0",
             },
         }
 
@@ -127,6 +156,8 @@ class ACPServer:
             session = self.sessions.get(session_id)
         if not session:
             raise ValueError(f"Unknown session: {session_id}")
+        if not text.strip():
+            raise ValueError("Empty prompt: nothing to do.")
 
         # H-2: clear cancel flag at turn start
         session._cancel.clear()
@@ -140,7 +171,7 @@ class ACPServer:
             session.history = session.history[-100:]
 
         try:
-            response = self._run_agent(session, text)
+            response = self._run_agent_streaming(session, text)
         except Exception:
             # H-3 fix: don't pollute history with error masquerading as assistant reply
             # Remove the orphaned user message so next turn isn't corrupted
@@ -156,8 +187,15 @@ class ACPServer:
             return {"stopReason": "cancelled"}
         return {"stopReason": "end_turn"}
 
-    def _run_agent(self, session: ACPSession, text: str) -> str:
-        """Run the Zeline agent loop."""
+    def _run_agent_streaming(self, session: ACPSession, text: str) -> str:
+        """Run the Zeline agent loop, streaming progress as ``session/update``.
+
+        While the turn runs, every model text delta, narration, tool call
+        and tool result is emitted as a JSON-RPC notification so the IDE can
+        render live progress. The return value and error behavior are
+        identical to the old blocking runner: unknown notifications are
+        ignored by spec-compliant clients, so this is backward compatible.
+        """
         try:
             from zeline.agent import Zeline
             from zeline import config as _cfg
@@ -168,6 +206,67 @@ class ACPServer:
                     f"Run `zeline model` to set up a provider first.\n"
                     f"Session {session.session_id} active in {session.cwd or 'default dir'}."
                 )
+            sid = session.session_id
+
+            # on_tool / on_tool_result always pair 1:1 in order (agent.py
+            # zips parsed_calls with results), so a FIFO queue pairs the
+            # toolCallIds correctly, including parallel batches.
+            pending_ids: list[str] = []
+            seq = [0]
+
+            def _emit(update: dict) -> None:
+                if not self._notify("session/update",
+                                    {"sessionId": sid, "update": update}):
+                    # Client is gone — stop the turn at the next checkpoint
+                    # instead of burning tokens nobody will read.
+                    session._cancel.set()
+
+            # Batch text deltas: satu flush per N chunk, bukan per chunk.
+            # Urutan dijaga: buffer di-flush SEBELUM notifikasi tool/narasi
+            # apapun, jadi IDE selalu melihat teks dalam urutan yang benar.
+            delta_buf = [""]
+            delta_chunks = [0]
+
+            def _flush_deltas() -> None:
+                if delta_buf[0]:
+                    _emit({"sessionUpdate": "agent_message_chunk",
+                           "content": {"type": "text", "text": delta_buf[0]}})
+                    delta_buf[0] = ""
+                    delta_chunks[0] = 0
+
+            def on_delta(piece: str) -> None:
+                if not piece:
+                    return
+                delta_buf[0] += piece
+                delta_chunks[0] += 1
+                if len(delta_buf[0]) >= 4000 or delta_chunks[0] >= 25:
+                    _flush_deltas()
+
+            def on_tool(name: str, args: dict) -> None:
+                _flush_deltas()  # jaga urutan: teks dulu, baru tool_call
+                seq[0] += 1
+                tid = f"tc_{seq[0]}"
+                pending_ids.append(tid)
+                _emit({"sessionUpdate": "tool_call",
+                       "toolCallId": tid,
+                       "title": str(name),
+                       "kind": "other"})
+
+            def on_tool_result(name: str, args: dict, result: str) -> None:
+                _flush_deltas()
+                tid = pending_ids.pop(0) if pending_ids else f"tc_{seq[0] + 1}"
+                _emit({"sessionUpdate": "tool_call_update",
+                       "toolCallId": tid,
+                       "status": "completed",
+                       "content": [{"type": "text",
+                                    "text": str(result)[:2000]}]})
+
+            def on_narration(narr: str) -> None:
+                if narr:
+                    _flush_deltas()
+                    _emit({"sessionUpdate": "agent_thought_chunk",
+                           "content": {"type": "text", "text": narr}})
+
             agent = Zeline(
                 identity=f"acp:{session.session_id}",
                 workspace=session.cwd,
@@ -176,8 +275,17 @@ class ACPServer:
             for msg in session.history[:-1]:  # exclude current (already added)
                 if isinstance(msg, dict) and "role" in msg:
                     agent.messages.append(msg)
-            # Run single turn via send(), wired to session cancel (H-2)
-            response = agent.send(text, should_stop=session._cancel.is_set)
+            # Run single turn via send(), wired to session cancel (H-2).
+            # Callbacks are notifications only; approval behavior is unchanged.
+            response = agent.send(
+                text,
+                should_stop=session._cancel.is_set,
+                on_tool=on_tool,
+                on_tool_result=on_tool_result,
+                on_narration=on_narration,
+                on_stream_delta=on_delta,
+            )
+            _flush_deltas()  # sisa buffer teks di akhir turn
             return response
         except Exception:
             # H-3: let errors propagate honestly to handle() -> -32603
@@ -185,7 +293,8 @@ class ACPServer:
 
     def _session_cancel(self, params: dict) -> dict:
         session_id = params.get("sessionId", "")
-        session = self.sessions.get(session_id)
+        with self._lock:
+            session = self.sessions.get(session_id)
         if session:
             session._cancel.set()
         return {}
@@ -229,9 +338,11 @@ def main() -> None:
         try:
             # H-1 fix: never let one bad frame kill the process
             resp = server.handle(msg)
-        except Exception as exc:
-            resp = {"jsonrpc": "2.0", "id": None,
-                    "error": {"code": -32603, "message": f"Internal error: {exc}"}}
+        except Exception:
+            # Pesan generik seperti handle() — jangan bocorkan detail internal.
+            err_id = msg.get("id") if isinstance(msg, dict) else None
+            resp = {"jsonrpc": "2.0", "id": err_id,
+                    "error": {"code": -32603, "message": "Internal error"}}
         if resp is not None:
             try:
                 sys.stdout.write(json.dumps(resp) + "\n")

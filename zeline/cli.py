@@ -1107,7 +1107,9 @@ def _run_reflection(sessions: "SessionStore") -> None:
     except Exception:
         summary = None
     if summary:
-        print(f"\n\033[90m📒 Self-improvement: {summary}\033[0m")
+        _parts = summary if isinstance(summary, list) else [summary]
+        for _p in _parts:
+            print(f"\n\033[90m{_p}\033[0m")
 
 
 # ---------------------------------------------------------------------------
@@ -1926,6 +1928,50 @@ def _parse_risk_classes(raw: str, flag: str) -> list[str]:
     return seen
 
 
+def cmd_meeting(namespace) -> int:
+    """Meeting commands: join / notes / leave / list."""
+    from zeline import meeting as _meeting_mod
+
+    action = namespace.meeting_command or "list"
+    if action == "list":
+        items = _meeting_mod.list_meetings()
+        if not items:
+            print("Belum ada meeting.")
+            return 0
+        for it in items:
+            print(f"  {it['id']} [{it['status']}] {it['platform']} {it['url']}")
+        return 0
+    if action == "join":
+        try:
+            mid = _meeting_mod.join_meeting(namespace.url, name=namespace.name or "")
+        except _meeting_mod.MeetingError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(f"meeting_id: {mid}")
+        print(f"platform: {_meeting_mod.detect_platform(namespace.url)}")
+        print(f"url: {_meeting_mod.redact_url(namespace.url)}")
+        return 0
+    if action == "notes":
+        try:
+            entry = _meeting_mod.take_notes(
+                namespace.meeting_id, audio_path=namespace.audio or None
+            )
+        except _meeting_mod.MeetingError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(entry)
+        return 0
+    if action == "leave":
+        try:
+            print(_meeting_mod.leave_meeting(namespace.meeting_id))
+        except _meeting_mod.MeetingError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        return 0
+    print(f"Unknown meeting command: {action}")
+    return 1
+
+
 def cmd_voice(namespace) -> int:
     """Offline voice commands: transcribe / speak / status / download-model."""
     from zeline import voice as _voice_mod
@@ -1967,6 +2013,33 @@ def cmd_voice(namespace) -> int:
         return 0
     print(f"Unknown voice command: {action}")
     return 1
+
+
+def cmd_image(namespace) -> int:
+    """Generate an image from a text prompt (local backends)."""
+    from zeline import image_gen as _ig_mod
+
+    if namespace.status or not (namespace.prompt or "").strip():
+        status = _ig_mod.image_gen_status()
+        for key, label in (("openai", "OpenAI DALL-E langsung"), ("sd", "Stable Diffusion lokal")):
+            info = status[key]
+            mark = "OK" if info["available"] else "--"
+            backend = info.get("backend") or "-"
+            print(f"[{mark}] {label}: {backend}")
+            print(f"     {info['detail']}")
+        return 0
+    import time as _time
+    out = (namespace.output or "").strip() or f"image-{int(_time.time())}.png"
+    try:
+        result = _ig_mod.generate_image(
+            namespace.prompt, out,
+            backend=namespace.backend, size=namespace.size,
+        )
+    except _ig_mod.ImageGenError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    print(f"Saved: {result}")
+    return 0
 
 
 def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "", trust_risk_cap: str = "") -> int:
@@ -2480,6 +2553,12 @@ def cmd_connect(service: str | None, code: str = "") -> int:
     if conn is None:
         print(f"Unknown connector '{service}'. Available: {', '.join(connectors_pkg.all_ids())}")
         return 2
+    # One-click OAuth first: connectors with an OAuth provider config use the
+    # browser flow instead of pasting tokens.
+    from zeline import oauth as _oauth
+
+    if _oauth.supports_oauth(service):
+        return _oauth.run_oauth_flow_cli(service)
     if service == "trello":
         # Needs API key + token (two secrets), not the single-token "pat" flow.
         import getpass
@@ -3766,6 +3845,65 @@ def cmd_hooks(
     return 2
 
 
+def cmd_kanban(
+    action: str = "list",
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    column: str | None = None,
+    card_id: str | None = None,
+    to_column: str | None = None,
+) -> int:
+    """Kanban board: list/add/move/delete cards (zeline/kanban.py)."""
+    from zeline import kanban as kanban_mod
+
+    if action == "list":
+        cards = kanban_mod.list_cards(column)
+        if not cards:
+            print("  No cards." + (f" (column: {column})" if column else ""))
+            return 0
+        for c in cards:
+            print(f"  [{c['column']}] {c['id']}: {c['title']}")
+        return 0
+
+    if action == "add":
+        if not (title or "").strip():
+            print("kanban add needs a title: zeline kanban add \"title\" [--column todo]")
+            return 2
+        try:
+            cid = kanban_mod.create_card(title, description or "", column or "todo")
+        except ValueError as exc:
+            print(f"  Error: {exc}")
+            return 2
+        print(f"  Created card {cid}")
+        return 0
+
+    if action == "move":
+        if not card_id or not to_column:
+            print("usage: zeline kanban move <card_id> <todo|doing|done>")
+            return 2
+        try:
+            card = kanban_mod.move_card(card_id, to_column)
+        except ValueError as exc:
+            print(f"  Error: {exc}")
+            return 2
+        print(f"  Moved {card['id']} to {card['column']}")
+        return 0
+
+    if action == "delete":
+        if not card_id:
+            print("usage: zeline kanban delete <card_id>")
+            return 2
+        if kanban_mod.delete_card(card_id):
+            print(f"  Deleted {card_id}")
+            return 0
+        print(f"  Card not found: {card_id}")
+        return 1
+
+    print(f"Unknown kanban action: {action}")
+    return 2
+
+
 def cmd_vault(
     action: str = "export",
     *,
@@ -3787,6 +3925,57 @@ def cmd_vault(
         return 0
 
     print(f"Unknown vault action: {action}")
+    return 2
+
+
+def cmd_lsp(
+    action: str = "servers",
+    *,
+    lang: str | None = None,
+    path: str | None = None,
+    line: int = 0,
+    character: int = 0,
+) -> int:
+    """Language server queries (zeline/lsp.py). Servers are the operator's own
+    binaries discovered from PATH; nothing is downloaded."""
+    from zeline import lsp
+
+    if action == "servers":
+        found = lsp.available()
+        print("Language servers on this machine:")
+        for language, argv in found.items():
+            status = argv[0] if argv else "(not installed)"
+            print(f"  {language:<12} {status}")
+        if not any(found.values()):
+            print("  None installed, e.g. `pip install basedpyright` for Python.")
+        return 0
+
+    if action == "start":
+        try:
+            print(lsp.start_lsp_server(lang or "python", path or "."))
+        except lsp.LspError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        return 0
+
+    if action == "stop":
+        print(lsp.stop_lsp_servers())
+        return 0
+
+    if action in {"definition", "references", "hover"}:
+        fn = {
+            "definition": lsp.goto_definition,
+            "references": lsp.find_references,
+            "hover": lsp.hover,
+        }[action]
+        try:
+            print(fn(path or "", line, character))
+            return 0
+        finally:
+            # One-shot CLI process: jangan biarkan server yatim piatu.
+            lsp.stop_lsp_servers()
+
+    print(f"Unknown lsp action: {action}")
     return 2
 
 
@@ -3927,6 +4116,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_send.add_argument("url", help="peer base URL (e.g. http://other-host:8788)")
     p_send.add_argument("message", help="message text to send")
     peer_sub.add_parser("keygen", help="generate a new peer shared secret")
+    meeting = subparsers.add_parser("meeting", help="join Zoom/Meet/Teams meetings, take notes")
+    meeting_sub = meeting.add_subparsers(dest="meeting_command")
+    m_join = meeting_sub.add_parser("join", help="join a meeting via headless browser")
+    m_join.add_argument("url", help="meeting URL (https, zoom.us / meet.google.com / teams.microsoft.com)")
+    m_join.add_argument("--name", default="", help="display name to join as")
+    m_notes = meeting_sub.add_parser("notes", help="capture notes (live captions + optional audio transcript)")
+    m_notes.add_argument("meeting_id", help="meeting id from 'zeline meeting join'")
+    m_notes.add_argument("--audio", default="", help="audio file to transcribe and append")
+    m_leave = meeting_sub.add_parser("leave", help="leave a meeting")
+    m_leave.add_argument("meeting_id", help="meeting id from 'zeline meeting join'")
+    meeting_sub.add_parser("list", help="list known meetings")
     voice = subparsers.add_parser("voice", help="offline voice: speech-to-text and text-to-speech")
     voice_sub = voice.add_subparsers(dest="voice_command")
     v_transcribe = voice_sub.add_parser("transcribe", help="transcribe an audio file to text (local faster-whisper)")
@@ -3941,6 +4141,12 @@ def build_parser() -> argparse.ArgumentParser:
     voice_sub.add_parser("status", help="show which voice backends are available")
     v_dl = voice_sub.add_parser("download-model", help="download a faster-whisper STT model (explicit, one-time)")
     v_dl.add_argument("model", nargs="?", default="tiny", help="model size (default: tiny)")
+    image = subparsers.add_parser("image", help="generate an image from a text prompt (local backends)")
+    image.add_argument("prompt", nargs="?", default="", help="text description of the image to create")
+    image.add_argument("-o", "--output", default="", help="output image path (default: image-<ts>.png in cwd)")
+    image.add_argument("--backend", default=None, help="force backend: openai, sd (default: auto-detect)")
+    image.add_argument("--size", default="1024x1024", help="image size WxH (default: 1024x1024)")
+    image.add_argument("--status", action="store_true", help="show which image backends are available")
     subparsers.add_parser("model", help="change provider/model without re-running gateway setup")
     keys = subparsers.add_parser("keys", help="manage provider API key pool (auto-rotates on 401/403/429)")
     keys_sub = keys.add_subparsers(dest="keys_command")
@@ -4158,6 +4364,34 @@ def build_parser() -> argparse.ArgumentParser:
     vault_sync.add_argument("--path", default=None, help="vault path (default ~/zeline-vault)")
     vault_sync.add_argument("--identity", default="cli:local", help="identity to sync")
 
+    kanban_parser = subparsers.add_parser("kanban", help="kanban board (todo/doing/done)")
+    kanban_sub = kanban_parser.add_subparsers(dest="kanban_command")
+    kanban_list = kanban_sub.add_parser("list", help="list cards")
+    kanban_list.add_argument("--column", default=None, choices=["todo", "doing", "done"],
+                             help="filter by column")
+    kanban_add = kanban_sub.add_parser("add", help="add a card")
+    kanban_add.add_argument("title", help="card title")
+    kanban_add.add_argument("--description", default="", help="card details")
+    kanban_add.add_argument("--column", default="todo", choices=["todo", "doing", "done"])
+    kanban_move = kanban_sub.add_parser("move", help="move a card")
+    kanban_move.add_argument("card_id", help="card id")
+    kanban_move.add_argument("to_column", choices=["todo", "doing", "done"])
+    kanban_del = kanban_sub.add_parser("delete", help="delete a card")
+    kanban_del.add_argument("card_id", help="card id")
+
+    lsp_parser = subparsers.add_parser("lsp", help="language server: definition, references, hover")
+    lsp_sub = lsp_parser.add_subparsers(dest="lsp_command")
+    lsp_start = lsp_sub.add_parser("start", help="start a language server for a language")
+    lsp_start.add_argument("--lang", default="python", help="language (default: python)")
+    lsp_start.add_argument("--path", default=".", help="workspace path (default: .)")
+    lsp_sub.add_parser("servers", help="list detected language servers")
+    lsp_sub.add_parser("stop", help="stop all running language servers")
+    for _verb in ("definition", "references", "hover"):
+        _p = lsp_sub.add_parser(_verb, help=f"one-shot {_verb} query via language server")
+        _p.add_argument("path", help="file to inspect")
+        _p.add_argument("line", type=int, help="1-based line number")
+        _p.add_argument("--character", type=int, default=0, help="0-based column (default: 0)")
+
     for alias, alias_help in (
         ("start", "alias: start enabled gateways"),
         ("stop", "alias: stop background gateways"),
@@ -4243,6 +4477,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if command == "voice":
         return cmd_voice(namespace)
+    if command == "image":
+        return cmd_image(namespace)
+    if command == "meeting":
+        return cmd_meeting(namespace)
     if command == "model":
         return cmd_model()
     if command == "gateway":
@@ -4393,6 +4631,23 @@ def main(argv: list[str] | None = None) -> int:
             getattr(namespace, "vault_command", None) or "export",
             path=getattr(namespace, "path", None),
             identity=getattr(namespace, "identity", None) or "cli:local",
+        )
+    if command == "kanban":
+        return cmd_kanban(
+            getattr(namespace, "kanban_command", None) or "list",
+            title=getattr(namespace, "title", None),
+            description=getattr(namespace, "description", None),
+            column=getattr(namespace, "column", None),
+            card_id=getattr(namespace, "card_id", None),
+            to_column=getattr(namespace, "to_column", None),
+        )
+    if command == "lsp":
+        return cmd_lsp(
+            getattr(namespace, "lsp_command", None) or "servers",
+            lang=getattr(namespace, "lang", None),
+            path=getattr(namespace, "path", None),
+            line=getattr(namespace, "line", 0) or 0,
+            character=getattr(namespace, "character", 0) or 0,
         )
     if command == "tools":
         action = namespace.tools_command or "list"

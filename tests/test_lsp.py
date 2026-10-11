@@ -31,13 +31,19 @@ LIVE = os.environ.get("ZELINE_LSP_TESTS") == "1"
 
 def fresh(home: Path):
     os.environ["ZELINE_HOME"] = str(home)
-    for name in list(sys.modules):
-        if name == "zeline" or name.startswith("zeline."):
-            sys.modules.pop(name, None)
+    # Simpan modul zeline.* yang di-pop agar bisa di-restore di tearDown
+    # (tanpa restore, test file lain yang jalan di proses yang sama bisa rusak).
+    saved = {
+        name: mod
+        for name, mod in list(sys.modules.items())
+        if name == "zeline" or name.startswith("zeline.")
+    }
+    for name in saved:
+        sys.modules.pop(name, None)
     cfg = importlib.import_module("zeline.config")
     lsp = importlib.import_module("zeline.lsp")
     tools = importlib.import_module("zeline.tools")
-    return cfg, lsp, tools
+    return cfg, lsp, tools, saved
 
 
 class FakePipe:
@@ -72,13 +78,18 @@ class LspBase(unittest.TestCase):
         self.home = Path(self._tmp.name) / "zhome"
         self.home.mkdir(parents=True)
         self._saved = os.environ.get("ZELINE_HOME")
-        self.config, self.lsp, self.tools = fresh(self.home)
+        self.config, self.lsp, self.tools, self._saved_modules = fresh(self.home)
 
     def tearDown(self):
         if self._saved is None:
             os.environ.pop("ZELINE_HOME", None)
         else:
             os.environ["ZELINE_HOME"] = self._saved
+        # Restore modul zeline.* yang di-pop fresh() agar test lain tidak rusak.
+        for name in list(sys.modules):
+            if name == "zeline" or name.startswith("zeline."):
+                sys.modules.pop(name, None)
+        sys.modules.update(self._saved_modules)
         self._tmp.cleanup()
 
     @staticmethod
@@ -148,6 +159,14 @@ class FramingTests(LspBase):
         with self.assertRaises(self.lsp.LspError) as caught:
             server._request("test/thing", timeout=0.5)
         self.assertIn("timed out", str(caught.exception))
+
+    def test_oversized_content_length_kills_server(self):
+        """Content-Length > 50MB: jangan alokasi memori tak terbatas."""
+        evil = b"Content-Length: 999999999\r\n\r\n" + b"x" * 10
+        server, _ = self.server([evil])
+        server._reader.join(timeout=5)
+        # Proses di-stop → request berikutnya fail-fast, bukan hang/OOM.
+        self.assertFalse(server.running)
 
     def test_a_server_to_client_request_is_answered(self):
         """Some servers stall forever waiting for a reply to their own request."""
@@ -464,3 +483,188 @@ class LiveServerTests(LspBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StandaloneApiTests(LspBase):
+    """Tests for the standalone public API: start_lsp_server, goto_definition,
+    find_references, hover, stop_lsp_servers. All mocked — no real server."""
+
+    def setUp(self):
+        super().setUp()
+        self.lsp._STANDALONE.clear()
+
+    def tearDown(self):
+        self.lsp.stop_lsp_servers()
+        super().tearDown()
+
+    def test_start_unknown_language_raises_clear_error(self):
+        with self.assertRaises(self.lsp.LspError) as ctx:
+            self.lsp.start_lsp_server("cobol", str(self.home))
+        self.assertIn("unknown language", str(ctx.exception))
+        self.assertIn("python", str(ctx.exception))
+
+    def test_start_without_server_raises_install_hint(self):
+        with mock.patch.object(self.lsp, "find_server", return_value=None):
+            with self.assertRaises(self.lsp.LspError) as ctx:
+                self.lsp.start_lsp_server("python", str(self.home))
+        self.assertIn("no python language server found", str(ctx.exception))
+        self.assertIn("basedpyright", str(ctx.exception))
+
+    def test_start_reuses_server_and_reports_status(self):
+        server = mock.Mock()
+        server.argv = ("/usr/bin/pylsp",)
+        server.running = True
+        with mock.patch.object(self.lsp, "find_server", return_value=("/usr/bin/pylsp",)):
+            with mock.patch.object(self.lsp, "LanguageServer", return_value=server) as cls:
+                first = self.lsp.start_lsp_server("python", str(self.home))
+                second = self.lsp.start_lsp_server("python", str(self.home))
+        # Started once, reused the second time.
+        self.assertEqual(cls.call_count, 1)
+        self.assertIn("pylsp", first)
+        self.assertIn("started for python", first)
+        self.assertIn("reused", second.lower() or first)
+
+    def test_query_missing_file_returns_error_text(self):
+        result = self.lsp.goto_definition(str(self.home / "ghost.py"), 1, 0)
+        self.assertTrue(result.startswith("ERROR lsp:"))
+        self.assertIn("not found", result)
+
+    def test_query_bad_line_returns_error_text(self):
+        target = self.home / "a.py"
+        target.write_text("x = 1\n", encoding="utf-8")
+        for fn in (self.lsp.goto_definition, self.lsp.find_references, self.lsp.hover):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("1-based line", fn(str(target), 0, 0))
+
+    def test_queries_use_mocked_registry(self):
+        target = self.home / "a.py"
+        target.write_text("x = 1\n", encoding="utf-8")
+        registry = mock.Mock()
+        registry.definition.return_value = "Definition:\n  a.py:1:1"
+        registry.references.return_value = "2 reference(s):\n  a.py:1:1"
+        registry.hover.return_value = "x: int"
+        with mock.patch.object(self.lsp, "_standalone_registry", return_value=registry):
+            self.assertIn("a.py:1:1", self.lsp.goto_definition(str(target), 1, 0))
+            self.assertIn("2 reference", self.lsp.find_references(str(target), 1, 0))
+            self.assertIn("x: int", self.lsp.hover(str(target), 1, 0))
+
+    def test_query_server_failure_returns_text_not_raised(self):
+        target = self.home / "a.py"
+        target.write_text("x = 1\n", encoding="utf-8")
+        registry = mock.Mock()
+        registry.definition.side_effect = self.lsp.LspError("boom")
+        with mock.patch.object(self.lsp, "_standalone_registry", return_value=registry):
+            result = self.lsp.goto_definition(str(target), 1, 0)
+        self.assertTrue(result.startswith("ERROR lsp:"))
+        self.assertIn("boom", result)
+
+    def test_project_root_walks_up_to_marker(self):
+        proj = self.home / "proj"
+        (proj / "sub" / "deep").mkdir(parents=True)
+        (proj / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        target = proj / "sub" / "deep" / "a.py"
+        self.assertEqual(self.lsp._project_root(target), proj)
+
+    def test_project_root_falls_back_to_parent(self):
+        target = self.home / "lonely" / "a.py"
+        target.parent.mkdir(parents=True)
+        self.assertEqual(self.lsp._project_root(target), target.parent)
+
+    def test_stop_clears_registries(self):
+        registry = mock.Mock()
+        registry.servers = {}
+        self.lsp._STANDALONE["x"] = registry
+        result = self.lsp.stop_lsp_servers()
+        self.assertIn("Stopped", result)
+        self.assertEqual(self.lsp._STANDALONE, {})
+        registry.shutdown.assert_called_once()
+
+    def test_disabled_config_reports_clearly(self):
+        saved = self.config.config_copy()
+        saved["tools"]["lsp"] = False
+        self.config.save_config(saved)
+        target = self.home / "a.py"
+        target.write_text("x = 1\n", encoding="utf-8")
+        self.assertIn("disabled", self.lsp.goto_definition(str(target), 1, 0))
+        with self.assertRaises(self.lsp.LspError):
+            self.lsp.start_lsp_server("python", str(self.home))
+
+
+class NewToolsTests(LspBase):
+    """The three new tools are advertised, profile-gated, and validated."""
+
+    def executor(self, profile: str = "full"):
+        return self.tools.ToolExecutor(
+            identity="cli:local", profile=profile, workspace=str(self.home)
+        )
+
+    def test_advertised_to_operator_profiles_only(self):
+        names = [s["function"]["name"] for s in self.executor("full").all_schemas]
+        for tool in ("lsp_definition", "lsp_references", "lsp_hover"):
+            with self.subTest(tool=tool):
+                self.assertIn(tool, names)
+        safe_names = [s["function"]["name"] for s in self.executor("safe").all_schemas]
+        for tool in ("lsp_definition", "lsp_references", "lsp_hover"):
+            self.assertNotIn(tool, safe_names)
+
+    def test_validation_errors(self):
+        executor = self.executor()
+        for tool in ("lsp_definition", "lsp_references", "lsp_hover"):
+            with self.subTest(tool=tool):
+                self.assertIn("needs a path", executor.run(tool, {"line": 1}))
+                self.assertIn("1-based line", executor.run(tool, {"path": "a.py", "line": 0}))
+
+    def test_path_outside_workspace_refused(self):
+        result = self.executor().run(
+            "lsp_definition", {"path": "../../etc/passwd", "line": 1}
+        )
+        self.assertIn("workspace", result)
+
+    def test_missing_file_reported_before_server_start(self):
+        with mock.patch.object(self.lsp, "find_server", return_value=None):
+            result = self.executor().run(
+                "lsp_hover", {"path": "ghost.py", "line": 1}
+            )
+        self.assertIn("not found", result)
+
+    def test_lsp_error_returned_as_text(self):
+        (self.home / "a.py").write_text("x = 1\n", encoding="utf-8")
+        with mock.patch.object(self.lsp, "find_server", return_value=None):
+            result = self.executor().run(
+                "lsp_references", {"path": "a.py", "line": 1}
+            )
+        self.assertTrue(result.startswith("ERROR lsp_references:"))
+        self.assertIn("no python language server", result)
+
+    def test_successful_query_returns_registry_text(self):
+        (self.home / "a.py").write_text("x = 1\n", encoding="utf-8")
+        registry = mock.Mock()
+        registry.definition.return_value = "Definition:\n  a.py:1:1"
+        executor = self.executor()
+        executor._lsp = registry
+        result = executor.run("lsp_definition", {"path": "a.py", "line": 1})
+        self.assertIn("a.py:1:1", result)
+        registry.definition.assert_called_once()
+
+
+class CliLspTests(LspBase):
+    """`zeline lsp` subcommands."""
+
+    def test_servers_lists_languages(self):
+        from zeline import cli as cli_module
+
+        with mock.patch.object(self.lsp.shutil, "which", return_value=None):
+            rc = cli_module.cmd_lsp("servers")
+        self.assertEqual(rc, 0)
+
+    def test_start_without_server_is_clear_error(self):
+        from zeline import cli as cli_module
+
+        with mock.patch.object(self.lsp, "find_server", return_value=None):
+            rc = cli_module.cmd_lsp("start", lang="python", path=str(self.home))
+        self.assertEqual(rc, 1)
+
+    def test_unknown_action(self):
+        from zeline import cli as cli_module
+
+        self.assertEqual(cli_module.cmd_lsp("teleport"), 2)

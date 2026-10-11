@@ -359,6 +359,78 @@ def _resolve_workspace_path(raw_path: str, workspace: Path) -> Path:
     return resolved
 
 
+def _parse_bool(value) -> bool:
+    """Parse a boolean that may arrive as bool, string, or number (LLM output)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "y", "success")
+    return bool(value)
+
+
+def _skillforge_tool(action: str, query: str = "", name: str = "", description: str = "",
+                     content: str = "", slug: str = "", success: bool = True) -> str:
+    """Dispatch for the skillforge tool. Never raises; returns human-readable text."""
+    try:
+        from zeline import skillforge as _sf
+
+        act = (action or "").strip().lower()
+        if act == "find":
+            if not query or not query.strip():
+                return "ERROR: 'query' is required for find."
+            hits = _sf.find_relevant(query, top_k=5)
+            if not hits:
+                return "No relevant skills found. Consider registering one after solving this."
+            lines = ["Relevant skills (ranked by relevance x effectiveness):"]
+            for h in hits:
+                lines.append(
+                    f"- {h['slug']} | {h['name']} | score {h['skill_score']} | "
+                    f"similarity {h['similarity']}"
+                )
+            return "\n".join(lines)
+        if act == "register":
+            if not name or not name.strip():
+                return "ERROR: 'name' is required for register."
+            if not content or not content.strip():
+                return "ERROR: 'content' is required for register."
+            res = _sf.register_skill(
+                name.strip(), (description or "").strip(), content.strip()
+            )
+            if not res.get("slug"):
+                return "ERROR: failed to register skill."
+            if res.get("merged"):
+                return (
+                    f"[forge:merged] Merged into existing skill '{res['slug']}' "
+                    f"(near-duplicate detected, version bumped instead of creating a duplicate)."
+                )
+            extra = f" (related to '{res['duplicate_of']}')" if res.get("duplicate_of") else ""
+            return f"Registered skill '{res['slug']}'{extra} with initial score {_sf.INITIAL_SCORE}."
+        if act == "feedback":
+            if not slug or not slug.strip():
+                return "ERROR: 'slug' is required for feedback."
+            parsed = _parse_bool(success)
+            new_score = _sf.record_use(slug.strip(), parsed)
+            if new_score is None:
+                return f"ERROR: unknown or deprecated skill '{slug}'."
+            return f"Recorded {'success' if parsed else 'failure'} for '{slug}'. New score: {new_score:.1f}."
+        if act == "report":
+            rep = _sf.skill_report()
+            lines = [
+                f"Skill library: {rep['active']} active, {rep['deprecated']} deprecated, "
+                f"avg score {rep['avg_score']}"
+            ]
+            if rep["top"]:
+                lines.append("Top skills:")
+                lines += [f"  - {t['slug']} ({t['score']})" for t in rep["top"]]
+            if rep["weak"]:
+                lines.append("Weakest (candidates for review):")
+                lines += [f"  - {w['slug']} ({w['score']})" for w in rep["weak"]]
+            return "\n".join(lines)
+        return f"ERROR: unknown action '{action}'. Use find|register|feedback|report."
+    except Exception as e:
+        return f"ERROR: skillforge failed: {e}"
+
+
 def _read_file(path: str, workspace: Path, offset: int = 1, limit: int = 0) -> str:
     """Read a text file, optionally a line window.
 
@@ -2356,7 +2428,9 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
-    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+    # any(): jika SATU SAJA hasil DNS internal, tolak. all() salah karena
+    # DNS bisa return [external, 127.0.0.1] dan lolos.
+    return any(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
 
 
 def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
@@ -3402,6 +3476,97 @@ TOOL_DEFS: list[ToolDef] = [
         risk=ToolRisk.NETWORK,
     ),
     ToolDef(
+        "meeting_join",
+        "Join a Zoom / Google Meet / Teams meeting via the operator's headless "
+        "browser and keep it open in the background. Returns a meeting_id. "
+        "Best-effort: logins, CAPTCHAs and waiting-room admission still need "
+        "a human — those come back as status 'waiting', never faked as joined. "
+        "Meeting passwords in the URL are redacted everywhere.",
+        {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Meeting URL (https, zoom.us / meet.google.com / teams.microsoft.com)."},
+                "name": {"type": "string", "description": "Display name to join as. Optional."},
+            },
+            "required": ["url"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.NETWORK,
+    ),
+    ToolDef(
+        "meeting_notes",
+        "Capture notes for a joined meeting: pulls on-page live captions "
+        "(best effort) and optionally transcribes an audio file with local "
+        "faster-whisper. Appends a timestamped entry to the meeting's notes "
+        "file and returns it.",
+        {
+            "type": "object",
+            "properties": {
+                "meeting_id": {"type": "string", "description": "Meeting id from meeting_join."},
+                "audio_path": {"type": "string", "description": "Audio file in the workspace to transcribe. Optional."},
+            },
+            "required": ["meeting_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "meeting_leave",
+        "Leave a meeting: stops its browser session and marks it left. "
+        "The notes file is kept.",
+        {
+            "type": "object",
+            "properties": {
+                "meeting_id": {"type": "string", "description": "Meeting id from meeting_join."},
+            },
+            "required": ["meeting_id"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "kanban_create",
+        "Create a card on the kanban board (columns: todo, doing, done). "
+        "Use for tracking multi-step work visibly.",
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Card title (required)."},
+                "description": {"type": "string", "description": "Card details."},
+                "column": {"type": "string", "description": "todo, doing, or done (default todo)."},
+            },
+            "required": ["title"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "kanban_move",
+        "Move a kanban card to another column (todo, doing, done).",
+        {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string", "description": "Card id from kanban_create."},
+                "to_column": {"type": "string", "description": "todo, doing, or done."},
+            },
+            "required": ["card_id", "to_column"],
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
+        "kanban_list",
+        "List kanban cards, optionally filtered by column.",
+        {
+            "type": "object",
+            "properties": {
+                "column": {"type": "string", "description": "todo, doing, or done. Empty = all."},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
         "gepa_drafts",
         "List auto-learned skill drafts (GEPA). Drafts are patterns the agent "
         "detected automatically; they become permanent skills only after "
@@ -3636,6 +3801,22 @@ TOOL_DEFS: list[ToolDef] = [
         risk=ToolRisk.WRITE,
     ),
     ToolDef(
+        "image_generate_local",
+        "Generate an image from a text prompt using a LOCAL/OFFLINE-capable backend (direct OpenAI DALL-E API, or local Stable Diffusion) and save it into the workspace. Use when the user asks to create/draw/render a picture and the provider image model is unavailable, or when they want local generation. No backend = clear error, never faked. Returns the saved file path — then call send_file with that path so the user actually SEES the image instead of a filename.",
+        {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed description of the image to create (max 2000 chars)"},
+                "path": {"type": "string", "description": "Output file path in the workspace, ending in .png/.jpg/.jpeg/.webp"},
+                "backend": {"type": "string", "description": "Force backend: 'openai' (needs OPENAI_API_KEY) or 'sd' (local Stable Diffusion). Optional (auto-detect)."},
+                "size": {"type": "string", "description": "Image size WxH, e.g. 1024x1024 or 512x512. Optional (default 1024x1024)."},
+            },
+            "required": ["prompt", "path"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.WRITE,
+    ),
+    ToolDef(
         "generate_video",
         "Generate a short video clip from a text prompt (text-to-video) and save it into the workspace as MP4. Use when the user asks to create/render a video, animation, or clip. Requires a Gemini API key with Veo access (the chat/text model cannot render video itself) — if it is not configured, the tool says so plainly instead of faking it. Generation takes minutes; if the job is still rendering, the tool returns an operation id you can resume with the 'operation' parameter. Returns the saved file path — then call send_file with that path so the user actually SEES the video instead of a filename.",
         {
@@ -3863,6 +4044,65 @@ TOOL_DEFS: list[ToolDef] = [
         risk=ToolRisk.READ,
     ),
     ToolDef(
+        "lsp_definition",
+        (
+            "Go to the definition of the symbol at a position in a workspace "
+            "file, using a real language server (knows a definition from a "
+            "comment mention, follows symbols through imports). Positions use "
+            "1-based line and 0-based character, matching what read_file shows."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Workspace file to inspect."},
+                "line": {"type": "integer", "description": "1-based line number."},
+                "character": {"type": "integer", "description": "0-based column (default 0)."},
+            },
+            "required": ["path", "line"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "lsp_references",
+        (
+            "Find every use of the symbol at a position in a workspace file, "
+            "using a real language server (follows symbols through imports, "
+            "including the declaration itself). Positions use 1-based line "
+            "and 0-based character, matching what read_file shows."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Workspace file to inspect."},
+                "line": {"type": "integer", "description": "1-based line number."},
+                "character": {"type": "integer", "description": "0-based column (default 0)."},
+            },
+            "required": ["path", "line"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
+        "lsp_hover",
+        (
+            "Show the type and documentation of the symbol at a position in a "
+            "workspace file, using a real language server. Positions use "
+            "1-based line and 0-based character, matching what read_file shows."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Workspace file to inspect."},
+                "line": {"type": "integer", "description": "1-based line number."},
+                "character": {"type": "integer", "description": "0-based column (default 0)."},
+            },
+            "required": ["path", "line"],
+        },
+        frozenset({"workspace", "full"}),
+        risk=ToolRisk.READ,
+    ),
+    ToolDef(
         "system_env",
         "Show environment info: OS/arch/CPU, installed runtimes & tools (python/node/go/git/docker/ffmpeg), and active local ports. Call before running commands to see which tools are available.",
         {"type": "object", "properties": {}},
@@ -4011,6 +4251,34 @@ TOOL_DEFS: list[ToolDef] = [
         },
         frozenset({"full"}),
         risk=ToolRisk.INSTALL,  # installs/modifies the agent's own procedures
+    ),
+    ToolDef(
+        "skillforge",
+        (
+            "Self-improving skill engine: find relevant learned skills for the current task, "
+            "register new skills distilled from experience, and record whether a skill helped. "
+            "action='find' does semantic search over the skill library (returns ranked matches with "
+            "effectiveness scores); 'register' saves a new skill through duplicate detection "
+            "(near-duplicates are merged, not duplicated); 'feedback' records success/failure after "
+            "using a skill so its score improves over time; 'report' shows library health (top/weak skills). "
+            "Use 'find' when starting a non-trivial task, 'register' after solving something reusable, "
+            "and 'feedback' right after applying a skill."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["find", "register", "feedback", "report"]},
+                "query": {"type": "string", "description": "For 'find': task description to match against skills."},
+                "name": {"type": "string", "description": "For 'register': skill name."},
+                "description": {"type": "string", "description": "For 'register': one-line when-to-use."},
+                "content": {"type": "string", "description": "For 'register': skill markdown (steps, pitfalls)."},
+                "slug": {"type": "string", "description": "For 'feedback': skill slug returned by 'find'."},
+                "success": {"type": "boolean", "description": "For 'feedback': did the skill help?"},
+            },
+            "required": ["action"],
+        },
+        frozenset({"full"}),
+        risk=ToolRisk.WRITE,
     ),
     ToolDef(
         "resolve_lesson",
@@ -7722,6 +7990,7 @@ _WRITE_PATH_ARGS: dict[str, tuple[str, ...]] = {
     "edit_video": ("video", "videos", "path", "audio"),
     "text_to_speech": ("path",),
     "voice_speak": ("path",),
+    "image_generate_local": ("path",),
     "qr_code": ("path",),
     "pdf_tool": ("pdfs", "path"),
     # download_file's destination is caged to the workspace at runtime, but
@@ -7911,6 +8180,85 @@ def _email_send(to: str, subject: str, body: str) -> str:
         return f"ERROR: email_send failed ({exc})."
 
 
+def _meeting_join(url: str, name: str = "") -> str:
+    """Wrapper tool ``meeting_join``: join a meeting via headless browser."""
+    try:
+        from zeline import meeting as meeting_mod
+        mid = meeting_mod.join_meeting(url, name=name or "")
+        return (
+            f"meeting_id: {mid}\n"
+            f"platform: {meeting_mod.detect_platform(url)}\n"
+            f"url: {meeting_mod.redact_url(url)}\n"
+            "Catatan: jika status 'waiting', meeting butuh manusia "
+            "(login/CAPTCHA/ruang tunggu)."
+        )
+    except Exception as exc:  # never leak tracebacks to the model
+        return f"ERROR: meeting_join failed ({exc})."
+
+
+def _meeting_notes(meeting_id: str, audio_path: str, workspace: Path) -> str:
+    """Wrapper tool ``meeting_notes``: captions + optional audio transcript."""
+    from zeline import meeting as meeting_mod
+    audio = (audio_path or "").strip()
+    target = None
+    if audio:
+        try:
+            target = _resolve_workspace_path(audio, workspace)
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+    try:
+        return meeting_mod.take_notes(meeting_id, audio_path=str(target) if target else None)
+    except Exception as exc:  # never leak tracebacks to the model
+        return f"ERROR: meeting_notes failed ({exc})."
+
+
+def _meeting_leave(meeting_id: str) -> str:
+    """Wrapper tool ``meeting_leave``: stop the meeting's browser session."""
+    try:
+        from zeline import meeting as meeting_mod
+        return meeting_mod.leave_meeting(meeting_id)
+    except Exception as exc:  # never leak tracebacks to the model
+        return f"ERROR: meeting_leave failed ({exc})."
+
+
+def _kanban_create(title: str, description: str = "", column: str = "todo") -> str:
+    """Create a kanban card and return its id."""
+    try:
+        from zeline import kanban as kanban_mod
+
+        card_id = kanban_mod.create_card(title, description, column)
+        return f"OK: card {card_id} created in column {column or 'todo'}."
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def _kanban_move(card_id: str, to_column: str) -> str:
+    """Move a kanban card to another column."""
+    try:
+        from zeline import kanban as kanban_mod
+
+        card = kanban_mod.move_card(card_id, to_column)
+        return f"OK: card {card['id']} moved to {card['column']}."
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def _kanban_list(column: str = "") -> str:
+    """List kanban cards as text."""
+    try:
+        from zeline import kanban as kanban_mod
+
+        cards = kanban_mod.list_cards(column or None)
+        if not cards:
+            return "No cards." + (f" in column {column}." if column else "")
+        lines = []
+        for c in cards:
+            lines.append(f"- [{c['column']}] {c['id']}: {c['title']}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
 def _peer_send(peer: str, message: str) -> str:
     """Send a message to a configured peer and return its reply."""
     try:
@@ -7981,6 +8329,34 @@ def _voice_speak(text: str, path: str, workspace: Path, voice: str = "id") -> st
         return f"Saved voice audio to {rel} — call send_file with that path so the user actually HEARS the audio instead of a filename."
     except ValueError:
         return f"Saved voice audio to {out}"
+
+
+def _image_generate_local(prompt: str, path: str, workspace: Path, backend: str = "",
+                    size: str = "1024x1024") -> str:
+    """Wrapper tool ``image_generate_local``: text -> image file (local backends)."""
+    from zeline import image_gen as _ig_mod
+    import time as _time
+    if not isinstance(path, str):
+        return f"ERROR: path must be a string, got {type(path).__name__}."
+    raw = path.strip()
+    if not raw:
+        raw = f"image-{int(_time.time())}.png"
+    try:
+        dest = _resolve_workspace_path(raw, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        return "ERROR: output path must end in .png/.jpg/.jpeg/.webp."
+    try:
+        out = _ig_mod.generate_image(prompt, dest, backend=backend or None,
+                                     size=size or "1024x1024")
+    except _ig_mod.ImageGenError as exc:
+        return f"ERROR: {exc}"
+    try:
+        rel = out.relative_to(workspace.resolve(strict=False))
+        return f"Saved image to {rel} — call send_file with that path so the user actually SEES the image instead of a filename."
+    except ValueError:
+        return f"Saved image to {out}"
 
 
 def _gepa_drafts(status: str | None = None) -> str:
@@ -8702,7 +9078,17 @@ class ToolExecutor:
             "workflow_resume": lambda exec_id, approved=True: self._workflow_resume(exec_id, approved=approved),
             "workflow_status": lambda exec_id: self._workflow_status(exec_id),
             "email_send": lambda to, subject, body: _email_send(to, subject, body),
+            "meeting_join": lambda url, name="": _meeting_join(url, name),
+            "meeting_notes": lambda meeting_id, audio_path="": _meeting_notes(
+                meeting_id, audio_path, self.workspace
+            ),
+            "meeting_leave": lambda meeting_id: _meeting_leave(meeting_id),
             "peer_send": lambda peer, message: _peer_send(peer, message),
+            "kanban_create": lambda title, description="", column="todo": _kanban_create(
+                title, description, column
+            ),
+            "kanban_move": lambda card_id, to_column: _kanban_move(card_id, to_column),
+            "kanban_list": lambda column="": _kanban_list(column),
             "gepa_drafts": lambda status=None: _gepa_drafts(status),
             "gepa_learn": lambda: _gepa_learn(),
             "consolidate_memory": lambda: self._consolidate_memory(),
@@ -8751,6 +9137,9 @@ class ToolExecutor:
             "voice_speak": lambda text, path="", voice="id": _voice_speak(
                 text, path, self.workspace, voice
             ),
+            "image_generate_local": lambda prompt, path="", backend="", size="1024x1024": _image_generate_local(
+                prompt, path, self.workspace, backend, size
+            ),
             "qr_code": lambda text, path, size=10: _qr_code(text, path, self.workspace, size),
             "transcribe_audio": lambda audio, language="", prompt="": _transcribe_audio(
                 audio, self.workspace, language, prompt
@@ -8774,6 +9163,15 @@ class ToolExecutor:
             "code_intel": lambda action, path="", line=0, character=0: self._code_intel(
                 action, path, line, character
             ),
+            "lsp_definition": lambda path="", line=0, character=0: self._lsp_query(
+                "lsp_definition", "definition", path, line, character
+            ),
+            "lsp_references": lambda path="", line=0, character=0: self._lsp_query(
+                "lsp_references", "references", path, line, character
+            ),
+            "lsp_hover": lambda path="", line=0, character=0: self._lsp_query(
+                "lsp_hover", "hover", path, line, character
+            ),
             "browser": lambda action, url="", selector="", text="", submit=False, path="", script="": self._browser(
                 action, url, selector, text, submit, path, script
             ),
@@ -8789,6 +9187,9 @@ class ToolExecutor:
             "update_task": lambda task, status: _update_task(task, status, self.identity),
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
                 action, name, content, old_text, new_text, file_path, category, absorbed_into
+            ),
+            "skillforge": lambda action, query="", name="", description="", content="", slug="", success=True: _skillforge_tool(
+                action, query, name, description, content, slug, success
             ),
             "resolve_lesson": lambda tool, args_sig_contains, fix: self._resolve_lesson(
                 tool, args_sig_contains, fix
@@ -9223,6 +9624,51 @@ class ToolExecutor:
         except browser_module.BrowserError as exc:
             return f"ERROR browser: {exc}"
 
+    def _lsp_query(self, tool: str, verb: str, path: str = "", line: int = 0, character: int = 0) -> str:
+        """Single-verb LSP query shared by lsp_definition/lsp_references/lsp_hover.
+
+        ``tool`` names the calling tool for error prefixes (keeps the existing
+        ``code_intel`` messages byte-identical when called through it).
+        """
+        from zeline import lsp as lsp_module
+
+        if not lsp_module.enabled():
+            return f"ERROR: {tool} is disabled (tools.lsp = false)."
+        if self.profile not in lsp_module.ALLOWED_PROFILES:
+            return f"ERROR: {tool} is not allowed for profile '{self.profile}'."
+
+        if not str(path).strip():
+            return f"ERROR: {tool} {verb} needs a path."
+        try:
+            line_no = int(str(line or 0).strip())
+        except (TypeError, ValueError):
+            return f"ERROR: {tool} {verb} needs a numeric 1-based line number."
+        if line_no < 1:
+            return f"ERROR: {tool} {verb} needs a 1-based line number."
+        try:
+            char_no = int(str(character or 0).strip())
+        except (TypeError, ValueError):
+            return f"ERROR: {tool} {verb} needs a numeric character offset."
+
+        try:
+            target = _resolve_workspace_path(path, self.workspace)
+        except ValueError as exc:
+            return f"ERROR {tool}: {exc}"
+        if not target.is_file():
+            return f"ERROR {tool}: not a file or not found: {target}"
+
+        try:
+            if self._lsp is None:
+                self._lsp = lsp_module.LspRegistry(self.workspace)
+            registry = self._lsp
+            if verb == "definition":
+                return registry.definition(target, line_no, char_no)
+            if verb == "references":
+                return registry.references(target, line_no, char_no)
+            return registry.hover(target, line_no, char_no)
+        except lsp_module.LspError as exc:
+            return f"ERROR {tool}: {exc}"
+
     def _code_intel(self, action: str, path: str = "", line: int = 0, character: int = 0) -> str:
         """Answer a code question using a language server.
 
@@ -9259,8 +9705,16 @@ class ToolExecutor:
             )
         if not str(path).strip():
             return f"ERROR: code_intel {verb} needs a path."
-        if verb in {"definition", "references", "hover"} and int(line or 0) < 1:
-            return f"ERROR: code_intel {verb} needs a 1-based line number."
+        if verb in {"definition", "references", "hover"}:
+            try:
+                line_no = int(str(line or 0).strip())
+            except (TypeError, ValueError):
+                line_no = 0
+            if line_no < 1:
+                return f"ERROR: code_intel {verb} needs a 1-based line number."
+
+        if verb in {"definition", "references", "hover"}:
+            return self._lsp_query("code_intel", verb, path, line, character)
 
         try:
             target = _resolve_workspace_path(path, self.workspace)
@@ -9275,13 +9729,7 @@ class ToolExecutor:
             registry = self._lsp
             if verb == "diagnostics":
                 return registry.diagnostics(target)
-            if verb == "symbols":
-                return registry.symbols(target)
-            if verb == "definition":
-                return registry.definition(target, int(line), int(character or 0))
-            if verb == "references":
-                return registry.references(target, int(line), int(character or 0))
-            return registry.hover(target, int(line), int(character or 0))
+            return registry.symbols(target)
         except lsp_module.LspError as exc:
             return f"ERROR code_intel: {exc}"
 
@@ -9789,7 +10237,7 @@ class ToolExecutor:
         body = str(record.get("result") or "").strip()
         if not body:
             return f"Worker {wid} finished with an empty result."
-        return f"Worker {wid} result:\n{body}"
+        return injection_filter.filter_tool_result(f"Worker {wid} result:\n{body}")
 
     def _enabled_native_defs(self) -> tuple[ToolDef, ...]:
         return self._native_defs
