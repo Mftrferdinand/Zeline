@@ -18,6 +18,45 @@ ACCOUNT_SCRIPTS = (
 )
 
 
+class MaskSecretTests(unittest.TestCase):
+    """mask_secret is the log/doctor redaction helper -- it must never leak."""
+
+    def test_masks_middle_and_keeps_edges(self):
+        from zeline.config import mask_secret
+
+        out = mask_secret("sk-1234567890abcdef")
+        self.assertEqual(out, "sk-1…cdef")
+        self.assertNotIn("234567890", out)
+
+    def test_short_values_are_fully_masked(self):
+        from zeline.config import mask_secret
+
+        self.assertEqual(mask_secret("abcde"), "•••••")
+        self.assertEqual(mask_secret("abcdefgh"), "••••••••")
+
+    def test_empty(self):
+        from zeline.config import mask_secret
+
+        self.assertEqual(mask_secret(""), "(empty)")
+
+    def test_zero_visible_redacts_everything(self):
+        # Regression: visible=0 used to skip the full-mask branch and emit
+        # "…" + value, printing the whole secret.
+        from zeline.config import mask_secret
+
+        for value in ("s", "ab", "secret", "sk-live-4f9a2b7c8d1e"):
+            out = mask_secret(value, 0)
+            self.assertNotIn(value, out)
+            self.assertEqual(out, "•" * len(value))
+
+    def test_negative_visible_never_leaks(self):
+        # Regression: a negative visible sliced value[:-3] from the end.
+        from zeline.config import mask_secret
+
+        for visible in (-1, -3, -99):
+            out = mask_secret("sk-SECRETCORE-9f2b", visible)
+            self.assertNotIn("SECRETCORE-9f2b", out)
+
 class SecurityHygieneTests(unittest.TestCase):
     def test_codeql_workflow_uses_supported_action_generation(self):
         workflow = (ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")

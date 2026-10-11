@@ -772,8 +772,19 @@ def config_copy() -> dict[str, Any]:
 
 
 def mask_secret(value: str, visible: int = 4) -> str:
+    """Redact *value*, keeping at most *visible* characters at each end.
+
+    ``visible`` is clamped to ``>= 0``; a non-positive value redacts the whole
+    string rather than leaking it. Guards two bugs: with ``visible == 0`` the
+    old code skipped the full-mask branch (``len(value) <= 0`` is never true)
+    and emitted ``"…" + value``, and a negative ``visible`` sliced from the
+    *end* (``value[:-3]``), printing most of the secret.
+    """
     if not value:
         return "(empty)"
+    visible = max(0, visible)
+    if visible == 0:
+        return "•" * len(value)
     if len(value) <= visible * 2:
         return "•" * len(value)
     return f"{value[:visible]}…{value[-visible:]}"
