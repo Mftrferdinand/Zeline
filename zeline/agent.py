@@ -594,6 +594,8 @@ class Zeline:
         on_stream_delta: Callable[[str], None] | None = None,
         force_stream: bool | None = None,
     ) -> dict[str, Any]:
+        # Cost telemetry: ukur durasi LLM call.
+        _t0 = time.monotonic()
         if not self._key_pool:
             raise ZelineError("API key not configured. Run `zeline setup`.")
         if not self.base_url or not self.model:
@@ -635,7 +637,21 @@ class Zeline:
             # append a final usage-only chunk. Purely additive either way.
             payload["stream_options"] = {"include_usage": True}
         if use_tools:
-            payload["tools"] = self.executor.schemas
+            schemas = self.executor.schemas
+            # Tool router: saring 278+ tools jadi ~15 kandidat berdasar query.
+            # Komplementer dengan lazy tool_search index: kalau index aktif
+            # (skema disembunyikan, model pakai tool_search), router tidak
+            # ikut campur agar discovery flow tidak rusak.
+            try:
+                from zeline import tool_router as _tr
+
+                _idx = self.executor._index()
+                if _tr.is_enabled() and not _idx.applicable:
+                    _q = self._last_user_text() or ""
+                    schemas = _tr.filter_schemas(_q, schemas)
+            except Exception:
+                pass
+            payload["tools"] = schemas
             payload["tool_choice"] = "auto"
 
         if self.protocol == "anthropic":
@@ -789,7 +805,7 @@ class Zeline:
         parsed = _parse_response(response.text)
         # Record token usage before shaping the message: the `usage` block lives
         # on the envelope, not the message, and is dropped a few lines below.
-        self._record_usage(parsed)
+        self._record_usage(parsed, int((time.monotonic() - _t0) * 1000))
 
         if self.protocol == "anthropic":
             text_parts: list[str] = []
@@ -827,7 +843,7 @@ class Zeline:
                 message["content"] = fallback
         return message
 
-    def _record_usage(self, payload: Any) -> None:
+    def _record_usage(self, payload: Any, duration_ms: int = 0) -> None:
         """Log provider token usage. Best-effort: never let stats break a turn."""
         # A lost statistic must never cost the user their answer, so every
         # failure here is swallowed deliberately.
@@ -837,6 +853,19 @@ class Zeline:
                 self._usage_store().record(
                     self._turn_model or self.model, prompt_tokens, completion_tokens, self.identity
                 )
+                # Cost telemetry: catat tiap LLM call ke journal (best-effort).
+                try:
+                    from zeline import cost as _cost_mod
+
+                    _cost_mod.record_llm_call(
+                        self.identity,
+                        self._turn_model or self.model,
+                        prompt_tokens,
+                        completion_tokens,
+                        duration_ms,
+                    )
+                except Exception:
+                    pass
 
     def _usage_store(self):
         # Created lazily and cached per agent: opening SQLite for a session that

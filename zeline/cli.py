@@ -4246,7 +4246,8 @@ def build_parser() -> argparse.ArgumentParser:
     fork_cmd.add_argument("target", help="new identity")
 
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
-    subparsers.add_parser("memory", help="view local CLI memory").add_argument(
+    memory_parser = subparsers.add_parser("memory", help="view local CLI memory")
+    memory_parser.add_argument(
         "action", nargs="?", choices=["consolidate"], help="consolidate: remove duplicates and expired facts"
     )
     proactive_parser = subparsers.add_parser(
@@ -4399,6 +4400,27 @@ def build_parser() -> argparse.ArgumentParser:
         ("logs", "alias: show gateway logs"),
     ):
         subparsers.add_parser(alias, help=alias_help)
+
+    # "Zeline Matang" feature CLIs: tiap modul expose register_* sendiri.
+    # Best-effort: satu fitur yang gagal import tidak meruntuhkan parser.
+    try:
+        from zeline import cost as _mat_cost_mod
+
+        _mat_cost_mod.register_cli(subparsers)
+    except Exception:
+        pass
+    try:
+        from zeline import triggers as _mat_trg_mod
+
+        _mat_trg_mod.register_cli(subparsers)
+    except Exception:
+        pass
+    try:
+        from zeline import memory_autosync as _mat_mas_mod
+
+        _mat_mas_mod.register_memory_sub(memory_parser)
+    except Exception:
+        pass
     return parser
 
 
@@ -4587,7 +4609,31 @@ def main(argv: list[str] | None = None) -> int:
     if command == "disconnect":
         return cmd_disconnect(getattr(namespace, "service", None))
     if command == "memory":
+        # Autosync subcommands (zeline memory sync / autosync ...) — dipegang
+        # modul memory_autosync; legacy `zeline memory [consolidate]` tetap jalan.
+        try:
+            from zeline import memory_autosync as _mas
+
+            _res = _mas.dispatch_memory(namespace)
+            if _res is not None:
+                return _res
+        except Exception:
+            pass
         return cmd_memory(getattr(namespace, "action", None))
+    if command == "cost":
+        from zeline import cost as _cost_mod
+
+        action = getattr(namespace, "cost_action", None)
+        if action == "report":
+            return _cost_mod.cmd_cost_report(getattr(namespace, "period", "day"))
+        if action == "today":
+            return _cost_mod.cmd_cost_today()
+        return 2
+    if command == "trigger":
+        func = getattr(namespace, "func", None)
+        if callable(func):
+            return int(func(namespace))
+        return 2
     if command == "proactive":
         return cmd_proactive(
             getattr(namespace, "action", None) or "status",

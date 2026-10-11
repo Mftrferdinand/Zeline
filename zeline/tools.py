@@ -7973,6 +7973,24 @@ TOOL_DEFS: list[ToolDef] = [
 ]
 
 
+#: "Zeline Matang" feature tools: ToolDefs didefinisikan di modul masing-masing
+#: (zeline/cost.py, zeline/triggers.py) dan di-extend di sini saat import.
+#: Lazy import di dalam try/except agar satu modul fitur yang gagal tidak
+#: meruntuhkan seluruh registry tool.
+try:
+    from zeline.cost import get_tool_defs as _mat_cost_tool_defs
+
+    TOOL_DEFS.extend(_mat_cost_tool_defs())
+except Exception:
+    pass
+try:
+    from zeline.triggers import get_tool_defs as _mat_trigger_tool_defs
+
+    TOOL_DEFS.extend(_mat_trigger_tool_defs())
+except Exception:
+    pass
+
+
 #: Path-like arguments per Write-class tool, for the workspace-escape check.
 #: A Write call whose target resolves outside the session workspace needs
 #: operator approval even though Write is otherwise allowed in workspace/full.
@@ -8178,6 +8196,52 @@ def _email_send(to: str, subject: str, body: str) -> str:
         return email_gw.tool_send(to, subject, body)
     except Exception as exc:  # never leak tracebacks to the model
         return f"ERROR: email_send failed ({exc})."
+
+
+def _cost_report(period: str = "day") -> str:
+    """Wrapper tool ``cost_report``: ringkasan biaya pemakaian per periode."""
+    from zeline import cost as _cost_mod
+
+    return _cost_mod.TOOL_HANDLERS["cost_report"](period)
+
+
+def _cost_today() -> str:
+    """Wrapper tool ``cost_today``: ringkasan biaya 24 jam terakhir."""
+    from zeline import cost as _cost_mod
+
+    return _cost_mod.TOOL_HANDLERS["cost_today"]()
+
+
+def _trigger_add(
+    connector: str,
+    event_type: str,
+    filter_json: str = "{}",
+    action: str = "notify",
+    action_params_json: str = "{}",
+    interval_min: int = 5,
+    trigger_id: str | None = None,
+) -> str:
+    """Wrapper tool ``trigger_add``: tambah event trigger."""
+    from zeline import triggers as _trg_mod
+
+    return _trg_mod.TOOL_HANDLERS["trigger_add"](
+        connector, event_type, filter_json, action, action_params_json,
+        interval_min, trigger_id,
+    )
+
+
+def _trigger_list() -> str:
+    """Wrapper tool ``trigger_list``: daftar event trigger."""
+    from zeline import triggers as _trg_mod
+
+    return _trg_mod.TOOL_HANDLERS["trigger_list"]()
+
+
+def _trigger_remove(trigger_id: str) -> str:
+    """Wrapper tool ``trigger_remove``: hapus event trigger."""
+    from zeline import triggers as _trg_mod
+
+    return _trg_mod.TOOL_HANDLERS["trigger_remove"](trigger_id)
 
 
 def _meeting_join(url: str, name: str = "") -> str:
@@ -9532,6 +9596,15 @@ class ToolExecutor:
             "crates_io_search_crates": lambda query, limit=10: _connector_tool("crates_io", "search_crates", query=query, limit=limit),
             "packagist_package_info": lambda vendor, package: _connector_tool("packagist", "package_info", vendor=vendor, package=package),
             "packagist_search_packages": lambda query, limit=10: _connector_tool("packagist", "search_packages", query=query, limit=limit),
+            # "Zeline Matang": cost telemetry + event triggers.
+            "cost_report": lambda period="day": _cost_report(period),
+            "cost_today": lambda: _cost_today(),
+            "trigger_add": lambda connector, event_type, filter_json="{}", action="notify", action_params_json="{}", interval_min=5, trigger_id=None: _trigger_add(
+                connector, event_type, filter_json, action, action_params_json,
+                interval_min, trigger_id,
+            ),
+            "trigger_list": lambda: _trigger_list(),
+            "trigger_remove": lambda trigger_id: _trigger_remove(trigger_id),
         }
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
@@ -10566,9 +10639,12 @@ class ToolExecutor:
         denied = self._approval_gate(name, args)
         if denied is not None:
             return denied
+        # Cost telemetry: ukur durasi setiap tool call yang benar-benar jalan.
+        _t0 = time.monotonic()
         if self.plugins is None:
             result = self._dispatch(name, args)
             self._audit(name, args, result)
+            self._record_tool_cost(name, _t0)
             return result
         outcome = self.plugins.before(name, args)
         if outcome.blocked:
@@ -10579,7 +10655,19 @@ class ToolExecutor:
         # result is still persisted in the audit/learning stores.
         result = self.plugins.after(name, outcome.args, result)
         self._audit(name, outcome.args, result)
+        self._record_tool_cost(name, _t0)
         return result
+
+    def _record_tool_cost(self, name: str, _t0: float) -> None:
+        """Catat durasi tool call ke cost journal. Best-effort: tidak pernah raise."""
+        try:
+            from zeline import cost as _cost_mod
+
+            _cost_mod.record_tool_call(
+                self.identity, name, "", int((time.monotonic() - _t0) * 1000)
+            )
+        except Exception:
+            pass
 
     def _approval_gate(self, name: str, args: dict[str, Any]) -> str | None:
         """The single approval choke point.

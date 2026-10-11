@@ -316,6 +316,12 @@ EXPECTED_RISKS = {
     "zendesk_list_tickets": "read",
     "zoho_crm_create_contact": "network",
     "zoho_crm_list_contacts": "read",
+    # "Zeline Matang": cost telemetry + event triggers.
+    "cost_report": "read",
+    "cost_today": "read",
+    "trigger_add": "write",
+    "trigger_list": "read",
+    "trigger_remove": "write",
 }
 
 DANGEROUS = {"install", "destructive", "network"}

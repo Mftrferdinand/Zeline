@@ -84,6 +84,48 @@ OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
         "scopes": ["identify"],
         "needs_secret": True,
     },
+    "notion": {
+        # Notion has no granular OAuth scopes — permissions are configured on
+        # the integration itself; keep scopes empty and omit the param.
+        "auth_endpoint": "https://api.notion.com/v1/oauth/authorize",
+        "token_endpoint": "https://api.notion.com/v1/oauth/token",
+        "scopes": [],
+        "needs_secret": True,
+        # Notion requires HTTP Basic auth (client_id:client_secret) plus a
+        # JSON body, and owner=user on the authorization URL.
+        "token_basic_auth": True,
+        "token_json_body": True,
+        "extra_auth_params": {"owner": "user"},
+    },
+    "linear": {
+        # Token endpoint per official docs (api.linear.app, bukan linear.app).
+        "auth_endpoint": "https://linear.app/oauth/authorize",
+        "token_endpoint": "https://api.linear.app/oauth/token",
+        "scopes": ["read"],
+        "needs_secret": True,
+    },
+    "gitlab": {
+        "auth_endpoint": "https://gitlab.com/oauth/authorize",
+        "token_endpoint": "https://gitlab.com/oauth/token",
+        "scopes": ["read_user", "read_api"],
+        "needs_secret": True,
+    },
+    "spotify": {
+        # Spotify requires HTTP Basic auth on the token endpoint.
+        "auth_endpoint": "https://accounts.spotify.com/authorize",
+        "token_endpoint": "https://accounts.spotify.com/api/token",
+        "scopes": ["user-read-private"],
+        "needs_secret": True,
+        "token_basic_auth": True,
+    },
+    "x": {
+        # X (Twitter) OAuth 2.0 mandates PKCE S256 — always sent by the flow.
+        "auth_endpoint": "https://twitter.com/i/oauth2/authorize",
+        "token_endpoint": "https://api.twitter.com/2/oauth2/token",
+        "scopes": ["tweet.read", "users.read"],
+        "needs_secret": True,
+        "token_basic_auth": True,
+    },
 }
 
 
@@ -265,6 +307,35 @@ def _take_pending(state: str | None) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+def _token_request_kwargs(
+    cfg: dict[str, Any],
+    client_id: str,
+    client_secret: str | None,
+    fields: dict[str, str],
+) -> dict[str, Any]:
+    """Build ``requests.post`` kwargs for token-endpoint calls.
+
+    ``token_basic_auth``: authenticate with HTTP Basic
+    ``client_id:client_secret`` instead of the body (Notion, Spotify, X).
+    When Basic is used, the credentials are removed from the body so the
+    secret is only sent in the ``Authorization`` header.
+    ``token_json_body``: send the body as JSON (Notion) instead of form.
+    """
+    fields = dict(fields)
+    kwargs: dict[str, Any] = {}
+    if cfg.get("token_basic_auth"):
+        # Drop client_secret dan client_id dari body juga — Basic header
+        # sudah membawanya (satu metode auth per request, per RFC 6749 2.3.1).
+        fields.pop("client_secret", None)
+        fields.pop("client_id", None)
+        kwargs["auth"] = (client_id, client_secret) if client_secret else None
+    if cfg.get("token_json_body"):
+        kwargs["json"] = fields
+    else:
+        kwargs["data"] = fields
+    return kwargs
+
+
 def start_oauth_flow(
     connector_id: str,
     redirect_uri: str,
@@ -301,11 +372,14 @@ def start_oauth_flow(
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(scopes or cfg["scopes"]),
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
     }
+    # Provider tanpa scope (Notion): jangan kirim param scope kosong.
+    scope = " ".join(scopes or cfg["scopes"])
+    if scope:
+        params["scope"] = scope
     for k, v in cfg.get("extra_auth_params", {}).items():
         params.setdefault(k, v)
     return f"{cfg['auth_endpoint']}?{urllib.parse.urlencode(params)}"
@@ -331,8 +405,9 @@ def _exchange_code(
         data["client_secret"] = client_secret
     headers = {"Accept": "application/json"}
     headers.update(cfg.get("token_headers", {}))
+    kwargs = _token_request_kwargs(cfg, client_id, client_secret, data)
     try:
-        resp = requests.post(cfg["token_endpoint"], data=data, headers=headers, timeout=_TIMEOUT, stream=True)
+        resp = requests.post(cfg["token_endpoint"], headers=headers, timeout=_TIMEOUT, stream=True, **kwargs)
     except Exception as exc:
         # Network error -> ValueError agar konsisten dengan error lain
         # di fungsi ini (caller menangkap Exception anyway).
@@ -428,13 +503,15 @@ def refresh_if_needed(connector_id: str) -> bool:
     }
     if client_secret:
         body["client_secret"] = client_secret
+    headers = {"Accept": "application/json", **cfg.get("token_headers", {})}
+    kwargs = _token_request_kwargs(cfg, client_id, client_secret, body)
     try:
         resp = requests.post(
             cfg["token_endpoint"],
-            data=body,
-            headers={"Accept": "application/json", **cfg.get("token_headers", {})},
+            headers=headers,
             timeout=_TIMEOUT,
             stream=True,
+            **kwargs,
         )
     except Exception:
         return False

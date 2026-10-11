@@ -392,3 +392,57 @@ Framework OAuth2 generik (`zeline/oauth.py`) — tambah provider baru = tambah e
 - `tool_call` / `tool_call_update` — tiap tool dipanggil/selesai (pairing 1:1, termasuk batch paralel)
 
 **Kompatibilitas:** respons final `session/prompt` tidak berubah — klien yang tidak paham notifikasi mengabaikannya per JSON-RPC. Broken pipe mid-turn → turn auto-cancel (tidak bakar token sia-sia). Approval path tidak berubah.
+
+## 23. Cost Telemetry
+
+`zeline/cost.py` mencatat setiap panggilan LLM dan tool ke jurnal append-only `~/.zeline/cost_journal.jsonl` (satu baris JSON per panggilan: timestamp, identity, kind, tool_name, model, input_tokens, output_tokens, cost_usd, duration_ms). Yang disimpan hanya metadata — isi prompt/argumen tidak pernah ditulis.
+
+Biaya dihitung dari tabel harga per 1 juta token (USD). Prioritas: `set_model_prices()` > env `ZELINE_PRICE_<MODEL>` > config > estimasi bawaan (16 model). Model tanpa harga dicatat `cost_usd=0` + `unpriced_calls` — biaya tidak pernah ditebak.
+
+Hook terpasang di agent loop: `agent._record_usage()` mencatat tiap LLM call (dengan durasi), `ToolExecutor.run()` mencatat durasi tiap tool call. Best-effort: tidak pernah raise ke caller.
+
+**Tools:** `cost_report` (period: day/week/month — total, per-tool termahal, per-hari), `cost_today` (alias 24 jam).
+**CLI:** `zeline cost report [--period day|week|month]`, `zeline cost today`.
+Detail: `docs/features/cost.md`.
+
+## 24. Event Triggers
+
+`zeline/triggers.py`: "kalau ada X baru di konektor Y → lakukan Z". Definisi tersimpan di `~/.zeline/triggers.json` (0600), state last-check di `~/.zeline/trigger_state.json` (anti double-fire).
+
+Event source: Gmail (`new_email`, filter from/subject) dan GitHub (`new_issue`/`new_pr`, filter repo/labels). Polling ringan (default 5 menit, clamp 1–1440, max 20 item/poll). Poll pertama hanya mencatat baseline — trigger baru tidak membanjiri dengan item lama.
+
+Action: `notify` (default: outbox `~/.zeline/trigger_outbox.jsonl`; hook `notify_owner` bisa di-rebind ke Telegram), `run_workflow` (hook ke `zeline.workflows`), `append_memory` (catatan ke memory inbox). Template disanitasi (max 300 char, placeholder polos — tanpa attribute access).
+
+**Tools:** `trigger_add`, `trigger_list`, `trigger_remove`.
+**CLI:** `zeline trigger add --connector gmail --event new_email --filter '{...}' --action notify`, `zeline trigger list`, `zeline trigger remove <id>`, `zeline trigger test <id>`.
+Detail: `docs/features/triggers.md`.
+
+## 25. Tool Router
+
+`zeline/tool_router.py`: pre-filter cepat yang menyempitkan 284 tools menjadi ~15 kandidat sebelum prompt dikirim ke model — tanpa model call, tanpa I/O, <6ms untuk 284 tools (budget 50ms).
+
+Scoring keyword/heuristic: token nama tool (bobot 3), prefix kategori (bobot 2), deskripsi (bobot 1), plus alias map EN/ID ("rapat"→meeting_*, "biaya"→cost_*). `ask_user` selalu termasuk. Fail-open: error → kembalikan semua skema.
+
+Terpasang di `agent._call_llm()`, komplementer dengan lazy `tool_search` index: kalau index aktif (skema disembunyikan), router tidak ikut campur agar discovery flow tidak rusak. Bisa dimatikan via `configure(enabled=False)` atau env `ZELINE_ROUTER_OFF=1`.
+
+Detail: `docs/features/tool_router.md`.
+
+## 26. Memory Autosync
+
+`zeline/memory_autosync.py`: tarik data dari konektor terhubung secara berkala, lipat jadi ringkasan harian ke Memory Tree. Modular per-source: `gmail` (via GoogleConnector), `github` (issues/PRs via search API), `calendar` (kalau konektor tersedia).
+
+Satu episode per source per hari (`Autosync · <Source> · <tanggal>`, via `memory.add_episode`) — dedup via pencocokan judul + state `~/.zeline/memory_autosync.json` (0600). Hanya metadata (subject/from/date) — body email tidak dibaca/di-log.
+
+**Privacy:** semua source default OFF; hanya sync yang explicitly di-enable. `ZELINE_AUTOSYNC_OFF=1` mematikan total.
+
+**CLI:** `zeline memory sync [source]`, `zeline memory autosync on|off|status` (terpasang sebagai subcommand `zeline memory`; legacy `zeline memory [consolidate]` tetap jalan).
+Detail: `docs/features/memory_autosync.md`.
+
+## 27. OAuth Expansion
+
+`zeline/oauth.py` tambah 5 provider (config entry — flow PKCE generik di-reuse): **Notion** (Basic auth + JSON body + `owner=user`), **Linear** (token di `api.linear.app`), **GitLab** (PKCE), **Spotify** (Basic auth wajib), **X/Twitter** (PKCE S256 wajib, Basic auth).
+
+Opsi config baru: `token_basic_auth: True` (RFC 6749 §2.3.1) dan `token_json_body: True` (Notion); dipakai di `_exchange_code` dan `refresh_if_needed`. Token tetap 0600, state single-use, redirect localhost.
+
+**CLI:** `zeline connect notion|linear|gitlab|spotify|x` (langsung jalan — `cmd_connect` sudah generik via `supports_oauth`).
+Detail: `docs/features/oauth_expansion.md`.
