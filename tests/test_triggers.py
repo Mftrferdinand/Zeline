@@ -70,7 +70,11 @@ class FakeGitHub:
         raise AssertionError(f"unexpected path {path}")
 
 
-def gh_issue(num, title, labels=(), created="2026-10-11T09:00:00Z", is_pr=False):
+def gh_issue(num, title, labels=(), created=None, is_pr=False):
+    # The trigger state below starts one hour in the past. Keep synthetic
+    # GitHub events relative to the test run; a fixed calendar timestamp turns
+    # this into a time bomb once that date is more than an hour old.
+    created = created or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     item = {
         "id": 1000 + num,
         "number": num,
@@ -272,7 +276,7 @@ def test_github_new_pr(home, monkeypatch):
         action_params={"text_template": "PR #{number}: {title}"},
         trigger_id="gh2",
     )
-    pr = dict(gh_issue(7, "add feature", created="2026-10-11T09:30:00Z"))
+    pr = dict(gh_issue(7, "add feature"))
     pr["html_url"] = "https://github.com/o/r/pull/7"
     triggers._CONNECTOR_OVERRIDES["github"] = FakeGitHub(prs=[pr])
     _seed_state(home, "gh2", time.time() - 3600)

@@ -9,6 +9,7 @@ import sys
 import types
 import unittest
 import urllib.error
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -42,17 +43,32 @@ def _stub_gateway_service(
     return module
 
 
+@contextmanager
+def _patched_gateway_service(module: types.ModuleType):
+    """Make updater imports use *module* without touching a real gateway.
+
+    ``from zeline import gateway_service`` can resolve the child module cached
+    on the ``zeline`` package even when ``sys.modules`` has been patched. Stub
+    both locations so updater tests cannot accidentally inspect, stop, or start
+    an operator's running gateway.
+    """
+    package = importlib.import_module("zeline")
+    with (
+        mock.patch.dict(sys.modules, {"zeline.gateway_service": module}),
+        mock.patch.object(package, "gateway_service", module, create=True),
+    ):
+        yield
+
+
 class UpdaterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.updater = importlib.import_module("zeline.updater")
         # Every test in this class calls update(); none of them is about gateway
         # lifecycle, so the service is stubbed as "nothing running" for all of
         # them. See _stub_gateway_service for what this prevents.
-        patcher = mock.patch.dict(
-            sys.modules, {"zeline.gateway_service": _stub_gateway_service(active=False)}
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self._gateway_patch = _patched_gateway_service(_stub_gateway_service(active=False))
+        self._gateway_patch.__enter__()
+        self.addCleanup(self._gateway_patch.__exit__, None, None, None)
 
     def test_cli_exposes_update_command(self):
         cli = importlib.import_module("zeline.cli")
@@ -133,7 +149,7 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
         """Run a successful checkout-mode update against a stubbed service."""
         service = mock.MagicMock()
         module = _stub_gateway_service(active=True, state=state, recorder=service)
-        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+        with _patched_gateway_service(module), \
              mock.patch.object(self.updater, "_checkout_root", return_value=Path("/tmp/zl")), \
              mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(self.updater, "_run_installer", return_value=0):
@@ -157,7 +173,7 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
     def test_nothing_running_means_nothing_started(self):
         service = mock.MagicMock()
         module = _stub_gateway_service(active=False, recorder=service)
-        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+        with _patched_gateway_service(module), \
              mock.patch.object(self.updater, "_checkout_root", return_value=Path("/tmp/zl")), \
              mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(self.updater, "_run_installer", return_value=0):
@@ -177,7 +193,7 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
         module.status = lambda: (calls.append("status") or (True, "running", {"pid": 1, "only": ["telegram"]}))
         module.drain_then_stop = lambda: (calls.append("stop") or (True, "stopped"))
         module.start = lambda only=None: (calls.append(f"start:{only}") or (True, "started"))
-        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+        with _patched_gateway_service(module), \
              mock.patch.object(self.updater, "_checkout_root", return_value=Path("/tmp/zl")), \
              mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(self.updater, "_run_installer", return_value=0):
@@ -191,7 +207,7 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
         module = _stub_gateway_service(
             active=True, state={"pid": 9, "only": ["telegram"]}, recorder=service
         )
-        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+        with _patched_gateway_service(module), \
              mock.patch.object(self.updater, "_checkout_root", return_value=None), \
              mock.patch.object(self.updater, "_latest_tag", side_effect=RuntimeError("offline")):
             code = self.updater.update()
@@ -207,11 +223,9 @@ class UpdaterCrossPlatformTests(unittest.TestCase):
         # Two tests in this class call update(); without the stub the real
         # gateway_service would drain and kill the operator's actual gateway
         # whenever the suite runs on a machine that has one running.
-        patcher = mock.patch.dict(
-            sys.modules, {"zeline.gateway_service": _stub_gateway_service(active=False)}
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self._gateway_patch = _patched_gateway_service(_stub_gateway_service(active=False))
+        self._gateway_patch.__enter__()
+        self.addCleanup(self._gateway_patch.__exit__, None, None, None)
 
     def test_posix_uses_bash_install_sh(self):
         installer = Path("/tmp/install.sh")
@@ -365,7 +379,7 @@ class DownloadRetryTests(unittest.TestCase):
     def test_update_reports_the_attempt_count_when_the_download_keeps_failing(self):
         """The owner reading the log should see that it retried, not just failed."""
         module = _stub_gateway_service(active=False)
-        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+        with _patched_gateway_service(module), \
              mock.patch.object(self.updater, "_checkout_root", return_value=None), \
              mock.patch.object(self.updater, "_latest_tag", return_value="v9.9.9"), \
              mock.patch.object(
