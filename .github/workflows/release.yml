@@ -258,7 +258,7 @@ jobs:
             dist/install.ps1
             dist/SHA256SUMS
       - name: Upload distributions for the PyPI job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pypi-dist
           path: |
