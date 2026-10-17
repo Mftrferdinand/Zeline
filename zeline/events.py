@@ -206,12 +206,14 @@ def log_tool_call(identity: str, tool: str, args: dict[str, Any], result: str) -
 
     Called from the tool executor right after a tool runs. Read-only tools are
     skipped so the log stays a side-effect index, not an activity trace. The
-    status is derived from the result string's ERROR convention used across the
-    tool layer.
+    status uses the same outcome interpreter as lessons and SkillForge; pending
+    and cancelled work is never labelled successful.
     """
     if not is_mutating(tool):
         return
-    status = "error" if str(result).startswith("ERROR") else "ok"
+    from zeline.outcomes import tool_outcome
+    outcome = tool_outcome(result)
+    status = {"failure": "error", "success": "ok"}.get(outcome, outcome)
     try:
         EventLog().record(identity, tool, status, detail=detail_for(tool, args))
     except Exception:
