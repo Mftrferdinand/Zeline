@@ -1710,7 +1710,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "stop", "new", "version", "update"],
+            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "skillforge", "stop", "new", "version", "update"],
         )
         self.assertEqual(commands[0]["description"], "Start Zeline")
         by_name = {item["command"]: item["description"] for item in commands}
@@ -1746,7 +1746,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_undo_and_stats_are_owner_only(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        for command in ("/undo", "/stats", "/events", "/lessons"):
+        for command in ("/undo", "/stats", "/events", "/lessons", "/skillforge"):
             with self.subTest(command=command), mock.patch.object(telegram, "_api_call") as api:
                 handled = telegram._handle_command_update(
                     "bot-api", command, object(), "telegram:42", 42,
@@ -2163,11 +2163,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 captured.setdefault("timeout", kwargs.get("timeout"))
                 return super().communicate(*args, **kwargs)
 
-        with mock.patch.object(tools.subprocess, "Popen", TrackedPopen):
+        with mock.patch.object(tools.subprocess, "Popen", TrackedPopen), \
+             mock.patch.object(tools, "_run_tracked", wraps=tools._run_tracked) as tracked:
             out = executor.run("run_shell", {"command": "printf ok", "timeout": 600})
         self.assertIn("exit=0", out)
         self.assertIn("ok", out)
-        self.assertEqual(captured["timeout"], 600)
+        self.assertEqual(tracked.call_args.kwargs["seconds"], 600)
+        self.assertGreater(captured["timeout"], 0)
+        self.assertLessEqual(captured["timeout"], 0.05)  # cancellation polling, not total deadline
 
         # A real timeout must tell the agent how to retry, not just say it failed.
         timed_out = executor.run("run_shell", {"command": "sleep 5", "timeout": 1})
@@ -3395,9 +3398,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(sessions.stopped, "telegram:42")
         self.assertFalse(gateway_stop.is_set())
         reply = api.call_args.kwargs["text"]
-        self.assertIn("❄️ Stopped — Bangun aplikasi", reply)
-        self.assertIn("force-killed", reply)
-        self.assertIn("history are intact", reply)
+        self.assertEqual(reply, "❄️ Stopped — Bangun aplikasi")
 
     def test_telegram_stop_when_idle_uses_exact_message(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

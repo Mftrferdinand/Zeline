@@ -10,13 +10,14 @@ import copy
 import json
 import re
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import requests
 
 from zeline import __version__, config
-from zeline import compaction
+from zeline import compaction, cancellation
 from zeline import tasks
 from zeline import skills
 from zeline import lessons
@@ -310,17 +311,31 @@ class Zeline:
         self._trim_history()
 
     def force_cancel(self) -> None:
-        """Paksa putus active HTTP connection / in-flight request seketika."""
+        """Detach this response only; close must never block the gateway."""
+        event = getattr(self, "_force_stop", None)
+        if event is not None:
+            event.set()
         active = getattr(self, "_active_response", None)
+        self._active_response = None
         if active is not None:
-            try:
-                active.close()
-                raw = getattr(active, "raw", None)
-                if raw is not None and hasattr(raw, "close"):
-                    raw.close()
-            except Exception:
-                pass
+            cancellation.close_async(active)
+
+    def _wait_io(self, call, dispose=None):
+        try:
+            return cancellation.wait_io(call, self._cancelled, dispose)
+        except cancellation.Cancelled:
+            raise _TurnCancelled() from None
+
+    def _stream_lines(self, response):
+        try:
+            yield from cancellation.iter_io(iter(response.iter_lines(decode_unicode=True)), self._cancelled)
+        except cancellation.Cancelled:
+            raise _TurnCancelled() from None
+
+    def _close_response(self, response):
+        if getattr(self, "_active_response", None) is response:
             self._active_response = None
+        cancellation.close_async(response)
 
     def _cancelled(self) -> bool:
         """True bila user menekan /stop di tengah turn ini.
@@ -330,7 +345,8 @@ class Zeline:
         """
         check = getattr(self, "_should_stop", None)
         try:
-            return bool(check and check())
+            forced = getattr(self, "_force_stop", None)
+            return bool((forced is not None and forced.is_set()) or (check and check()))
         except Exception:
             return False
 
@@ -463,22 +479,22 @@ class Zeline:
                 for attempt in range(2):
                     if self._cancelled():
                         raise _TurnCancelled()
-                    response = requests.post(
-                        endpoint,
-                        headers=headers,
-                        json=copy.deepcopy(payload),
-                        timeout=180,
-                        stream=stream,
+                    request_payload = copy.deepcopy(payload)
+                    response = self._wait_io(
+                        lambda: requests.post(endpoint, headers=headers, json=request_payload,
+                                              timeout=180, stream=stream),
+                        dispose=cancellation.close_async,
                     )
+                    if self._cancelled():
+                        cancellation.close_async(response)
+                        raise _TurnCancelled()
                     self._active_response = response
                     if response.status_code not in retryable:
                         break
-                    close_response = getattr(response, "close", None)
-                    if callable(close_response):
-                        close_response()
+                    self._close_response(response)
                     # Small bounded backoff: enough for a router connection to
                     # rotate/recover without making Telegram wait for minutes.
-                    time.sleep(0.5 + 0.5 * attempt + 0.25 * model_index)
+                    self._wait_io(lambda: time.sleep(0.5 + 0.5 * attempt + 0.25 * model_index))
                 if response is not None and response.status_code not in retryable:
                     break
             if response is None:
@@ -523,7 +539,10 @@ class Zeline:
                     force_stream=False,
                 )
 
-        parsed = _parse_response(response.text)
+        try:
+            parsed = _parse_response(response.text)
+        finally:
+            self._close_response(response)
         # Record token usage before shaping the message: the `usage` block lives
         # on the envelope, not the message, and is dropped a few lines below.
         self._record_usage(parsed)
@@ -590,7 +609,7 @@ class Zeline:
         reasoning_seen = False
         finish_reason: str | None = None
         try:
-            for raw_line in response.iter_lines(decode_unicode=True):
+            for raw_line in self._stream_lines(response):
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
                 if self._cancelled():
                     raise _TurnCancelled()
@@ -648,7 +667,7 @@ class Zeline:
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
         finally:
-            response.close()
+            self._close_response(response)
 
         if usage_chunk is not None:
             self._record_usage(usage_chunk)
@@ -683,7 +702,7 @@ class Zeline:
         stream_input_tokens = 0
         stream_output_tokens = 0
         try:
-            for raw_line in response.iter_lines(decode_unicode=True):
+            for raw_line in self._stream_lines(response):
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
                 if self._cancelled():
                     raise _TurnCancelled()
@@ -748,7 +767,7 @@ class Zeline:
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
         finally:
-            response.close()
+            self._close_response(response)
 
         if stream_input_tokens or stream_output_tokens:
             self._record_usage({
@@ -812,6 +831,14 @@ class Zeline:
                 tail = [summary, *tail]
         self.messages = [system, *tail]
 
+    def _observe_loaded_skill(self, name: str, result: str) -> None:
+        """Auto-injected procedures obey the same measurement contract as tools."""
+        observer = self.executor._skill_telemetry
+        if observer is not None:
+            with contextlib.suppress(Exception):
+                observer.observe("load_skill", {"name": name}, result,
+                                 include_private=self.executor.profile == "full")
+
     def send(
         self,
         user_input: str,
@@ -819,6 +846,7 @@ class Zeline:
         on_tool_result: Callable[[str, dict[str, Any], str], None] | None = None,
         on_iteration: Callable[[int, int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        interrupt_reason: Callable[[], str] | None = None,
         take_steer: Callable[[], str | None] | None = None,
         on_narration: Callable[[str], None] | None = None,
         on_stream_delta: Callable[[str], None] | None = None,
@@ -836,7 +864,10 @@ class Zeline:
         # protocol tail before appending a new user message, then bound context.
         self._drop_incomplete_tail()
         self._trim_history()
+        self._force_stop = threading.Event()
         self._should_stop = should_stop
+        self.executor._should_stop = self._cancelled
+        self.executor._interrupt_reason = interrupt_reason
         self._turn_skill_context = ""
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []
@@ -849,6 +880,7 @@ class Zeline:
         elif _CAPTCHA_INTENT_RE.search(text):
             skill_names.append("captcha-solving-2captcha")
         loaded_contexts: list[str] = []
+        loaded_skills: list[tuple[str, str]] = []
         for skill_name in skill_names:
             loaded = skills.load_skill(
                 skill_name,
@@ -856,11 +888,22 @@ class Zeline:
             )
             if not loaded.startswith("ERROR"):
                 loaded_contexts.append(f"## Auto-loaded skill: {skill_name}\n{loaded}")
+                loaded_skills.append((skill_name, loaded))
         self._turn_skill_context = "\n\n".join(loaded_contexts)
         self.messages.append({"role": "user", "content": text})
         self.last_turn_tool_calls = 0
+        # Learning is observation-only and best-effort: never break execution or
+        # mutate an active skill merely because telemetry is unavailable.
+        telemetry = None
+        with contextlib.suppress(Exception):
+            from zeline.skillforge import TurnTelemetry
+            telemetry = TurnTelemetry(self.identity)
+        self.executor._skill_telemetry = telemetry
+        turn_outcome = "unknown"
         try:
-            return self._run_turn(
+            for skill_name, loaded in loaded_skills:
+                self._observe_loaded_skill(skill_name, loaded)
+            answer = self._run_turn(
                 on_tool=on_tool,
                 on_tool_result=on_tool_result,
                 on_iteration=on_iteration,
@@ -869,14 +912,23 @@ class Zeline:
                 on_narration=on_narration,
                 on_stream_delta=on_stream_delta,
             )
+            turn_outcome = "cancelled" if answer == CANCELLED_REPLY else "completed" if answer.strip() else "unknown"
+            return answer
         except _TurnCancelled:
+            turn_outcome = "cancelled"
             # /stop di tengah jalan: rapikan ekor tool-call yang belum lengkap
             # supaya pesan berikutnya di sesi ini tidak ditolak provider.
             self._drop_incomplete_tail()
             self._trim_history()
             return CANCELLED_REPLY
         finally:
+            self.executor._skill_telemetry = None
+            if telemetry is not None:
+                with contextlib.suppress(Exception):
+                    telemetry.finish(turn_outcome)
             self._should_stop = None
+            self.executor._should_stop = None
+            self.executor._interrupt_reason = None
             self._turn_skill_context = ""
 
     def _run_turn(
@@ -904,6 +956,10 @@ class Zeline:
                 return answer
             if on_iteration:
                 on_iteration(iteration, config.MAX_TOOL_ROUNDS)
+            observer = self.executor._skill_telemetry
+            if observer is not None:
+                with contextlib.suppress(Exception):
+                    observer.begin_round()
             message = self._call_llm(on_stream_delta=on_stream_delta)
             if should_stop and should_stop():
                 return CANCELLED_REPLY
@@ -976,6 +1032,9 @@ class Zeline:
                 for _tc, name, args in parsed_calls:
                     on_tool(name, args)
 
+            if self._cancelled():
+                raise _TurnCancelled()
+
             if run_parallel:
                 with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
                     results = list(pool.map(lambda ca: self.executor.run(ca[1], ca[2]), parsed_calls))
@@ -985,10 +1044,15 @@ class Zeline:
                 results = []
                 for _tc, name, args in parsed_calls:
                     if should_stop and should_stop():
-                        raise _TurnCancelled()
+                        break
                     results.append(self.executor.run(name, args))
 
             if should_stop and should_stop():
+                # Preserve completed side effects before filling cancelled tool
+                # IDs. A later turn must not repeat already executed writes.
+                for (tool_call, _name, _args), result in zip(parsed_calls, results):
+                    self.messages.append({"role": "tool", "tool_call_id": str(tool_call.get("id", "")),
+                                          "content": str(result)})
                 raise _TurnCancelled()
 
             # Domain-agnostic escalation: the initial prompt may only contain a
@@ -1002,6 +1066,7 @@ class Zeline:
                     include_private=self.executor.profile == "full",
                 )
                 if not loaded.startswith("ERROR") and loaded not in self._turn_skill_context:
+                    self._observe_loaded_skill("captcha-solving-2captcha", loaded)
                     extra = f"## Auto-loaded skill after Cloudflare detection\n{loaded}"
                     self._turn_skill_context = "\n\n".join(
                         part for part in (self._turn_skill_context, extra) if part
@@ -1012,6 +1077,7 @@ class Zeline:
                     include_private=self.executor.profile == "full",
                 )
                 if not loaded.startswith("ERROR") and loaded not in self._turn_skill_context:
+                    self._observe_loaded_skill("network-route", loaded)
                     extra = f"## Auto-loaded skill after geo-block detection\n{loaded}"
                     self._turn_skill_context = "\n\n".join(
                         part for part in (self._turn_skill_context, extra) if part
@@ -1139,15 +1205,13 @@ class Zeline:
                     "Kalau YA, WAJIB mulai dengan manage_skill action='list' untuk "
                     "melihat skill yang sudah ada — jangan menyimpan nama baru untuk "
                     "pelajaran yang sudah punya skill. "
-                    "- Sudah ada skill yang seintent (walau namanya beda): pakai "
-                    "manage_skill action='patch' untuk memperkaya skill itu; kalau ada "
-                    "beberapa skill yang tumpang tindih, gabungkan ke satu lalu "
-                    "manage_skill action='delete' dengan absorbed_into='<skill induk>'. "
-                    "- Belum ada: manage_skill action='create' (isi: kapan dipakai, "
-                    "langkah bernomor + command persis, pitfalls). Detail panjang "
-                    "(referensi API, log, contoh output) taruh di file terpisah lewat "
-                    "manage_skill action='write_file' file_path='references/<topik>.md' "
-                    "lalu tunjuk dari SKILL.md — jangan menumpuk semua di satu file. "
+                    "- Existing skill: load it, then propose manage_skill action='patch'. "
+                    "- New procedure: propose manage_skill action='create' with triggers, "
+                    "numbered steps, verification and safety constraints. "
+                    "During internal reflection these writes become SkillForge proposals, "
+                    "NOT active edits. Tests and explicit operator review are required. "
+                    "Do not delete skills, write scripts or use shell/network tools here. "
+                    "Do not claim an untested proposal is a proven improvement. "
                     "(B) Apakah user MENGOREKSI kamu berulang tentang hal yang sama "
                     "(mis. edit/revisi yang katanya 'masih sama/nggak berubah', font/warna/"
                     "layout yang harus lebih presisi, atau kamu menimpa file dgn versi lama)? "
@@ -1175,6 +1239,8 @@ class Zeline:
         # user's own facts, without changing the fact-only tool schema.
         previous_source = getattr(self.executor.memory, "default_source", "user")
         self.executor.memory.default_source = "reflection"
+        previous_reflection = self.executor._reflection_mode
+        self.executor._reflection_mode = True
         review_completed = False
         try:
             for _ in range(REFLECTION_TOOL_ROUNDS):
@@ -1214,6 +1280,7 @@ class Zeline:
         finally:
             # Kembalikan source default; instance memory dipakai lagi di sesi ini.
             self.executor.memory.default_source = previous_source
+            self.executor._reflection_mode = previous_reflection
             # Buang jejak refleksi dari history utama supaya tidak mengganggu
             # konteks percakapan berikutnya.
             self.messages = saved_messages

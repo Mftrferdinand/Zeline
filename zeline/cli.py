@@ -2279,6 +2279,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
     subparsers.add_parser("memory", help="view local CLI memory")
     subparsers.add_parser("lessons", help="view lessons learned from tool failures")
+    from zeline import skillforge
+    skillforge.add_arguments(subparsers.add_parser(
+        "skillforge", help="measure skill effectiveness and review tested improvement proposals"))
 
 
 
@@ -2502,6 +2505,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_memory()
     if command == "lessons":
         return cmd_lessons()
+    if command == "skillforge":
+        from zeline import skillforge
+        return skillforge.command(namespace)
     if command == "cron":
         return cmd_cron(
             getattr(namespace, "cron_action", None) or "list",

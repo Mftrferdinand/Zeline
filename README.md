@@ -30,6 +30,7 @@ Run it locally for development or deploy it to your own server or cloud, and con
 - **Persistent memory** — long-term memory isolated per platform identity
 - **Session persistence** — conversation history stored in SQLite (`~/.zeline/sessions.db`), so it survives gateway restarts
 - **Skills** — reusable Markdown procedures loaded on demand; see the [Zenith skill index](zeline/skills/ZENITH_INDEX.md) for the full bundled catalog
+- **SkillForge** — revision-specific usage telemetry, uncertainty-aware effectiveness scoring, stale-skill review and a draft → test → operator review workflow; [usage and safety contract](docs/skillforge.md)
 - **Messaging gateways** — Telegram (long polling, commands, attachments), WhatsApp (Baileys QR pairing), and an authenticated local HTTP webhook
 - **Built-in tools** — web search, web fetch, deep research, HTTP requests, file read/write/edit/search, image analysis, text-to-image generation, code execution, shell, and sub-agent delegation
 - **Lazy tool schemas** — the model is sent a small core of schemas plus a one-line summary of every other tool, and fetches full parameters on demand with `tool_search`. On the `full` profile that is 6,793 characters per request instead of 17,089 (60% less), without hiding any capability: names stay visible and a listed tool can be called directly. It engages only where the saving outweighs the extra round trip, so the public `safe` profile keeps sending everything; run `zeline toolsearch` for the numbers on your own tool set

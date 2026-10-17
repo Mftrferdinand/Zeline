@@ -633,14 +633,12 @@ class AgentLoopTests(unittest.TestCase):
             self.assertIsNone(safe.reflect(min_tool_calls=5))
         post.assert_not_called()
 
-    def test_reflect_reports_only_real_changes_and_can_finish_a_merge(self):
-        """An inventory read is orientation, not an improvement.
+    def test_reflect_reports_proposals_but_never_deletes_or_writes_companions(self):
+        """Inventory stays quiet; autonomous skill revisions require review.
 
-        The anti-duplicate flow spends its first round on ``action='list'``. If
-        that round were reported, every reflection would push a skill listing into
-        the chat as "Improvement"; and if the loop still stopped after three
-        rounds, the merge (``delete absorbed_into=…``) — the step that actually
-        removes a duplicate — would be cut off before it ran.
+        Normal operator manage_skill calls retain their existing write contract.
+        Internal reflection must not mutate live skills, even if an older model
+        follows its former merge/delete instruction.
         """
         self.assertGreaterEqual(self.agent_module.REFLECTION_TOOL_ROUNDS, 4)
         agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
@@ -667,10 +665,15 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIsNotNone(summary)
         # The listing must not be surfaced as an improvement…
         self.assertNotIn("skills:", summary)
-        # …while every real write is, including the merge in the final round.
-        self.assertIn("umbrella-flow/SKILL.md", summary)
-        self.assertIn("umbrella-flow/references/detail.md", summary)
-        self.assertIn("absorbed into 'umbrella-flow'", summary)
+        self.assertIn("umbrella-flow", summary)
+        self.assertIn("dupe-flow", summary)
+        self.assertIn("pending tests and operator review", summary)
+        from zeline.skillforge import ForgeStore
+        self.assertEqual(len(ForgeStore().proposals()), 2)
+        skills_module = importlib.import_module("zeline.skills")
+        self.assertIsNone(skills_module._find_skill("umbrella-flow", include_private=True))
+        self.assertIsNone(skills_module._find_skill("dupe-flow", include_private=True))
+        self.assertFalse(agent.executor._reflection_mode)
 
     def test_reflection_memory_writes_are_tagged_as_autonomous_inference(self):
         """A fact the model saves DURING reflection is not user-stated.

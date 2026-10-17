@@ -23,6 +23,28 @@ from zeline import interaction
 from zeline.session_store import SessionPersistence
 
 
+@dataclass(eq=False)
+class TurnTicket:
+    """One irreversible cancellation token, allocated before a worker starts."""
+
+    identity: str
+    session: "Session"
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    reason: str = ""
+    admitted_at: float = field(default_factory=time.monotonic)
+    started_at: float = 0.0
+    iteration: int = 0
+    maximum: int = 0
+    finished: threading.Event = field(default_factory=threading.Event)
+    previous_progress: dict[str, object] | None = None
+
+    def cancel(self, reason: str = "stop") -> None:
+        # A hard stop always overrides a prior soft redirect.
+        if not self.reason or reason == "stop":
+            self.reason = reason
+        self.cancel_event.set()
+
+
 @dataclass
 class Session:
     agent: Zeline
@@ -34,6 +56,10 @@ class Session:
     session_id: str = field(default_factory=lambda: f"zel-{uuid.uuid4().hex[:8]}")
     title: str = "New Session"
     created_at: float = field(default_factory=time.time)
+    pending_turns: list[TurnTicket] = field(default_factory=list)
+    active_turn: TurnTicket | None = None
+    wake: threading.Event = field(default_factory=threading.Event)
+    cancelling: bool = False
 
 
 class SessionStore:
@@ -113,98 +139,184 @@ class SessionStore:
                 session.last_used = time.monotonic()
             return session
 
-    def send(
-        self,
-        identity: str,
-        text: str,
-        tool_profile: str,
-        workspace: str | None = None,
-        system_extra: str = "",
-        on_tool: Callable | None = None,
-        on_tool_result: Callable | None = None,
-        on_iteration: Callable | None = None,
-        on_narration: Callable | None = None,
-        on_stream_delta: Callable | None = None,
-    ) -> str:
-        # Gateway sedang drain untuk restart/update: jangan mulai turn baru,
-        # dan katakan alasannya. Turn yang sudah jalan tetap diselesaikan.
-        if self._paused.is_set():
-            return (
-                "⏸️ Zeline is finishing current work before restarting. "
-                "Send this again in a moment."
-            )
-        session = self.get_or_create(identity, tool_profile, workspace, system_extra)
-        # Agent memiliki mutable message history; satu session harus serial.
-        with session.lock:
+    def admit(
+        self, identity: str, tool_profile: str, workspace: str | None = None,
+        system_extra: str = "", *, interrupt: bool = False,
+    ) -> TurnTicket | None:
+        """Atomically reserve FIFO order BEFORE starting a gateway worker."""
+        with self._lock:
+            if self._paused.is_set():
+                return None
+            session = self.get_or_create(identity, tool_profile, workspace, system_extra)
+            previous = self._progress_locked(session)
+            ticket = TurnTicket(identity, session, previous_progress=previous)
+            if interrupt:
+                current = session.active_turn
+                if current is None and session.pending_turns:
+                    current = session.pending_turns[0]
+                if current is not None and not current.cancel_event.is_set():
+                    current.cancel("interrupt")
+                    session.cancel_event = current.cancel_event
+                    # Wake a question waiter. Foreground redirection is handled
+                    # by the executor using the ticket's immutable predicate.
+                    interaction.cancel(identity)
+                    session.agent.force_cancel()
+            session.pending_turns.append(ticket)
+            session.running = True  # Includes admitted-but-not-yet-started work.
+            session.wake.set()
+            return ticket
+
+    def release(self, ticket: TurnTicket) -> None:
+        """Drop an unused reservation if its transport worker failed to start."""
+        with self._lock:
+            ticket.cancel()
+            session = ticket.session
+            if ticket in session.pending_turns:
+                session.pending_turns.remove(ticket)
+            ticket.finished.set()
+            session.running = session.active_turn is not None or bool(session.pending_turns)
+            session.wake.set()
+
+    @staticmethod
+    def _progress_locked(session: Session) -> dict[str, object] | None:
+        ticket = session.active_turn or (session.pending_turns[0] if session.pending_turns else None)
+        if ticket is None:
+            return None
+        return {"elapsed": max(0.0, time.monotonic() - (ticket.started_at or ticket.admitted_at)),
+                "iteration": ticket.iteration, "maximum": ticket.maximum or config.MAX_TOOL_ROUNDS,
+                "title": session.title, "cancelled": ticket.cancel_event.is_set()}
+
+    def progress(self, identity: str) -> dict[str, object] | None:
+        with self._lock:
+            session = self._sessions.get(identity)
+            return self._progress_locked(session) if session is not None else None
+
+    def wait_turn(self, ticket: TurnTicket) -> bool:
+        """Claim the FIFO head; cancellation never requires taking the agent lock."""
+        session = ticket.session
+        while True:
             with self._lock:
-                session.cancel_event.clear()
-                session.running = True
-                if session.title == "New Session":
-                    session.title = text.strip().splitlines()[0][:80] or "New Session"
+                if (ticket.cancel_event.is_set() or ticket.finished.is_set()
+                        or self._sessions.get(ticket.identity) is not session):
+                    return False
+                if session.active_turn is ticket:
+                    return True
+                if (not session.cancelling and session.active_turn is None
+                        and session.pending_turns and session.pending_turns[0] is ticket):
+                    session.pending_turns.pop(0)
+                    session.active_turn = ticket
+                    session.cancel_event = ticket.cancel_event
+                    ticket.started_at = time.monotonic()
+                    session.running = True
+                    return True
+                session.wake.clear()
+            session.wake.wait(0.05)
 
-            def take_steer() -> str | None:
+    def finish_turn(self, ticket: TurnTicket) -> None:
+        with self._lock:
+            session = ticket.session
+            if session.active_turn is ticket:
+                session.active_turn = None
+                session.steer_queue.clear()
+            if ticket in session.pending_turns:
+                session.pending_turns.remove(ticket)
+            ticket.finished.set()
+            session.running = session.active_turn is not None or bool(session.pending_turns)
+            session.wake.set()
+
+    def send(
+        self, identity: str, text: str, tool_profile: str,
+        workspace: str | None = None, system_extra: str = "",
+        on_tool: Callable | None = None, on_tool_result: Callable | None = None,
+        on_iteration: Callable | None = None, on_narration: Callable | None = None,
+        on_stream_delta: Callable | None = None, *, ticket: TurnTicket | None = None,
+    ) -> str:
+        own_ticket = ticket is None
+        if ticket is None:
+            ticket = self.admit(identity, tool_profile, workspace, system_extra)
+        if ticket is None:
+            return ("⏸️ Zeline is finishing current work before restarting. "
+                    "Send this again in a moment.")
+        if ticket.identity != identity:
+            raise ValueError("Turn reservation belongs to a different session")
+        session = ticket.session
+        try:
+            if not self.wait_turn(ticket):
+                return "Stopped."
+            with session.lock:
+                if ticket.cancel_event.is_set():
+                    return "Stopped."
                 with self._lock:
-                    return session.steer_queue.pop(0) if session.steer_queue else None
+                    if session.title == "New Session":
+                        session.title = text.strip().splitlines()[0][:80] or "New Session"
 
-            try:
+                def take_steer() -> str | None:
+                    with self._lock:
+                        return session.steer_queue.pop(0) if session.steer_queue else None
+
+                def iteration(current, maximum):
+                    with self._lock:
+                        ticket.iteration, ticket.maximum = current, maximum
+                    if not ticket.cancel_event.is_set() and on_iteration:
+                        on_iteration(current, maximum)
+
                 reply = session.agent.send(
-                    text,
-                    on_tool=on_tool,
-                    on_tool_result=on_tool_result,
-                    on_iteration=on_iteration,
-                    should_stop=session.cancel_event.is_set,
-                    take_steer=take_steer,
-                    on_narration=on_narration,
+                    text, on_tool=on_tool, on_tool_result=on_tool_result,
+                    on_iteration=iteration, should_stop=ticket.cancel_event.is_set,
+                    interrupt_reason=lambda: ticket.reason,
+                    take_steer=take_steer, on_narration=on_narration,
                     on_stream_delta=on_stream_delta,
                 )
+                if ticket.cancel_event.is_set():
+                    reply = "Stopped."
                 session.last_used = time.monotonic()
-                # Simpan history ke disk setelah tiap turn sukses → bertahan
-                # lintas restart gateway.
                 if self._persistence is not None:
                     try:
                         self._persistence.save(identity, session.agent.export_history(), session.title)
-                    except Exception:
-                        pass
-                    # Arsip permanen: simpan user + assistant turn ini agar bisa
-                    # di-recall lintas /new (bukan cuma window aktif). Best-effort.
-                    try:
                         self._persistence.append_turn(identity, "user", text, session.title)
                         self._persistence.append_turn(identity, "assistant", reply, session.title)
                     except Exception:
                         pass
                 return reply
-            finally:
-                with self._lock:
-                    session.running = False
-                    session.steer_queue.clear()
+        finally:
+            # Gateway reservations span result delivery too, so the next turn
+            # cannot steal channels or deliver before the prior final is sent.
+            if own_ticket:
+                self.finish_turn(ticket)
 
     def stop(self, identity: str) -> bool:
         with self._lock:
             session = self._sessions.get(identity)
-            if session is None or not session.running:
-                return False
-            session.cancel_event.set()
-            agent = getattr(session, "agent", None)
-            if agent is not None and hasattr(agent, "force_cancel"):
-                try:
-                    agent.force_cancel()
-                except Exception:
-                    pass
-        # Sebuah tool yang sedang MENUNGGU jawaban ask_user tidak punya proses
-        # untuk dibunuh — ia menunggu event. Tanpa ini /stop tidak melepaskan
-        # tunggu itu dan sesi terlihat menggantung meski sudah dibatalkan.
+            had_work = bool(session is not None and session.running)
+            if session is not None:
+                session.cancelling = True
+                if session.active_turn is not None:
+                    session.active_turn.cancel("stop")
+                for ticket in session.pending_turns:
+                    ticket.cancel("stop")
+                session.pending_turns.clear()
+                session.cancel_event.set()
+                session.steer_queue.clear()
+                if session.active_turn is not None or had_work:
+                    try:
+                        session.agent.force_cancel()
+                    except Exception:
+                        pass
+                session.wake.set()
+        # Cancellation does not acquire the mutable-history lock. A fresh turn
+        # may be admitted now, but cannot start until owned resources are stopped.
         try:
             interaction.cancel(identity)
+            killed = tools.cancel_identity(identity)
         except Exception:
-            pass
-        # /stop harus MEMAKSA berhenti, bukan sekadar menandai flag: perintah
-        # foreground yang sedang jalan (pytest/build/install) dibunuh beserta
-        # grup prosesnya, jadi turn tidak lagi tertahan sampai perintah selesai.
-        try:
-            tools.cancel_identity(identity)
-        except Exception:
-            pass
-        return True
+            killed = 0
+        finally:
+            if session is not None:
+                with self._lock:
+                    session.cancelling = False
+                    session.running = session.active_turn is not None or bool(session.pending_turns)
+                    session.wake.set()
+        return had_work or bool(killed)
 
     def reflect(self, identity: str, min_tool_calls: int = 5) -> str | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
@@ -218,11 +330,33 @@ class SessionStore:
             session = self._sessions.get(identity)
         if session is None:
             return None
-        with session.lock:
+        if not session.lock.acquire(blocking=False):
+            return None
+        ticket = None
+        previous_check = getattr(session.agent, "_should_stop", None)
+        previous_executor_check = getattr(session.agent.executor, "_should_stop", None)
+        try:
+            with self._lock:
+                if session.running or session.pending_turns or session.cancel_event.is_set():
+                    return None
+                ticket = TurnTicket(identity, session, maximum=5)
+                ticket.started_at = time.monotonic()
+                session.active_turn = ticket
+                session.running = True
+                session.cancel_event = ticket.cancel_event
+                session.agent._should_stop = ticket.cancel_event.is_set
+                session.agent.executor._should_stop = ticket.cancel_event.is_set
             try:
-                return session.agent.reflect(min_tool_calls=min_tool_calls)
+                result = session.agent.reflect(min_tool_calls=min_tool_calls)
+                return None if ticket.cancel_event.is_set() else result
             except Exception:
                 return None
+        finally:
+            if ticket is not None:
+                session.agent._should_stop = previous_check
+                session.agent.executor._should_stop = previous_executor_check
+                self.finish_turn(ticket)
+            session.lock.release()
 
     def steer(self, identity: str, text: str) -> bool:
         guidance = text.strip()
@@ -237,6 +371,12 @@ class SessionStore:
         with self._lock:
             session = self._sessions.pop(identity, None)
             if session is not None:
+                if session.active_turn is not None:
+                    session.active_turn.cancel("stop")
+                for ticket in session.pending_turns:
+                    ticket.cancel("stop")
+                session.pending_turns.clear()
+                session.wake.set()
                 session.cancel_event.set()
                 agent = getattr(session, "agent", None)
                 if agent is not None and hasattr(agent, "force_cancel"):

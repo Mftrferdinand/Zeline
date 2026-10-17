@@ -220,6 +220,7 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "stats", "description": "View token usage"},
         {"command": "events", "description": "Recent file/skill/memory changes"},
         {"command": "lessons", "description": "View self-learning lessons"},
+        {"command": "skillforge", "description": "Review skill effectiveness and proposals"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
         {"command": "version", "description": "Show version and check for updates"},
@@ -1672,6 +1673,31 @@ def _events_card(identity: str) -> str:
     return "\n".join(lines)
 
 
+def _skillforge_card() -> str:
+    """Owner-only measured overview; never draft, approve, or apply from a card."""
+    from zeline.skillforge import ForgeStore
+    try:
+        store = ForgeStore()
+        rows = store.scan(limit=5)
+        pending = sum(row["status"] in {"pending", "tested", "approved"} for row in store.proposals())
+        lines = ["<b>SkillForge</b>",
+                 "Observed tool outcomes, not model claims. No automatic skill replacement.",
+                 f"Proposals awaiting action: {pending}", ""]
+        for row in rows:
+            score = row.get("score", {})
+            value = score.get("effectiveness")
+            label = "insufficient observations" if not score.get("sufficient_evidence") else f"{value:.0f}% observed effectiveness"
+            reasons = ", ".join(row["reasons"]) or "current revision"
+            lines.append(html.escape(f"{row['name']} — {label} · {reasons}", quote=False))
+        if not rows:
+            lines.append("No skill observations yet. Scores appear after real skill-backed tool runs.")
+        lines.extend(["", "Local review: <code>zeline skillforge list</code>",
+                      "Tests and explicit operator review are required before apply."])
+        return "\n".join(lines)
+    except Exception:
+        return "<b>SkillForge</b>\nObservation store unavailable; no skill was changed."
+
+
 def _lessons_card(identity: str) -> str:
     """Lessons learned from tool failures — the agent's self-improvement store.
 
@@ -1790,6 +1816,7 @@ def _handle_command_update(
                 "/stats — View token usage\n"
                 "/events — Recent file/skill/memory changes\n"
                 "/lessons — View self-learning lessons\n"
+                "/skillforge — Review skill effectiveness and proposals\n"
                 "/stop — Stop the active turn\n"
                 "/new — Start a new session\n\n"
                 "Send a message to start a task"
@@ -1854,6 +1881,11 @@ def _handle_command_update(
         text = refusal if refusal is not None else _events_card(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
         return True
+    if command == "/skillforge":
+        refusal = _owner_only_reply("/skillforge", chat_id, allowed)
+        text = refusal if refusal is not None else _skillforge_card()
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        return True
     if command == "/lessons":
         refusal = _owner_only_reply("/lessons", chat_id, allowed)
         text = refusal if refusal is not None else _lessons_card(identity)
@@ -1879,10 +1911,7 @@ def _handle_command_update(
             # SATU pesan saja. Turn yang dibatalkan TIDAK ikut mengirim
             # "Stopped." (lihat _send_agent_reply) dan refleksi dilewati, jadi
             # inilah satu-satunya balasan untuk /stop.
-            reply = (
-                f"❄️ Stopped — {title}\n"
-                "The running step was force-killed. Session and history are intact."
-            )
+            reply = f"❄️ Stopped — {title}"
         elif _stopped_recently(identity):
             # /stop kedua (dobel-tap, atau update yang sama dikirim ulang
             # Telegram) tiba setelah turn benar-benar berhenti. Membalas
@@ -2767,7 +2796,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
-        return "/status · /models · /model <id> · /undo · /stats · /events · /lessons · /version · /update · /new · /restart · /stop · /logs"
+        return "/status · /models · /model <id> · /undo · /stats · /events · /lessons · /skillforge · /version · /update · /new · /restart · /stop · /logs"
     if command == "/status":
         return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":
@@ -2870,7 +2899,12 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None) -> None:
+    def cancelled():
+        return _ticket is not None and _ticket.cancel_event.is_set()
+
+    if cancelled():
+        return
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
               timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
@@ -2883,6 +2917,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # rapi — narasi & jawaban akhir masing-masing jadi bubble utuh sendiri
     # (tidak ada edit-in-place), diselingi feed aktivitas tool.
     def on_tool(_name, _args):
+        if cancelled():
+            return
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
         # Tambahkan satu baris ringkas ke feed live, bukan pesan baru.
@@ -2908,6 +2944,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
                 _render_ask_question(api, chat_id, entry)
 
     def on_tool_result(_name, _args, result):
+        if cancelled():
+            return
         result_text = _tool_result_text(_name, _args, result)
         if result_text:
             live.add(_safe_progress_line(result_text))
@@ -2915,12 +2953,16 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_iteration(current, maximum):
+        if cancelled():
+            return
         # Awal tiap iterasi = mulai menunggu respons provider. Simpan nomor
         # langkah supaya header status bisa menunjukkan 'step 4/20'.
         live.set_iteration(current, maximum)
         live.set_waiting()
 
     def on_narration(sentence: str):
+        if cancelled():
+            return
         # Kalimat rencana/temuan model yang menyertai tool call → dikirim
         # sebagai bubble chat UTUH tersendiri SEBELUM tool jalan. Ini yang
         # bikin alur kebaca hidup & "satset": [penjelasan] → [tool feed] →
@@ -2944,6 +2986,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # berjalan lalu dilepas di finally: kalau tetap terdaftar, sebuah cron job
     # atau turn lain bisa mengirim file ke chat yang salah.
     def _deliver_file(path: Path, caption: str, kind: str) -> bool:
+        if cancelled():
+            return False
         # Bubble progres yang sedang berjalan dikunci lebih dulu supaya file
         # muncul DI BAWAH aktivitas tool, bukan menimpanya.
         live.detach()
@@ -2953,8 +2997,11 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         return sent
 
     delivery.register_channel(identity, _deliver_file)
+    from zeline import interaction
+    interaction.register_channel(identity, lambda entry: None if cancelled() else _render_ask_question(api, chat_id, entry))
     try:
         reply = sessions.send(
+            **({"ticket": _ticket} if _ticket is not None else {}),
             identity=identity,
             text=text,
             tool_profile=tool_profile,
@@ -2973,19 +3020,18 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         done.set()
         heartbeat.join(timeout=0.2)
         delivery.unregister_channel(identity)
-        if ok:
-            # Kunci bubble progres sebagai catatan alur (tidak dihapus), lalu
-            # kirim jawaban final sebagai pesan baru terpisah.
-            live.finalize()
-        else:
-            live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
+        interaction.unregister_channel(identity)
+        # Completed side effects are history, not transient trash. Preserve
+        # their progress on success, cancellation, and provider failure alike.
+        live.finalize()
+    if cancelled():
+        return
     # /stop sudah mengirim SATU konfirmasi sendiri ("❄️ Stopped — <judul>").
     # Agent mengembalikan sentinel "Stopped." untuk turn yang sama, jadi
     # mengirimnya berarti dua pesan untuk satu pembatalan — dan refleksi di
     # bawah bisa menambah pesan ketiga. Turn yang dibatalkan berhenti di sini:
     # tidak ada balasan, tidak ada refleksi, tidak ada bubble sisa.
     if isinstance(reply, str) and reply.strip() == _CANCELLED_SENTINEL and _consume_stop(identity):
-        live.clear()
         return
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
@@ -2995,6 +3041,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # (biar rantai jawaban tidak menumpuk quote berulang).
     first_part = True
     for part in _split_message(reply):
+        if cancelled():
+            return
         extra: dict[str, Any] = {}
         if first_part and reply_to_message_id:
             extra["reply_to_message_id"] = reply_to_message_id
@@ -3029,7 +3077,37 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
-def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> threading.Thread:
+def _interrupt_ack(progress: dict[str, Any]) -> str:
+    elapsed = max(0, int(float(progress.get("elapsed", 0))))
+    age = f"{elapsed // 60} min elapsed" if elapsed >= 60 else f"{elapsed}s elapsed"
+    current, maximum = int(progress.get("iteration", 0)), int(progress.get("maximum", 0))
+    detail = age + (f", iteration {current}/{maximum}" if maximum else "")
+    return f"⚡ Interrupting current task ({detail}). I'll respond to your message shortly."
+
+
+_busy_ack_ts: dict[tuple[int, str], float] = {}
+_busy_ack_lock = threading.Lock()
+_BUSY_ACK_COOLDOWN = 30.0
+
+
+def _send_busy_ack(api, sessions, identity, chat_id, progress):
+    key = (id(sessions), identity)
+    now = time.monotonic()
+    with _busy_ack_lock:
+        if key in _busy_ack_ts and now - _busy_ack_ts[key] < _BUSY_ACK_COOLDOWN:
+            return
+        for stale, stamp in list(_busy_ack_ts.items()):
+            if now - stamp >= _BUSY_ACK_COOLDOWN:
+                _busy_ack_ts.pop(stale, None)
+        _busy_ack_ts[key] = now
+    sent = _api_call(api, "sendMessage", chat_id=chat_id, text=_interrupt_ack(progress),
+                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+    if not sent:
+        with _busy_ack_lock:
+            _busy_ack_ts.pop(key, None)  # Failed delivery must remain retryable.
+
+
+def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, prepare=None) -> threading.Thread:
     """Jalankan turn di worker agar polling tetap menerima /stop dan /steer.
 
     Kirim 'typing…' SEKETIKA (sinkron, dari loop polling) sebelum worker dimulai.
@@ -3041,25 +3119,61 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     ``reply_to_message_id`` dipakai agar bubble jawaban final nempel (quote) ke
     pesan user — jelas balasan untuk pertanyaan yang mana saat ada beberapa.
     """
+    ticket = None
+    if callable(getattr(sessions, "admit", None)):
+        ticket = sessions.admit(identity, tool_profile, interrupt=True)
+        if ticket is not None and ticket.previous_progress is not None:
+            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress)
+        else:
+            with _busy_ack_lock:
+                _busy_ack_ts.pop((id(sessions), identity), None)
     try:
-        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
+        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     except Exception:
         pass
+
+    def run_reserved():
+        try:
+            if ticket is not None:
+                if not sessions.wait_turn(ticket):
+                    return
+                prepared_text = text
+                if prepare is not None:
+                    from zeline import cancellation
+                    try:
+                        prepared_text, error = cancellation.wait_io(prepare, ticket.cancel_event.is_set)
+                    except cancellation.Cancelled:
+                        return
+                    except Exception as exc:
+                        prepared_text, error = "", f"Could not read media ({type(exc).__name__})."
+                    if ticket.cancel_event.is_set():
+                        return
+                    if error:
+                        _api_call(api, "sendMessage", chat_id=chat_id, text=error,
+                                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                        return
+                _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
+                                  tool_profile=tool_profile, reply_to_message_id=reply_to_message_id,
+                                  _ticket=ticket)
+            else:
+                _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=text,
+                                  tool_profile=tool_profile, reply_to_message_id=reply_to_message_id)
+        finally:
+            if ticket is not None:
+                sessions.finish_turn(ticket)
+
     worker = threading.Thread(
-        target=_send_agent_reply,
-        kwargs={
-            "api": api,
-            "sessions": sessions,
-            "chat_id": chat_id,
-            "identity": identity,
-            "text": text,
-            "tool_profile": tool_profile,
-            "reply_to_message_id": reply_to_message_id,
-        },
+        target=run_reserved,
         name=f"zeline-telegram-{chat_id}",
         daemon=True,
     )
-    worker.start()
+    try:
+        worker.start()
+    except Exception:
+        if ticket is not None:
+            sessions.release(ticket)
+        raise
     return worker
 
 
@@ -3136,6 +3250,26 @@ def _dispatch_update(
             if interaction.answer(identity, text):
                 return
             _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
+    elif (document or photos or voice or video) and callable(getattr(sessions, "admit", None)):
+        # Admit before download/extraction, so polling can still accept /stop.
+        def prepare():
+            if document:
+                filename = _document_filename(document)
+                content, error = _download_document(api, token, document)
+                if error:
+                    return "", error
+                extracted, error = _extract_document_text(filename, content or b"", str(document.get("mime_type") or ""))
+                return (_build_document_prompt(filename, extracted or "", caption), error)
+            if photos:
+                largest = photos[-1] if isinstance(photos, list) else {}
+                dest, error = _download_media_file(api, token, str(largest.get("file_id") or ""), ".jpg")
+                return (_build_image_prompt(dest, caption), "") if dest is not None and not error else ("", error or "Could not read the image.")
+            media, extension, kind = (voice, ".ogg", "audio") if voice else (video, ".mp4", "video")
+            dest, error = _download_media_file(api, token, str(media.get("file_id") or ""), extension)
+            return (_build_media_notice_prompt(kind, dest, caption), "") if dest is not None and not error else ("", error or f"Could not read the {kind}.")
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity,
+                          text=caption or "Process attached media", tool_profile=tool_profile,
+                          reply_to_message_id=incoming_message_id, prepare=prepare)
     elif document:
         filename = _document_filename(document)
         file_content, error = _download_document(api, token, document)

@@ -351,6 +351,7 @@ class _BackgroundJob:
     process: subprocess.Popen
     log_path: Path
     started_at: float
+    identity: str = "cli:local"
     log_handle: Any = None
     read_offset: int = 0
     finished_at: float | None = None
@@ -415,8 +416,10 @@ def _terminate_group(process: subprocess.Popen) -> None:
         except Exception:
             pass
         return
+    group_id = None
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        group_id = os.getpgid(process.pid)
+        os.killpg(group_id, signal.SIGTERM)
     except Exception:
         try:
             process.terminate()
@@ -424,16 +427,17 @@ def _terminate_group(process: subprocess.Popen) -> None:
             return
     try:
         process.wait(timeout=3)
-        return
     except Exception:
         pass
+    # The shell can exit while a child ignores SIGTERM. Retain the original
+    # process-group ID; getpgid(parent) fails once that shell has been reaped.
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except Exception:
-        try:
+        if group_id is not None:
+            os.killpg(group_id, signal.SIGKILL)
+        elif process.poll() is None:
             process.kill()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 def cancel_identity(identity: str) -> int:
@@ -444,7 +448,11 @@ def cancel_identity(identity: str) -> int:
     sampai selesai walaupun user sudah membatalkan.
     """
     with _FG_LOCK:
-        processes = list(_FG_PROCS.get(identity or "cli:local", ()))
+        owner = identity or "cli:local"
+        processes = [proc for key, bucket in _FG_PROCS.items()
+                     if key == owner or key.startswith(owner + "::sub") for proc in bucket]
+        processes.extend(job.process for job in list(_BG_JOBS.values())
+                         if job.identity == owner or job.identity.startswith(owner + "::sub"))
     killed = 0
     for process in processes:
         if process.poll() is None:
@@ -460,6 +468,8 @@ def _run_tracked(
     cwd: str,
     seconds: int,
     identity: str,
+    should_stop=None,
+    interrupt_reason=None,
 ) -> tuple[int, str, bool]:
     """Jalankan perintah foreground yang BISA dibunuh oleh /stop.
 
@@ -467,6 +477,8 @@ def _run_tracked(
     session/grup sendiri (``start_new_session``) supaya seluruh keturunannya
     ikut mati saat dibatalkan.
     """
+    if should_stop and should_stop():
+        return -1, "CANCELLED", False
     process = subprocess.Popen(
         command,
         shell=shell,
@@ -480,8 +492,27 @@ def _run_tracked(
     _fg_track(identity, process)
     try:
         try:
-            output, _ = process.communicate(timeout=seconds)
-            return int(process.returncode or 0), output or "", False
+            partial_output = b""
+            deadline = time.monotonic() + seconds
+            while True:
+                if should_stop and should_stop():
+                    if interrupt_reason and interrupt_reason() == "interrupt":
+                        job = _promote_foreground(process, identity, command, partial_output)
+                        if interrupt_reason() == "stop":
+                            _terminate_group(process)
+                        return 0, f"started background job={job.job_id} pid={process.pid}\nlog={job.log_path}\nForeground task preserved after user interruption.", False
+                    _terminate_group(process)
+                    output, _ = process.communicate(timeout=5)
+                    return int(process.returncode or -1), output or "CANCELLED", False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, seconds)
+                try:
+                    output, _ = process.communicate(timeout=min(remaining, 0.05))
+                    return int(process.returncode or 0), output or "", False
+                except subprocess.TimeoutExpired as exc:
+                    partial_output = exc.output or b""
+                    continue
         except subprocess.TimeoutExpired:
             _terminate_group(process)
             try:
@@ -491,6 +522,34 @@ def _run_tracked(
             return -1, output or "", True
     finally:
         _fg_untrack(identity, process)
+
+
+def _promote_foreground(process, identity, command, prefix=b""):
+    job_id = f"bg{next(_BG_COUNTER)}"
+    log_path = _bg_log_dir() / f"{job_id}.log"
+    handle = log_path.open("wb", buffering=0)
+    if prefix:
+        handle.write(prefix.encode() if isinstance(prefix, str) else prefix)
+    job = _BackgroundJob(job_id=job_id, command=str(command), process=process,
+                         log_path=log_path, started_at=time.time(), identity=identity)
+    _BG_JOBS[job_id] = job
+
+    def drain():
+        try:
+            if process.stdout is not None:
+                while True:
+                    data = os.read(process.stdout.fileno(), 65536)
+                    if not data:
+                        break
+                    handle.write(data)
+        except (OSError, ValueError):
+            pass
+        finally:
+            handle.close()
+            if process.stdout is not None:
+                process.stdout.close()
+    threading.Thread(target=drain, daemon=True, name=f"zeline-log-{job_id}").start()
+    return job
 
 
 def _bg_log_dir() -> Path:
@@ -548,7 +607,7 @@ def _bg_status(job: _BackgroundJob) -> str:
     return f"exited (exit={code})"
 
 
-def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False, identity: str = "cli:local") -> str:
+def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False, identity: str = "cli:local", should_stop=None, interrupt_reason=None) -> str:
     """Owner-only shell. Gateways do not receive this profile by default.
 
     ``timeout`` lets the agent raise the limit for genuinely long work such as
@@ -599,7 +658,11 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
             log_path=log_path,
             started_at=time.time(),
             log_handle=handle,
+            identity=identity,
         )
+        if should_stop and should_stop():
+            _terminate_group(process)
+            return "CANCELLED: background launch stopped."
         return (
             f"started background job={job_id} pid={process.pid}\n"
             f"log={log_path}\n"
@@ -609,7 +672,7 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
     seconds = _clamp_timeout(timeout)
     try:
         code, output, timed_out = _run_tracked(
-            command, shell=True, cwd=str(workspace), seconds=seconds, identity=identity,
+            command, shell=True, cwd=str(workspace), seconds=seconds, identity=identity, should_stop=should_stop, interrupt_reason=interrupt_reason,
         )
         if timed_out:
             return (
@@ -729,7 +792,7 @@ def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
     return f"job={job.job_id} killed."
 
 
-def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local") -> str:
+def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local", should_stop=None, interrupt_reason=None) -> str:
     """Run an owner-only Python snippet without shell interpolation."""
     if len(code) > 100_000:
         return "ERROR: code too long (maximum 100,000 characters)."
@@ -738,7 +801,7 @@ def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str
         workspace.mkdir(parents=True, exist_ok=True)
         exit_code, output, timed_out = _run_tracked(
             [os.environ.get("PYTHON", "python"), "-c", code],
-            shell=False, cwd=str(workspace), seconds=seconds, identity=identity,
+            shell=False, cwd=str(workspace), seconds=seconds, identity=identity, should_stop=should_stop, interrupt_reason=interrupt_reason,
         )
         if timed_out:
             return (
@@ -2406,6 +2469,9 @@ class ToolExecutor:
         # Built lazily on first use so constructing an executor stays cheap, and
         # kept for the executor's lifetime so a revealed tool stays revealed.
         self._lazy_index: tool_index.LazySchemaIndex | None = None
+        # Populated only during a normal agent turn, never internal reflection.
+        self._skill_telemetry: Any = None
+        self._reflection_mode = False
         # Started on the first browser call, reused after that.
         self._browser_session: Any | None = None
         # Language servers, started on the first code_intel call. Initialization
@@ -2455,14 +2521,16 @@ class ToolExecutor:
             "resolve_lesson": lambda tool, args_sig_contains, fix: self._resolve_lesson(
                 tool, args_sig_contains, fix
             ),
-            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity),
-            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity),
+            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
+            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
             "delegate_task": lambda goal="", context="", role="", tasks=None, verify=False: self._delegate_task(
                 goal, context, role, tasks, verify
             ),
             "recall_history": lambda query="": self._recall_history(query),
-            "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
+            "ask_user": lambda question, options=None: interaction.ask(
+                self.identity, question, options,
+                **({"should_stop": self._should_stop} if getattr(self, "_should_stop", None) else {})),
         }
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
@@ -2691,6 +2759,8 @@ class ToolExecutor:
         # Import inside the function to avoid a circular import (agent → tools).
         from zeline.agent import Zeline
 
+        if self._cancelled():
+            return "Stopped."
         sub = Zeline(
             identity=f"{self.identity}::sub{suffix}",
             tool_profile=self.profile,
@@ -2698,7 +2768,7 @@ class ToolExecutor:
             system_extra=system_extra,
             depth=self.depth + 1,
         )
-        return sub.send(brief)
+        return sub.send(brief, should_stop=getattr(self, "_should_stop", None))
 
     def _delegate_task(
         self,
@@ -2742,7 +2812,7 @@ class ToolExecutor:
 
         results = delegation.run_tasks(plan, spawn=spawn)
 
-        if not verify:
+        if not verify or self._cancelled():
             return delegation.render(results)
 
         # Verification improves an answer; it must never be able to destroy one.
@@ -2833,20 +2903,47 @@ class ToolExecutor:
         effect is on record even if the turn later fails (session history is only
         saved after a successful turn; the audit row is written at tool time).
         """
+        if self._cancelled():
+            return "CANCELLED: turn stopped before tool dispatch."
         if self.plugins is None:
-            result = self._dispatch(name, args)
+            result = self._execute(name, args)
             self._audit(name, args, result)
             return result
         outcome = self.plugins.before(name, args)
         if outcome.blocked:
             return plugin_bus.denial_message(name, outcome)
-        result = self._dispatch(name, outcome.args)
+        result = self._execute(name, outcome.args)
         # Redaction/rewriting hooks must run before audit and lessons capture;
         # otherwise a plugin can hide a secret from the model while the raw
         # result is still persisted in the audit/learning stores.
         result = self.plugins.after(name, outcome.args, result)
         self._audit(name, outcome.args, result)
         return result
+
+    def _cancelled(self):
+        check = getattr(self, "_should_stop", None)
+        return bool(check and check())
+
+    def _execute(self, name: str, args: dict[str, Any]) -> str:
+        if self._cancelled():
+            return "CANCELLED: turn stopped before tool dispatch."
+        if not self._reflection_mode:
+            return self._dispatch(name, args)
+        # Apply restrictions after operator hooks, but before any live dispatch.
+        # Rewritten/denied calls keep their ordinary governance and redaction.
+        if name not in {"manage_skill", "load_skill", "list_memory", "add_memory", "resolve_lesson"}:
+            return "ERROR: tool is unavailable during internal reflection; propose a reviewed skill change instead."
+        if name == "manage_skill" and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}:
+            if name not in {definition.name for definition in self._enabled_native_defs()}:
+                return "ERROR: skill proposals are unavailable for this profile or disabled by the owner."
+            try:
+                from zeline.skillforge import ForgeStore
+                return ForgeStore().propose_edit(**args)
+            except Exception as exc:
+                # Proposal persistence is best-effort like the reflection turn;
+                # database/disk faults must not abort the user's main session.
+                return "ERROR skill proposal: " + type(exc).__name__
+        return self._dispatch(name, args)
 
     def _audit(self, name: str, args: dict[str, Any], result: str) -> None:
         """Record a mutating tool call to the append-only event log.
@@ -2860,6 +2957,10 @@ class ToolExecutor:
         tool call into a failed one. Read-only tools are skipped inside
         ``log_tool_call`` so this stays a side-effect index, not an activity log.
         """
+        observer = self._skill_telemetry
+        if observer is not None:
+            with contextlib.suppress(Exception):
+                observer.observe(name, args, result, include_private=self.profile == "full")
         try:
             events_module.log_tool_call(self.identity, name, args if isinstance(args, dict) else {}, result)
         except Exception:

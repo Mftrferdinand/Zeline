@@ -35,6 +35,14 @@ release's documented one-liner keeps working after a newer release ships.
 
 ## [Unreleased]
 
+### Added
+- SkillForge runtime telemetry and revision-specific, recency-weighted effectiveness scores with explicit unknown/cancelled outcomes and uncertainty.
+- Bounded stale-skill scan → revision proposal → structural/behavioral test workflow, explicit operator safety review, mandatory backups and private-copy application.
+- `zeline skillforge` operator CLI and owner-only Telegram `/skillforge` overview, plus a package-safe legacy script entry point.
+
+### Changed
+- Internal self-improvement now proposes skill changes instead of silently editing/deleting active procedures. Ordinary operator-requested skill management remains unchanged.
+
 ## [0.3.2] — 2026-09-06
 
 ### Changed
