@@ -160,6 +160,57 @@ shows exactly which tools arrive, rather than leaving you to find out mid-turn.
 A stdio server is a local process launched by Zeline, so the same
 `workspace`/`full` restriction applies.
 
+### Parallel web search and page fetching
+
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)
+adds web search and page extraction without a Parallel account or API key.
+Anonymous searches use Fast mode; the free endpoint has lower rate limits.
+
+Add the following `parallel` server to `mcp.servers` in your Zeline config
+(`zeline config path` prints its location). Merge the entry into your existing
+configuration, keeping your other settings and servers:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "parallel": {
+        "enabled": true,
+        "transport": "http",
+        "url": "https://search.parallel.ai/mcp",
+        "headers": {
+          "User-Agent": "Zeline (Parallel Search MCP)"
+        }
+      }
+    }
+  }
+}
+```
+
+Check the connection:
+
+```bash
+zeline mcp test parallel
+```
+
+Look for `mcp__parallel__web_search` and `mcp__parallel__web_fetch` in the
+output. A zero exit status alone does not prove discovery succeeded: check
+that both tools are listed and there is no connection error.
+
+MCP tools require the `workspace` or `full` profile. Keep your current profile
+if it already supports MCP. If your local CLI uses `safe` and you want to enable
+extensions, run `zeline tools profile workspace`; this changes only the local
+CLI profile, not gateway profiles. Start a new `zeline chat` session using your
+existing model configuration, then try:
+
+> Use Parallel to find the latest Python release on python.org, fetch the
+> relevant release page, and summarize the changes with source links.
+
+This adds separate MCP tools; it does not replace the native `web_search` or
+`web_fetch` tools or change their providers. Requests send the search text and
+fetched URLs to Parallel. To remove the server, run `zeline mcp remove parallel`
+and start a new session.
+
 ---
 
 ## Choosing between them
