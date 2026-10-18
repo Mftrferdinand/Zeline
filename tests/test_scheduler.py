@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -323,6 +324,36 @@ class ExecutionTests(CronBase):
         # A skip must not overwrite the real run's status with a scheduling note.
         self.assertIn("ok", job.last_status)
         self.assertEqual(job.runs, 1)
+
+    def test_another_process_cannot_claim_a_running_job(self):
+        class BlockingSessions(FakeSessions):
+            release = threading.Event()
+
+            def send(self, *args, **kwargs):
+                self.started.set()
+                self.release.wait(5)
+                return "finished"
+
+        sessions = BlockingSessions()
+        self.cron.add_job("30m", "slow thing")
+        self.cron.run_now("job1")
+        scheduler = self.scheduler(sessions)
+        try:
+            self.assertEqual(scheduler.tick(), ["job1"])
+            self.assertTrue(sessions.started.wait(5))
+            child = subprocess.run(
+                [sys.executable, "-c", "from zeline.scheduler import Scheduler; "
+                 "import time; s=Scheduler(None); print(s.tick()); "
+                 "deadline=time.time()+5; "
+                 "\nwhile s.busy and time.time()<deadline: time.sleep(.01)"],
+                cwd=str(SOURCE_ROOT), env={**os.environ, "ZELINE_HOME": str(self.home)},
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(child.returncode, 0, child.stderr)
+            self.assertEqual(child.stdout.strip(), "[]")
+        finally:
+            sessions.release.set()
+            self._settle(scheduler)
 
     def test_several_jobs_can_run_in_one_tick(self):
         sessions = FakeSessions()

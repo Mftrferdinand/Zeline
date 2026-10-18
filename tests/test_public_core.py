@@ -1063,6 +1063,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertGreater(len(parts), 1)
         self.assertTrue(all(len(part) <= 4_000 for part in parts))
 
+    def test_rendered_html_parts_stay_within_telegram_limit(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        source = "<&" * 1_600
+        rendered = telegram._telegram_html_parts(source)
+        self.assertGreater(len(rendered), 1)
+        self.assertTrue(all(len(part) <= telegram.TELEGRAM_MESSAGE_LIMIT for part in rendered))
+        self.assertEqual("".join(rendered).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"), source)
+
     def test_split_message_never_breaks_code_fence(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # Prose + satu blok kode raksasa (>2 potongan) + prose penutup.
@@ -1710,7 +1718,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "stop", "new", "version", "update"],
+            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "skillforge", "stop", "new", "version", "update"],
         )
         self.assertEqual(commands[0]["description"], "Start Zeline")
         by_name = {item["command"]: item["description"] for item in commands}
@@ -1746,7 +1754,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_undo_and_stats_are_owner_only(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        for command in ("/undo", "/stats", "/events", "/lessons"):
+        for command in ("/undo", "/stats", "/events", "/lessons", "/skillforge"):
             with self.subTest(command=command), mock.patch.object(telegram, "_api_call") as api:
                 handled = telegram._handle_command_update(
                     "bot-api", command, object(), "telegram:42", 42,
@@ -2163,11 +2171,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 captured.setdefault("timeout", kwargs.get("timeout"))
                 return super().communicate(*args, **kwargs)
 
-        with mock.patch.object(tools.subprocess, "Popen", TrackedPopen):
+        with mock.patch.object(tools.subprocess, "Popen", TrackedPopen), \
+             mock.patch.object(tools, "_run_tracked", wraps=tools._run_tracked) as tracked:
             out = executor.run("run_shell", {"command": "printf ok", "timeout": 600})
         self.assertIn("exit=0", out)
         self.assertIn("ok", out)
-        self.assertEqual(captured["timeout"], 600)
+        self.assertEqual(tracked.call_args.kwargs["seconds"], 600)
+        self.assertGreater(captured["timeout"], 0)
+        self.assertLessEqual(captured["timeout"], 0.05)  # cancellation polling, not total deadline
 
         # A real timeout must tell the agent how to retry, not just say it failed.
         timed_out = executor.run("run_shell", {"command": "sleep 5", "timeout": 1})
@@ -2421,9 +2432,9 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_tool_progress_uses_zeline_style_labels_and_argument_preview(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Reading skill: test-driven-development")
+        self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Loading skill: test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
-        self.assertEqual(shell, "<pre>python -m unittest tests.test_agent</pre>")
+        self.assertEqual(shell, "💻 Executing command… <pre>python -m unittest tests.test_agent</pre>")
         self.assertTrue(shell.endswith("</pre>"))
         # `<code class="language-...">` di dalam `<pre>` memicu header bahasa +
         # tombol COPY CODE di Telegram; feed progres harus kartu polos.
@@ -2432,20 +2443,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn("Zeline Terminal", shell)
         self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file <code>agent.py</code> L1-300")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file: <code>agent.py</code> L1-300")
         # read_file tanpa offset/limit → tanpa rentang baris.
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file <code>hotel-dashboard.html</code>")
-        self.assertEqual(telegram._tool_progress_text("write_file", {"path": "app.py"}), "📝 Writing file <code>app.py</code>")
-        self.assertEqual(telegram._tool_progress_text("edit_file", {"path": "app.py"}), "🎬 Editing file <code>app.py</code>")
-        self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "🎬 Editing file <code>app.py</code>")
-        self.assertEqual(telegram._tool_progress_text("search_files", {"query": "name"}), "🔎 Searching files: name")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file: <code>hotel-dashboard.html</code>")
+        self.assertEqual(telegram._tool_progress_text("write_file", {"path": "app.py"}), "📝 Writing file: <code>app.py</code>")
+        self.assertEqual(telegram._tool_progress_text("edit_file", {"path": "app.py"}), "✏️ Editing file: <code>app.py</code>")
+        self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "✏️ Editing file: <code>app.py</code>")
+        self.assertEqual(telegram._tool_progress_text("search_files", {"query": "name"}), "🔎 Searching workspace: name")
         self.assertEqual(telegram._tool_progress_text("add_memory", {"fact": "x"}), "🧠 Saving to memory…")
-        # Hapus memory TIDAK boleh dilabeli "Saving": verb-nya harus jujur.
-        self.assertEqual(telegram._tool_progress_text("remove_memory", {"substring": "x"}), "🧠 Removing from memory…")
-        self.assertEqual(telegram._tool_progress_text("system_env", {}), "🧰 Checking system environment…")
+        self.assertEqual(telegram._tool_progress_text("remove_memory", {"substring": "x"}), "🧹 Removing memory…")
+        self.assertEqual(telegram._tool_progress_text("system_env", {}), "🖥️ Inspecting system environment…")
         task = telegram._tool_progress_text("update_task", {"task": "Run tests", "status": "in_progress"})
         # Satu baris, tanpa newline.
-        self.assertEqual(task, "📋 Updating tasks: in_progress · Run tests")
+        self.assertEqual(task, "📋 Updating task progress: Run tests")
         self.assertNotIn("\n", task)
 
     def test_telegram_terminal_progress_has_no_title_or_emoji(self):
@@ -2456,13 +2466,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # varian kartu besar di Telegram ada dua: `<code class="language-...">`
         # di dalam `<pre>`, dan isi yang melebihi satu baris.
         search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
-        self.assertEqual(search, "<pre>python -searching ftmo -v</pre>")
+        self.assertEqual(search, "💻 Executing command… <pre>python -searching ftmo -v</pre>")
         self.assertNotIn("<code", search)
         self.assertNotIn("class=", search)
         self.assertNotIn("Zeline Terminal", search)
         self.assertNotIn("📺", search)
         coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
-        self.assertEqual(coding, "<pre>pytest -q</pre>")
+        self.assertEqual(coding, "💻 Executing command… <pre>pytest -q</pre>")
         self.assertNotIn("<code", coding)
         self.assertNotIn("Zeline Terminal", coding)
         self.assertNotIn("📺", coding)
@@ -2479,13 +2489,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # font monospace Telegram menempel ke karakter terakhir dan terlihat
         # seperti potongan yang dipaksakan).
         self.assertTrue(truncated.endswith(f"{telegram._TRUNCATION_MARK}</pre>"))
-        self.assertNotIn("…", truncated)
+        self.assertNotIn("…", truncated.split("<pre>", 1)[1])
         self.assertNotIn("\n", truncated)
         self.assertNotIn("<code", truncated)
         # Isi mentah (setelah unescape) tidak melebihi batas preview + penanda,
         # jadi kartu tidak bisa tumbuh melewati satu baris.
         import html as _html
-        raw_inner = _html.unescape(truncated[len("<pre>"):-len("</pre>")])
+        raw_inner = _html.unescape(truncated.split("<pre>", 1)[1][:-len("</pre>")])
         self.assertLessEqual(
             len(raw_inner),
             telegram._TERMINAL_PREVIEW_LIMIT + 1 + len(telegram._TRUNCATION_MARK),
@@ -2522,19 +2532,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(fetched, "")
         # web_search hanya penanda ringkas: subjek (kata pertama) + '…', bukan kueri panjang.
         search = telegram._tool_progress_text("web_search", {"query": "FundedNext prop trading firm evaluation challenge"})
-        self.assertEqual(search, "🌐 Searching web: FundedNext…")
+        self.assertEqual(search, "🔎 Searching the web: FundedNext…")
         self.assertTrue(search.endswith("…"))
-        # research menampilkan kueri lengkap (detail riset ada di sini).
+        # Research keeps the complete query because its detail matters.
         research = telegram._tool_progress_text("deep_research", {"query": "FundedNext prop firm review rules payout"})
-        self.assertTrue(research.startswith("🌐 Researching: FundedNext prop firm review"))
+        self.assertTrue(research.startswith("🧠 Researching in depth: FundedNext prop firm review"))
 
     def test_telegram_finalize_line_converts_searching_to_reading(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # Saat selesai, web Searching & Researching (yang di-collapse) diselesaikan
         # jadi '📖 Read web · <subjek>' — TETAP menyebut subjek, bukan generik
         # 'data/other'. Baris file dibiarkan apa adanya.
-        self.assertEqual(telegram._finalize_line("🌐 Searching FundedNext…"), "📖 Read web · FundedNext")
-        self.assertEqual(telegram._finalize_line("🌐 Researching FundedNext prop firm review"), "📖 Read web · FundedNext prop firm review")
+        self.assertEqual(telegram._finalize_line("🔎 Searching the web: FundedNext…"), "📖 Read web · FundedNext")
+        self.assertEqual(telegram._finalize_line("🧠 Researching in depth: FundedNext prop firm review"), "📖 Read web · FundedNext prop firm review")
         self.assertEqual(telegram._finalize_line("📖 Reading <code>agent.py</code> L1-27"), "📖 Reading <code>agent.py</code> L1-27")
 
     def test_telegram_live_status_collapses_only_search_research(self):
@@ -2547,15 +2557,15 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
             live = telegram._LiveStatus("bot-api", 1)
-            live.add("🌐 Searching FTMO 2025")
-            live.add("🌐 Searching FTMO OANDA")   # kategori sama → collapse
-            live.add("🌐 Searching FTMO rules")   # tetap satu baris search
-            live.add("🌐 Researching FTMO")
+            live.add("🔎 Searching the web: FTMO 2025")
+            live.add("🔎 Searching the web: FTMO OANDA")   # kategori sama → collapse
+            live.add("🔎 Searching the web: FTMO rules")   # tetap satu baris search
+            live.add("🧠 Researching in depth: FTMO")
         # Search/research tetap di-collapse (repetitif): 1 search + 1 research.
-        searches = [l for l in live.lines if l.startswith("🌐 Searching")]
+        searches = [l for l in live.lines if l.startswith("🔎 Searching the web")]
         self.assertEqual(len(searches), 1)
-        self.assertEqual(searches[0], "🌐 Searching FTMO rules")  # baris terbaru
-        self.assertEqual(len([l for l in live.lines if l.startswith("🌐 Researching")]), 1)
+        self.assertEqual(searches[0], "🔎 Searching the web: FTMO rules")  # baris terbaru
+        self.assertEqual(len([l for l in live.lines if l.startswith("🧠 Researching in depth")]), 1)
 
     def test_telegram_live_status_does_not_collapse_coding_actions(self):
         # Aksi coding (baca/tulis/edit file, shell) TIDAK di-collapse — tiap
@@ -2586,14 +2596,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
             live = telegram._LiveStatus("bot-api", 1)
-            live.add("🌐 Researching FundingPips rules pricing")
-            live.add("🌐 Searching FundingPips")
+            live.add("🧠 Researching in depth: FundingPips rules pricing")
+            live.add("🔎 Searching the web: FundingPips")
             live.add("📖 Reading <code>notes.md</code> L1-50")
             rendered = live._render()
         lines = [l for l in rendered.split("\n") if l.strip() and not l.startswith("<pre>")]
         # Search & research ditata dulu; aksi lain menyusul kronologis.
-        self.assertEqual(lines[0], "🌐 Searching FundingPips")
-        self.assertEqual(lines[1], "🌐 Researching FundingPips rules pricing")
+        self.assertEqual(lines[0], "🔎 Searching the web: FundingPips")
+        self.assertEqual(lines[1], "🧠 Researching in depth: FundingPips rules pricing")
 
     def test_telegram_turn_triggers_background_reflection(self):
         # Setelah turn sukses, gateway harus memicu sessions.reflect(identity)
@@ -2614,18 +2624,44 @@ class ZelinePublicCoreTests(unittest.TestCase):
             time.sleep(0.15)
         self.assertEqual(called["reflect"], "telegram:42")
 
+    def test_telegram_delivers_structured_reflection_html_without_generic_prefix(self):
+        telegram = importlib.import_module("zeline.gateways.telegram")
+        delivered = []
+
+        class Sessions:
+            def send(self, **_kwargs):
+                return "beres"
+            def reflect(self, _identity, *a, **k):
+                return ("📙 <b>Self-Improvement review:</b> active skill unchanged\n\n"
+                        "📘 <b>Refinements review:</b> proposal pending")
+
+        def api(_api, method, **kwargs):
+            if method == "sendMessage":
+                delivered.append(kwargs.get("text", ""))
+            return {"result": {"message_id": 5}}
+
+        with mock.patch.object(telegram, "_api_call", side_effect=api):
+            telegram._send_agent_reply("bot-api", Sessions(), chat_id=42, identity="telegram:42", text="hi", tool_profile="full")
+            time.sleep(0.15)
+        self.assertIn("📙 <b>Self-Improvement review:</b> active skill unchanged", delivered)
+        self.assertIn("📘 <b>Refinements review:</b> proposal pending", delivered)
+        self.assertFalse(any("\n\n" in text for text in delivered))
+        self.assertFalse(any(text.startswith("📒 Improvement:") for text in delivered))
+
     def test_telegram_progress_supports_code_skill_and_self_improvement(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        self.assertEqual(telegram._tool_progress_text("execute_code", {"code": "from pathlib import Path\nprint(Path.home())"}), "🐍 Running code: <code>from pathlib import Path</code>…")
+        self.assertEqual(telegram._tool_progress_text("execute_code", {"code": "from pathlib import Path\nprint(Path.home())"}), "🐍 Executing code: <code>from pathlib import Path</code>…")
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "patch", "name": "zeline-development"}), "📝 Updating skill: <code>zeline-development</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}), "💡 Saving skill: <code>riset-prop-firm</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm", "file_path": "references/api.md"}), "📄 Writing <code>references/api.md</code> in skill <code>riset-prop-firm</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🧹 Merging skill <code>dupe</code> into <code>riset-prop-firm</code>")
-        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗂 Reviewing saved skills…")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}), "✨ Creating skill: <code>riset-prop-firm</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm", "file_path": "references/api.md"}), "📄 Writing skill resource: <code>references/api.md</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🧬 Merging skills: <code>dupe</code> into <code>riset-prop-firm</code>")
+        self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗃️ Browsing available skills…")
         result = telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement).")
-        self.assertEqual(result, "📒 Improvement: Patched private/zeline-development/SKILL.md (1 replacement).")
+        self.assertEqual(result, "📘 Refinements: Patched private/zeline-development/SKILL.md (1 replacement).")
         saved = telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
-        self.assertEqual(saved, "📒 Improvement: OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
+        self.assertEqual(saved, "📙 Self-Improvement: OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
+        enhanced = telegram._tool_result_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm"}, "Wrote references/checks.md.")
+        self.assertEqual(enhanced, "📗 Enhancements: Wrote references/checks.md.")
         # An inventory read is orientation, not an improvement: reporting it would
         # push the private skill list into the chat on every reflection.
         self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "list"}, "3 skills:\n- a [private/folder]: x"))
@@ -2677,43 +2713,41 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
     def test_telegram_progress_labels_runtime_memory_history_and_question(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
-        # runtime_info bukan "runtime info": yang dibaca identitas runtime aktif.
-        self.assertEqual(telegram._tool_progress_text("runtime_info", {}), "🪪 Checking runtime: model &amp; provider…")
-        # Memory satu keluarga ikon 🧠; verb-nya yang membedakan baca/simpan/hapus.
-        self.assertEqual(telegram._tool_progress_text("list_memory", {}), "🧠 Reading saved memory…")
+        self.assertEqual(telegram._tool_progress_text("runtime_info", {}), "🪪 Checking agent runtime…")
+        self.assertEqual(telegram._tool_progress_text("list_memory", {}), "🧠 Retrieving saved memories…")
         self.assertEqual(
             telegram._tool_progress_text("recall_history", {"query": "invoice tabel"}),
-            "🕰 Recalling past chat: invoice tabel",
+            "🕰️ Recalling conversation history: invoice tabel",
         )
-        self.assertEqual(telegram._tool_progress_text("recall_history", {}), "🕰 Recalling recent conversation…")
+        self.assertEqual(telegram._tool_progress_text("recall_history", {}), "🕰️ Recalling conversation history…")
         self.assertEqual(
             telegram._tool_progress_text("ask_user", {"question": "Squash atau merge commit?"}),
-            "🙋 Asking you: Squash atau merge commit?",
+            "🙋 Requesting your input: Squash atau merge commit?",
         )
-        self.assertEqual(telegram._tool_progress_text("ask_user", {}), "🙋 Asking you a question…")
+        self.assertEqual(telegram._tool_progress_text("ask_user", {}), "🙋 Requesting your input…")
 
     def test_telegram_progress_labels_browser_code_intel_route_and_download(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # browser: aksi jadi verb nyata, dan URL diringkas ke HOST saja (query
         # string bisa membawa token).
         opened = telegram._tool_progress_text("browser", {"action": "open", "url": "https://www.example.com/p?token=SECRET"})
-        self.assertEqual(opened, "🌍 Opening page: example.com")
+        self.assertEqual(opened, "🌐 Opening webpage: example.com")
         self.assertNotIn("SECRET", opened)
-        self.assertEqual(telegram._tool_progress_text("browser", {"action": "click", "selector": "button.login"}), "🖱 Clicking <code>button.login</code>")
-        self.assertEqual(telegram._tool_progress_text("browser", {"action": "type", "selector": "#email"}), "⌨️ Typing into <code>#email</code>")
-        self.assertEqual(telegram._tool_progress_text("browser", {"action": "screenshot", "path": "shots/home.png"}), "📸 Capturing screenshot <code>home.png</code>")
-        self.assertEqual(telegram._tool_progress_text("browser", {"action": "eval", "script": "document.title"}), "🧪 Running JavaScript on the page…")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "click", "selector": "button.login"}), "🖱 Interacting with webpage <code>button.login</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "type", "selector": "#email"}), "⌨️ Entering text <code>#email</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "screenshot", "path": "shots/home.png"}), "📸 Capturing webpage screenshot <code>home.png</code>")
+        self.assertEqual(telegram._tool_progress_text("browser", {"action": "eval", "script": "document.title"}), "🧪 Executing browser script…")
         # code_intel: sebut file + baris, bukan cuma nama aksi.
         self.assertEqual(
             telegram._tool_progress_text("code_intel", {"action": "definition", "path": "zeline/agent.py", "line": 820}),
-            "🧭 Finding definition <code>agent.py</code> L820",
+            "🎯 Locating symbol definition <code>agent.py</code> L820",
         )
         self.assertEqual(telegram._tool_progress_text("code_intel", {"action": "servers"}), "🩺 Checking language servers…")
         # network_route: label rute boleh tampil, proxy_url TIDAK (user:pass@host).
         route = telegram._tool_progress_text(
             "network_route", {"action": "add", "label": "sg-1", "proxy_url": "socks5h://user:hunter2@1.2.3.4:1080"}
         )
-        self.assertEqual(route, "🛰 Adding network route: <code>sg-1</code>")
+        self.assertEqual(route, "🛜 Configuring network route: <code>sg-1</code>")
         self.assertNotIn("hunter2", route)
         # download_file: nama tujuan + host, bukan URL panjang mentah.
         got = telegram._tool_progress_text(
@@ -2726,10 +2760,10 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         # Fallback lama mengubah `mcp__mem0__add_memory` jadi "🔧 mcp  mem0  add memory".
         line = telegram._tool_progress_text("mcp__mem0__add_memory", {"text": "x"})
-        self.assertEqual(line, "🧩 add memory via mem0")
+        self.assertEqual(line, "🧩 Connecting to external tool: add memory via mem0")
         self.assertNotIn("  ", line)
         self.assertNotIn("mcp", line)
-        self.assertEqual(telegram._tool_progress_text("mcp__notion__query_database", {}), "🧩 query database via notion")
+        self.assertEqual(telegram._tool_progress_text("mcp__notion__query_database", {}), "🧩 Connecting to external tool: query database via notion")
 
     def test_telegram_live_status_no_header_when_only_waiting(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -3395,9 +3429,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(sessions.stopped, "telegram:42")
         self.assertFalse(gateway_stop.is_set())
         reply = api.call_args.kwargs["text"]
-        self.assertIn("❄️ Stopped — Bangun aplikasi", reply)
-        self.assertIn("force-killed", reply)
-        self.assertIn("history are intact", reply)
+        self.assertEqual(reply, "❄️ Stopped — Bangun aplikasi")
 
     def test_telegram_stop_when_idle_uses_exact_message(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

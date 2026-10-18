@@ -351,6 +351,7 @@ class _BackgroundJob:
     process: subprocess.Popen
     log_path: Path
     started_at: float
+    identity: str = "cli:local"
     log_handle: Any = None
     read_offset: int = 0
     finished_at: float | None = None
@@ -415,8 +416,10 @@ def _terminate_group(process: subprocess.Popen) -> None:
         except Exception:
             pass
         return
+    group_id = None
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        group_id = os.getpgid(process.pid)
+        os.killpg(group_id, signal.SIGTERM)
     except Exception:
         try:
             process.terminate()
@@ -424,16 +427,17 @@ def _terminate_group(process: subprocess.Popen) -> None:
             return
     try:
         process.wait(timeout=3)
-        return
     except Exception:
         pass
+    # The shell can exit while a child ignores SIGTERM. Retain the original
+    # process-group ID; getpgid(parent) fails once that shell has been reaped.
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except Exception:
-        try:
+        if group_id is not None:
+            os.killpg(group_id, signal.SIGKILL)
+        elif process.poll() is None:
             process.kill()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 def cancel_identity(identity: str) -> int:
@@ -444,7 +448,11 @@ def cancel_identity(identity: str) -> int:
     sampai selesai walaupun user sudah membatalkan.
     """
     with _FG_LOCK:
-        processes = list(_FG_PROCS.get(identity or "cli:local", ()))
+        owner = identity or "cli:local"
+        processes = [proc for key, bucket in _FG_PROCS.items()
+                     if key == owner or key.startswith(owner + "::sub") for proc in bucket]
+        processes.extend(job.process for job in list(_BG_JOBS.values())
+                         if job.identity == owner or job.identity.startswith(owner + "::sub"))
     killed = 0
     for process in processes:
         if process.poll() is None:
@@ -460,6 +468,8 @@ def _run_tracked(
     cwd: str,
     seconds: int,
     identity: str,
+    should_stop=None,
+    interrupt_reason=None,
 ) -> tuple[int, str, bool]:
     """Jalankan perintah foreground yang BISA dibunuh oleh /stop.
 
@@ -467,6 +477,8 @@ def _run_tracked(
     session/grup sendiri (``start_new_session``) supaya seluruh keturunannya
     ikut mati saat dibatalkan.
     """
+    if should_stop and should_stop():
+        return -1, "CANCELLED", False
     process = subprocess.Popen(
         command,
         shell=shell,
@@ -480,8 +492,27 @@ def _run_tracked(
     _fg_track(identity, process)
     try:
         try:
-            output, _ = process.communicate(timeout=seconds)
-            return int(process.returncode or 0), output or "", False
+            partial_output = b""
+            deadline = time.monotonic() + seconds
+            while True:
+                if should_stop and should_stop():
+                    if interrupt_reason and interrupt_reason() == "interrupt":
+                        job = _promote_foreground(process, identity, command, partial_output)
+                        if interrupt_reason() == "stop":
+                            _terminate_group(process)
+                        return 0, f"started background job={job.job_id} pid={process.pid}\nlog={job.log_path}\nForeground task preserved after user interruption.", False
+                    _terminate_group(process)
+                    output, _ = process.communicate(timeout=5)
+                    return int(process.returncode or -1), output or "CANCELLED", False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, seconds)
+                try:
+                    output, _ = process.communicate(timeout=min(remaining, 0.05))
+                    return int(process.returncode or 0), output or "", False
+                except subprocess.TimeoutExpired as exc:
+                    partial_output = exc.output or b""
+                    continue
         except subprocess.TimeoutExpired:
             _terminate_group(process)
             try:
@@ -491,6 +522,34 @@ def _run_tracked(
             return -1, output or "", True
     finally:
         _fg_untrack(identity, process)
+
+
+def _promote_foreground(process, identity, command, prefix=b""):
+    job_id = f"bg{next(_BG_COUNTER)}"
+    log_path = _bg_log_dir() / f"{job_id}.log"
+    handle = log_path.open("wb", buffering=0)
+    if prefix:
+        handle.write(prefix.encode() if isinstance(prefix, str) else prefix)
+    job = _BackgroundJob(job_id=job_id, command=str(command), process=process,
+                         log_path=log_path, started_at=time.time(), identity=identity)
+    _BG_JOBS[job_id] = job
+
+    def drain():
+        try:
+            if process.stdout is not None:
+                while True:
+                    data = os.read(process.stdout.fileno(), 65536)
+                    if not data:
+                        break
+                    handle.write(data)
+        except (OSError, ValueError):
+            pass
+        finally:
+            handle.close()
+            if process.stdout is not None:
+                process.stdout.close()
+    threading.Thread(target=drain, daemon=True, name=f"zeline-log-{job_id}").start()
+    return job
 
 
 def _bg_log_dir() -> Path:
@@ -548,7 +607,7 @@ def _bg_status(job: _BackgroundJob) -> str:
     return f"exited (exit={code})"
 
 
-def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False, identity: str = "cli:local") -> str:
+def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False, identity: str = "cli:local", should_stop=None, interrupt_reason=None) -> str:
     """Owner-only shell. Gateways do not receive this profile by default.
 
     ``timeout`` lets the agent raise the limit for genuinely long work such as
@@ -599,7 +658,11 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
             log_path=log_path,
             started_at=time.time(),
             log_handle=handle,
+            identity=identity,
         )
+        if should_stop and should_stop():
+            _terminate_group(process)
+            return "CANCELLED: background launch stopped."
         return (
             f"started background job={job_id} pid={process.pid}\n"
             f"log={log_path}\n"
@@ -609,7 +672,7 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
     seconds = _clamp_timeout(timeout)
     try:
         code, output, timed_out = _run_tracked(
-            command, shell=True, cwd=str(workspace), seconds=seconds, identity=identity,
+            command, shell=True, cwd=str(workspace), seconds=seconds, identity=identity, should_stop=should_stop, interrupt_reason=interrupt_reason,
         )
         if timed_out:
             return (
@@ -729,7 +792,7 @@ def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
     return f"job={job.job_id} killed."
 
 
-def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local") -> str:
+def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local", should_stop=None, interrupt_reason=None) -> str:
     """Run an owner-only Python snippet without shell interpolation."""
     if len(code) > 100_000:
         return "ERROR: code too long (maximum 100,000 characters)."
@@ -738,7 +801,7 @@ def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str
         workspace.mkdir(parents=True, exist_ok=True)
         exit_code, output, timed_out = _run_tracked(
             [os.environ.get("PYTHON", "python"), "-c", code],
-            shell=False, cwd=str(workspace), seconds=seconds, identity=identity,
+            shell=False, cwd=str(workspace), seconds=seconds, identity=identity, should_stop=should_stop, interrupt_reason=interrupt_reason,
         )
         if timed_out:
             return (
@@ -1089,6 +1152,8 @@ def _schedule_task(
     prompt: str = "",
     job_id: str = "",
     deliver: str = "",
+    script: str = "", no_agent: bool = False, workdir: str = "", timeout: float = 900,
+    model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
 ) -> str:
     """Let the agent manage its own scheduled jobs.
 
@@ -1121,9 +1186,10 @@ def _schedule_task(
             f"{job.id}  {job.parsed().describe()}  [{state}]  next {cron.describe_next_run(job)}",
             f"  target: {job.deliver}",
             f"  task: {job.prompt[:300]}",
+            job.options_summary(),
         ]
         if job.last_status:
-            stamp = f"{cron.format_time(job.last_run)} " if job.last_run else ""
+            stamp = f"{cron.format_time(job.last_run, job.timezone)} " if job.last_run else ""
             lines.append(f"  last run: {stamp}{job.last_status[:160]}")
         if job.runs or job.failures or job.skips:
             lines.append(f"  runs {job.runs}, failures {job.failures}, skipped {job.skips}")
@@ -1143,7 +1209,7 @@ def _schedule_task(
         )
 
     if verb == "add":
-        if not str(prompt or "").strip():
+        if not str(prompt or "").strip() and not no_agent:
             return (
                 "ERROR schedule_task: a job needs a prompt — the full instruction to "
                 "run later. Nobody will be watching, so make it self-contained."
@@ -1154,7 +1220,9 @@ def _schedule_task(
             # that silently wrote to disk would look like it never ran.
             target = identity if identity.startswith("telegram:") else "local"
         try:
-            job = cron.add_job(schedule, prompt, target)
+            job = cron.add_job(schedule, prompt, target, script=script, no_agent=no_agent,
+                               workdir=workdir, timeout=timeout, model=model, profile=profile,
+                               skills=skills, context_from=context_from, timezone=timezone)
         except cron.CronError as exc:
             return f"ERROR schedule_task: {exc}"
         where = (
@@ -1832,11 +1900,12 @@ TOOL_DEFS: list[ToolDef] = [
                     "enum": ["add", "list", "show", "pause", "resume", "run", "remove"],
                     "description": "What to do. 'list' first if you need job ids.",
                 },
+                "timezone": {"type": "string", "description": "IANA timezone such as Asia/Jakarta. Empty uses host local time; never assume host timezone matches the user."},
                 "schedule": {
                     "type": "string",
                     "description": (
                         "For 'add': an interval ('30m', 'every 2h', '1d') or a daily "
-                        "wall-clock time in the user's own timezone ('09:00'). Minimum "
+                        "wall-clock time ('09:00'); set timezone explicitly for the user. Minimum "
                         "interval 1 minute."
                     ),
                 },
@@ -1847,6 +1916,14 @@ TOOL_DEFS: list[ToolDef] = [
                         "question at run time, so include every detail it needs."
                     ),
                 },
+                "script": {"type": "string", "description": "Trusted local Python or bash script. Absolute path, or relative to explicit workdir."},
+                "model": {"type": "string", "description": "Per-job model ID on the configured provider; leaves global model configuration untouched."},
+                "profile": {"type": "string", "enum": ["safe", "workspace", "full"], "description": "Per-job agent tool profile."},
+                "skills": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "uniqueItems": True, "description": "Explicit job procedures, loaded before the agent turn."},
+                "context_from": {"type": "array", "items": {"type": "string"}, "maxItems": 3, "uniqueItems": True, "description": "Existing job IDs whose latest successful saved results are injected as untrusted data. Does not trigger or wait for upstream jobs."},
+                "no_agent": {"type": "boolean", "description": "Deliver script stdout verbatim without a model; empty stdout is silent. Requires script."},
+                "workdir": {"type": "string", "description": "Existing absolute working directory for this job."},
+                "timeout": {"type": "number", "description": "Script timeout in seconds; greater than zero, at most 3600. Default 900."},
                 "job_id": {
                     "type": "string",
                     "description": "For show/pause/resume/run/remove: the job id from 'list'.",
@@ -1872,11 +1949,19 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "add_memory",
-        "Save one long-term fact about the user in this conversation's memory.",
+        "Save a fact, or atomically correct memory by ID using operations. Read list_memory with include_metadata first; use expected_revision to prevent stale overwrites.",
         {
             "type": "object",
-            "properties": {"fact": {"type": "string", "description": "Short fact to remember"}},
-            "required": ["fact"],
+            "properties": {
+                "fact": {"type": "string", "description": "Short fact to remember; omit when using operations"},
+                "operations": {"type": "array", "maxItems": 100, "items": {
+                    "type": "object", "properties": {
+                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
+                        "text": {"type": "string"}, "id": {"type": "string"},
+                        "expected_revision": {"type": "integer"},
+                    }, "required": ["action"],
+                }},
+            },
         },
         frozenset(SAFE_PROFILES),
     ),
@@ -1892,8 +1977,11 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "list_memory",
-        "Show all facts stored for this user/conversation.",
-        {"type": "object", "properties": {}},
+        "List this identity's facts. Optional lexical query and metadata expose stable IDs/revisions for precise corrections; not semantic search.",
+        {"type": "object", "properties": {
+            "query": {"type": "string"}, "include_metadata": {"type": "boolean"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        }},
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
@@ -2271,7 +2359,12 @@ TOOL_DEFS: list[ToolDef] = [
             "pass that reports what is wrong or unproven — worth it for work you will act "
             "on. Sub-agents know NOTHING about this chat, so put ALL needed info (paths, "
             "constraints, error text, desired output language) in 'context'. They inherit "
-            "the same tools/workspace under the same profile but cannot delegate further."
+            "the same tools/workspace under the same profile but cannot delegate further. "
+            "By default this waits for results. Set background=true to persist jobs across parent/session restarts; "
+            "a gateway worker must be running to execute them. Durable tasks may use key/depends_on. "
+            "Use action=list/status/results/ack/cancel to inspect or hand off owned jobs. "
+            "Retries are off unless a node explicitly sets retry_safe=true and max_attempts; "
+            "do not mark external side effects retry-safe without an idempotency guarantee."
         ),
         {
             "type": "object",
@@ -2281,18 +2374,26 @@ TOOL_DEFS: list[ToolDef] = [
                 "role": {"type": "string", "description": "Single task role: worker, coder, researcher, reviewer, or writer."},
                 "tasks": {
                     "type": "array",
-                    "description": "Several independent tasks to run in parallel. Each item: {goal, context, role}. Use instead of 'goal'.",
+                    "description": "Synchronous independent tasks, or durable graph nodes when background=true. Dependencies use local key names or owned job IDs.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "goal": {"type": "string"},
                             "context": {"type": "string"},
                             "role": {"type": "string"},
+                            "key": {"type": "string"},
+                            "depends_on": {"type": "array", "items": {"type": "string"}},
+                            "retry_safe": {"type": "boolean"},
+                            "max_attempts": {"type": "integer", "minimum": 1, "maximum": 5},
                         },
                         "required": ["goal"],
                     },
                 },
-                "verify": {"type": "boolean", "description": "Run a verifier sub-agent over the results and report what is wrong or unproven."},
+                "verify": {"type": "boolean", "description": "Synchronous verifier pass. For durable work, submit a reviewer node depending on worker nodes instead."},
+                "background": {"type": "boolean", "description": "Persist without waiting; gateway worker executes later. Default false."},
+                "action": {"type": "string", "enum": ["run", "submit", "list", "status", "results", "ack", "cancel"]},
+                "job_id": {"type": "string", "description": "Owned job ID for status/ack/cancel. Results remain pending until ack."},
+                "idempotency_key": {"type": "string", "maxLength": 128, "description": "Stable unique request label for durable submissions. Reuse only for retrying the identical graph; avoids duplicate jobs if submission response is lost."},
             },
         },
         frozenset({"workspace", "full"}),
@@ -2347,6 +2448,7 @@ class ToolExecutor:
         if profile not in SAFE_PROFILES:
             raise ValueError(f"unknown tool profile: {profile}")
         self.identity = identity or "cli:local"
+        self._model_override: str | None = None
         self.profile = profile
         self.workspace = Path(workspace or config.WORKSPACE).expanduser().resolve(strict=False)
         # Kedalaman agen: 0 = agen utama. Sub-agent yang dibuat delegate_task
@@ -2398,6 +2500,8 @@ class ToolExecutor:
                 self.openapi = registry
         # Plugin hooks wrap every tool call, so a failure while loading them
         # must leave the agent fully functional and simply unhooked.
+        from zeline.policies import PolicyEngine
+        self.execution_policy = PolicyEngine(self.identity, self.profile, self.workspace)
         self.plugins: plugin_bus.PluginBus | None = None
         with contextlib.suppress(Exception):
             bus = plugin_bus.PluginBus(profile)
@@ -2406,6 +2510,9 @@ class ToolExecutor:
         # Built lazily on first use so constructing an executor stays cheap, and
         # kept for the executor's lifetime so a revealed tool stays revealed.
         self._lazy_index: tool_index.LazySchemaIndex | None = None
+        # Populated only during a normal agent turn, never internal reflection.
+        self._skill_telemetry: Any = None
+        self._reflection_mode = False
         # Started on the first browser call, reused after that.
         self._browser_session: Any | None = None
         # Language servers, started on the first code_intel call. Initialization
@@ -2428,8 +2535,10 @@ class ToolExecutor:
             "git": lambda action, path="", message="", ref="", staged=False, limit=10: _git(
                 action, self.workspace, path=path, message=message, ref=ref, staged=staged, limit=limit
             ),
-            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="": _schedule_task(
-                action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver
+            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="", script="", no_agent=False, workdir="", timeout=900, model="", profile="", skills=None, context_from=None, timezone="": _schedule_task(
+                action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver,
+                script=script, no_agent=no_agent, workdir=workdir, timeout=timeout,
+                model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone
             ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
@@ -2455,14 +2564,14 @@ class ToolExecutor:
             "resolve_lesson": lambda tool, args_sig_contains, fix: self._resolve_lesson(
                 tool, args_sig_contains, fix
             ),
-            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity),
-            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity),
+            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
+            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
-            "delegate_task": lambda goal="", context="", role="", tasks=None, verify=False: self._delegate_task(
-                goal, context, role, tasks, verify
-            ),
+            "delegate_task": self._delegate_task,
             "recall_history": lambda query="": self._recall_history(query),
-            "ask_user": lambda question, options=None: interaction.ask(self.identity, question, options),
+            "ask_user": lambda question, options=None: interaction.ask(
+                self.identity, question, options,
+                **({"should_stop": self._should_stop} if getattr(self, "_should_stop", None) else {})),
         }
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
@@ -2691,6 +2800,8 @@ class ToolExecutor:
         # Import inside the function to avoid a circular import (agent → tools).
         from zeline.agent import Zeline
 
+        if self._cancelled():
+            return "Stopped."
         sub = Zeline(
             identity=f"{self.identity}::sub{suffix}",
             tool_profile=self.profile,
@@ -2698,7 +2809,8 @@ class ToolExecutor:
             system_extra=system_extra,
             depth=self.depth + 1,
         )
-        return sub.send(brief)
+        sub._shared_budget = getattr(self, "_run_budget", None)
+        return sub.send(brief, should_stop=getattr(self, "_should_stop", None))
 
     def _delegate_task(
         self,
@@ -2707,6 +2819,10 @@ class ToolExecutor:
         role: str = "",
         tasks: Any = None,
         verify: bool = False,
+        background: bool = False,
+        action: str = "run",
+        job_id: str = "",
+        idempotency_key: str = "",
     ) -> str:
         """Run one or several sub-agents, optionally with a verifier pass.
 
@@ -2715,6 +2831,8 @@ class ToolExecutor:
         delegate_task again (bounded by MAX_SUBAGENT_DEPTH). Only final answers
         return to the parent — intermediate steps never pollute its context.
         """
+        if background or action != "run":
+            return self._durable_delegate(goal, context, role, tasks, verify, action, job_id, idempotency_key)
         from zeline import delegation
         from zeline.agent import ZelineError as _ZErr
 
@@ -2742,7 +2860,7 @@ class ToolExecutor:
 
         results = delegation.run_tasks(plan, spawn=spawn)
 
-        if not verify:
+        if not verify or self._cancelled():
             return delegation.render(results)
 
         # Verification improves an answer; it must never be able to destroy one.
@@ -2762,6 +2880,36 @@ class ToolExecutor:
             return delegation.render(results, verified=False)
         return delegation.render(results, verification=verdict)
 
+    def _durable_delegate(self, goal, context, role, tasks, verify, action, job_id, idempotency_key=""):
+        from zeline.durable_jobs import JobStore
+        store = JobStore()
+        try:
+            if action in {"run", "submit"}:
+                if verify:
+                    return "ERROR: durable verification needs an explicit reviewer node with depends_on; inline verify is only supported synchronously."
+                nodes = tasks
+                if isinstance(nodes, str):
+                    nodes = json.loads(nodes)
+                if nodes is None:
+                    nodes = [{"goal": goal, "context": context, "role": role or "worker"}]
+                ids = store.submit(self.identity, nodes, profile=self.profile, workspace=str(self.workspace), idempotency_key=idempotency_key)
+                return json.dumps({"durable_jobs": True, "state": "queued", "job_ids": ids,
+                                   "note": "Persisted. A gateway worker executes queued jobs. Read results explicitly; acknowledge after consuming."})
+            if action == "list":
+                return json.dumps({"jobs": store.list(self.identity)}, ensure_ascii=False)
+            if action == "results":
+                return json.dumps({"results": store.results(self.identity)}, ensure_ascii=False)
+            if action == "status":
+                job = store.get(self.identity, job_id)
+                return json.dumps(job, ensure_ascii=False) if job else "ERROR: job not found in this identity."
+            if action == "ack":
+                return json.dumps({"success": store.ack(self.identity, job_id)})
+            if action == "cancel":
+                return json.dumps({"success": store.cancel(self.identity, job_id)})
+            return "ERROR: use run/submit, list, status, results, ack or cancel."
+        except (ValueError, OSError, TypeError) as exc:
+            return f"ERROR durable delegation: {exc}"
+
     def _enabled_native_defs(self) -> tuple[ToolDef, ...]:
         return self._native_defs
 
@@ -2771,7 +2919,7 @@ class ToolExecutor:
             "identity": config.NAME,
             "framework": "Zeline",
             "lab": "Zerolinear",
-            "model": config.MODEL,
+            "model": self._model_override or config.MODEL,
             "protocol": config.PROTOCOL,
             "tool_profile": self.profile,
             "tools": available,
@@ -2833,20 +2981,59 @@ class ToolExecutor:
         effect is on record even if the turn later fails (session history is only
         saved after a successful turn; the audit row is written at tool time).
         """
+        if self._cancelled():
+            return "CANCELLED: turn stopped before tool dispatch."
+        budget = getattr(self, "_run_budget", None)
+        if budget is not None:
+            budget.consume("tool_calls")
         if self.plugins is None:
-            result = self._dispatch(name, args)
+            result = self._execute(name, args)
             self._audit(name, args, result)
             return result
         outcome = self.plugins.before(name, args)
         if outcome.blocked:
             return plugin_bus.denial_message(name, outcome)
-        result = self._dispatch(name, outcome.args)
+        result = self._execute(name, outcome.args)
         # Redaction/rewriting hooks must run before audit and lessons capture;
         # otherwise a plugin can hide a secret from the model while the raw
         # result is still persisted in the audit/learning stores.
-        result = self.plugins.after(name, outcome.args, result)
+        from zeline.policies import PolicyBlocked
+        if not isinstance(result, PolicyBlocked):
+            result = self.plugins.after(name, outcome.args, result)
         self._audit(name, outcome.args, result)
         return result
+
+    def _cancelled(self):
+        check = getattr(self, "_should_stop", None)
+        return bool(check and check())
+
+    def _execute(self, name: str, args: dict[str, Any]) -> str:
+        if self._cancelled():
+            return "CANCELLED: turn stopped before tool dispatch."
+        from zeline.policies import PolicyBlocked
+        try:
+            reason = self.execution_policy.check(name, args)
+        except BaseException as exc:
+            reason = f"required policy evaluation failed ({type(exc).__name__})"
+        if reason is not None:
+            return PolicyBlocked("ERROR: execution policy: " + reason)
+        if not self._reflection_mode:
+            return self._dispatch(name, args)
+        # Apply restrictions after operator hooks, but before any live dispatch.
+        # Rewritten/denied calls keep their ordinary governance and redaction.
+        if name not in {"manage_skill", "load_skill", "list_memory", "add_memory", "resolve_lesson"}:
+            return "ERROR: tool is unavailable during internal reflection; propose a reviewed skill change instead."
+        if name == "manage_skill" and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}:
+            if name not in {definition.name for definition in self._enabled_native_defs()}:
+                return "ERROR: skill proposals are unavailable for this profile or disabled by the owner."
+            try:
+                from zeline.skillforge import ForgeStore
+                return ForgeStore().propose_edit(**args)
+            except Exception as exc:
+                # Proposal persistence is best-effort like the reflection turn;
+                # database/disk faults must not abort the user's main session.
+                return "ERROR skill proposal: " + type(exc).__name__
+        return self._dispatch(name, args)
 
     def _audit(self, name: str, args: dict[str, Any], result: str) -> None:
         """Record a mutating tool call to the append-only event log.
@@ -2860,6 +3047,10 @@ class ToolExecutor:
         tool call into a failed one. Read-only tools are skipped inside
         ``log_tool_call`` so this stays a side-effect index, not an activity log.
         """
+        observer = self._skill_telemetry
+        if observer is not None:
+            with contextlib.suppress(Exception):
+                observer.observe(name, args, result, include_private=self.profile == "full")
         try:
             events_module.log_tool_call(self.identity, name, args if isinstance(args, dict) else {}, result)
         except Exception:
@@ -2873,9 +3064,11 @@ class ToolExecutor:
         try:
             from zeline import lessons as lessons_module
             safe_args = args if isinstance(args, dict) else {}
-            if str(result).startswith("ERROR"):
+            from zeline.outcomes import tool_outcome
+            outcome = tool_outcome(result)
+            if outcome == "failure":
                 lessons_module.log_failure(self.identity, name, safe_args, result)
-            else:
+            elif outcome == "success":
                 lessons_module.log_success(self.identity, name, safe_args, result)
         except Exception:
             pass

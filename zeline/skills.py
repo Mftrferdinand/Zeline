@@ -802,6 +802,12 @@ def _adopt_into_private(name: str) -> tuple[Path, str]:
 
 
 def _create_skill(name: str, content: str, category: str) -> str:
+    from zeline.skillforge import ForgeStore
+    with ForgeStore()._pins_lock():
+        return _create_skill_locked(name, content, category)
+
+
+def _create_skill_locked(name: str, content: str, category: str) -> str:
     if not content.strip():
         return "ERROR skill: empty content."
     if len(content) > MAX_SKILL_CHARS:
@@ -825,6 +831,12 @@ def _create_skill(name: str, content: str, category: str) -> str:
 
 
 def _patch_skill(name: str, old_text: str, new_text: str, file_path: str) -> str:
+    from zeline.skillforge import ForgeStore
+    with ForgeStore()._pins_lock():
+        return _patch_skill_locked(name, old_text, new_text, file_path)
+
+
+def _patch_skill_locked(name: str, old_text: str, new_text: str, file_path: str) -> str:
     if not old_text:
         return "ERROR patch skill: old_text kosong."
     skill_dir, note = _adopt_into_private(name)
@@ -851,6 +863,12 @@ def _patch_skill(name: str, old_text: str, new_text: str, file_path: str) -> str
 
 
 def _write_skill_file(name: str, file_path: str, content: str) -> str:
+    from zeline.skillforge import ForgeStore
+    with ForgeStore()._pins_lock():
+        return _write_skill_file_locked(name, file_path, content)
+
+
+def _write_skill_file_locked(name: str, file_path: str, content: str) -> str:
     if len(content) > MAX_SKILL_CHARS:
         return f"ERROR skill: content too long (maximum {MAX_SKILL_CHARS:,} characters)."
     skill_dir, note = _adopt_into_private(name)
@@ -868,6 +886,20 @@ def _write_skill_file(name: str, file_path: str, content: str) -> str:
 
 
 def _delete_skill(name: str, absorbed_into: str) -> str:
+    try:
+        from zeline.skillforge import ForgeStore
+        store = ForgeStore()
+        # Pin and delete are one serialized operation, not check-then-delete.
+        with store._pins_lock():
+            return _delete_skill_locked(name, absorbed_into, store)
+    except Exception:
+        return (
+            f"ERROR: could not complete protected deletion for '{name}'; "
+            "inspect the registry and remaining files before retrying."
+        )
+
+
+def _delete_skill_locked(name: str, absorbed_into: str, store) -> str:
     located = _locate_unit(name)
     if located is None:
         return f"ERROR: skill '{name}' not found."
@@ -876,6 +908,17 @@ def _delete_skill(name: str, absorbed_into: str) -> str:
         return (
             f"ERROR: '{name}' is a bundled/public skill; patch it instead "
             "(the patch is copied into private scope automatically)."
+        )
+    # Pin protection — refuse delete on pinned skills.
+    try:
+        if store.is_pinned(name):
+            return (
+                f"ERROR: '{name}' is pinned — run `zeline skillforge unpin {name}` first."
+            )
+    except Exception:
+        return (
+            f"ERROR: could not verify pin protection for '{name}'; "
+            "refusing deletion until the registry is repaired."
         )
     if absorbed_into:
         try:
@@ -890,10 +933,13 @@ def _delete_skill(name: str, absorbed_into: str) -> str:
                 "write the umbrella skill first, then delete this one."
             )
     _checkpoint_skill_tree(path, "skill-delete")
-    if path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
-    else:
-        path.unlink()
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except OSError:
+        return f"ERROR: deletion of private skill '{name}' failed; inspect remaining files before retrying."
     if absorbed_into:
         return f"Deleted private skill '{name}' (absorbed into '{absorbed_into}')."
     return f"Deleted private skill '{name}' (no forwarding target)."
