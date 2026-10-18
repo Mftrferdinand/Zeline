@@ -101,7 +101,7 @@ def has_pending(identity: str) -> bool:
     return pending(identity) is not None
 
 
-def ask(identity: str, question: str, options: object = None) -> str:
+def ask(identity: str, question: str, options: object = None, *, should_stop=None) -> str:
     """Block until the operator answers, or the wait is cancelled / times out.
 
     Returns the answer text, or an ``ERROR``/notice string the model can act on.
@@ -114,6 +114,8 @@ def ask(identity: str, question: str, options: object = None) -> str:
     choices = normalize_options(options)
 
     with _LOCK:
+        if should_stop and should_stop():
+            return "CANCELLED: the user cancelled this question."
         if key in _PENDING:
             return (
                 "ERROR ask_user: a question is already awaiting the user's answer. "
@@ -124,11 +126,22 @@ def ask(identity: str, question: str, options: object = None) -> str:
 
     timeout = _timeout_seconds()
     try:
-        delivered = _deliver(entry)
+        from zeline import cancellation
+        try:
+            delivered = cancellation.wait_io(lambda: _deliver(entry), lambda: entry.cancelled or bool(should_stop and should_stop()))
+        except cancellation.Cancelled:
+            return "CANCELLED: the user cancelled this question."
         if delivered is not None:
             # A synchronous channel (CLI stdin) already produced the answer.
             return delivered
-        if not entry.event.wait(timeout=timeout):
+        import time
+        deadline = time.monotonic() + timeout
+        while not entry.event.wait(timeout=min(0.05, max(0, deadline - time.monotonic()))):
+            if should_stop and should_stop():
+                return "CANCELLED: the user cancelled this question."
+            if time.monotonic() >= deadline:
+                break
+        if not entry.event.is_set():
             return (
                 f"NO ANSWER: the user did not reply within {int(timeout)}s. "
                 "Proceed with your best judgement and say which assumption you made."

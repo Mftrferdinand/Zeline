@@ -291,18 +291,18 @@ class VoicePromptTests(unittest.TestCase):
         self.assertIn("audio track", prompt)
         self.assertIn("ffmpeg", prompt)
 
-    def test_the_feed_says_transcribing_for_audio_and_looking_for_images(self):
+    def test_the_feed_distinguishes_audio_video_and_image_analysis(self):
         self.assertEqual(
             self.telegram._tool_progress_text("analyze_media", {"path_or_url": "/x/voice.ogg"}),
-            "🎧 Transcribing audio…",
+            "🎧 Analyzing audio…",
         )
         self.assertEqual(
             self.telegram._tool_progress_text("analyze_media", {"path_or_url": "/x/clip.mp4"}),
-            "🎧 Transcribing audio…",
+            "🎞️ Analyzing video…",
         )
         self.assertEqual(
             self.telegram._tool_progress_text("analyze_media", {"path_or_url": "/x/shot.png"}),
-            "🖼 Looking at image…",
+            "👁️ Analyzing image…",
         )
 
 

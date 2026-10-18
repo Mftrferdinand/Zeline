@@ -217,6 +217,10 @@ def _run_one(task: Task, index: int, spawn: Any) -> Result:
     text = (output or "").strip()
     if not text:
         return Result(task=task, index=index, output="(the sub-agent returned no output)")
+    from zeline.outcomes import tool_outcome
+    outcome = tool_outcome(text)
+    if outcome in {"failure", "cancelled"}:
+        return Result(task=task, index=index, output=text, error=text)
     return Result(task=task, index=index, output=text)
 
 
@@ -253,6 +257,7 @@ def render(results: list[Result], *, verification: str = "", verified: bool | No
             lines.append(f"--- {label} FAILED: {item.task.goal}")
             lines.append(f"ERROR: {item.error}")
     if failed:
+        lines.insert(0, "ERROR: one or more delegated tasks failed; inspect the preserved results.")
         lines.append("")
         lines.append(
             f"Note: {len(failed)} task(s) failed. The results above are from the "
@@ -262,6 +267,12 @@ def render(results: list[Result], *, verification: str = "", verified: bool | No
         lines.append("")
         lines.append("--- verification")
         lines.append(verification)
+        verdict = verification.strip().splitlines()[0].strip().lower()
+        if verdict == "verdict: problems":
+            lines.insert(0, "ERROR: verification found problems; the task is not accepted as complete.")
+        elif verdict != "verdict: ok":
+            lines.insert(0, "ERROR: verification is inconclusive; the task is not accepted as complete.")
+            lines.append("Not verified: reviewer returned no recognized verdict; treat these results as unchecked.")
     elif verified is False:
         lines.append("")
         lines.append(
