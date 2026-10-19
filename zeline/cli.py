@@ -1236,8 +1236,15 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     elif cron_module.list_jobs():
         print("  [cron] disabled by config (tools.cron = false)", flush=True)
 
+    # Durable jobs live outside parent sessions and /new. The gateway owns
+    # their worker, independently of whether recurring cron jobs are enabled.
+    from zeline.durable_jobs import Worker
+    durable_worker = Worker()
+    durable_worker.start()
+
     def shutdown(_signal=None, _frame=None):
         print("\n==> Stopping gateway…", flush=True)
+        durable_worker.stop()
         cron.stop()
         runtime.stop()
 
@@ -1253,6 +1260,7 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
         # Stop arming new jobs first, or a tick during the drain starts work we
         # are about to kill.
+        durable_worker.stop()
         cron.stop()
         finished, busy = sessions.drain(timeout=timeout)
         if finished:
@@ -1288,6 +1296,7 @@ def _run_gateway_loop(only: list[str] | None) -> int:
             signal.signal(sigusr1, previous_usr1)
         if sigbreak is not None and previous_break is not None:
             signal.signal(sigbreak, previous_break)
+        durable_worker.stop()
         cron.stop()
         runtime.stop(timeout=1)
     return 0
@@ -1839,6 +1848,8 @@ def cmd_cron(
     prompt: str | None = None,
     deliver: str | None = None,
     job_id: str | None = None,
+    script: str = "", no_agent: bool = False, workdir: str = "", timeout: float = 900,
+    model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
 ) -> int:
     """Manage scheduled jobs."""
     from zeline import scheduler as cron_module
@@ -1857,7 +1868,7 @@ def cmd_cron(
             print(f"  {job.describe()}")
             print(f"      {job.prompt[:100]}")
             if job.last_status:
-                stamp = f"{cron_module.format_time(job.last_run)} " if job.last_run else ""
+                stamp = f"{cron_module.format_time(job.last_run, job.timezone)} " if job.last_run else ""
                 print(f"      last: {stamp}{job.last_status}")
         print()
         print("  Jobs run inside the gateway process, so they only fire while it is up.")
@@ -1865,17 +1876,19 @@ def cmd_cron(
         return 0
 
     if action == "add":
-        if not schedule or not prompt:
-            print("Usage: zeline cron add <schedule> <prompt> [--deliver telegram:<chat_id>]")
+        if not schedule or (not prompt and not no_agent):
+            print("Usage: zeline cron add <schedule> [prompt] [--script path --no-agent] [--deliver target]")
             return 2
         try:
-            job = cron_module.add_job(schedule, prompt, deliver or "local")
+            job = cron_module.add_job(schedule, prompt or "", deliver or "local",
+                                      script=script, no_agent=no_agent, workdir=workdir, timeout=timeout,
+                                      model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone)
         except cron_module.CronError as exc:
             print(f"ERROR: {exc}")
             return 1
         print(
             f"Created {job.id} — {job.parsed().describe()}, "
-            f"first run {cron_module.format_time(job.next_run)}"
+            f"first run {cron_module.format_time(job.next_run, job.timezone)}"
         )
         if job.deliver in ("local", "", "none"):
             print(f"  Results are saved to {cron_module.output_dir()}")
@@ -1915,6 +1928,7 @@ def cmd_cron(
         if job.last_status:
             print(f"  Last     : {job.last_status}")
         print(f"  Prompt   : {job.prompt}")
+        print(job.options_summary())
         return 0
 
     print(f"Unknown cron action '{action}'. Use list, add, show, run, pause, resume, or remove.")
@@ -2279,6 +2293,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("skills", aliases=["skill"], help="list skills")
     subparsers.add_parser("memory", help="view local CLI memory")
     subparsers.add_parser("lessons", help="view lessons learned from tool failures")
+    from zeline import skillforge
+    skillforge.add_arguments(subparsers.add_parser(
+        "skillforge", help="measure skill effectiveness and review tested improvement proposals"))
 
 
 
@@ -2314,7 +2331,16 @@ def build_parser() -> argparse.ArgumentParser:
     cron_sub.add_parser("list", help="list scheduled jobs")
     cron_add = cron_sub.add_parser("add", help="add a job: <schedule> <prompt>")
     cron_add.add_argument("schedule", help="interval ('30m', 'every 2h', '1d') or daily time ('09:00')")
-    cron_add.add_argument("prompt", help="what the agent should do")
+    cron_add.add_argument("prompt", nargs="?", help="what the agent should do")
+    cron_add.add_argument("--timezone", default="", help="IANA timezone, e.g. Asia/Jakarta; default host local")
+    cron_add.add_argument("--model", default="", help="per-job model ID on the configured provider; does not change global config")
+    cron_add.add_argument("--profile", choices=("safe", "workspace", "full"), default="", help="per-job tool profile")
+    cron_add.add_argument("--skill", dest="skills", action="append", help="attach a skill; repeat up to five times")
+    cron_add.add_argument("--context-from", action="append", help="latest successful result from an existing job; repeat up to three times")
+    cron_add.add_argument("--script", default="", help="trusted Python or bash script")
+    cron_add.add_argument("--no-agent", action="store_true", help="deliver script stdout without calling a model")
+    cron_add.add_argument("--workdir", default="", help="existing absolute working directory")
+    cron_add.add_argument("--timeout", type=float, default=900, help="script timeout in seconds (maximum 3600)")
     cron_add.add_argument("--deliver", help="where to send results, e.g. telegram:12345 (default: save locally)")
     for verb, help_text in (
         ("show", "show one job in detail"),
@@ -2502,6 +2528,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_memory()
     if command == "lessons":
         return cmd_lessons()
+    if command == "skillforge":
+        from zeline import skillforge
+        return skillforge.command(namespace)
     if command == "cron":
         return cmd_cron(
             getattr(namespace, "cron_action", None) or "list",
@@ -2509,6 +2538,11 @@ def main(argv: list[str] | None = None) -> int:
             prompt=getattr(namespace, "prompt", None),
             deliver=getattr(namespace, "deliver", None),
             job_id=getattr(namespace, "job_id", None),
+            script=getattr(namespace, "script", ""), no_agent=getattr(namespace, "no_agent", False),
+            workdir=getattr(namespace, "workdir", ""), timeout=getattr(namespace, "timeout", 900),
+            model=getattr(namespace, "model", ""), profile=getattr(namespace, "profile", ""),
+            skills=getattr(namespace, "skills", None), context_from=getattr(namespace, "context_from", None),
+            timezone=getattr(namespace, "timezone", ""),
         )
     if command == "toolsearch":
         return cmd_toolsearch(getattr(namespace, "action", None) or "status")

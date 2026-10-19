@@ -94,6 +94,10 @@ class SessionPersistence:
                 "  updated_at REAL NOT NULL"
                 ")"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS turn_checkpoints ("
+                "key TEXT PRIMARY KEY, title TEXT, messages TEXT NOT NULL, updated_at REAL NOT NULL)"
+            )
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -102,18 +106,29 @@ class SessionPersistence:
     def load(self, identity: str) -> tuple[list[dict[str, Any]], str | None]:
         """Kembalikan (messages, title) untuk sebuah identity, atau ([], None)."""
         with self._lock, closing(self._connect()) as conn, conn:
-            row = conn.execute(
-                "SELECT messages, title FROM sessions WHERE key = ?",
-                (_key(identity),),
+            checkpoint = conn.execute(
+                "SELECT messages, title FROM turn_checkpoints WHERE key = ?", (_key(identity),)
+            ).fetchone()
+            row = checkpoint or conn.execute(
+                "SELECT messages, title FROM sessions WHERE key = ?", (_key(identity),)
             ).fetchone()
         if not row:
             return [], None
         try:
             messages = json.loads(row[0])
             if not isinstance(messages, list):
-                return [], None
-        except (json.JSONDecodeError, TypeError):
+                raise ValueError("invalid session history")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            if checkpoint:
+                raise ValueError("interrupted-turn checkpoint is invalid") from None
             return [], None
+        if checkpoint:
+            messages.append({"role": "assistant", "content": (
+                "[Zeline recovery] The previous turn was interrupted before its final commit. "
+                "Recorded tool results are evidence of completed calls. A missing result "
+                "has an UNKNOWN outcome: an external action may already have happened. "
+                "Verify actual state before retrying mutations. No tool is replayed automatically."
+            )})
         return messages, (row[1] if row[1] else None)
 
     def save(self, identity: str, messages: list[dict[str, Any]], title: str | None = None) -> None:
@@ -127,11 +142,51 @@ class SessionPersistence:
                 "title=COALESCE(excluded.title, sessions.title), updated_at=excluded.updated_at",
                 (_key(identity), title, payload, time.time()),
             )
+            conn.execute("DELETE FROM turn_checkpoints WHERE key = ?", (_key(identity),))
+
+    def save_checkpoint(self, identity: str, messages: list[dict[str, Any]],
+                        title: str | None = None) -> None:
+        """Persist a bounded recovery snapshot, without claiming turn completion."""
+        payload = json.dumps(self._trim(messages), ensure_ascii=False)
+        with self._lock, closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO turn_checkpoints (key, title, messages, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET title=excluded.title, "
+                "messages=excluded.messages, updated_at=excluded.updated_at",
+                (_key(identity), title, payload, time.time()),
+            )
+
+    def save_turn(self, identity: str, messages: list[dict[str, Any]],
+                  user_text: str, reply: str, title: str | None = None) -> None:
+        """Commit the active window and both archive messages atomically.
+
+        Errors propagate to the caller so a failed commit cannot masquerade as
+        durable history. This records completed turns, not in-flight tool steps.
+        """
+        payload = json.dumps(self._trim(messages), ensure_ascii=False)
+        now = time.time()
+        with self._lock, closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO sessions (key, title, messages, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET messages=excluded.messages, "
+                "title=COALESCE(excluded.title, sessions.title), updated_at=excluded.updated_at",
+                (_key(identity), title, payload, now),
+            )
+            for role, content in (("user", user_text), ("assistant", reply)):
+                text = (content or "").strip()
+                if text:
+                    conn.execute(
+                        "INSERT INTO archive (key, role, content, title, ts) VALUES (?, ?, ?, ?, ?)",
+                        (_key(identity), role, text[:MAX_STORED_CHARS], title, now),
+                    )
+            conn.execute("DELETE FROM turn_checkpoints WHERE key = ?", (_key(identity),))
 
     def reset(self, identity: str) -> bool:
         with self._lock, closing(self._connect()) as conn, conn:
             cur = conn.execute("DELETE FROM sessions WHERE key = ?", (_key(identity),))
-            return cur.rowcount > 0
+            removed = cur.rowcount > 0
+            pending = conn.execute("DELETE FROM turn_checkpoints WHERE key = ?", (_key(identity),))
+            return removed or pending.rowcount > 0
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """Inventory of stored sessions for `zeline session list`.
@@ -144,6 +199,8 @@ class SessionPersistence:
             with self._lock, closing(self._connect()) as conn, conn:
                 rows = conn.execute(
                     "SELECT key, title, messages, updated_at FROM sessions "
+                    "WHERE key NOT IN (SELECT key FROM turn_checkpoints) "
+                    "UNION ALL SELECT key, title, messages, updated_at FROM turn_checkpoints "
                     "ORDER BY updated_at DESC"
                 ).fetchall()
         except sqlite3.Error:

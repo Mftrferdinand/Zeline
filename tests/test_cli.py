@@ -411,8 +411,15 @@ class ZelineCliTests(unittest.TestCase):
         # Arrow-menu fallback (non-TTY) pakai nomor. Tanpa provider tersimpan,
         # menu = [1]Add [2]Remove [3]Cancel. Pilih 1 (Add) -> isi provider.
         # Setelah add ada 1 provider: menu = [1]MyProvider [2]Add [3]Remove [4]Cancel -> 4.
-        with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), mock.patch.object(self.cli, "_masked_secret_input", return_value="provider-secret"):
+        # Provider discovery is unrelated to this menu/configuration test.
+        # Keep fixture credentials local and fail if any HTTP escapes the mock.
+        with mock.patch("builtins.input", side_effect=["1", "https://api.example/v1", "My Provider", "research-model", "4"]), \
+             mock.patch.object(self.cli, "_masked_secret_input", return_value="provider-secret"), \
+             mock.patch.object(self.cli, "_discover_provider_models", return_value=("openai", [])) as discover, \
+             mock.patch("requests.sessions.Session.request", side_effect=AssertionError("unexpected HTTP")) as http:
             result = self.invoke(["model"])
+        discover.assert_called_once_with("https://api.example/v1", "provider-secret")
+        http.assert_not_called()
         saved = __import__("json").loads((self.home / "config.json").read_text(encoding="utf-8"))
         self.assertIn("added", result)
         self.assertEqual(saved["provider"], {

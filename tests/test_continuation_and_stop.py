@@ -276,8 +276,7 @@ class StopRepliesOnceTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(api.call_count, 1)
         text = api.call_args.kwargs["text"]
-        self.assertIn("❄️ Stopped — Bangun aplikasi", text)
-        self.assertIn("force-killed", text)
+        self.assertEqual(text, "❄️ Stopped — Bangun aplikasi")
 
     def test_second_stop_right_after_is_silent_not_no_active_task(self):
         """Ini pesan ketiga yang dikeluhkan: /stop dobel bilang 'No active task'."""
@@ -322,7 +321,8 @@ class StopRepliesOnceTests(unittest.TestCase):
                 "bot-api", sessions, chat_id=42, identity="telegram:42",
                 text="kerjakan sesuatu", tool_profile="safe",
             )
-            live.return_value.clear.assert_called()
+            live.return_value.finalize.assert_called_once()
+            live.return_value.clear.assert_not_called()
         sent = [c for c in api.call_args_list if c.args[1:2] == ("sendMessage",)]
         self.assertEqual(sent, [], "turn yang dibatalkan tidak boleh mengirim pesan apa pun")
         self.assertFalse(sessions.reflected, "refleksi tidak boleh jalan untuk turn yang dibatalkan")

@@ -286,9 +286,7 @@ class SessionIntegrationTests(AskUserBase):
 
         for label, call in (("stop", store.stop), ("reset", store.reset)):
             with self.subTest(path=label):
-                session = mock.Mock()
-                session.running = True
-                session.cancel_event = threading.Event()
+                session = sessions_mod.Session(agent=mock.Mock(), lock=threading.Lock(), last_used=0, running=True)
                 store._sessions["telegram:5"] = session
                 with mock.patch.object(interaction, "cancel", return_value=True) as cancel:
                     call("telegram:5")

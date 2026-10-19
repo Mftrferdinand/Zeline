@@ -220,6 +220,7 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "stats", "description": "View token usage"},
         {"command": "events", "description": "Recent file/skill/memory changes"},
         {"command": "lessons", "description": "View self-learning lessons"},
+        {"command": "skillforge", "description": "Review skill effectiveness and proposals"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
         {"command": "version", "description": "Show version and check for updates"},
@@ -358,54 +359,54 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     tampil per pemanggilan supaya user lihat SEMUA yang dikerjakan.
     """
     if name == "load_skill":
-        return f"📚 Reading skill: {html.escape(str(arguments.get('name', ''))[:100])}"
+        return f"📚 Loading skill: {html.escape(str(arguments.get('name', ''))[:100])}"
     if name == "run_shell":
         command = str(arguments.get("command", ""))
         line = _terminal_progress(command, search=_is_search_command(command))
         if arguments.get("background"):
             return f"🚀 Starting background process {line}" if line else "🚀 Starting background process…"
-        return line
+        return f"💻 Executing command… {line}" if line else "💻 Executing command…"
     if name == "process_control":
         action = str(arguments.get("action", "")).strip().lower()
         job = html.escape(str(arguments.get("job_id", ""))[:40], quote=False)
         labels = {
-            "list": "📋 Listing background processes…",
-            "poll": f"⏱ Checking background process <code>{job}</code>…" if job else "⏱ Checking background process…",
-            "log": f"📜 Reading process log <code>{job}</code>" if job else "📜 Reading process log…",
-            "kill": f"🛑 Stopping background process <code>{job}</code>" if job else "🛑 Stopping background process…",
+            "list": "📋 Listing active processes…",
+            "poll": f"🔄 Checking process status <code>{job}</code>…" if job else "🔄 Checking process status…",
+            "log": f"📜 Reading process logs <code>{job}</code>" if job else "📜 Reading process logs…",
+            "kill": f"🛑 Terminating process <code>{job}</code>" if job else "🛑 Terminating process…",
         }
         return labels.get(action, "⚙️ Managing background process…")
     if name == "execute_code":
         code = str(arguments.get("code", "")).strip()
         first = html.escape((code.splitlines() or ["code"])[0][:100], quote=False)
-        return f"🐍 Running code: <code>{first}</code>…"
+        return f"🐍 Executing code: <code>{first}</code>…"
     if name == "manage_skill":
         skill_name = html.escape(str(arguments.get("name", ""))[:100], quote=False)
         action = str(arguments.get("action", "")).strip().lower()
         file_path = html.escape(str(arguments.get("file_path", ""))[:120], quote=False)
         if action in {"list", "inventory"}:
-            return "🗂 Reviewing saved skills…"
+            return "🗃️ Browsing available skills…"
         if action == "create":
-            return f"💡 Saving skill: <code>{skill_name}</code>"
+            return f"✨ Creating skill: <code>{skill_name}</code>"
         if action == "write_file":
-            return f"📄 Writing <code>{file_path or 'file'}</code> in skill <code>{skill_name}</code>"
+            return f"📄 Writing skill resource: <code>{file_path or 'file'}</code>"
         if action == "delete":
             merged = html.escape(str(arguments.get("absorbed_into", ""))[:100], quote=False)
             if merged:
-                return f"🧹 Merging skill <code>{skill_name}</code> into <code>{merged}</code>"
+                return f"🧬 Merging skills: <code>{skill_name}</code> into <code>{merged}</code>"
             return f"🗑 Removing skill: <code>{skill_name}</code>"
         target = f" <code>{file_path}</code>" if file_path else ""
         return f"📝 Updating skill: <code>{skill_name}</code>{target}"
     if name == "resolve_lesson":
         tool = html.escape(str(arguments.get("tool", ""))[:60], quote=False)
-        return f"📒 Resolving lesson: <code>{tool}</code>" if tool else "📒 Resolving a lesson…"
+        return f"🎓 Resolving lesson: <code>{tool}</code>" if tool else "🎓 Resolving a lesson…"
     if name == "add_memory":
         return "🧠 Saving to memory…"
     if name == "remove_memory":
         # Verb harus jujur: dulu penghapusan ikut dilabeli "Saving to memory".
-        return "🧠 Removing from memory…"
+        return "🧹 Removing memory…"
     if name == "system_env":
-        return "🧰 Checking system environment…"
+        return "🖥️ Inspecting system environment…"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
     if name == "read_file":
         # Zeline read_file membaca seluruh file (tanpa offset/limit); rentang
@@ -413,112 +414,111 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if "offset" in arguments or "limit" in arguments:
             offset = max(1, int(arguments.get("offset", 1) or 1))
             limit = max(1, int(arguments.get("limit", 500) or 500))
-            return f"📖 Reading file <code>{path}</code> L{offset}-{offset + limit - 1}"
-        return f"📖 Reading file <code>{path}</code>"
+            return f"📖 Reading file: <code>{path}</code> L{offset}-{offset + limit - 1}"
+        return f"📖 Reading file: <code>{path}</code>"
     if name == "write_file":
-        return f"📝 Writing file <code>{path}</code>"
+        return f"📝 Writing file: <code>{path}</code>"
     if name == "edit_file":
-        return f"🎬 Editing file <code>{path}</code>"
+        return f"✏️ Editing file: <code>{path}</code>"
     if name == "patch_file":
-        return f"🎬 Editing file <code>{path}</code>"
+        return f"✏️ Editing file: <code>{path}</code>"
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
-        return f"🔎 Searching files: {query}" if query else "🔎 Searching files…"
+        return f"🔎 Searching workspace: {query}" if query else "🔎 Searching workspace…"
     if name == "update_task":
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
         task = html.escape(str(arguments.get("task", ""))[:120], quote=False)
-        return f"📋 Updating tasks: {status} · {task}" if task else f"📋 Updating tasks: {status}"
+        return f"📋 Updating task progress: {task}" if task else "📋 Updating task progress…"
     if name == "undo_file":
         action = str(arguments.get("action", "")).strip().lower()
         if action == "list":
             target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
-            return f"↩️ Listing checkpoints for <code>{target}</code>" if target else "↩️ Listing file checkpoints…"
+            return f"🕓 Reviewing file checkpoints: <code>{target}</code>" if target else "🕓 Reviewing file checkpoints…"
         cid = html.escape(str(arguments.get("checkpoint_id", ""))[:32], quote=False)
         if action == "diff":
-            return f"🔍 Previewing undo <code>{cid}</code>" if cid else "🔍 Previewing an undo…"
+            return f"🔍 Previewing file changes: <code>{cid}</code>" if cid else "🔍 Previewing file changes…"
         if action == "restore":
-            return f"↩️ Restoring file from <code>{cid}</code>" if cid else "↩️ Restoring a file…"
+            return f"↩️ Restoring previous version: <code>{cid}</code>" if cid else "↩️ Restoring previous version…"
         return "↩️ Undoing a file change…"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
         subject = html.escape((query.split() or [""])[0][:40], quote=False)
-        return f"🌐 Searching web: {subject}…" if subject else "🌐 Searching web…"
+        return f"🔎 Searching the web: {subject}…" if subject else "🔎 Searching the web…"
     if name == "web_fetch":
         # Baca sumber web tidak ditampilkan sebagai baris terpisah (biar bersih).
         return ""
     if name == "deep_research":
         query = html.escape(str(arguments.get('query', ''))[:100], quote=False)
-        return f"🌐 Researching: {query}…" if query else "🌐 Researching…"
+        return f"🧠 Researching in depth: {query}…" if query else "🧠 Researching in depth…"
     if name == "generate_image":
         prompt = html.escape(str(arguments.get("prompt", ""))[:100], quote=False)
         return f"🎨 Generating image: {prompt}…" if prompt else "🎨 Generating image…"
     if name == "analyze_media":
         target = str(arguments.get("path_or_url", "")).lower()
-        if any(target.endswith(ext) for ext in (
-            ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".flac", ".aac", ".amr",
-            ".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".3gp",
-        )):
-            return "🎧 Transcribing audio…"
-        return "🖼 Looking at image…"
+        if any(target.endswith(ext) for ext in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".3gp")):
+            return "🎞️ Analyzing video…"
+        if any(target.endswith(ext) for ext in (".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".flac", ".aac", ".amr")):
+            return "🎧 Analyzing audio…"
+        return "👁️ Analyzing image…"
     if name == "send_file":
         target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
         return f"📤 Sending file <code>{target}</code>" if target else "📤 Sending a file…"
     if name == "git":
         verb = str(arguments.get("action", "")).strip().lower()
         labels = {
-            "status": "🌿 Checking git status…",
-            "diff": "🔍 Reading the diff…",
+            "status": "🌿 Checking repository status…",
+            "diff": "🔍 Reviewing code changes…",
             "log": "📜 Reading commit history…",
-            "show": "🔎 Reading a commit…",
-            "branch": "🌿 Listing branches…",
+            "show": "🔎 Inspecting commit…",
+            "branch": "🌱 Listing repository branches…",
         }
         if verb in labels:
             return labels[verb]
         if verb == "add":
             target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
-            return f"➕ Staging <code>{target}</code>" if target else "➕ Staging changes…"
+            return f"📦 Staging changes: <code>{target}</code>" if target else "📦 Staging changes…"
         if verb == "commit":
             subject = html.escape(str(arguments.get("message", "")).splitlines()[0][:60], quote=False) if arguments.get("message") else ""
-            return f"💾 Committing: {subject}" if subject else "💾 Committing…"
+            return f"💾 Committing changes: {subject}" if subject else "💾 Committing changes…"
         return "🌿 Running git…"
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":
             when = html.escape(str(arguments.get("schedule", ""))[:40], quote=False)
-            return f"⏰ Scheduling a job: {when}" if when else "⏰ Scheduling a job…"
+            return f"⏰ Scheduling automation: {when}" if when else "⏰ Scheduling automation…"
         if verb == "list":
-            return "⏰ Checking scheduled jobs…"
+            return "📅 Reviewing scheduled tasks…"
         job = html.escape(str(arguments.get("job_id", ""))[:32], quote=False)
         labels = {
-            "show": "⏰ Reading scheduled job",
-            "pause": "⏸ Pausing scheduled job",
-            "resume": "▶️ Resuming scheduled job",
-            "run": "⚡ Running scheduled job now",
+            "show": "📅 Reviewing scheduled task",
+            "pause": "⏸️ Pausing scheduled task",
+            "resume": "▶️ Resuming scheduled task",
+            "run": "▶️ Running scheduled task",
             "remove": "🗑 Removing scheduled job",
         }
         label = labels.get(verb, "⏰ Managing scheduled jobs")
         return f"{label} {job}".strip() if job else f"{label}…"
     if name == "http_request":
         url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
-        return f"🔗 Calling API: {url}" if url else "🔗 Calling API…"
+        return f"🔗 Sending API request: {url}" if url else "🔗 Sending API request…"
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
-        return f"🤝 Delegating: {goal}…" if goal else "🤝 Delegating subtask…"
+        return f"🤝 Delegating task: {goal}…" if goal else "🤝 Delegating task…"
     if name == "runtime_info":
         # Bukan "runtime info": yang dibaca adalah identitas runtime aktif —
         # model, provider, protokol, profil tool.
-        return "🪪 Checking runtime: model &amp; provider…"
+        return "🪪 Checking agent runtime…"
     if name == "list_memory":
         # Ikon 🧠 dipakai satu keluarga untuk memory; VERB-nya yang membedakan
         # baca / simpan / hapus, jadi feed tetap terbaca sebagai satu domain.
-        return "🧠 Reading saved memory…"
+        return "🧠 Retrieving saved memories…"
     if name == "recall_history":
         query = html.escape(str(arguments.get("query", "")).strip()[:100], quote=False)
-        return f"🕰 Recalling past chat: {query}" if query else "🕰 Recalling recent conversation…"
+        return f"🕰️ Recalling conversation history: {query}" if query else "🕰️ Recalling conversation history…"
     if name == "ask_user":
         question = html.escape(str(arguments.get("question", "")).strip()[:80], quote=False)
-        return f"🙋 Asking you: {question}" if question else "🙋 Asking you a question…"
+        return f"🙋 Requesting your input: {question}" if question else "🙋 Requesting your input…"
     if name == "network_route":
         action = str(arguments.get("action", "")).strip().lower()
         # proxy_url TIDAK pernah ditampilkan: isinya bisa user:pass@host.
@@ -526,9 +526,9 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         target = f": <code>{label}</code>" if label else ""
         labels = {
             "list": "🛰 Listing network routes…",
-            "add": f"🛰 Adding network route{target}",
+            "add": f"🛜 Configuring network route{target}",
             "remove": f"🛰 Removing network route{target}",
-            "test": f"🛰 Testing network route{target}",
+            "test": f"📡 Testing network connection{target}",
         }
         return labels.get(action, "🛰 Managing network routes…")
     if name == "browser":
@@ -537,22 +537,22 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         selector = html.escape(str(arguments.get("selector", ""))[:60], quote=False)
         where = f" <code>{selector}</code>" if selector else ""
         if action == "open":
-            return f"🌍 Opening page: {host}" if host else "🌍 Opening browser page…"
+            return f"🌐 Opening webpage: {host}" if host else "🌐 Opening webpage…"
         if action == "text":
-            return f"🌍 Reading page text{where}"
+            return f"📖 Reading webpage content{where}"
         if action == "click":
-            return f"🖱 Clicking{where}" if selector else "🖱 Clicking on the page…"
+            return f"🖱 Interacting with webpage{where}" if selector else "🖱 Interacting with webpage…"
         if action == "type":
-            return f"⌨️ Typing into{where}" if selector else "⌨️ Typing on the page…"
+            return f"⌨️ Entering text{where}" if selector else "⌨️ Entering text…"
         if action == "screenshot":
-            return f"📸 Capturing screenshot <code>{path}</code>" if path else "📸 Capturing page screenshot…"
+            return f"📸 Capturing webpage screenshot <code>{path}</code>" if path else "📸 Capturing webpage screenshot…"
         if action == "links":
-            return "🌍 Listing page links…"
+            return "🔗 Extracting page links…"
         if action == "eval":
-            return "🧪 Running JavaScript on the page…"
+            return "🧪 Executing browser script…"
         if action == "close":
-            return "🌍 Closing the browser…"
-        return "🌍 Driving the browser…"
+            return "🚪 Closing browser session…"
+        return "🌐 Driving the browser…"
     if name == "code_intel":
         action = str(arguments.get("action", "")).strip().lower()
         where = f" <code>{path}</code>" if path else ""
@@ -562,13 +562,13 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             line_no = 0
         at = f"{where} L{line_no}" if (where and line_no > 0) else where
         if action == "diagnostics":
-            return f"🩺 Checking code diagnostics{where}" if where else "🩺 Checking code diagnostics…"
+            return f"🩺 Analyzing code diagnostics{where}" if where else "🩺 Analyzing code diagnostics…"
         if action == "definition":
-            return f"🧭 Finding definition{at}" if at else "🧭 Finding the definition…"
+            return f"🎯 Locating symbol definition{at}" if at else "🎯 Locating symbol definition…"
         if action == "references":
-            return f"🧭 Finding references{at}" if at else "🧭 Finding references…"
+            return f"🔗 Finding symbol references{at}" if at else "🔗 Finding symbol references…"
         if action == "hover":
-            return f"💬 Inspecting type &amp; docs{at}" if at else "💬 Inspecting type &amp; docs…"
+            return f"💡 Inspecting type information{at}" if at else "💡 Inspecting type information…"
         if action == "symbols":
             return f"🗺 Mapping symbols{where}" if where else "🗺 Mapping file symbols…"
         if action == "servers":
@@ -588,13 +588,13 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         parts = name[len(mcp_module.MCP_TOOL_PREFIX):].split("__", 1)
         server = html.escape(parts[0].replace("_", " ")[:40], quote=False)
         remote = html.escape((parts[1] if len(parts) > 1 else "tool").replace("_", " ")[:60], quote=False)
-        return f"🧩 {remote} via {server}"
+        return f"🧩 Connecting to external tool: {remote} via {server}"
     # Fallback: satu baris, argumen pertama saja, TANPA newline.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
         first_val = html.escape(str(next(iter(arguments.values())))[:80], quote=False)
     label = html.escape(name.replace("_", " "), quote=False)
-    return f"🔧 {label}: {first_val}" if first_val else f"🔧 {label}"
+    return f"⚙️ Executing tool: {label}: {first_val}" if first_val else f"⚙️ Executing tool: {label}"
 
 
 def _progress_category(line: str) -> str | None:
@@ -605,9 +605,9 @@ def _progress_category(line: str) -> str | None:
     shell, run code TIDAK di-collapse — tiap file & command tampil sendiri supaya
     user lihat SEMUA yang dikerjakan, bukan cuma satu ringkasan.
     """
-    if line.startswith("🌐 Researching"):
+    if line.startswith("🧠 Researching in depth"):
         return "research"
-    if line.startswith("🌐"):
+    if line.startswith("🔎 Searching the web"):
         return "search"
     return None
 
@@ -635,11 +635,11 @@ def _finalize_line(line: str) -> str:
     penanda generik 'data/other'. Baris file (📖 Reading <file>) dibiarkan apa
     adanya supaya SEMUA file yang dibaca tetap terlihat.
     """
-    prefixes = ("🌐 Searching", "🌐 Researching")
+    prefixes = ("🔎 Searching the web", "🧠 Researching in depth")
     for prefix in prefixes:
         if line.startswith(prefix):
             # Ambil subjek setelah ikon+verb, buang elipsis/trailing.
-            subject = line[len(prefix):].strip().strip("…").strip()
+            subject = line[len(prefix):].strip().lstrip(":").strip().strip("…").strip()
             return f"📖 Read web · {subject}" if subject else "📖 Read web"
     return line
 
@@ -647,12 +647,20 @@ def _finalize_line(line: str) -> str:
 def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
     """Render hanya hasil nyata yang bernilai sebagai progress terpisah."""
     if name == "manage_skill" and not result.startswith("ERROR"):
-        # ``list`` cuma orientasi internal (cek duplikat sebelum menyimpan);
-        # mengirim inventaris skill ke chat sebagai "Improvement" itu bising dan
-        # membocorkan nama skill private tanpa alasan.
-        if str(arguments.get("action", "")).strip().lower() in {"list", "inventory"}:
+        # Inventory is orientation only: never leak a private skill list as an
+        # accomplishment. Mutations use the same vocabulary as background
+        # reflection so the chat has one coherent improvement language.
+        action = str(arguments.get("action", "")).strip().lower()
+        if action in {"list", "inventory"}:
             return None
-        return f"📒 Improvement: {html.escape(result[:1000], quote=False)}"
+        labels = {
+            "create": "📙 Self-Improvement",
+            "patch": "📘 Refinements",
+            "write_file": "📗 Enhancements",
+            "delete": "📘 Refinements",
+        }
+        label = labels.get(action, "📙 Self-Improvement")
+        return f"{label}: {html.escape(result[:1000], quote=False)}"
     return None
 
 
@@ -1672,6 +1680,31 @@ def _events_card(identity: str) -> str:
     return "\n".join(lines)
 
 
+def _skillforge_card() -> str:
+    """Owner-only measured overview; never draft, approve, or apply from a card."""
+    from zeline.skillforge import ForgeStore
+    try:
+        store = ForgeStore()
+        rows = store.scan(limit=5)
+        pending = sum(row["status"] in {"pending", "tested", "approved"} for row in store.proposals())
+        lines = ["<b>SkillForge</b>",
+                 "Observed tool outcomes, not model claims. No automatic skill replacement.",
+                 f"Proposals awaiting action: {pending}", ""]
+        for row in rows:
+            score = row.get("score", {})
+            value = score.get("effectiveness")
+            label = "insufficient observations" if not score.get("sufficient_evidence") else f"{value:.0f}% observed effectiveness"
+            reasons = ", ".join(row["reasons"]) or "current revision"
+            lines.append(html.escape(f"{row['name']} — {label} · {reasons}", quote=False))
+        if not rows:
+            lines.append("No skill observations yet. Scores appear after real skill-backed tool runs.")
+        lines.extend(["", "Local review: <code>zeline skillforge list</code>",
+                      "Tests and explicit operator review are required before apply."])
+        return "\n".join(lines)
+    except Exception:
+        return "<b>SkillForge</b>\nObservation store unavailable; no skill was changed."
+
+
 def _lessons_card(identity: str) -> str:
     """Lessons learned from tool failures — the agent's self-improvement store.
 
@@ -1790,6 +1823,7 @@ def _handle_command_update(
                 "/stats — View token usage\n"
                 "/events — Recent file/skill/memory changes\n"
                 "/lessons — View self-learning lessons\n"
+                "/skillforge — Review skill effectiveness and proposals\n"
                 "/stop — Stop the active turn\n"
                 "/new — Start a new session\n\n"
                 "Send a message to start a task"
@@ -1854,6 +1888,11 @@ def _handle_command_update(
         text = refusal if refusal is not None else _events_card(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
         return True
+    if command == "/skillforge":
+        refusal = _owner_only_reply("/skillforge", chat_id, allowed)
+        text = refusal if refusal is not None else _skillforge_card()
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        return True
     if command == "/lessons":
         refusal = _owner_only_reply("/lessons", chat_id, allowed)
         text = refusal if refusal is not None else _lessons_card(identity)
@@ -1879,10 +1918,7 @@ def _handle_command_update(
             # SATU pesan saja. Turn yang dibatalkan TIDAK ikut mengirim
             # "Stopped." (lihat _send_agent_reply) dan refleksi dilewati, jadi
             # inilah satu-satunya balasan untuk /stop.
-            reply = (
-                f"❄️ Stopped — {title}\n"
-                "The running step was force-killed. Session and history are intact."
-            )
+            reply = f"❄️ Stopped — {title}"
         elif _stopped_recently(identity):
             # /stop kedua (dobel-tap, atau update yang sama dikirim ulang
             # Telegram) tiba setelah turn benar-benar berhenti. Membalas
@@ -1903,11 +1939,12 @@ def _handle_command_update(
         except Exception:
             summary = None
         if summary:
-            _api_call(
-                api, "sendMessage", chat_id=chat_id,
-                text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
-                parse_mode="HTML",
-            )
+            for phase in summary.split("\n\n"):
+                _api_call(
+                    api, "sendMessage", chat_id=chat_id,
+                    text=phase[:1500],
+                    parse_mode="HTML",
+                )
         sessions.reset(identity)
         _api_call(api, "sendMessage", chat_id=chat_id, text=_new_session_text())
         return True
@@ -2623,6 +2660,28 @@ def _split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     return parts or ["(jawaban kosong)"]
 
 
+def _telegram_html_parts(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split source Markdown until every rendered HTML payload fits Telegram."""
+    pending = _split_message(text, limit)
+    rendered_parts: list[str] = []
+    while pending:
+        part = pending.pop(0)
+        rendered = _markdown_to_telegram_html(part)
+        if len(rendered) <= limit:
+            rendered_parts.append(rendered)
+            continue
+        # Escaping can expand one source character into several HTML entity
+        # characters. Re-split the source, not rendered HTML, so tags/fences
+        # remain balanced. Leave headroom for renderer-added tags.
+        reduced = max(1, min(len(part) - 1, int(len(part) * limit / len(rendered)) - 64))
+        pieces = _split_message(part, reduced)
+        if len(pieces) == 1 and pieces[0] == part:
+            midpoint = max(1, len(part) // 2)
+            pieces = _split_plain(part, midpoint)
+        pending[:0] = pieces
+    return rendered_parts
+
+
 def _load_offset() -> int:
     try:
         data = json.loads(OFFSET_FILE.read_text(encoding="utf-8"))
@@ -2767,7 +2826,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
-        return "/status · /models · /model <id> · /undo · /stats · /events · /lessons · /version · /update · /new · /restart · /stop · /logs"
+        return "/status · /models · /model <id> · /undo · /stats · /events · /lessons · /skillforge · /version · /update · /new · /restart · /stop · /logs"
     if command == "/status":
         return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":
@@ -2870,7 +2929,12 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None) -> None:
+    def cancelled():
+        return _ticket is not None and _ticket.cancel_event.is_set()
+
+    if cancelled():
+        return
     _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
               timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     done = threading.Event()
@@ -2883,6 +2947,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # rapi — narasi & jawaban akhir masing-masing jadi bubble utuh sendiri
     # (tidak ada edit-in-place), diselingi feed aktivitas tool.
     def on_tool(_name, _args):
+        if cancelled():
+            return
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
         # Tambahkan satu baris ringkas ke feed live, bukan pesan baru.
@@ -2908,6 +2974,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
                 _render_ask_question(api, chat_id, entry)
 
     def on_tool_result(_name, _args, result):
+        if cancelled():
+            return
         result_text = _tool_result_text(_name, _args, result)
         if result_text:
             live.add(_safe_progress_line(result_text))
@@ -2915,12 +2983,16 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         live.set_waiting()
 
     def on_iteration(current, maximum):
+        if cancelled():
+            return
         # Awal tiap iterasi = mulai menunggu respons provider. Simpan nomor
         # langkah supaya header status bisa menunjukkan 'step 4/20'.
         live.set_iteration(current, maximum)
         live.set_waiting()
 
     def on_narration(sentence: str):
+        if cancelled():
+            return
         # Kalimat rencana/temuan model yang menyertai tool call → dikirim
         # sebagai bubble chat UTUH tersendiri SEBELUM tool jalan. Ini yang
         # bikin alur kebaca hidup & "satset": [penjelasan] → [tool feed] →
@@ -2931,11 +3003,14 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if not sentence:
             return
         live.detach()
-        for part in _split_message(sentence):
-            _api_call(
+        for rendered_part in _telegram_html_parts(sentence):
+            sent = _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=_markdown_to_telegram_html(part), parse_mode="HTML",
+                text=rendered_part, parse_mode="HTML",
             )
+            if sent is None:
+                print("  [telegram] narration delivery stopped after a failed part", flush=True)
+                break
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
@@ -2944,6 +3019,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # berjalan lalu dilepas di finally: kalau tetap terdaftar, sebuah cron job
     # atau turn lain bisa mengirim file ke chat yang salah.
     def _deliver_file(path: Path, caption: str, kind: str) -> bool:
+        if cancelled():
+            return False
         # Bubble progres yang sedang berjalan dikunci lebih dulu supaya file
         # muncul DI BAWAH aktivitas tool, bukan menimpanya.
         live.detach()
@@ -2953,8 +3030,11 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         return sent
 
     delivery.register_channel(identity, _deliver_file)
+    from zeline import interaction
+    interaction.register_channel(identity, lambda entry: None if cancelled() else _render_ask_question(api, chat_id, entry))
     try:
         reply = sessions.send(
+            **({"ticket": _ticket} if _ticket is not None else {}),
             identity=identity,
             text=text,
             tool_profile=tool_profile,
@@ -2973,19 +3053,18 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         done.set()
         heartbeat.join(timeout=0.2)
         delivery.unregister_channel(identity)
-        if ok:
-            # Kunci bubble progres sebagai catatan alur (tidak dihapus), lalu
-            # kirim jawaban final sebagai pesan baru terpisah.
-            live.finalize()
-        else:
-            live.clear()  # error/batal: buang bubble agar tidak menyisakan sampah
+        interaction.unregister_channel(identity)
+        # Completed side effects are history, not transient trash. Preserve
+        # their progress on success, cancellation, and provider failure alike.
+        live.finalize()
+    if cancelled():
+        return
     # /stop sudah mengirim SATU konfirmasi sendiri ("❄️ Stopped — <judul>").
     # Agent mengembalikan sentinel "Stopped." untuk turn yang sama, jadi
     # mengirimnya berarti dua pesan untuk satu pembatalan — dan refleksi di
     # bawah bisa menambah pesan ketiga. Turn yang dibatalkan berhenti di sini:
     # tidak ada balasan, tidak ada refleksi, tidak ada bubble sisa.
     if isinstance(reply, str) and reply.strip() == _CANCELLED_SENTINEL and _consume_stop(identity):
-        live.clear()
         return
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
@@ -2994,19 +3073,24 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # beberapa pertanyaan dalam bubble terpisah. Part berikutnya tanpa reply
     # (biar rantai jawaban tidak menumpuk quote berulang).
     first_part = True
-    for part in _split_message(reply):
+    for rendered_part in _telegram_html_parts(reply):
+        if cancelled():
+            return
         extra: dict[str, Any] = {}
         if first_part and reply_to_message_id:
             extra["reply_to_message_id"] = reply_to_message_id
             extra["allow_sending_without_reply"] = True
-        _api_call(
+        sent = _api_call(
             api,
             "sendMessage",
             chat_id=chat_id,
-            text=_markdown_to_telegram_html(part),
+            text=rendered_part,
             parse_mode="HTML",
             **extra,
         )
+        if sent is None:
+            print("  [telegram] final reply delivery stopped after a failed part", flush=True)
+            break
         first_part = False
 
     # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
@@ -3021,15 +3105,46 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             except Exception:
                 summary = None
             if summary:
-                _api_call(
-                    api, "sendMessage", chat_id=chat_id,
-                    text=f"📒 Improvement: {html.escape(summary[:1500], quote=False)}",
-                    parse_mode="HTML",
-                )
+                for phase in summary.split("\n\n"):
+                    _api_call(
+                        api, "sendMessage", chat_id=chat_id,
+                        text=phase[:1500],
+                        parse_mode="HTML",
+                    )
         threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
-def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None) -> threading.Thread:
+def _interrupt_ack(progress: dict[str, Any]) -> str:
+    elapsed = max(0, int(float(progress.get("elapsed", 0))))
+    age = f"{elapsed // 60} min elapsed" if elapsed >= 60 else f"{elapsed}s elapsed"
+    current, maximum = int(progress.get("iteration", 0)), int(progress.get("maximum", 0))
+    detail = age + (f", iteration {current}/{maximum}" if maximum else "")
+    return f"⚡ Interrupting current task ({detail}). I'll respond to your message shortly."
+
+
+_busy_ack_ts: dict[tuple[int, str], float] = {}
+_busy_ack_lock = threading.Lock()
+_BUSY_ACK_COOLDOWN = 30.0
+
+
+def _send_busy_ack(api, sessions, identity, chat_id, progress):
+    key = (id(sessions), identity)
+    now = time.monotonic()
+    with _busy_ack_lock:
+        if key in _busy_ack_ts and now - _busy_ack_ts[key] < _BUSY_ACK_COOLDOWN:
+            return
+        for stale, stamp in list(_busy_ack_ts.items()):
+            if now - stamp >= _BUSY_ACK_COOLDOWN:
+                _busy_ack_ts.pop(stale, None)
+        _busy_ack_ts[key] = now
+    sent = _api_call(api, "sendMessage", chat_id=chat_id, text=_interrupt_ack(progress),
+                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+    if not sent:
+        with _busy_ack_lock:
+            _busy_ack_ts.pop(key, None)  # Failed delivery must remain retryable.
+
+
+def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, prepare=None) -> threading.Thread:
     """Jalankan turn di worker agar polling tetap menerima /stop dan /steer.
 
     Kirim 'typing…' SEKETIKA (sinkron, dari loop polling) sebelum worker dimulai.
@@ -3041,25 +3156,61 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     ``reply_to_message_id`` dipakai agar bubble jawaban final nempel (quote) ke
     pesan user — jelas balasan untuk pertanyaan yang mana saat ada beberapa.
     """
+    ticket = None
+    if callable(getattr(sessions, "admit", None)):
+        ticket = sessions.admit(identity, tool_profile, interrupt=True)
+        if ticket is not None and ticket.previous_progress is not None:
+            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress)
+        else:
+            with _busy_ack_lock:
+                _busy_ack_ts.pop((id(sessions), identity), None)
     try:
-        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing", timeout=10)
+        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
     except Exception:
         pass
+
+    def run_reserved():
+        try:
+            if ticket is not None:
+                if not sessions.wait_turn(ticket):
+                    return
+                prepared_text = text
+                if prepare is not None:
+                    from zeline import cancellation
+                    try:
+                        prepared_text, error = cancellation.wait_io(prepare, ticket.cancel_event.is_set)
+                    except cancellation.Cancelled:
+                        return
+                    except Exception as exc:
+                        prepared_text, error = "", f"Could not read media ({type(exc).__name__})."
+                    if ticket.cancel_event.is_set():
+                        return
+                    if error:
+                        _api_call(api, "sendMessage", chat_id=chat_id, text=error,
+                                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                        return
+                _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
+                                  tool_profile=tool_profile, reply_to_message_id=reply_to_message_id,
+                                  _ticket=ticket)
+            else:
+                _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=text,
+                                  tool_profile=tool_profile, reply_to_message_id=reply_to_message_id)
+        finally:
+            if ticket is not None:
+                sessions.finish_turn(ticket)
+
     worker = threading.Thread(
-        target=_send_agent_reply,
-        kwargs={
-            "api": api,
-            "sessions": sessions,
-            "chat_id": chat_id,
-            "identity": identity,
-            "text": text,
-            "tool_profile": tool_profile,
-            "reply_to_message_id": reply_to_message_id,
-        },
+        target=run_reserved,
         name=f"zeline-telegram-{chat_id}",
         daemon=True,
     )
-    worker.start()
+    try:
+        worker.start()
+    except Exception:
+        if ticket is not None:
+            sessions.release(ticket)
+        raise
     return worker
 
 
@@ -3136,6 +3287,26 @@ def _dispatch_update(
             if interaction.answer(identity, text):
                 return
             _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity, text=text, tool_profile=tool_profile, reply_to_message_id=incoming_message_id)
+    elif (document or photos or voice or video) and callable(getattr(sessions, "admit", None)):
+        # Admit before download/extraction, so polling can still accept /stop.
+        def prepare():
+            if document:
+                filename = _document_filename(document)
+                content, error = _download_document(api, token, document)
+                if error:
+                    return "", error
+                extracted, error = _extract_document_text(filename, content or b"", str(document.get("mime_type") or ""))
+                return (_build_document_prompt(filename, extracted or "", caption), error)
+            if photos:
+                largest = photos[-1] if isinstance(photos, list) else {}
+                dest, error = _download_media_file(api, token, str(largest.get("file_id") or ""), ".jpg")
+                return (_build_image_prompt(dest, caption), "") if dest is not None and not error else ("", error or "Could not read the image.")
+            media, extension, kind = (voice, ".ogg", "audio") if voice else (video, ".mp4", "video")
+            dest, error = _download_media_file(api, token, str(media.get("file_id") or ""), extension)
+            return (_build_media_notice_prompt(kind, dest, caption), "") if dest is not None and not error else ("", error or f"Could not read the {kind}.")
+        _start_agent_reply(api, sessions, chat_id=chat_id_int, identity=identity,
+                          text=caption or "Process attached media", tool_profile=tool_profile,
+                          reply_to_message_id=incoming_message_id, prepare=prepare)
     elif document:
         filename = _document_filename(document)
         file_content, error = _download_document(api, token, document)

@@ -480,6 +480,8 @@ def _defaults() -> dict[str, Any]:
         "providers": {},
         "agent": {
             "max_tool_rounds": DEFAULT_MAX_TOOL_ROUNDS,
+            "max_provider_requests_per_turn": 0,
+            "max_tool_calls_per_turn": 0,
             "max_sessions": DEFAULT_MAX_SESSIONS,
             # Optional same-provider model used only after repeated transient
             # 502/503/504 responses. Empty keeps fresh installs provider-neutral.
@@ -724,7 +726,7 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
     global MAX_PARALLEL_SUBAGENTS
     global RESTART_DRAIN_TIMEOUT
     global ASK_USER_TIMEOUT, FORMAT_ON_WRITE, FORMATTERS, PROJECT_RULES
-    global MAX_TURN_SECONDS
+    global MAX_TURN_SECONDS, MAX_PROVIDER_REQUESTS_PER_TURN, MAX_TOOL_CALLS_PER_TURN
     global USAGE_TRACKING, MODEL_PRICES, CHECKPOINTS, CUSTOM_TOOLS, OPENAPI_TOOLS, PLUGINS, TOOL_SEARCH
     global BROWSER, BROWSER_BINARY, LSP, LSP_SERVERS, CRON
     PROVIDER = cfg["provider"]
@@ -771,6 +773,8 @@ def _set_runtime_values(cfg: dict[str, Any]) -> None:
         )
     except (TypeError, ValueError):
         MAX_TURN_SECONDS = float(DEFAULT_MAX_TURN_SECONDS)
+    MAX_PROVIDER_REQUESTS_PER_TURN = cfg.get("agent", {}).get("max_provider_requests_per_turn", 0)
+    MAX_TOOL_CALLS_PER_TURN = cfg.get("agent", {}).get("max_tool_calls_per_turn", 0)
     STREAM_RESPONSES = bool(cfg.get("agent", {}).get("stream", True))
     WORKSPACE = str(cfg.get("tools", {}).get("workspace", str(Path.home())))
     CLI_TOOL_PROFILE = str(cfg.get("tools", {}).get("cli_profile", "full"))
