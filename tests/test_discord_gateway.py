@@ -98,9 +98,22 @@ class HeartbeatTests(unittest.TestCase):
     class _Socket:
         def __init__(self):
             self.frames: list[dict] = []
+            self._frames_changed = threading.Condition()
 
         def send(self, raw):
-            self.frames.append(__import__("json").loads(raw))
+            with self._frames_changed:
+                self.frames.append(__import__("json").loads(raw))
+                self._frames_changed.notify_all()
+
+        def wait_for_frame_count(self, count, timeout=2):
+            deadline = time.monotonic() + timeout
+            with self._frames_changed:
+                while len(self.frames) < count:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._frames_changed.wait(remaining)
+                return True
 
     def test_a_heartbeat_only_ever_writes_to_its_own_socket(self):
         first, second = self._Socket(), self._Socket()
@@ -121,18 +134,18 @@ class HeartbeatTests(unittest.TestCase):
         ]
         for thread in threads:
             thread.start()
-        time.sleep(0.08)
+        self.assertTrue(first.wait_for_frame_count(1), "the first heartbeat never sent anything")
+        self.assertTrue(second.wait_for_frame_count(1), "the second heartbeat never sent anything")
         # Retiring the first connection must not silence the second.
         first_stop.set()
         threads[0].join(timeout=2)
         self.assertFalse(threads[0].is_alive())
         sent_after_stop = len(second.frames)
-        time.sleep(0.05)
+        self.assertTrue(second.wait_for_frame_count(sent_after_stop + 1))
         second_stop.set()
         threads[1].join(timeout=2)
         self.assertFalse(threads[1].is_alive())
 
-        self.assertTrue(first.frames, "the first heartbeat never sent anything")
         self.assertGreater(len(second.frames), sent_after_stop)
         self.assertTrue(all(frame["op"] == 1 for frame in first.frames + second.frames))
         self.assertTrue(all(frame["d"] == 7 for frame in first.frames))
