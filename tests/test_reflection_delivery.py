@@ -98,6 +98,42 @@ class ReflectionDeliveryTests(unittest.TestCase):
         self.assertFalse(module.lessons.resolved_lessons(self.identity))
         self.assertNotIn("📗", summary)
 
+    def test_waiting_for_human_does_not_consume_the_active_work_budget(self):
+        module = importlib.import_module("zeline.agent")
+        agent = module.Zeline(identity=self.identity, tool_profile="full")
+        clock = [0.0]
+        ask = {"content": "", "tool_calls": [{"id": "question", "type": "function",
+            "function": {"name": "ask_user", "arguments": '{"question":"Proceed?"}'}}]}
+
+        def execute(name, args):
+            clock[0] += module.config.MAX_TURN_SECONDS + 60
+            return "Proceed"
+
+        with mock.patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(agent.executor, "run", side_effect=execute), \
+             mock.patch.object(agent, "_call_llm", side_effect=[ask, {"content": "Continuing normally"}]) as provider:
+            agent.send("Ask before doing the next step")
+        self.assertFalse(any(c.kwargs.get("use_tools") is False for c in provider.call_args_list),
+                         "A human pause incorrectly exhausted the agent's work budget")
+
+    def test_slow_tool_execution_still_consumes_the_active_work_budget(self):
+        module = importlib.import_module("zeline.agent")
+        agent = module.Zeline(identity=self.identity, tool_profile="full")
+        clock = [0.0]
+        tool = {"content": "", "tool_calls": [{"id": "request", "type": "function",
+            "function": {"name": "http_request", "arguments": '{"url":"https://example.test"}'}}]}
+
+        def execute(name, args):
+            clock[0] += module.config.MAX_TURN_SECONDS + 60
+            return "Status: 200"
+
+        with mock.patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(agent.executor, "run", side_effect=execute), \
+             mock.patch.object(agent, "_call_llm", side_effect=[tool, {"content": "Budget reached"}]) as provider:
+            agent.send("Fetch the requested page")
+        self.assertTrue(any(c.kwargs.get("use_tools") is False for c in provider.call_args_list),
+                        "Ordinary slow tools must not bypass execution limits")
+
     def test_single_deep_research_call_qualifies_even_below_five_tools(self):
         module = importlib.import_module("zeline.agent")
         agent = module.Zeline(identity=self.identity, tool_profile="full")

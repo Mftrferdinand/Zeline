@@ -982,6 +982,24 @@ class _LiveStatus:
         with self._lock:
             self._push_locked(allow_create=False)
 
+    def _settle_terminal(self, method: str, **payload) -> None:
+        """Retry only an idempotent terminal edit/delete, outside the agent loop."""
+        call_api = _api_call
+        api = self.api
+        kwargs = {**payload, "timeout": _PROGRESS_TIMEOUT, "attempts": _PROGRESS_ATTEMPTS}
+        if call_api(api, method, **kwargs):
+            return
+
+        def retry():
+            for delay in (0.25, 1.0, 2.0):
+                time.sleep(delay)
+                if call_api(api, method, **kwargs):
+                    return
+
+        # Never retry sendMessage: only the already-known message ID is touched.
+        # A closed status cannot gain a timer or be reopened by this worker.
+        threading.Thread(target=retry, daemon=True, name="zeline-status-cleanup").start()
+
     def finalize(self) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
 
@@ -997,20 +1015,17 @@ class _LiveStatus:
             if self.message_id is None:
                 return
             if not self.lines:
-                _api_call(
-                    self.api, "deleteMessage",
-                    chat_id=self.chat_id, message_id=self.message_id,
-                    timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
+                self._settle_terminal(
+                    "deleteMessage", chat_id=self.chat_id, message_id=self.message_id,
                 )
                 self.message_id = None
                 return
             body = "\n".join(_group_command_lines([
                 _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
             ]))
-            _api_call(
-                self.api, "editMessageText", chat_id=self.chat_id,
+            self._settle_terminal(
+                "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=body, parse_mode="HTML",
-                timeout=20, attempts=_INTERACTIVE_ATTEMPTS,
             )
 
     def clear(self) -> None:
@@ -2190,8 +2205,19 @@ def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> 
         return
     if index == -1:
         # This is a mode switch, NOT an answer. Plain text resolves the same wait.
-        _edit_interactive(api, chat_id, message_id, _ask_card_text(entry, custom=True),
-                          reply_markup=_ask_keyboard(chat_id, entry))
+        # Edit only the owned card: a send fallback would create an untracked
+        # actionable picker that the resolution hook cannot retire.
+        _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id,
+                  text=_ask_card_text(entry, custom=True),
+                  reply_markup=_ask_keyboard(chat_id, entry),
+                  attempts=_INTERACTIVE_ATTEMPTS, timeout=20)
+        # Resolution may have rendered its receipt while this mode edit was in
+        # flight. Reconcile this exact card after the stale edit completes;
+        # never hold the interaction lock across network I/O or delay /stop.
+        if entry.status != "pending":
+            _api_call(api, "editMessageText", chat_id=chat_id, message_id=message_id,
+                      text=_ask_card_text(entry), reply_markup={"inline_keyboard": []},
+                      attempts=_INTERACTIVE_ATTEMPTS, timeout=20)
         return
     interaction.answer_option(identity, index, request_id=entry.request_id)
 

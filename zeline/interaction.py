@@ -17,8 +17,9 @@ Design rules learned from the ``/stop`` work:
 
 - A blocking wait MUST be cancellable. ``/stop`` and ``/new`` call
   :func:`cancel` so a pending question never wedges a session.
-- The wait MUST have a ceiling below ``config.MAX_TURN_SECONDS``; otherwise the
-  turn budget expires while a tool sits waiting and the user sees nothing.
+- Unrendered channels have a bounded delivery/answer wait. A successfully
+  rendered interactive question may wait until answer or cancellation; the agent
+  excludes ask_user idle time from its active execution budget.
 - Only ONE question per identity may be open at a time. A second question
   replaces nothing — it is refused, so the model cannot spam prompts.
 """

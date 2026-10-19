@@ -1180,7 +1180,14 @@ class Zeline:
                     for tool_call, name, args in parsed_calls:
                         if should_stop and should_stop():
                             break
-                        result = self.executor.run(name, args)
+                        human_wait_started = time.monotonic() if name == "ask_user" else None
+                        try:
+                            result = self.executor.run(name, args)
+                        finally:
+                            if human_wait_started is not None:
+                                # Human input is idle time, not active execution.
+                                # A late answer must not force an early final reply.
+                                turn_started += time.monotonic() - human_wait_started
                         results.append(result)
                         recorded = {
                             "role": "tool",
