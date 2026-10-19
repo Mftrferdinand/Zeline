@@ -3062,10 +3062,16 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if not sentence:
             return
         live.detach()
+        # Narration is also a response to this turn's message. Keep its origin
+        # in the worker closure so queued follow-ups cannot steal the quote.
+        extra = {"reply_to_message_id": reply_to_message_id,
+                 "allow_sending_without_reply": True} if reply_to_message_id else {}
         for rendered_part in _telegram_html_parts(sentence):
+            if cancelled():
+                return
             sent = _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=rendered_part, parse_mode="HTML",
+                text=rendered_part, parse_mode="HTML", **extra,
             )
             if sent is None:
                 print("  [telegram] narration delivery stopped after a failed part", flush=True)
@@ -3191,7 +3197,7 @@ _busy_ack_lock = threading.Lock()
 _BUSY_ACK_COOLDOWN = 30.0
 
 
-def _send_busy_ack(api, sessions, identity, chat_id, progress):
+def _send_busy_ack(api, sessions, identity, chat_id, progress, *, reply_to_message_id=None):
     key = (id(sessions), identity)
     now = time.monotonic()
     with _busy_ack_lock:
@@ -3201,8 +3207,11 @@ def _send_busy_ack(api, sessions, identity, chat_id, progress):
             if now - stamp >= _BUSY_ACK_COOLDOWN:
                 _busy_ack_ts.pop(stale, None)
         _busy_ack_ts[key] = now
+    # Bind to the message that interrupted this run, never a shared "latest" ID.
+    extra = {"reply_to_message_id": reply_to_message_id,
+             "allow_sending_without_reply": True} if reply_to_message_id else {}
     sent = _api_call(api, "sendMessage", chat_id=chat_id, text=_interrupt_ack(progress),
-                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS, **extra)
     if not sent:
         with _busy_ack_lock:
             _busy_ack_ts.pop(key, None)  # Failed delivery must remain retryable.
@@ -3224,7 +3233,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     if callable(getattr(sessions, "admit", None)):
         ticket = sessions.admit(identity, tool_profile, interrupt=True)
         if ticket is not None and ticket.previous_progress is not None:
-            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress)
+            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress,
+                           reply_to_message_id=reply_to_message_id)
         else:
             with _busy_ack_lock:
                 _busy_ack_ts.pop((id(sessions), identity), None)
