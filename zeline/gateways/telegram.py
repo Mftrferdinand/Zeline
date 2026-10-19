@@ -627,6 +627,25 @@ def _ordered_lines(lines: list[str]) -> list[str]:
     return [line for _index, line in sorted(enumerate(lines), key=key)]
 
 
+def _group_command_lines(lines: list[str]) -> list[str]:
+    """Share a heading for adjacent commands without collapsing their evidence."""
+    heading = "💻 Executing command…"
+    grouped: list[str] = []
+    in_commands = False
+    for line in lines:
+        is_command = line == heading or line.startswith(heading + " ")
+        if is_command:
+            command = line[len(heading):].strip()
+            if not in_commands:
+                grouped.append(f"{heading}\n{command}" if command else heading)
+            elif command:
+                grouped.append(command)
+        else:
+            grouped.append(line)
+        in_commands = is_command
+    return grouped
+
+
 def _finalize_line(line: str) -> str:
     """Ubah baris fase-kerja jadi bentuk 'selesai'.
 
@@ -855,7 +874,7 @@ class _LiveStatus:
         # baris kosong. Diminta user: status yang mengambang di atas feed bikin
         # baris terbaru (yang justru paling penting) terdorong ke bawah, dan
         # jam yang berubah tiap detik menarik mata ke tempat yang salah.
-        ordered = _ordered_lines(self.lines)[-self.max_lines:]
+        ordered = _group_command_lines(_ordered_lines(self.lines)[-self.max_lines:])
         header = self._header()
         if header and ordered:
             return "\n".join(ordered) + "\n\n" + header
@@ -967,7 +986,9 @@ class _LiveStatus:
                 )
                 self.message_id = None
                 return
-            body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
+            body = "\n".join(_group_command_lines([
+                _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
+            ]))
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=body, parse_mode="HTML",
@@ -1002,7 +1023,9 @@ class _LiveStatus:
                 self._last_text = None
                 return
             if self.lines:
-                body = "\n".join(_finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:])
+                body = "\n".join(_group_command_lines([
+                    _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
+                ]))
                 _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
                     message_id=self.message_id, text=body, parse_mode="HTML",
