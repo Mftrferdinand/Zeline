@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 
 from zeline import config
@@ -47,6 +48,11 @@ class PendingQuestion:
     event: threading.Event = field(default_factory=threading.Event)
     answer: str = ""
     cancelled: bool = False
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    wait_forever: bool = False  # A rendered channel may wait until answer or /stop.
+    status: str = "pending"
+    on_resolved: object = None
+    message_id: int | None = None
 
 
 _LOCK = threading.Lock()
@@ -133,15 +139,18 @@ def ask(identity: str, question: str, options: object = None, *, should_stop=Non
             return "CANCELLED: the user cancelled this question."
         if delivered is not None:
             # A synchronous channel (CLI stdin) already produced the answer.
+            entry.answer = delivered
+            entry.status = "answered"
             return delivered
         import time
-        deadline = time.monotonic() + timeout
-        while not entry.event.wait(timeout=min(0.05, max(0, deadline - time.monotonic()))):
+        deadline = None if entry.wait_forever else time.monotonic() + timeout
+        while not entry.event.wait(timeout=0.05 if deadline is None else min(0.05, max(0, deadline - time.monotonic()))):
             if should_stop and should_stop():
                 return "CANCELLED: the user cancelled this question."
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 break
         if not entry.event.is_set():
+            entry.status = "expired"
             return (
                 f"NO ANSWER: the user did not reply within {int(timeout)}s. "
                 "Proceed with your best judgement and say which assumption you made."
@@ -153,32 +162,41 @@ def ask(identity: str, question: str, options: object = None, *, should_stop=Non
         with _LOCK:
             if _PENDING.get(key) is entry:
                 del _PENDING[key]
+        if entry.status == "pending":
+            entry.status = "cancelled"
+        if callable(entry.on_resolved):
+            try:
+                entry.on_resolved(entry)
+            except Exception:  # A failed receipt must not lose the user answer.
+                pass
 
 
-def answer(identity: str, text: str) -> bool:
+def answer(identity: str, text: str, *, request_id: str | None = None) -> bool:
     """Route a user message to the pending question. True if it was consumed."""
     key = identity or "cli:local"
     with _LOCK:
         entry = _PENDING.get(key)
-        if entry is None or entry.event.is_set():
+        if entry is None or entry.event.is_set() or (request_id is not None and entry.request_id != request_id):
             return False
         entry.answer = str(text or "").strip()[:MAX_ANSWER_CHARS]
-    entry.event.set()
+        entry.status = "answered"
+        entry.event.set()
     return True
 
 
-def answer_option(identity: str, index: int) -> str | None:
+def answer_option(identity: str, index: int, *, request_id: str | None = None) -> str | None:
     """Answer by option index (button tap). Returns the chosen text, or None."""
     key = identity or "cli:local"
     with _LOCK:
         entry = _PENDING.get(key)
-        if entry is None or entry.event.is_set():
+        if entry is None or entry.event.is_set() or (request_id is not None and entry.request_id != request_id):
             return None
         if index < 0 or index >= len(entry.options):
             return None
         chosen = entry.options[index]
         entry.answer = chosen
-    entry.event.set()
+        entry.status = "answered"
+        entry.event.set()
     return chosen
 
 
@@ -190,7 +208,8 @@ def cancel(identity: str) -> bool:
         if entry is None or entry.event.is_set():
             return False
         entry.cancelled = True
-    entry.event.set()
+        entry.status = "cancelled"
+        entry.event.set()
     return True
 
 

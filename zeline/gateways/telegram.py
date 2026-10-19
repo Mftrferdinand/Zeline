@@ -811,6 +811,7 @@ class _LiveStatus:
         self.iteration: int | None = None
         self.maximum: int | None = None
         self._last_text: str | None = None
+        self._closed = False
         self._lock = threading.Lock()
 
     def _header(self) -> str:
@@ -821,6 +822,8 @@ class _LiveStatus:
         itu diberi ambang lebih longgar dan label "Thinking". Begitu tool
         pertama jalan, statusnya jadi "Working" dengan ambang normal.
         """
+        if self.phase == "awaiting_user":
+            return "⏳ Waiting for your answer · /stop to cancel"
         elapsed = time.monotonic() - self.turn_started
         working = bool(self.lines)
         threshold = _STATUS_AFTER_SECONDS if working else _THINKING_AFTER_SECONDS
@@ -861,6 +864,8 @@ class _LiveStatus:
         return "\n".join(ordered)
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
+        if self._closed:
+            return
         # Bubble progres dibuat saat ada aktivitas tool nyata, ATAU saat turn
         # sudah berjalan lama tanpa kabar (header status) — supaya user tidak
         # merasa didiamkan. Pertanyaan ringan yang selesai cepat tetap bersih.
@@ -890,6 +895,13 @@ class _LiveStatus:
                 timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
 
+    def set_awaiting_user(self) -> None:
+        """Human input is idle waiting, never provider work or typing."""
+        with self._lock:
+            self.phase = "awaiting_user"
+            self.phase_started = time.monotonic()
+            self._push_locked()
+
     def set_waiting(self) -> None:
         """Tandai bahwa kita sedang menunggu respons provider (LLM berpikir).
 
@@ -908,6 +920,8 @@ class _LiveStatus:
         if not line:
             return
         with self._lock:
+            if self._closed:
+                return
             self.phase = "tool"
             self.phase_started = time.monotonic()
             category = _progress_category(line)
@@ -940,6 +954,9 @@ class _LiveStatus:
         pesan kosong.
         """
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             if self.message_id is None:
                 return
             if not self.lines:
@@ -954,7 +971,7 @@ class _LiveStatus:
             _api_call(
                 self.api, "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=body, parse_mode="HTML",
-                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
+                timeout=20, attempts=_INTERACTIVE_ATTEMPTS,
             )
 
     def clear(self) -> None:
@@ -978,6 +995,8 @@ class _LiveStatus:
         Bubble kosong (belum ada tool) cukup dilepaskan tanpa menyisakan sampah.
         """
         with self._lock:
+            if self._closed:
+                return
             if self.message_id is None:
                 self.lines = []
                 self._last_text = None
@@ -1024,8 +1043,9 @@ def _start_working_heartbeat(
     def heartbeat() -> None:
         while not done.wait(interval):
             try:
-                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
-                          timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                if live.phase != "awaiting_user" and not done.is_set():
+                    _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                              timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
             except Exception:
                 pass
             live.tick()
@@ -2080,49 +2100,80 @@ def _edit_interactive(api: str, chat_id: int, message_id: int, text: str, **extr
 # either a button tap or the next plain message back to the waiting tool.
 #
 # callback_data is capped at 64 bytes by Telegram, so the payload is just
-# `ask:<chat_id>:<option_index>` — the question text stays in the process.
+# `ask:<chat_id>:<request_id>:<option_index>` binds taps to one question.
 
-def _ask_callback_data(chat_id: int, index: int) -> str:
-    return f"ask:{chat_id}:{index}"
+def _ask_callback_data(chat_id: int, index: int, request_id: str) -> str:
+    return f"ask:{chat_id}:{request_id}:{index}"
+
+
+def _ask_keyboard(chat_id: int, entry: Any) -> dict[str, Any]:
+    rows = [
+        [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index, entry.request_id)}]
+        for index, option in enumerate(entry.options)
+    ]
+    rows.append([{"text": "Fill in yourself", "callback_data": _ask_callback_data(chat_id, -1, entry.request_id)}])
+    return {"inline_keyboard": rows}
+
+
+def _ask_card_text(entry: Any, *, custom: bool = False) -> str:
+    body = f"Ask user: {entry.question}"
+    if entry.status == "answered":
+        return f"{body}\n\nAnswer: {entry.answer or '(empty answer)'}"
+    if entry.status == "cancelled":
+        return f"{body}\n\nAnswer: (cancelled)"
+    if entry.status == "expired":
+        return f"{body}\n\nAnswer: (no answer received)"
+    prompt = "Type your own answer below." if custom else "Choose an option or type your answer directly."
+    return f"{body}\n\nWaiting for your answer. {prompt}"
 
 
 def _handle_ask_callback(api: str, chat_id: int, message_id: int, data: str) -> None:
-    """Resolve a pending ask_user question from a tapped option button."""
+    """Bind each tap to its exact card; stale taps never overwrite receipts."""
     parts = data.split(":")
-    if len(parts) != 3:
+    if len(parts) != 4:
         return
     try:
-        target_chat = int(parts[1])
-        index = int(parts[2])
+        target_chat, index = int(parts[1]), int(parts[3])
     except ValueError:
         return
-    identity = f"telegram:{target_chat}"
-    chosen = interaction.answer_option(identity, index)
-    if chosen is None:
-        # Already answered, cancelled, or timed out — say so instead of leaving
-        # a dead button that looks like the tap was ignored.
-        _edit_interactive(api, chat_id, message_id, "That question is no longer waiting for an answer.")
+    if target_chat != chat_id:
         return
-    _edit_interactive(api, chat_id, message_id, f"✅ {chosen}")
+    identity = f"telegram:{chat_id}"
+    entry = interaction.pending(identity)
+    if (entry is None or entry.event.is_set() or entry.request_id != parts[2]
+            or entry.message_id != message_id):
+        return
+    if index == -1:
+        # This is a mode switch, NOT an answer. Plain text resolves the same wait.
+        _edit_interactive(api, chat_id, message_id, _ask_card_text(entry, custom=True),
+                          reply_markup=_ask_keyboard(chat_id, entry))
+        return
+    interaction.answer_option(identity, index, request_id=entry.request_id)
 
 
 def _render_ask_question(api: str, chat_id: int, entry: Any) -> None:
-    """Send the question bubble for a pending ask_user entry."""
-    text = f"❓ {entry.question}"
-    if entry.options:
-        rows = [
-            [{"text": option[:64], "callback_data": _ask_callback_data(chat_id, index)}]
-            for index, option in enumerate(entry.options)
-        ]
-        _api_call(
-            api, "sendMessage", chat_id=chat_id, text=text,
-            reply_markup={"inline_keyboard": rows},
-        )
-    else:
-        _api_call(
-            api, "sendMessage", chat_id=chat_id,
-            text=f"{text}\n\nReply with your answer.",
-        )
+    """Keep the question in chat, then edit it into a durable Q&A receipt."""
+    if entry.message_id is not None:
+        return
+
+    def resolved(completed):
+        if completed.message_id is not None:
+            _edit_interactive(api, chat_id, completed.message_id, _ask_card_text(completed),
+                              reply_markup={"inline_keyboard": []})
+
+    # Install the receipt hook BEFORE network I/O. A direct answer or /stop can
+    # arrive while sendMessage is in flight; the eventual card must still settle
+    # to Answer/(cancelled), never remain an orphaned picker.
+    entry.on_resolved = resolved
+    result = _api_call(api, "sendMessage", chat_id=chat_id,
+                       text=_ask_card_text(entry), reply_markup=_ask_keyboard(chat_id, entry))
+    if result and isinstance(result.get("result"), dict):
+        entry.message_id = result["result"].get("message_id")
+    # Human input is not a 180-second network request. /stop and /new still
+    # cancel the wait; a failed send retains the bounded fallback timeout.
+    entry.wait_forever = entry.message_id is not None
+    if entry.event.is_set() and entry.message_id is not None:
+        resolved(entry)
 
 
 def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
@@ -2955,23 +3006,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         # _safe_progress_line menjaga tag HTML (pre/code) tetap seimbang saat
         # dipangkas — mencegah editMessageText gagal "Can't find end tag pre".
         live.add(_safe_progress_line(_tool_progress_text(_name, _args)))
-        # ask_user memblokir sampai user menjawab, jadi pertanyaannya harus
-        # SUDAH terkirim sebelum tool-nya menunggu. Kirim di sini, tepat setelah
-        # tool call terlihat: kalau menunggu on_tool_result, pertanyaan baru
-        # muncul setelah jawabannya masuk — terlambat dan bikin user bingung.
-        if _name == "ask_user":
-            entry = None
-            # Tool berjalan di thread lain; beri jeda singkat sampai entry
-            # terdaftar, lalu render. Tanpa polling kecil ini kita bisa
-            # membaca state sebelum interaction.ask() mendaftarkannya.
-            for _ in range(20):
-                entry = interaction.pending(identity)
-                if entry is not None:
-                    break
-                time.sleep(0.05)
-            if entry is not None:
-                live.detach()
-                _render_ask_question(api, chat_id, entry)
+        # The registered interaction renderer owns question delivery. Polling
+        # here runs before tool dispatch and used to race/double-render cards.
 
     def on_tool_result(_name, _args, result):
         if cancelled():
@@ -3031,7 +3067,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
 
     delivery.register_channel(identity, _deliver_file)
     from zeline import interaction
-    interaction.register_channel(identity, lambda entry: None if cancelled() else _render_ask_question(api, chat_id, entry))
+    def render_question(entry):
+        if not cancelled():
+            live.set_awaiting_user()
+            _render_ask_question(api, chat_id, entry)
+
+    interaction.register_channel(identity, render_question)
     try:
         reply = sessions.send(
             **({"ticket": _ticket} if _ticket is not None else {}),
