@@ -721,8 +721,8 @@ class AgentLoopTests(unittest.TestCase):
         ])
         self.assertIsNotNone(summary)
         self.assertIn("📙 <b>Self-Improvement review:</b>", summary)
-        self.assertIn("📘 <b>Refinements review:</b>", summary)
-        self.assertIn("📗 <b>Enhancements review:</b>", summary)
+        self.assertIn("📘 <b>Self-Refinements review:</b>", summary)
+        self.assertIn("📗 <b>Self-Enhancements review:</b>", summary)
         self.assertIn("\n\n", summary)
         self.assertIn("active skill unchanged", summary)
         self.assertIn("review pending", summary)
@@ -738,8 +738,8 @@ class AgentLoopTests(unittest.TestCase):
         enhancement_only = self.agent_module._format_reflection_actions([
             ("resolve_lesson", {"tool": "web_search"}, "Resolved lesson: x"),
         ])
-        for summary, secondary in ((refinement_only, "📘 <b>Refinements review:</b>"),
-                                   (enhancement_only, "📗 <b>Enhancements review:</b>")):
+        for summary, secondary in ((refinement_only, "📘 <b>Self-Refinements review:</b>"),
+                                   (enhancement_only, "📗 <b>Self-Enhancements review:</b>")):
             self.assertIsNotNone(summary)
             self.assertIn("📙 <b>Self-Improvement review:</b>", summary)
             self.assertIn(secondary, summary)

@@ -97,9 +97,9 @@ def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -
             "no separate reusable-skill proposal was needed."
         )
     if refinements:
-        lines.append("📘 <b>Refinements review:</b> " + " ".join(refinements))
+        lines.append("📘 <b>Self-Refinements review:</b> " + " ".join(refinements))
     if enhancements:
-        lines.append("📗 <b>Enhancements review:</b> " + " ".join(enhancements))
+        lines.append("📗 <b>Self-Enhancements review:</b> " + " ".join(enhancements))
     # A blank-line delimiter is intentional: Telegram emits each phase as a
     # separate message rather than merging unrelated review outcomes into one
     # noisy card.

@@ -674,9 +674,9 @@ def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str 
             return None
         labels = {
             "create": "📙 Self-Improvement",
-            "patch": "📘 Refinements",
-            "write_file": "📗 Enhancements",
-            "delete": "📘 Refinements",
+            "patch": "📘 Self-Refinements",
+            "write_file": "📗 Self-Enhancements",
+            "delete": "📘 Self-Refinements",
         }
         label = labels.get(action, "📙 Self-Improvement")
         return f"{label}: {html.escape(result[:1000], quote=False)}"
