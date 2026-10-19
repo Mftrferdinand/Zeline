@@ -831,6 +831,7 @@ class _LiveStatus:
         self.maximum: int | None = None
         self._last_text: str | None = None
         self._closed = False
+        self._creation_unknown = False
         self._lock = threading.Lock()
 
     def _header(self) -> str:
@@ -898,21 +899,38 @@ class _LiveStatus:
             return
         if text == self._last_text and not force:
             return
-        self._last_text = text
         if self.message_id is None:
+            if self._creation_unknown:
+                return
+            # A read timeout can mean Telegram accepted the message but its ID
+            # was lost. Never resend that creation on the next heartbeat. Send
+            # static activity first: an untracked bubble must not carry a live
+            # timer or /stop hint that we cannot remove when the turn finishes.
+            initial = "\n".join(_group_command_lines(
+                _ordered_lines(self.lines)[-self.max_lines:])) or "Agent activity"
+            self._creation_unknown = True
             payload = _api_call(
                 self.api, "sendMessage", chat_id=self.chat_id,
-                text=text, parse_mode="HTML",
+                text=initial, parse_mode="HTML",
                 timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
             )
             if payload and isinstance(payload.get("result"), dict):
                 self.message_id = payload["result"].get("message_id")
-        else:
-            _api_call(
-                self.api, "editMessageText", chat_id=self.chat_id,
-                message_id=self.message_id, text=text, parse_mode="HTML",
-                timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
-            )
+            if self.message_id is None:
+                return
+            self._creation_unknown = False
+            self._last_text = initial
+            if text == initial:
+                return
+        result = _api_call(
+            self.api, "editMessageText", chat_id=self.chat_id,
+            message_id=self.message_id, text=text, parse_mode="HTML",
+            timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
+        )
+        # Failed edits remain retryable even when the next tick has identical
+        # text (for example Waiting for your answer, which has no live timer).
+        if result:
+            self._last_text = text
 
     def set_awaiting_user(self) -> None:
         """Human input is idle waiting, never provider work or typing."""
@@ -1026,17 +1044,21 @@ class _LiveStatus:
                 body = "\n".join(_group_command_lines([
                     _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
                 ]))
-                _api_call(
+                settled = _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
                     message_id=self.message_id, text=body, parse_mode="HTML",
                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
             else:
-                _api_call(
+                settled = _api_call(
                     self.api, "deleteMessage",
                     chat_id=self.chat_id, message_id=self.message_id,
                     timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS,
                 )
+            if not settled:
+                # Do not abandon a message that may still contain Working.
+                # Later progress reuses this ID and finalize retries cleanup.
+                return
             self.message_id = None
             self.lines = []
             self._last_text = None

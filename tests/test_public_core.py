@@ -1261,8 +1261,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
             live.turn_started -= telegram._STATUS_AFTER_SECONDS + 1
             live.tick()  # heartbeat saja, tanpa tool baru
         created = [text for method, text in sent if method == "sendMessage"]
-        self.assertTrue(created)
-        self.assertIn(f"{telegram.WORKING_ICON} Working", created[0])
+        self.assertEqual(len(created), 1)
+        # Creation carries static evidence only until we know the Telegram ID.
+        # An accepted send with a lost response must never orphan a live timer.
+        self.assertNotIn("Working", created[0])
+        edited = [text for method, text in sent if method == "editMessageText"]
+        self.assertTrue(edited)
+        self.assertIn(f"{telegram.WORKING_ICON} Working", edited[-1])
 
     def test_heartbeat_on_a_toolless_turn_creates_no_bubble_before_the_thinking_mark(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
