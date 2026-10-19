@@ -3025,7 +3025,7 @@ def _build_media_notice_prompt(kind: str, path: Path, caption: str = "") -> str:
     return f"{instruction} Caption/request: {ask or '(no caption)'}"
 
 
-def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None) -> None:
+def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: str, tool_profile: str, reply_to_message_id: int | None = None, _ticket=None) -> bool | None:
     def cancelled():
         return _ticket is not None and _ticket.cancel_event.is_set()
 
@@ -3101,7 +3101,6 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
 
-    ok = False
     # send_file mengirim file lewat channel ini. Didaftarkan HANYA selama turn
     # berjalan lalu dilepas di finally: kalau tetap terdaftar, sebuah cron job
     # atau turn lain bisa mengirim file ke chat yang salah.
@@ -3135,7 +3134,6 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             on_iteration=on_iteration,
             on_narration=on_narration,
         )
-        ok = True
     except ZelineError as exc:
         reply = _format_agent_error(str(exc))
     except Exception as exc:
@@ -3185,25 +3183,28 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             break
         first_part = False
 
-    # Self-improvement: setelah turn berbobot (banyak tool), jalankan refleksi di
-    # background agar tidak menahan balasan. reflect() sendiri menjaga ambang
-    # (profile full + cukup tool call) dan hanya kirim pesan bila benar-benar
-    # menyimpan/memperbaiki skill — jadi ini yang bikin Zeline "sering
-    # Self-improvement" seperti diminta, tanpa nyampah di sesi ringan.
-    if ok:
-        def _reflect_bg():
-            try:
-                summary = sessions.reflect(identity)
-            except Exception:
-                summary = None
-            if summary:
-                for phase in summary.split("\n\n"):
-                    _api_call(
-                        api, "sendMessage", chat_id=chat_id,
-                        text=phase[:1500],
-                        parse_mode="HTML",
-                    )
-        threading.Thread(target=_reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
+    # Admitted turns must release their ticket BEFORE reflection tries the
+    # session's idle gate. The caller schedules it after finish_turn(). Legacy
+    # direct callers have no reserved ticket, so they may schedule immediately.
+    if _ticket is None:
+        _start_reflection(api, sessions, chat_id, identity, reply_to_message_id)
+    return True
+
+
+def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None):
+    def reflect_bg():
+        try:
+            summary = sessions.reflect(identity)
+        except Exception as exc:
+            print(f"  [telegram] reflection failed: {type(exc).__name__}", flush=True)
+            return
+        if summary:
+            extra = {"reply_to_message_id": reply_to_message_id,
+                     "allow_sending_without_reply": True} if reply_to_message_id else {}
+            for phase in summary.split("\n\n"):
+                _api_call(api, "sendMessage", chat_id=chat_id,
+                          text=phase[:1500], parse_mode="HTML", **extra)
+    threading.Thread(target=reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()
 
 
 def _interrupt_ack(progress: dict[str, Any]) -> str:
@@ -3267,6 +3268,7 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
         pass
 
     def run_reserved():
+        reflect_ready = False
         try:
             if ticket is not None:
                 if not sessions.wait_turn(ticket):
@@ -3286,7 +3288,7 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
                         _api_call(api, "sendMessage", chat_id=chat_id, text=error,
                                   timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
                         return
-                _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
+                reflect_ready = _send_agent_reply(api, sessions, chat_id=chat_id, identity=identity, text=prepared_text,
                                   tool_profile=tool_profile, reply_to_message_id=reply_to_message_id,
                                   _ticket=ticket)
             else:
@@ -3295,6 +3297,8 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
         finally:
             if ticket is not None:
                 sessions.finish_turn(ticket)
+        if reflect_ready and ticket is not None and not ticket.cancel_event.is_set():
+            _start_reflection(api, sessions, chat_id, identity, reply_to_message_id)
 
     worker = threading.Thread(
         target=run_reserved,

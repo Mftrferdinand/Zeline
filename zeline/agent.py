@@ -266,6 +266,7 @@ class Zeline:
         # repeated tasks were never reviewed. This counter is reset only after
         # a reflection pass completes successfully.
         self._tool_calls_since_reflection: int = 0
+        self._research_since_reflection = False
         # Predikat pembatalan turn aktif (diisi oleh send()); dipakai loop
         # streaming agar /stop langsung memutus, bukan menunggu provider.
         self._should_stop: Callable[[], bool] | None = None
@@ -1139,6 +1140,8 @@ class Zeline:
             if self._cancelled():
                 raise _TurnCancelled()
 
+            if any(name == "deep_research" for _call, name, _args in parsed_calls):
+                self._research_since_reflection = True
             recorded_results: list[dict[str, Any]] = []
             if run_parallel:
                 with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
@@ -1321,7 +1324,7 @@ class Zeline:
         # callers/tests that construct an agent and mark a substantial turn
         # directly. Normal sends maintain the cumulative counter.
         observed_tool_calls = max(self._tool_calls_since_reflection, self.last_turn_tool_calls)
-        if observed_tool_calls < min_tool_calls:
+        if observed_tool_calls < min_tool_calls and not self._research_since_reflection:
             # Every tool outcome has already been processed synchronously by
             # ToolExecutor._audit: failures become durable lessons and a later
             # matching success resolves them.  This gate only skips the costly
@@ -1352,6 +1355,10 @@ class Zeline:
                 "role": "user",
                 "content": (
                     "REFLEKSI SELF-IMPROVEMENT (internal, jangan tampilkan ke user). "
+                    "Review is mandatory after substantial work, including failed attempts. "
+                    "Extract reusable lessons from observed tool outcomes, not guesses. "
+                    "Save actionable, durable guidance only; never store credentials or task logs. "
+                    "Failures without a verified fix must remain unresolved, not claimed as solved. "
                     "Tinjau singkat percakapan barusan. "
                     "(A) Apakah ada prosedur reusable, alur kerja non-trivial, atau "
                     "error tricky yang berhasil diatasi dan layak jadi skill? "
@@ -1440,9 +1447,22 @@ class Zeline:
             self.messages = saved_messages
             if review_completed:
                 self._tool_calls_since_reflection = 0
+                self._research_since_reflection = False
                 self.last_turn_tool_calls = 0
             # A reflection may have changed memory, lessons, or skills. Make the
             # next ordinary turn see the new knowledge immediately.
             self._refresh_system_prompt()
-        return _format_reflection_actions(actions)
+        summary = _format_reflection_actions(actions)
+        if not review_completed:
+            notice = "Review incomplete: provider review failed; learning remains pending."
+            if summary:
+                return summary.replace("</b>", "</b> " + notice, 1)
+            return "📙 <b>Self-Improvement review:</b> " + notice
+        if summary:
+            return summary
+        # A completed review is observable even when no new change is justified.
+        # Do not fabricate secondary phases or claim active skills were updated.
+        unresolved = f" {len(pending_lessons)} recorded lesson(s) still need a verified fix." if pending_lessons else ""
+        return (f"📙 <b>Self-Improvement review:</b> Reviewed {observed_tool_calls} tool call(s); "
+                "no new reusable change was verified. Active skills unchanged." + unresolved)
 
