@@ -1,6 +1,6 @@
 """Cancellation integration tests: local HTTP and fixture subprocesses only."""
 import json
-import os
+import sys
 import tempfile
 import threading
 import time
@@ -189,7 +189,8 @@ class CancellationCoreTests(unittest.TestCase):
             output = []
             with patch.object(tools, '_fg_track', side_effect=register):
                 worker = threading.Thread(target=lambda: output.append(tools._run_shell(
-                    'echo started; sleep 20', Path(tmp), timeout=30, identity='fixture:soft',
+                    f'"{sys.executable}" -c "import time; print(\'started\', flush=True); time.sleep(20)"',
+                    Path(tmp), timeout=30, identity='fixture:soft',
                     should_stop=stop.is_set, interrupt_reason=lambda: 'interrupt')), daemon=True)
                 worker.start()
                 try:

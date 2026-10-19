@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from zeline import config
+from zeline.outcomes import tool_outcome  # Re-export for existing callers.
 
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _OUTCOMES = frozenset({"success", "failure", "unknown", "cancelled"})
@@ -42,35 +43,6 @@ def _name(value: str) -> str:
 
 def revision_of(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def tool_outcome(result: Any) -> str:
-    """Interpret known failure envelopes without storing their raw content."""
-    text = str(result).strip()
-    if (text.lower() in {"stopped.", "cancelled", "canceled"}
-            or re.match(r"^job=\S+ killed\.", text)):
-        return "cancelled"
-    if re.match(r"^started background job=\S+", text) or re.match(r"^job=\S+ status=running\b", text):
-        return "unknown"
-    terminal = re.match(r"^job=\S+ (?:status=exited|already finished) \(exit=(-?\d+)\)", text)
-    if terminal:
-        return "success" if int(terminal[1]) == 0 else "failure"
-    if re.match(r"(?i)^error\b", text):
-        return "failure"
-    http_status = re.match(r"^Status:\s+(\d{3})\b", text)
-    if http_status:
-        return "failure" if int(http_status[1]) >= 400 else "success"
-    with contextlib.suppress(ValueError, TypeError):
-        data = json.loads(text)
-        if isinstance(data, dict):
-            if data.get("error") or data.get("success") is False or data.get("ok") is False:
-                return "failure"
-            for key in ("exit_code", "returncode"):
-                if key in data and data[key] is not None and int(data[key]) != 0:
-                    return "failure"
-    if re.search(r"(?im)^exit(?:[ _]code)?\s*[:=]\s*-?[1-9]\d*\b", text):
-        return "failure"
-    return "success" if text else "unknown"
 
 
 class TurnTelemetry:
@@ -498,11 +470,12 @@ class ForgeStore:
         return self.get(proposal_id)
 
     def apply(self, proposal_id: str) -> dict[str, Any]:
-        """Apply only an unchanged, tested, approved draft to a PRIVATE override.
+        """Apply only an unchanged, tested, approved draft to a PRIVATE override."""
+        with self._pins_lock():
+            return self._apply_locked(proposal_id)
 
-        Backups are mandatory here (unlike best-effort ordinary edits). Packaged
-        skills, safety files and integrity locks are never overwritten.
-        """
+    def _apply_locked(self, proposal_id: str) -> dict[str, Any]:
+        """Apply an approved proposal while holding the shared mutation lock."""
         from zeline import skills
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -549,6 +522,244 @@ class ForgeStore:
             db.execute("INSERT INTO audit(proposal,action,observed) VALUES (?,?,?)",
                        (proposal_id, "applied", time.time()))
         return self.get(proposal_id)
+
+    # ── Pin / unpin ──────────────────────────────────────────────────────
+    def _pins_path(self) -> Path:
+        return self.root / "pins.json"
+
+    @contextmanager
+    def _pins_lock(self):
+        """Serialize pin registry read-modify-write across processes."""
+        path = self.root / "pins.lock"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _load_pins(self) -> set[str]:
+        path = self._pins_path()
+        if not path.exists():
+            return set()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ValueError("Pin registry is unreadable; refusing an unsafe operation") from exc
+        if not isinstance(data, list) or any(
+            not isinstance(item, str) or not _NAME.fullmatch(item) for item in data
+        ):
+            raise ValueError("Pin registry has an invalid schema; refusing an unsafe operation")
+        return set(data)
+
+    def _save_pins(self, pins: set[str]) -> None:
+        path = self._pins_path()
+        payload = json.dumps(sorted(pins), ensure_ascii=False)
+        fd, staged_name = tempfile.mkstemp(prefix=".pins-", suffix=".tmp", dir=path.parent)
+        staged = Path(staged_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            staged.chmod(0o600)
+            os.replace(staged, path)
+        finally:
+            with contextlib.suppress(OSError):
+                staged.unlink()
+
+    def pin(self, name: str) -> str:
+        _name(name)
+        with self._pins_lock():
+            entry, _scope = self._source(name)
+            if entry is None:
+                raise ValueError(f"Skill '{name}' not found")
+            pins = self._load_pins()
+            pins.add(name)
+            self._save_pins(pins)
+        return f"Pinned '{name}'. It is now protected from deletion and archival."
+
+    def unpin(self, name: str) -> str:
+        _name(name)
+        with self._pins_lock():
+            pins = self._load_pins()
+            pins.discard(name)
+            self._save_pins(pins)
+        return f"Unpinned '{name}'. It can now be deleted or archived."
+
+    def is_pinned(self, name: str) -> bool:
+        return name in self._load_pins()
+
+    def pinned(self) -> list[str]:
+        return sorted(self._load_pins())
+
+    # ── Archive / restore ────────────────────────────────────────────────
+    def _archive_dir(self) -> Path:
+        d = self.root / "archive"
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return d
+
+    def archive(self, name: str) -> str:
+        """Move a private skill while serializing against pin and deletion."""
+        with self._pins_lock():
+            return self._archive_locked(name)
+
+    def _archive_locked(self, name: str) -> str:
+        """Move a private skill to the archive directory."""
+        _name(name)
+        if self.is_pinned(name):
+            raise ValueError(f"'{name}' is pinned — unpin it first")
+        from zeline import skills
+        located = skills._locate_unit(name)
+        if located is None:
+            raise ValueError(f"Skill '{name}' not found")
+        scope, path = located
+        if scope != "private":
+            raise ValueError(f"'{name}' is a bundled/public skill; only private skills can be archived")
+        dest = self._archive_dir() / name
+        if dest.exists():
+            raise ValueError(f"'{name}' is already archived — restore it first")
+        if path.is_dir():
+            shutil.move(str(path), str(dest))
+        else:
+            dest.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.move(str(path), str(dest / path.name))
+        return f"Archived '{name}'. Use `zeline skillforge restore {name}` to bring it back."
+
+    def restore(self, name: str) -> str:
+        """Restore while serializing destination checks and the archive move."""
+        with self._pins_lock():
+            return self._restore_locked(name)
+
+    def _restore_locked(self, name: str) -> str:
+        """Restore an archived skill back to private scope."""
+        _name(name)
+        from zeline import skills
+        source = self._archive_dir() / name
+        if not source.exists():
+            raise ValueError(f"'{name}' not found in archive")
+        dest = skills.PRIVATE_SKILLS_DIR / name
+        flat_dest = skills.PRIVATE_SKILLS_DIR / f"{name}.md"
+        # Public skills may coexist: restoring a private override is valid. Only
+        # private destination paths can collide with the archived unit.
+        if dest.exists() or flat_dest.exists():
+            raise ValueError(f"'{name}' already exists in private skills — delete or rename it first")
+        if source.is_dir() and (source / "SKILL.md").is_file():
+            shutil.move(str(source), str(dest))
+        elif source.is_dir():
+            # Flat skills are archived in a directory wrapper.
+            children = list(source.iterdir())
+            files = [child for child in children if child.is_file()]
+            if len(children) != 1 or len(files) != 1 or files[0].name != f"{name}.md":
+                raise ValueError(f"Archived skill '{name}' has an invalid layout")
+            shutil.move(str(files[0]), str(flat_dest))
+            source.rmdir()
+        else:
+            raise ValueError(f"Archived skill '{name}' has an invalid layout")
+        return f"Restored '{name}' to private skills."
+
+    def archived(self) -> list[str]:
+        """List archived skill names."""
+        d = self._archive_dir()
+        return sorted(p.name for p in d.iterdir() if p.is_dir() or p.is_file())
+
+    # ── Usage summary ────────────────────────────────────────────────────
+    def usage_summary(self, name: str | None = None, *, days: int = 90,
+                      now: float | None = None) -> list[dict[str, Any]]:
+        """Per-skill usage stats: total uses, last used, success rate."""
+        if type(days) is not int or not 1 <= days <= 36_500:
+            raise ValueError("days must be an integer from 1 to 36500")
+        current = time.time() if now is None else float(now)
+        cutoff = current - days * 86400
+        with self.connect() as db:
+            if name:
+                _name(name)
+                rows = db.execute(
+                    "SELECT skill, outcome, MAX(observed) as last_used, COUNT(*) as cnt "
+                    "FROM usage WHERE skill=? AND observed>=? GROUP BY skill, outcome",
+                    (name, cutoff)).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT skill, outcome, MAX(observed) as last_used, COUNT(*) as cnt "
+                    "FROM usage WHERE observed>=? GROUP BY skill, outcome",
+                    (cutoff,)).fetchall()
+        skills_data: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            s = row["skill"]
+            if s not in skills_data:
+                skills_data[s] = {"name": s, "total": 0, "success": 0, "failure": 0,
+                                  "unknown": 0, "cancelled": 0, "last_used": 0}
+            skills_data[s]["total"] += row["cnt"]
+            skills_data[s][row["outcome"]] += row["cnt"]
+            skills_data[s]["last_used"] = max(skills_data[s]["last_used"], row["last_used"])
+        result = []
+        for s, data in sorted(skills_data.items()):
+            denominator = data["success"] + data["failure"]
+            data["success_rate"] = round(100 * data["success"] / denominator, 1) if denominator else None
+            result.append(data)
+        result.sort(key=lambda r: r["last_used"], reverse=True)
+        return result
+
+    # ── Prune ────────────────────────────────────────────────────────────
+    def prune(self, *, stale_days: int = 180, min_uses: int = 0,
+              dry_run: bool = True, now: float | None = None) -> list[dict[str, str]]:
+        """Identify or archive skills with zero usage and stale mtime.
+
+        Returns a list of {name, reason, action} dicts. With dry_run=True
+        (default), only reports what would be archived. Never touches pinned
+        skills.
+        """
+        if type(stale_days) is not int or not 1 <= stale_days <= 36_500:
+            raise ValueError("stale_days must be an integer from 1 to 36500")
+        if type(min_uses) is not int or min_uses < 0:
+            raise ValueError("min_uses must be a non-negative integer")
+        from zeline import skills
+        current = time.time() if now is None else float(now)
+        candidates = []
+        for unit_name, skill_md in skills._iter_skill_units(skills.PRIVATE_SKILLS_DIR):
+            if self.is_pinned(unit_name):
+                continue
+            try:
+                unit = skill_md.parent if skill_md.name == "SKILL.md" else skill_md
+                files = [unit] if unit.is_file() else [
+                    child for child in unit.rglob("*") if child.is_file()
+                ]
+                mtime = max(child.stat().st_mtime for child in files)
+            except (OSError, ValueError):
+                continue
+            age_days = (current - mtime) / 86400
+            if age_days < stale_days:
+                continue
+            usage = self.usage_summary(unit_name, days=stale_days, now=current)
+            total = usage[0]["total"] if usage else 0
+            if total > min_uses:
+                continue
+            reason = f"stale ({int(age_days)}d), {total} uses in {stale_days}d"
+            action = "would_archive" if dry_run else "archived"
+            if not dry_run:
+                try:
+                    self.archive(unit_name)
+                except ValueError:
+                    action = "skipped"
+            candidates.append({"name": unit_name, "reason": reason, "action": action})
+        return candidates
 
     def record_usage(self, identity: str, turn: str, name: str, scope: str,
                      revision: str, outcome: str, *, tool_successes: int = 0,
@@ -667,6 +878,27 @@ def add_arguments(parser) -> None:
     apply.add_argument("proposal_id")
     apply.add_argument("--confirm", action="store_true", help="confirm the explicit operator-approved write")
 
+    # ── Curator commands ─────────────────────────────────────────────────
+    pin_cmd = sub.add_parser("pin", help="protect a skill from deletion and archival")
+    pin_cmd.add_argument("name")
+    unpin_cmd = sub.add_parser("unpin", help="remove deletion/archival protection")
+    unpin_cmd.add_argument("name")
+    sub.add_parser("pinned", help="list pinned skills")
+
+    archive_cmd = sub.add_parser("archive", help="move a stale private skill to archive")
+    archive_cmd.add_argument("name")
+    restore_cmd = sub.add_parser("restore", help="restore an archived skill to private scope")
+    restore_cmd.add_argument("name")
+    sub.add_parser("archived", help="list archived skills")
+
+    usage_cmd = sub.add_parser("usage", help="show per-skill usage statistics")
+    usage_cmd.add_argument("name", nargs="?", default=None)
+    usage_cmd.add_argument("--days", type=int, default=90)
+
+    prune_cmd = sub.add_parser("prune", help="identify or archive dead private skills")
+    prune_cmd.add_argument("--stale-days", type=int, default=180)
+    prune_cmd.add_argument("--execute", action="store_true", help="actually archive (default: dry run)")
+
 
 def command(args) -> int:
     try:
@@ -704,6 +936,24 @@ def command(args) -> int:
             if not args.confirm:
                 raise ValueError("Operator application requires --confirm")
             result = store.apply(args.proposal_id)
+        # ── Curator commands ─────────────────────────────────────────
+        elif action == "pin":
+            result = store.pin(args.name)
+        elif action == "unpin":
+            result = store.unpin(args.name)
+        elif action == "pinned":
+            result = store.pinned()
+        elif action == "archive":
+            result = store.archive(args.name)
+        elif action == "restore":
+            result = store.restore(args.name)
+        elif action == "archived":
+            result = store.archived()
+        elif action == "usage":
+            result = store.usage_summary(args.name, days=args.days)
+        elif action == "prune":
+            result = store.prune(stale_days=args.stale_days,
+                                 dry_run=not args.execute)
         else:
             raise ValueError("Unknown SkillForge action")
         print(json.dumps(result, ensure_ascii=False, indent=2))

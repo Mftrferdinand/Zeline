@@ -201,9 +201,13 @@ class SafetyTests(BrowserBase):
                 self.assertTrue(self.browser._is_blocked_host(url), url)
 
     def test_public_urls_are_allowed(self):
-        for url in ("https://example.com", "http://example.org/path"):
-            with self.subTest(url=url):
-                self.assertFalse(self.browser._is_blocked_host(url))
+        # Mock DNS so the test is hermetic — real getaddrinfo fails when the
+        # network is unavailable (Termux offline, restricted CI runners).
+        fake_public = [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
+        with mock.patch.object(socket, "getaddrinfo", return_value=fake_public):
+            for url in ("https://example.com", "http://example.org/path"):
+                with self.subTest(url=url):
+                    self.assertFalse(self.browser._is_blocked_host(url))
 
     def test_open_refuses_a_blocked_url_without_launching(self):
         session = self.browser.BrowserSession(binary="/nonexistent/browser")

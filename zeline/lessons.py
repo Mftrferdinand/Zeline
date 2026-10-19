@@ -421,7 +421,8 @@ def log_failure(
     Called from the tool executor when a tool returns ERROR. This is the
     automatic capture path — the model does not have to decide to save it.
     """
-    if not str(result).startswith("ERROR"):
+    from zeline.outcomes import tool_outcome
+    if tool_outcome(result) != "failure":
         return
     try:
         _get_store().record_failure(identity, tool, args, result)
@@ -445,7 +446,8 @@ def log_success(
 
     Best-effort and silent, exactly like ``log_failure``.
     """
-    if str(result).startswith("ERROR"):
+    from zeline.outcomes import tool_outcome
+    if tool_outcome(result) != "success":
         return
     try:
         _get_store().record_fix_auto(identity, tool, args)

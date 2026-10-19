@@ -7,6 +7,7 @@ Satu gateway process menangani banyak chat secara concurrent. Store ini:
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -18,7 +19,7 @@ from typing import Callable
 from zeline import config
 from zeline import tasks
 from zeline import tools
-from zeline.agent import Zeline
+from zeline.agent import Zeline, ZelineError
 from zeline import interaction
 from zeline.session_store import SessionPersistence
 
@@ -60,6 +61,7 @@ class Session:
     active_turn: TurnTicket | None = None
     wake: threading.Event = field(default_factory=threading.Event)
     cancelling: bool = False
+    persistence_error: str = ""
 
 
 class SessionStore:
@@ -125,8 +127,11 @@ class SessionStore:
                             agent.load_history(stored)
                         if stored_title:
                             title = stored_title
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logging.getLogger(__name__).warning(
+                            "Session restore failed (%s)", type(exc).__name__)
+                        raise ZelineError("Saved conversation could not be restored; "
+                                          "existing state has been preserved.") from None
                 session = Session(
                     agent=agent,
                     lock=threading.Lock(),
@@ -250,6 +255,18 @@ class SessionStore:
                     if session.title == "New Session":
                         session.title = text.strip().splitlines()[0][:80] or "New Session"
 
+                # Persist the inbound request before provider dispatch. If the
+                # process dies before Zeline.send reaches its first internal
+                # checkpoint, a later “continue” still sees this request.
+                if self._persistence is not None:
+                    try:
+                        pending = [*session.agent.export_history(), {"role": "user", "content": text}]
+                        self._persistence.save_checkpoint(identity, pending, session.title)
+                    except Exception as exc:
+                        session.persistence_error = f"checkpoint failed ({type(exc).__name__})"
+                        logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
+                        raise ZelineError("Progress could not be saved; no work was started.") from None
+
                 def take_steer() -> str | None:
                     with self._lock:
                         return session.steer_queue.pop(0) if session.steer_queue else None
@@ -260,23 +277,39 @@ class SessionStore:
                     if not ticket.cancel_event.is_set() and on_iteration:
                         on_iteration(current, maximum)
 
+                def checkpoint(messages):
+                    if self._persistence is None:
+                        return
+                    try:
+                        self._persistence.save_checkpoint(identity, messages, session.title)
+                    except Exception as exc:
+                        session.persistence_error = f"checkpoint failed ({type(exc).__name__})"
+                        logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
+                        raise ZelineError("Progress could not be saved; no further tools were started. "
+                                          "Verify the last action before retrying.") from None
+
                 reply = session.agent.send(
                     text, on_tool=on_tool, on_tool_result=on_tool_result,
                     on_iteration=iteration, should_stop=ticket.cancel_event.is_set,
                     interrupt_reason=lambda: ticket.reason,
                     take_steer=take_steer, on_narration=on_narration,
-                    on_stream_delta=on_stream_delta,
+                    on_stream_delta=on_stream_delta, on_checkpoint=checkpoint,
                 )
                 if ticket.cancel_event.is_set():
                     reply = "Stopped."
                 session.last_used = time.monotonic()
                 if self._persistence is not None:
                     try:
-                        self._persistence.save(identity, session.agent.export_history(), session.title)
-                        self._persistence.append_turn(identity, "user", text, session.title)
-                        self._persistence.append_turn(identity, "assistant", reply, session.title)
-                    except Exception:
-                        pass
+                        self._persistence.save_turn(
+                            identity, session.agent.export_history(), text, reply, session.title)
+                        session.persistence_error = ""
+                    except Exception as exc:
+                        # Do not expose exception text, paths, identities or message content.
+                        session.persistence_error = f"save_turn failed ({type(exc).__name__})"
+                        logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
+                        if not ticket.cancel_event.is_set():
+                            reply += ("\n\n⚠️ Riwayat percakapan ini gagal disimpan. "
+                                      "Hasil tugas tidak dibatalkan; simpan jawaban penting sebelum restart.")
                 return reply
         finally:
             # Gateway reservations span result delivery too, so the next turn
@@ -496,6 +529,7 @@ class SessionStore:
                     "model": config.MODEL,
                     "context": "0 messages",
                     "agent_running": False,
+                    "persistence_error": "",
                 }
             fmt = "%Y-%m-%d %H:%M:%S"
             return {
@@ -506,6 +540,7 @@ class SessionStore:
                 "model": session.agent.model,
                 "context": f"{max(0, len(session.agent.messages) - 1)} messages",
                 "agent_running": session.running,
+                "persistence_error": session.persistence_error,
             }
 
 

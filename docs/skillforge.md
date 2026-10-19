@@ -140,6 +140,28 @@ locks are not changed by the cycle. Proposal transitions are recorded in a local
 audit table. This does not claim a cross-process lock against unrelated manual
 editors or crash-atomic transactions spanning SQLite and the filesystem.
 
+## Curator safety
+
+Pin/unpin, private create/patch/write, proposal apply, deletion, archival and
+restore share one cross-process mutation lock. Source/destination validation and
+the filesystem mutation happen under that lock; a concurrent author cannot race
+a restore into a nested or conflicting skill unit, and a concurrent pin cannot
+report success for an in-flight deletion or archival. Pin registries use atomic
+replacement; an unreadable or malformed registry refuses protected operations
+rather than assuming no skills are pinned. Filesystem deletion errors are
+reported as errors, not successful deletion.
+
+Restore permits a bundled public counterpart (a private override is valid), but
+refuses an existing private directory or flat-file destination. This includes an
+empty private directory. Cooperating restore operations are serialized so they
+cannot nest or overwrite the same archived unit.
+
+Prune defaults to dry-run. `stale_days` and usage `days` must be integers from
+1 through 36500; `min_uses` must be a non-negative integer. Age is measured from
+the newest file in the private skill tree, not just `SKILL.md`. These locks do not
+coordinate unrelated manual editors or provide crash-atomic transactions across
+filesystem moves and the proposal database.
+
 ## Verification and rollout
 
 ```bash

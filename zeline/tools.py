@@ -1152,6 +1152,8 @@ def _schedule_task(
     prompt: str = "",
     job_id: str = "",
     deliver: str = "",
+    script: str = "", no_agent: bool = False, workdir: str = "", timeout: float = 900,
+    model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
 ) -> str:
     """Let the agent manage its own scheduled jobs.
 
@@ -1184,9 +1186,10 @@ def _schedule_task(
             f"{job.id}  {job.parsed().describe()}  [{state}]  next {cron.describe_next_run(job)}",
             f"  target: {job.deliver}",
             f"  task: {job.prompt[:300]}",
+            job.options_summary(),
         ]
         if job.last_status:
-            stamp = f"{cron.format_time(job.last_run)} " if job.last_run else ""
+            stamp = f"{cron.format_time(job.last_run, job.timezone)} " if job.last_run else ""
             lines.append(f"  last run: {stamp}{job.last_status[:160]}")
         if job.runs or job.failures or job.skips:
             lines.append(f"  runs {job.runs}, failures {job.failures}, skipped {job.skips}")
@@ -1206,7 +1209,7 @@ def _schedule_task(
         )
 
     if verb == "add":
-        if not str(prompt or "").strip():
+        if not str(prompt or "").strip() and not no_agent:
             return (
                 "ERROR schedule_task: a job needs a prompt — the full instruction to "
                 "run later. Nobody will be watching, so make it self-contained."
@@ -1217,7 +1220,9 @@ def _schedule_task(
             # that silently wrote to disk would look like it never ran.
             target = identity if identity.startswith("telegram:") else "local"
         try:
-            job = cron.add_job(schedule, prompt, target)
+            job = cron.add_job(schedule, prompt, target, script=script, no_agent=no_agent,
+                               workdir=workdir, timeout=timeout, model=model, profile=profile,
+                               skills=skills, context_from=context_from, timezone=timezone)
         except cron.CronError as exc:
             return f"ERROR schedule_task: {exc}"
         where = (
@@ -1895,11 +1900,12 @@ TOOL_DEFS: list[ToolDef] = [
                     "enum": ["add", "list", "show", "pause", "resume", "run", "remove"],
                     "description": "What to do. 'list' first if you need job ids.",
                 },
+                "timezone": {"type": "string", "description": "IANA timezone such as Asia/Jakarta. Empty uses host local time; never assume host timezone matches the user."},
                 "schedule": {
                     "type": "string",
                     "description": (
                         "For 'add': an interval ('30m', 'every 2h', '1d') or a daily "
-                        "wall-clock time in the user's own timezone ('09:00'). Minimum "
+                        "wall-clock time ('09:00'); set timezone explicitly for the user. Minimum "
                         "interval 1 minute."
                     ),
                 },
@@ -1910,6 +1916,14 @@ TOOL_DEFS: list[ToolDef] = [
                         "question at run time, so include every detail it needs."
                     ),
                 },
+                "script": {"type": "string", "description": "Trusted local Python or bash script. Absolute path, or relative to explicit workdir."},
+                "model": {"type": "string", "description": "Per-job model ID on the configured provider; leaves global model configuration untouched."},
+                "profile": {"type": "string", "enum": ["safe", "workspace", "full"], "description": "Per-job agent tool profile."},
+                "skills": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "uniqueItems": True, "description": "Explicit job procedures, loaded before the agent turn."},
+                "context_from": {"type": "array", "items": {"type": "string"}, "maxItems": 3, "uniqueItems": True, "description": "Existing job IDs whose latest successful saved results are injected as untrusted data. Does not trigger or wait for upstream jobs."},
+                "no_agent": {"type": "boolean", "description": "Deliver script stdout verbatim without a model; empty stdout is silent. Requires script."},
+                "workdir": {"type": "string", "description": "Existing absolute working directory for this job."},
+                "timeout": {"type": "number", "description": "Script timeout in seconds; greater than zero, at most 3600. Default 900."},
                 "job_id": {
                     "type": "string",
                     "description": "For show/pause/resume/run/remove: the job id from 'list'.",
@@ -1935,11 +1949,19 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "add_memory",
-        "Save one long-term fact about the user in this conversation's memory.",
+        "Save a fact, or atomically correct memory by ID using operations. Read list_memory with include_metadata first; use expected_revision to prevent stale overwrites.",
         {
             "type": "object",
-            "properties": {"fact": {"type": "string", "description": "Short fact to remember"}},
-            "required": ["fact"],
+            "properties": {
+                "fact": {"type": "string", "description": "Short fact to remember; omit when using operations"},
+                "operations": {"type": "array", "maxItems": 100, "items": {
+                    "type": "object", "properties": {
+                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
+                        "text": {"type": "string"}, "id": {"type": "string"},
+                        "expected_revision": {"type": "integer"},
+                    }, "required": ["action"],
+                }},
+            },
         },
         frozenset(SAFE_PROFILES),
     ),
@@ -1955,8 +1977,11 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "list_memory",
-        "Show all facts stored for this user/conversation.",
-        {"type": "object", "properties": {}},
+        "List this identity's facts. Optional lexical query and metadata expose stable IDs/revisions for precise corrections; not semantic search.",
+        {"type": "object", "properties": {
+            "query": {"type": "string"}, "include_metadata": {"type": "boolean"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        }},
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
@@ -2334,7 +2359,12 @@ TOOL_DEFS: list[ToolDef] = [
             "pass that reports what is wrong or unproven — worth it for work you will act "
             "on. Sub-agents know NOTHING about this chat, so put ALL needed info (paths, "
             "constraints, error text, desired output language) in 'context'. They inherit "
-            "the same tools/workspace under the same profile but cannot delegate further."
+            "the same tools/workspace under the same profile but cannot delegate further. "
+            "By default this waits for results. Set background=true to persist jobs across parent/session restarts; "
+            "a gateway worker must be running to execute them. Durable tasks may use key/depends_on. "
+            "Use action=list/status/results/ack/cancel to inspect or hand off owned jobs. "
+            "Retries are off unless a node explicitly sets retry_safe=true and max_attempts; "
+            "do not mark external side effects retry-safe without an idempotency guarantee."
         ),
         {
             "type": "object",
@@ -2344,18 +2374,26 @@ TOOL_DEFS: list[ToolDef] = [
                 "role": {"type": "string", "description": "Single task role: worker, coder, researcher, reviewer, or writer."},
                 "tasks": {
                     "type": "array",
-                    "description": "Several independent tasks to run in parallel. Each item: {goal, context, role}. Use instead of 'goal'.",
+                    "description": "Synchronous independent tasks, or durable graph nodes when background=true. Dependencies use local key names or owned job IDs.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "goal": {"type": "string"},
                             "context": {"type": "string"},
                             "role": {"type": "string"},
+                            "key": {"type": "string"},
+                            "depends_on": {"type": "array", "items": {"type": "string"}},
+                            "retry_safe": {"type": "boolean"},
+                            "max_attempts": {"type": "integer", "minimum": 1, "maximum": 5},
                         },
                         "required": ["goal"],
                     },
                 },
-                "verify": {"type": "boolean", "description": "Run a verifier sub-agent over the results and report what is wrong or unproven."},
+                "verify": {"type": "boolean", "description": "Synchronous verifier pass. For durable work, submit a reviewer node depending on worker nodes instead."},
+                "background": {"type": "boolean", "description": "Persist without waiting; gateway worker executes later. Default false."},
+                "action": {"type": "string", "enum": ["run", "submit", "list", "status", "results", "ack", "cancel"]},
+                "job_id": {"type": "string", "description": "Owned job ID for status/ack/cancel. Results remain pending until ack."},
+                "idempotency_key": {"type": "string", "maxLength": 128, "description": "Stable unique request label for durable submissions. Reuse only for retrying the identical graph; avoids duplicate jobs if submission response is lost."},
             },
         },
         frozenset({"workspace", "full"}),
@@ -2410,6 +2448,7 @@ class ToolExecutor:
         if profile not in SAFE_PROFILES:
             raise ValueError(f"unknown tool profile: {profile}")
         self.identity = identity or "cli:local"
+        self._model_override: str | None = None
         self.profile = profile
         self.workspace = Path(workspace or config.WORKSPACE).expanduser().resolve(strict=False)
         # Kedalaman agen: 0 = agen utama. Sub-agent yang dibuat delegate_task
@@ -2461,6 +2500,8 @@ class ToolExecutor:
                 self.openapi = registry
         # Plugin hooks wrap every tool call, so a failure while loading them
         # must leave the agent fully functional and simply unhooked.
+        from zeline.policies import PolicyEngine
+        self.execution_policy = PolicyEngine(self.identity, self.profile, self.workspace)
         self.plugins: plugin_bus.PluginBus | None = None
         with contextlib.suppress(Exception):
             bus = plugin_bus.PluginBus(profile)
@@ -2494,8 +2535,10 @@ class ToolExecutor:
             "git": lambda action, path="", message="", ref="", staged=False, limit=10: _git(
                 action, self.workspace, path=path, message=message, ref=ref, staged=staged, limit=limit
             ),
-            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="": _schedule_task(
-                action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver
+            "schedule_task": lambda action, schedule="", prompt="", job_id="", deliver="", script="", no_agent=False, workdir="", timeout=900, model="", profile="", skills=None, context_from=None, timezone="": _schedule_task(
+                action, self.identity, schedule=schedule, prompt=prompt, job_id=job_id, deliver=deliver,
+                script=script, no_agent=no_agent, workdir=workdir, timeout=timeout,
+                model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone
             ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
@@ -2524,9 +2567,7 @@ class ToolExecutor:
             "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
             "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
-            "delegate_task": lambda goal="", context="", role="", tasks=None, verify=False: self._delegate_task(
-                goal, context, role, tasks, verify
-            ),
+            "delegate_task": self._delegate_task,
             "recall_history": lambda query="": self._recall_history(query),
             "ask_user": lambda question, options=None: interaction.ask(
                 self.identity, question, options,
@@ -2768,6 +2809,7 @@ class ToolExecutor:
             system_extra=system_extra,
             depth=self.depth + 1,
         )
+        sub._shared_budget = getattr(self, "_run_budget", None)
         return sub.send(brief, should_stop=getattr(self, "_should_stop", None))
 
     def _delegate_task(
@@ -2777,6 +2819,10 @@ class ToolExecutor:
         role: str = "",
         tasks: Any = None,
         verify: bool = False,
+        background: bool = False,
+        action: str = "run",
+        job_id: str = "",
+        idempotency_key: str = "",
     ) -> str:
         """Run one or several sub-agents, optionally with a verifier pass.
 
@@ -2785,6 +2831,8 @@ class ToolExecutor:
         delegate_task again (bounded by MAX_SUBAGENT_DEPTH). Only final answers
         return to the parent — intermediate steps never pollute its context.
         """
+        if background or action != "run":
+            return self._durable_delegate(goal, context, role, tasks, verify, action, job_id, idempotency_key)
         from zeline import delegation
         from zeline.agent import ZelineError as _ZErr
 
@@ -2832,6 +2880,36 @@ class ToolExecutor:
             return delegation.render(results, verified=False)
         return delegation.render(results, verification=verdict)
 
+    def _durable_delegate(self, goal, context, role, tasks, verify, action, job_id, idempotency_key=""):
+        from zeline.durable_jobs import JobStore
+        store = JobStore()
+        try:
+            if action in {"run", "submit"}:
+                if verify:
+                    return "ERROR: durable verification needs an explicit reviewer node with depends_on; inline verify is only supported synchronously."
+                nodes = tasks
+                if isinstance(nodes, str):
+                    nodes = json.loads(nodes)
+                if nodes is None:
+                    nodes = [{"goal": goal, "context": context, "role": role or "worker"}]
+                ids = store.submit(self.identity, nodes, profile=self.profile, workspace=str(self.workspace), idempotency_key=idempotency_key)
+                return json.dumps({"durable_jobs": True, "state": "queued", "job_ids": ids,
+                                   "note": "Persisted. A gateway worker executes queued jobs. Read results explicitly; acknowledge after consuming."})
+            if action == "list":
+                return json.dumps({"jobs": store.list(self.identity)}, ensure_ascii=False)
+            if action == "results":
+                return json.dumps({"results": store.results(self.identity)}, ensure_ascii=False)
+            if action == "status":
+                job = store.get(self.identity, job_id)
+                return json.dumps(job, ensure_ascii=False) if job else "ERROR: job not found in this identity."
+            if action == "ack":
+                return json.dumps({"success": store.ack(self.identity, job_id)})
+            if action == "cancel":
+                return json.dumps({"success": store.cancel(self.identity, job_id)})
+            return "ERROR: use run/submit, list, status, results, ack or cancel."
+        except (ValueError, OSError, TypeError) as exc:
+            return f"ERROR durable delegation: {exc}"
+
     def _enabled_native_defs(self) -> tuple[ToolDef, ...]:
         return self._native_defs
 
@@ -2841,7 +2919,7 @@ class ToolExecutor:
             "identity": config.NAME,
             "framework": "Zeline",
             "lab": "Zerolinear",
-            "model": config.MODEL,
+            "model": self._model_override or config.MODEL,
             "protocol": config.PROTOCOL,
             "tool_profile": self.profile,
             "tools": available,
@@ -2905,6 +2983,9 @@ class ToolExecutor:
         """
         if self._cancelled():
             return "CANCELLED: turn stopped before tool dispatch."
+        budget = getattr(self, "_run_budget", None)
+        if budget is not None:
+            budget.consume("tool_calls")
         if self.plugins is None:
             result = self._execute(name, args)
             self._audit(name, args, result)
@@ -2916,7 +2997,9 @@ class ToolExecutor:
         # Redaction/rewriting hooks must run before audit and lessons capture;
         # otherwise a plugin can hide a secret from the model while the raw
         # result is still persisted in the audit/learning stores.
-        result = self.plugins.after(name, outcome.args, result)
+        from zeline.policies import PolicyBlocked
+        if not isinstance(result, PolicyBlocked):
+            result = self.plugins.after(name, outcome.args, result)
         self._audit(name, outcome.args, result)
         return result
 
@@ -2927,6 +3010,13 @@ class ToolExecutor:
     def _execute(self, name: str, args: dict[str, Any]) -> str:
         if self._cancelled():
             return "CANCELLED: turn stopped before tool dispatch."
+        from zeline.policies import PolicyBlocked
+        try:
+            reason = self.execution_policy.check(name, args)
+        except BaseException as exc:
+            reason = f"required policy evaluation failed ({type(exc).__name__})"
+        if reason is not None:
+            return PolicyBlocked("ERROR: execution policy: " + reason)
         if not self._reflection_mode:
             return self._dispatch(name, args)
         # Apply restrictions after operator hooks, but before any live dispatch.
@@ -2974,9 +3064,11 @@ class ToolExecutor:
         try:
             from zeline import lessons as lessons_module
             safe_args = args if isinstance(args, dict) else {}
-            if str(result).startswith("ERROR"):
+            from zeline.outcomes import tool_outcome
+            outcome = tool_outcome(result)
+            if outcome == "failure":
                 lessons_module.log_failure(self.identity, name, safe_args, result)
-            else:
+            elif outcome == "success":
                 lessons_module.log_success(self.identity, name, safe_args, result)
         except Exception:
             pass

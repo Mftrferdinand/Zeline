@@ -36,8 +36,9 @@ from typing import Any
 
 #: Reason text for a call the runtime never finished (``/stop``, crash, timeout).
 CANCELLED_NOTE = (
-    "This tool call did not complete: the turn was interrupted before a result "
-    "was produced. No output is available. Re-run the call if you still need it."
+    "This tool call did not complete with a recorded result: the turn was interrupted before a result "
+    "was recorded. No output is available. The outcome is UNKNOWN: external effects "
+    "may already have happened. Verify actual state before retrying a mutating call."
 )
 
 #: Reason text for a call whose arguments the provider sent malformed.
