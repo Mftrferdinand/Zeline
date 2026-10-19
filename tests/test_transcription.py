@@ -302,7 +302,7 @@ class VoicePromptTests(unittest.TestCase):
         )
         self.assertEqual(
             self.telegram._tool_progress_text("analyze_media", {"path_or_url": "/x/shot.png"}),
-            "👁️ Analyzing image…",
+            "👀 Analyzing image…",
         )
 
 

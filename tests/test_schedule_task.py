@@ -277,9 +277,9 @@ class ProgressFeedTests(unittest.TestCase):
         cases = {
             ("add", "09:00", ""): "⏰ Scheduling automation: 09:00",
             ("list", "", ""): "📅 Reviewing scheduled tasks…",
-            ("pause", "", "job1"): "⏸️ Pausing scheduled task job1",
-            ("resume", "", "job1"): "▶️ Resuming scheduled task job1",
-            ("run", "", "job2"): "▶️ Running scheduled task job2",
+            ("pause", "", "job1"): "🅿️ Pausing scheduled task job1",
+            ("resume", "", "job1"): "⏸️ Resuming scheduled task job1",
+            ("run", "", "job2"): "⏸️ Running scheduled task job2",
             ("remove", "", "job3"): "🗑 Removing scheduled job job3",
             ("show", "", "job1"): "📅 Reviewing scheduled task job1",
         }

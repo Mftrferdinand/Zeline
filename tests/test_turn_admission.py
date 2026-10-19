@@ -163,7 +163,7 @@ class TurnAdmissionTests(unittest.TestCase):
             self.assertTrue(all(not worker.is_alive() for worker in (first, second, third)))
         self.assertEqual(calls, ["first"])
         self.assertFalse(any("obsolete answer" in text or "fresh answer" in text for text in sent))
-        self.assertEqual(sum(text.startswith("❄️ Stopped") for text in sent), 1)
+        self.assertEqual(sum(text.startswith("⛔ Stopped") for text in sent), 1)
 
     def test_cancelled_turn_cannot_emit_late_narration_or_progress(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -310,7 +310,7 @@ class TurnAdmissionTests(unittest.TestCase):
         if not hasattr(telegram, "_interrupt_ack"):
             self.fail("No status-rich busy-message acknowledgment")
         self.assertEqual(telegram._interrupt_ack({"elapsed": 660, "iteration": 18, "maximum": 150}),
-                         "⚡ Interrupting current task (11 min elapsed, iteration 18/150). I'll respond to your message shortly.")
+                         "💥 Interrupting current task (11 min elapsed, iteration 18/150). I'll respond to your message shortly.")
 
 
 if __name__ == "__main__":

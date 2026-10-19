@@ -290,13 +290,13 @@ class GitProgressFeedTests(unittest.TestCase):
 
     def test_each_action_has_its_own_feed_line(self):
         cases = {
-            ("status", "", ""): "🌿 Checking repository status…",
+            ("status", "", ""): "📁 Checking repository status…",
             ("diff", "", ""): "🔍 Reviewing code changes…",
-            ("log", "", ""): "📜 Reading commit history…",
+            ("log", "", ""): "📖 Reading commit history…",
             ("show", "", ""): "🔎 Inspecting commit…",
-            ("branch", "", ""): "🌱 Listing repository branches…",
+            ("branch", "", ""): "🗳️ Listing repository branches…",
             ("add", "zeline/tools.py", ""): "📦 Staging changes: <code>tools.py</code>",
-            ("commit", "", "feat: a thing\n\nbody"): "💾 Committing changes: feat: a thing",
+            ("commit", "", "feat: a thing\n\nbody"): "🗳️ Committing changes: feat: a thing",
         }
         for (action, path, message), expected in cases.items():
             with self.subTest(action=action):

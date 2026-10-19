@@ -364,15 +364,15 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         command = str(arguments.get("command", ""))
         line = _terminal_progress(command, search=_is_search_command(command))
         if arguments.get("background"):
-            return f"🚀 Starting background process {line}" if line else "🚀 Starting background process…"
+            return f"🌟 Starting background process {line}" if line else "🌟 Starting background process…"
         return f"💻 Executing command… {line}" if line else "💻 Executing command…"
     if name == "process_control":
         action = str(arguments.get("action", "")).strip().lower()
         job = html.escape(str(arguments.get("job_id", ""))[:40], quote=False)
         labels = {
             "list": "📋 Listing active processes…",
-            "poll": f"🔄 Checking process status <code>{job}</code>…" if job else "🔄 Checking process status…",
-            "log": f"📜 Reading process logs <code>{job}</code>" if job else "📜 Reading process logs…",
+            "poll": f"🛄 Checking process status <code>{job}</code>…" if job else "🛄 Checking process status…",
+            "log": f"📖 Reading process logs <code>{job}</code>" if job else "📖 Reading process logs…",
             "kill": f"🛑 Terminating process <code>{job}</code>" if job else "🛑 Terminating process…",
         }
         return labels.get(action, "⚙️ Managing background process…")
@@ -389,7 +389,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if action == "create":
             return f"✨ Creating skill: <code>{skill_name}</code>"
         if action == "write_file":
-            return f"📄 Writing skill resource: <code>{file_path or 'file'}</code>"
+            return f"📝 Writing skill resource: <code>{file_path or 'file'}</code>"
         if action == "delete":
             merged = html.escape(str(arguments.get("absorbed_into", ""))[:100], quote=False)
             if merged:
@@ -401,10 +401,10 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         tool = html.escape(str(arguments.get("tool", ""))[:60], quote=False)
         return f"🎓 Resolving lesson: <code>{tool}</code>" if tool else "🎓 Resolving a lesson…"
     if name == "add_memory":
-        return "🧠 Saving to memory…"
+        return "🔍 Saving to memory…"
     if name == "remove_memory":
         # Verb harus jujur: dulu penghapusan ikut dilabeli "Saving to memory".
-        return "🧹 Removing memory…"
+        return "🌀 Removing memory…"
     if name == "system_env":
         return "🖥️ Inspecting system environment…"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
@@ -419,9 +419,9 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "write_file":
         return f"📝 Writing file: <code>{path}</code>"
     if name == "edit_file":
-        return f"✏️ Editing file: <code>{path}</code>"
+        return f"📝 Editing file: <code>{path}</code>"
     if name == "patch_file":
-        return f"✏️ Editing file: <code>{path}</code>"
+        return f"📝 Editing file: <code>{path}</code>"
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
         return f"🔎 Searching workspace: {query}" if query else "🔎 Searching workspace…"
@@ -433,13 +433,13 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         action = str(arguments.get("action", "")).strip().lower()
         if action == "list":
             target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
-            return f"🕓 Reviewing file checkpoints: <code>{target}</code>" if target else "🕓 Reviewing file checkpoints…"
+            return f"⏱️ Reviewing file checkpoints: <code>{target}</code>" if target else "⏱️ Reviewing file checkpoints…"
         cid = html.escape(str(arguments.get("checkpoint_id", ""))[:32], quote=False)
         if action == "diff":
             return f"🔍 Previewing file changes: <code>{cid}</code>" if cid else "🔍 Previewing file changes…"
         if action == "restore":
-            return f"↩️ Restoring previous version: <code>{cid}</code>" if cid else "↩️ Restoring previous version…"
-        return "↩️ Undoing a file change…"
+            return f"✂️ Restoring previous version: <code>{cid}</code>" if cid else "✂️ Restoring previous version…"
+        return "✂️ Undoing a file change…"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
@@ -450,7 +450,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return ""
     if name == "deep_research":
         query = html.escape(str(arguments.get('query', ''))[:100], quote=False)
-        return f"🧠 Researching in depth: {query}…" if query else "🧠 Researching in depth…"
+        return f"🔍 Researching in depth: {query}…" if query else "🔍 Researching in depth…"
     if name == "generate_image":
         prompt = html.escape(str(arguments.get("prompt", ""))[:100], quote=False)
         return f"🎨 Generating image: {prompt}…" if prompt else "🎨 Generating image…"
@@ -460,18 +460,18 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             return "🎞️ Analyzing video…"
         if any(target.endswith(ext) for ext in (".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".flac", ".aac", ".amr")):
             return "🎧 Analyzing audio…"
-        return "👁️ Analyzing image…"
+        return "👀 Analyzing image…"
     if name == "send_file":
         target = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
         return f"📤 Sending file <code>{target}</code>" if target else "📤 Sending a file…"
     if name == "git":
         verb = str(arguments.get("action", "")).strip().lower()
         labels = {
-            "status": "🌿 Checking repository status…",
+            "status": "📁 Checking repository status…",
             "diff": "🔍 Reviewing code changes…",
-            "log": "📜 Reading commit history…",
+            "log": "📖 Reading commit history…",
             "show": "🔎 Inspecting commit…",
-            "branch": "🌱 Listing repository branches…",
+            "branch": "🗳️ Listing repository branches…",
         }
         if verb in labels:
             return labels[verb]
@@ -480,8 +480,8 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             return f"📦 Staging changes: <code>{target}</code>" if target else "📦 Staging changes…"
         if verb == "commit":
             subject = html.escape(str(arguments.get("message", "")).splitlines()[0][:60], quote=False) if arguments.get("message") else ""
-            return f"💾 Committing changes: {subject}" if subject else "💾 Committing changes…"
-        return "🌿 Running git…"
+            return f"🗳️ Committing changes: {subject}" if subject else "🗳️ Committing changes…"
+        return "📁 Running git…"
     if name == "schedule_task":
         verb = str(arguments.get("action", "")).strip().lower()
         if verb == "add":
@@ -492,30 +492,30 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         job = html.escape(str(arguments.get("job_id", ""))[:32], quote=False)
         labels = {
             "show": "📅 Reviewing scheduled task",
-            "pause": "⏸️ Pausing scheduled task",
-            "resume": "▶️ Resuming scheduled task",
-            "run": "▶️ Running scheduled task",
+            "pause": "🅿️ Pausing scheduled task",
+            "resume": "⏸️ Resuming scheduled task",
+            "run": "⏸️ Running scheduled task",
             "remove": "🗑 Removing scheduled job",
         }
         label = labels.get(verb, "⏰ Managing scheduled jobs")
         return f"{label} {job}".strip() if job else f"{label}…"
     if name == "http_request":
         url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
-        return f"🔗 Sending API request: {url}" if url else "🔗 Sending API request…"
+        return f"🖇️ Sending API request: {url}" if url else "🖇️ Sending API request…"
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
-        return f"🤝 Delegating task: {goal}…" if goal else "🤝 Delegating task…"
+        return f"⚓ Delegating task: {goal}…" if goal else "⚓ Delegating task…"
     if name == "runtime_info":
         # Bukan "runtime info": yang dibaca adalah identitas runtime aktif —
         # model, provider, protokol, profil tool.
         return "🪪 Checking agent runtime…"
     if name == "list_memory":
-        # Ikon 🧠 dipakai satu keluarga untuk memory; VERB-nya yang membedakan
+        # Ikon 🔍 dipakai satu keluarga untuk memory; VERB-nya yang membedakan
         # baca / simpan / hapus, jadi feed tetap terbaca sebagai satu domain.
-        return "🧠 Retrieving saved memories…"
+        return "🔍 Retrieving saved memories…"
     if name == "recall_history":
         query = html.escape(str(arguments.get("query", "")).strip()[:100], quote=False)
-        return f"🕰️ Recalling conversation history: {query}" if query else "🕰️ Recalling conversation history…"
+        return f"⏱️ Recalling conversation history: {query}" if query else "⏱️ Recalling conversation history…"
     if name == "ask_user":
         question = html.escape(str(arguments.get("question", "")).strip()[:80], quote=False)
         return f"🙋 Requesting your input: {question}" if question else "🙋 Requesting your input…"
@@ -525,12 +525,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         label = html.escape(str(arguments.get("label", ""))[:60], quote=False)
         target = f": <code>{label}</code>" if label else ""
         labels = {
-            "list": "🛰 Listing network routes…",
+            "list": "🛠️ Listing network routes…",
             "add": f"🛜 Configuring network route{target}",
-            "remove": f"🛰 Removing network route{target}",
-            "test": f"📡 Testing network connection{target}",
+            "remove": f"🛠️ Removing network route{target}",
+            "test": f"🛜 Testing network connection{target}",
         }
-        return labels.get(action, "🛰 Managing network routes…")
+        return labels.get(action, "🛠️ Managing network routes…")
     if name == "browser":
         action = str(arguments.get("action", "")).strip().lower()
         host = html.escape(_short_host(str(arguments.get("url", "")))[:80], quote=False)
@@ -541,17 +541,17 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if action == "text":
             return f"📖 Reading webpage content{where}"
         if action == "click":
-            return f"🖱 Interacting with webpage{where}" if selector else "🖱 Interacting with webpage…"
+            return f"🗃️ Interacting with webpage{where}" if selector else "🗃️ Interacting with webpage…"
         if action == "type":
-            return f"⌨️ Entering text{where}" if selector else "⌨️ Entering text…"
+            return f"⚡ Entering text{where}" if selector else "⚡ Entering text…"
         if action == "screenshot":
             return f"📸 Capturing webpage screenshot <code>{path}</code>" if path else "📸 Capturing webpage screenshot…"
         if action == "links":
-            return "🔗 Extracting page links…"
+            return "🖇️ Extracting page links…"
         if action == "eval":
-            return "🧪 Executing browser script…"
+            return "📂 Executing browser script…"
         if action == "close":
-            return "🚪 Closing browser session…"
+            return "📴 Closing browser session…"
         return "🌐 Driving the browser…"
     if name == "code_intel":
         action = str(arguments.get("action", "")).strip().lower()
@@ -562,17 +562,17 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             line_no = 0
         at = f"{where} L{line_no}" if (where and line_no > 0) else where
         if action == "diagnostics":
-            return f"🩺 Analyzing code diagnostics{where}" if where else "🩺 Analyzing code diagnostics…"
+            return f"⚙️ Analyzing code diagnostics{where}" if where else "⚙️ Analyzing code diagnostics…"
         if action == "definition":
-            return f"🎯 Locating symbol definition{at}" if at else "🎯 Locating symbol definition…"
+            return f"📍 Locating symbol definition{at}" if at else "📍 Locating symbol definition…"
         if action == "references":
-            return f"🔗 Finding symbol references{at}" if at else "🔗 Finding symbol references…"
+            return f"🖇️ Finding symbol references{at}" if at else "🖇️ Finding symbol references…"
         if action == "hover":
             return f"💡 Inspecting type information{at}" if at else "💡 Inspecting type information…"
         if action == "symbols":
             return f"🗺 Mapping symbols{where}" if where else "🗺 Mapping file symbols…"
         if action == "servers":
-            return "🩺 Checking language servers…"
+            return "⚙️ Checking language servers…"
         return f"🧭 Asking the language server{where}"
     if name == "download_file":
         # URL mentah tidak ditampilkan (sama seperti web_fetch): host saja.
@@ -588,7 +588,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         parts = name[len(mcp_module.MCP_TOOL_PREFIX):].split("__", 1)
         server = html.escape(parts[0].replace("_", " ")[:40], quote=False)
         remote = html.escape((parts[1] if len(parts) > 1 else "tool").replace("_", " ")[:60], quote=False)
-        return f"🧩 Connecting to external tool: {remote} via {server}"
+        return f"🛜 Connecting to external tool: {remote} via {server}"
     # Fallback: satu baris, argumen pertama saja, TANPA newline.
     first_val = ""
     if isinstance(arguments, dict) and arguments:
@@ -605,7 +605,7 @@ def _progress_category(line: str) -> str | None:
     shell, run code TIDAK di-collapse — tiap file & command tampil sendiri supaya
     user lihat SEMUA yang dikerjakan, bukan cuma satu ringkasan.
     """
-    if line.startswith("🧠 Researching in depth"):
+    if line.startswith("🔍 Researching in depth"):
         return "research"
     if line.startswith("🔎 Searching the web"):
         return "search"
@@ -654,7 +654,7 @@ def _finalize_line(line: str) -> str:
     penanda generik 'data/other'. Baris file (📖 Reading <file>) dibiarkan apa
     adanya supaya SEMUA file yang dibaca tetap terlihat.
     """
-    prefixes = ("🔎 Searching the web", "🧠 Researching in depth")
+    prefixes = ("🔎 Searching the web", "🔍 Researching in depth")
     for prefix in prefixes:
         if line.startswith(prefix):
             # Ambil subjek setelah ikon+verb, buang elipsis/trailing.
@@ -1990,15 +1990,13 @@ def _handle_command_update(
         _api_call(api, "sendMessage", chat_id=chat_id, text=picker_text, reply_markup=markup)
         return True
     if command == "/stop":
-        status = sessions.status(identity)
         stopped = sessions.stop(identity)
-        title = str(status.get("title") or "Active task").strip()
         if stopped:
             _note_stop(identity)
             # SATU pesan saja. Turn yang dibatalkan TIDAK ikut mengirim
             # "Stopped." (lihat _send_agent_reply) dan refleksi dilewati, jadi
             # inilah satu-satunya balasan untuk /stop.
-            reply = f"❄️ Stopped — {title}"
+            reply = "⛔ Stopped. You can continue this session."
         elif _stopped_recently(identity):
             # /stop kedua (dobel-tap, atau update yang sama dikirim ulang
             # Telegram) tiba setelah turn benar-benar berhenti. Membalas
@@ -3238,7 +3236,7 @@ def _interrupt_ack(progress: dict[str, Any]) -> str:
     age = f"{elapsed // 60} min elapsed" if elapsed >= 60 else f"{elapsed}s elapsed"
     current, maximum = int(progress.get("iteration", 0)), int(progress.get("maximum", 0))
     detail = age + (f", iteration {current}/{maximum}" if maximum else "")
-    return f"⚡ Interrupting current task ({detail}). I'll respond to your message shortly."
+    return f"💥 Interrupting current task ({detail}). I'll respond to your message shortly."
 
 
 _busy_ack_ts: dict[tuple[int, str], float] = {}

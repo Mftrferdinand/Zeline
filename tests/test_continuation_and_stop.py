@@ -276,7 +276,7 @@ class StopRepliesOnceTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(api.call_count, 1)
         text = api.call_args.kwargs["text"]
-        self.assertEqual(text, "❄️ Stopped — Bangun aplikasi")
+        self.assertEqual(text, "⛔ Stopped. You can continue this session.")
 
     def test_second_stop_right_after_is_silent_not_no_active_task(self):
         """Ini pesan ketiga yang dikeluhkan: /stop dobel bilang 'No active task'."""
