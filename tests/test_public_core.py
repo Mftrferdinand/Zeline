@@ -852,7 +852,19 @@ class ZelinePublicCoreTests(unittest.TestCase):
         workspace.mkdir(parents=True)
         executor = self.tools.ToolExecutor("cli:local", profile="workspace", workspace=workspace)
         self.assertIn("blocked", executor.run("download_file", {"url": "http://169.254.169.254/x", "path": "meta.txt"}))
-        self.assertIn("workspace", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
+        socket = self.tools.socket
+        public_address = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
+        # Isolate path validation from public DNS without bypassing the SSRF guard.
+        with mock.patch.object(socket, "getaddrinfo", return_value=public_address) as dns, \
+                mock.patch.object(self.tools.requests, "get", side_effect=AssertionError("No HTTP expected")) as get:
+            self.assertIn("workspace", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
+            dns.assert_called_once_with("example.com", None)
+            get.assert_not_called()
+        # DNS failure must still fail closed before any download or file write.
+        with mock.patch.object(socket, "getaddrinfo", side_effect=socket.gaierror("fixture DNS unavailable")), \
+                mock.patch.object(self.tools.requests, "get", side_effect=AssertionError("No HTTP expected")) as get:
+            self.assertIn("blocked", executor.run("download_file", {"url": "https://example.com/x", "path": "../escape.txt"}))
+            get.assert_not_called()
         self.assertFalse((self.home / "escape.txt").exists())
 
     def test_generate_image_is_owner_gated_and_validates_input(self):

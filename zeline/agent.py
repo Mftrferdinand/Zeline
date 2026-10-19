@@ -25,6 +25,7 @@ from zeline import lessons
 from zeline.tools import ToolExecutor
 from zeline import project_rules
 from zeline import tool_protocol
+from zeline.narration import NarrationGate
 from zeline import usage_stats
 from zeline.run_budget import RunBudget, BudgetExceeded
 
@@ -1045,6 +1046,7 @@ class Zeline:
         on_stream_delta: Callable[[str], None] | None = None,
     ) -> str:
         turn_started = time.monotonic()
+        narration_gate = NarrationGate()
         repeated_failures = 0  # tool call berturut yang balik ERROR
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
@@ -1094,14 +1096,13 @@ class Zeline:
             self.last_turn_tool_calls += len(tool_calls)
             self._tool_calls_since_reflection += len(tool_calls)
 
-            # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu
-            # konfignya lalu benerin") adalah kalimat rencana model. Kirim ke
-            # user sebagai bubble tersendiri SEBELUM tool jalan — inilah yang
-            # bikin alurnya kebaca seperti Zeline (bubble penjelasan →
-            # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
+            # Select only pre-tool chat updates. Keep the raw model message in
+            # history and leave all tool/progress callbacks and final text alone.
             narration = str(message.get("content") or "").strip()
             if narration and on_narration:
-                on_narration(narration)
+                selected = narration_gate.select(narration)
+                if selected is not None:
+                    on_narration(selected)
 
             # Urutan ini wajib untuk OpenAI-compatible tool calling.
             self.messages.append(
@@ -1247,6 +1248,9 @@ class Zeline:
                     )
 
             steer_text = take_steer() if take_steer else None
+            if steer_text:
+                # The same blocker after new user guidance is a new useful update.
+                narration_gate = NarrationGate()
             for recorded, (tool_call, name, args), result in zip(recorded_results, parsed_calls, results):
                 if on_tool_result:
                     on_tool_result(name, args, result)
