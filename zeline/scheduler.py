@@ -828,6 +828,18 @@ def _run_script(job: Job, should_stop=None) -> str:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS can deny a group signal after its leader has exited.
+                # Do not replace the script result with that cleanup race.
+                if process.poll() is None:
+                    # Group signalling can be denied even when the owned child
+                    # is still killable. Reap it and settle its pipe readers
+                    # before surfacing the group-cleanup failure.
+                    process.kill()
+                    process.wait(timeout=5)
+                    for reader in readers:
+                        reader.join(timeout=2)
+                    raise
         process.wait(timeout=5)
         for reader in readers:
             reader.join(timeout=2)

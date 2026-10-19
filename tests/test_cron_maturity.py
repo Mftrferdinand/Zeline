@@ -411,6 +411,68 @@ for number in range(8): s.add_job('1h',f'worker-{index}-{number}')
         for call in deliver.call_args_list:
             self.assertLessEqual(len(call.args[1]), 64000)
 
+    @unittest.skipIf(os.name == "nt", "POSIX process-group cleanup")
+    def test_exited_script_cleanup_permission_error_preserves_output_limit(self):
+        script = self.home / "cleanup-race.py"
+        script.write_text("print('x' * 200000)\n")
+        job = self.cron.add_job("1h", script=str(script), no_agent=True)
+        processes = []
+        popen = self.cron.subprocess.Popen
+
+        def spawn(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        def denied_after_exit(pid, sig):
+            self.assertEqual(pid, processes[0].pid)
+            # Reader closes the overflowing pipe; reap before injecting the
+            # macOS race, independently of scheduler/child timing.
+            processes[0].wait(timeout=5)
+            raise PermissionError(1, "Operation not permitted")
+
+        try:
+            with patch.object(self.cron.subprocess, "Popen", side_effect=spawn), \
+                    patch.object(self.cron.os, "killpg", side_effect=denied_after_exit) as killpg:
+                with self.assertRaisesRegex(self.cron.CronError, "output limit"):
+                    self.cron._run_script(job)
+            killpg.assert_called_once()
+            self.assertIsNotNone(processes[0].returncode)
+            self.assertTrue(processes[0].stdout.closed)
+            self.assertTrue(processes[0].stderr.closed)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process-group cleanup")
+    def test_running_script_cleanup_permission_error_reaps_child_before_raising(self):
+        script = self.home / "denied-cleanup.py"
+        script.write_text("import time\ntime.sleep(60)\n")
+        job = self.cron.add_job("1h", script=str(script), no_agent=True, timeout=.1)
+        processes = []
+        popen = self.cron.subprocess.Popen
+
+        def spawn(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        try:
+            with patch.object(self.cron.subprocess, "Popen", side_effect=spawn), \
+                    patch.object(self.cron.os, "killpg", side_effect=PermissionError(1, "denied")):
+                with self.assertRaises(PermissionError):
+                    self.cron._run_script(job)
+            self.assertIsNotNone(processes[0].returncode)
+            self.assertTrue(processes[0].stdout.closed)
+            self.assertTrue(processes[0].stderr.closed)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+
     def test_empty_script_stdout_is_silent(self):
         script = self.home / "quiet.py"
         script.write_text("pass\n")
