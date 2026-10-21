@@ -1,4 +1,28 @@
 # Changelog
+
+## [0.4.1] — 2026-10-21
+
+This release packages reviewed changes from the retained v0.3.4 baseline. It does
+not restore the removed v0.3.5–v0.3.9 code wholesale.
+
+### Added
+- Bounded, resumable tool I/O, validated file cursors, bounded process spools and evidence-preserving context windows ([#323](https://github.com/Mftrferdinand/Zeline/pull/323)).
+- SkillForge usage telemetry, recency-weighted revision scores, stale-skill proposals, test gates, explicit review, backups and private-copy application; operator CLI and owner-only Telegram overview ([#309](https://github.com/Mftrferdinand/Zeline/pull/309), [#323](https://github.com/Mftrferdinand/Zeline/pull/323)).
+- Optional Parallel Search and local Sem MCP setup with documented access boundaries ([#312](https://github.com/Mftrferdinand/Zeline/pull/312), [#322](https://github.com/Mftrferdinand/Zeline/pull/322)).
+
+### Changed
+- Internal reflection proposes skill changes instead of silently modifying or deleting active procedures; ordinary operator-requested skill management remains unchanged.
+- Emit 📙 Self-Enhancement, 📘 Self-Improvement and 📗 Self-Refinement only for evidenced actions. Substantial research remains review-eligible; incomplete reviews remain visible without invented success.
+- Preserve updated Telegram activity icons, compact letter-choice questions, durable receipts, unquoted live narration and final-answer attribution. Post-task learning is separate from the final answer ([#313](https://github.com/Mftrferdinand/Zeline/pull/313), [#314](https://github.com/Mftrferdinand/Zeline/pull/314), [#316](https://github.com/Mftrferdinand/Zeline/pull/316), [#318](https://github.com/Mftrferdinand/Zeline/pull/318), [#323](https://github.com/Mftrferdinand/Zeline/pull/323)).
+- Focus progress narration on meaningful findings, blockers and decisions ([#315](https://github.com/Mftrferdinand/Zeline/pull/315)).
+- Include public installers and release guides in source distributions, and align installers, documentation and package metadata on v0.4.1.
+
+### Fixed
+- Prevent subprocess cleanup from sending group-wide signals to shared or foreign process groups; preserve owned-descendant cleanup and Windows tree termination ([#324](https://github.com/Mftrferdinand/Zeline/pull/324)). This is defensive hardening, not a diagnosis of a past Android host outage.
+- Explicit invalid-UTF-8 failures, cancellation-safe process ownership, complete capture evidence and tool-call/result integrity during compaction ([#323](https://github.com/Mftrferdinand/Zeline/pull/323)).
+- Runtime policy, continuation and scheduler hardening; macOS subprocess cleanup races ([#308](https://github.com/Mftrferdinand/Zeline/pull/308), [#309](https://github.com/Mftrferdinand/Zeline/pull/309)).
+- Cross-platform test fixtures: stdlib-only persistence regressions, Windows promoted-child directory lifetime and platform-specific failure injection ([#323](https://github.com/Mftrferdinand/Zeline/pull/323)).
+
 ## [0.3.4] — 2026-09-11
 
 ### Added
@@ -32,20 +56,6 @@ configuration are treated as stable and migrated on upgrade.
 
 The install commands for each release are pinned to its tag, so an older
 release's documented one-liner keeps working after a newer release ships.
-
-## [Unreleased]
-
-### Added
-- SkillForge runtime telemetry and revision-specific, recency-weighted effectiveness scores with explicit unknown/cancelled outcomes and uncertainty.
-- Bounded stale-skill scan → revision proposal → structural/behavioral test workflow, explicit operator safety review, mandatory backups and private-copy application.
-- `zeline skillforge` operator CLI and owner-only Telegram `/skillforge` overview, plus a package-safe legacy script entry point.
-
-### Changed
-- Restore bounded, resumable tool I/O and evidence-preserving session compaction, with explicit UTF-8 failures and cancellation-safe process ownership.
-- Preserve approved Telegram icons, compact questions and receipts, unquoted live narration, and final-answer attribution. Render self-improvement phases only for actual verified actions.
-- Keep substantial research eligible for review; surface incomplete reviews without inventing completed phases or discarding pending work.
-- Include documented installers and release guides in source distributions; retain the last published installer pins until release assets exist.
-- Internal self-improvement now proposes skill changes instead of silently editing/deleting active procedures. Ordinary operator-requested skill management remains unchanged.
 
 ## [0.3.2] — 2026-09-06
 
@@ -403,3 +413,4 @@ Release notes for 0.2.5 and earlier are on the
 [#231]: https://github.com/Mftrferdinand/Zeline/pull/231
 [#232]: https://github.com/Mftrferdinand/Zeline/pull/232
 [#233]: https://github.com/Mftrferdinand/Zeline/pull/233
+[0.4.1]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.1
