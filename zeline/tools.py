@@ -385,8 +385,14 @@ def _terminate_group(process: subprocess.Popen) -> None:
         return
     group_id = None
     try:
-        group_id = os.getpgid(process.pid)
-        os.killpg(group_id, signal.SIGTERM)
+        candidate = os.getpgid(process.pid)
+        # Our detached children lead their own groups. A foreground/shared
+        # group can contain the terminal and sibling agents: never signal it.
+        if candidate == process.pid:
+            group_id = candidate
+            os.killpg(group_id, signal.SIGTERM)
+        else:
+            process.terminate()
     except Exception:
         try:
             process.terminate()
