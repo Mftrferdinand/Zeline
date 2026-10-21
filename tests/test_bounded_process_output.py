@@ -43,7 +43,10 @@ class BoundedProcessOutputTests(unittest.TestCase):
     def test_thread_start_failure_closes_allocated_resources(self):
         from types import SimpleNamespace
         output = importlib.import_module('zeline.process_output')
-        for failure in ('set_blocking', 'start'):
+        failures = ['start']
+        if output.os.name != 'nt':
+            failures.insert(0, 'set_blocking')
+        for failure in failures:
             with self.subTest(failure=failure):
                 stream = tempfile.TemporaryFile()
                 spool = tempfile.TemporaryFile()
@@ -206,8 +209,11 @@ class BoundedProcessOutputTests(unittest.TestCase):
                 "os.write(1,b'B'*12000)")
             with patch.object(self.tools, '_bg_log_dir', return_value=Path(tmp)):
                 worker = threading.Thread(target=lambda: result.append(
-                    self.run_code(source, should_stop=stop.is_set,
-                                  interrupt_reason=lambda: 'interrupt')))
+                    self.tools._run_tracked(
+                        [sys.executable, '-c', source], shell=False, cwd=tmp,
+                        seconds=3, identity='fixture:bounded',
+                        should_stop=stop.is_set,
+                        interrupt_reason=lambda: 'interrupt')))
                 worker.start()
                 try:
                     deadline = time.monotonic() + 3
