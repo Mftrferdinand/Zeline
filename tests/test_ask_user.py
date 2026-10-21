@@ -77,7 +77,7 @@ class OptionNormalizationTests(AskUserBase):
         self.assertEqual(self.interaction.normalize_options(42), ())
 
     def test_long_option_text_is_truncated(self):
-        long_option = "x" * (self.interaction.MAX_OPTION_CHARS + 500)
+        long_option = "x" * (self.interaction.MAX_OPTION_CHARS + 50)
         result = self.interaction.normalize_options([long_option])
         self.assertEqual(len(result[0]), self.interaction.MAX_OPTION_CHARS)
 

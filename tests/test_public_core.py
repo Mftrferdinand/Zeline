@@ -1274,8 +1274,6 @@ class ZelinePublicCoreTests(unittest.TestCase):
             live.tick()  # heartbeat saja, tanpa tool baru
         created = [text for method, text in sent if method == "sendMessage"]
         self.assertEqual(len(created), 1)
-        # Creation carries static evidence only until we know the Telegram ID.
-        # An accepted send with a lost response must never orphan a live timer.
         self.assertNotIn("Working", created[0])
         edited = [text for method, text in sent if method == "editMessageText"]
         self.assertTrue(edited)
@@ -1614,8 +1612,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         with mock.patch.object(telegram, "_api_call") as api:
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=1, identity="telegram:1", text="hi", tool_profile="safe")
-        self.assertEqual(api.call_args.kwargs["parse_mode"], "HTML")
-        self.assertIn("<b>Berhasil</b>", api.call_args.kwargs["text"])
+            # Control updates can interleave after the final text message.
+            telegram._api_call("bot-api", "sendChatAction", chat_id=1, action="typing")
+        replies = [call.kwargs for call in api.call_args_list
+                   if len(call.args) >= 2 and call.args[1] == "sendMessage"
+                   and "<b>Berhasil</b>" in str(call.kwargs.get("text", ""))]
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0].get("parse_mode"), "HTML")
 
     def test_telegram_streams_model_narration_as_separate_bubbles(self):
         # Kalimat rencana model yang menyertai tool call harus dikirim sebagai
@@ -2179,14 +2182,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(by_name["process_control"].profiles, frozenset({"full"}))
 
         executor = tools.ToolExecutor("telegram:owner", profile="full", workspace=str(self.home))
-        captured: dict[str, object] = {}
         real_popen = tools.subprocess.Popen
 
         class TrackedPopen(real_popen):  # type: ignore[misc,valid-type]
             def communicate(self, *args, **kwargs):
-                # Timeout yang benar-benar diberlakukan pada proses foreground.
-                captured.setdefault("timeout", kwargs.get("timeout"))
-                return super().communicate(*args, **kwargs)
+                raise AssertionError("foreground output must use bounded draining")
 
         with mock.patch.object(tools.subprocess, "Popen", TrackedPopen), \
              mock.patch.object(tools, "_run_tracked", wraps=tools._run_tracked) as tracked:
@@ -2194,11 +2194,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("exit=0", out)
         self.assertIn("ok", out)
         self.assertEqual(tracked.call_args.kwargs["seconds"], 600)
-        self.assertGreater(captured["timeout"], 0)
-        self.assertLessEqual(captured["timeout"], 0.05)  # cancellation polling, not total deadline
 
-        # A real timeout must tell the agent how to retry, not just say it failed.
+        # Check elapsed time rather than requiring communicate(timeout=...):
+        # the streaming collector polls the child without buffering its output.
+        timeout_started = time.monotonic()
         timed_out = executor.run("run_shell", {"command": "sleep 5", "timeout": 1})
+        elapsed = time.monotonic() - timeout_started
+        self.assertGreaterEqual(elapsed, .8)
+        self.assertLess(elapsed, 3)
         self.assertIn("timed out", timed_out)
         self.assertIn("larger timeout", timed_out)
         self.assertIn("background=true", timed_out)
@@ -2642,26 +2645,30 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(called["reflect"], "telegram:42")
 
     def test_telegram_delivers_structured_reflection_html_without_generic_prefix(self):
+        import threading
         telegram = importlib.import_module("zeline.gateways.telegram")
         delivered = []
+        review_delivered = threading.Event()
 
         class Sessions:
             def send(self, **_kwargs):
                 return "beres"
             def reflect(self, _identity, *a, **k):
-                return ("📙 <b>Self-Improvement review:</b> active skill unchanged\n\n"
-                        "📘 <b>Self-Refinements review:</b> proposal pending")
+                return ("📙 <b>Self-Enhancement:</b> active skill unchanged\n\n"
+                        "📘 <b>Self-Improvement:</b> proposal pending")
 
         def api(_api, method, **kwargs):
             if method == "sendMessage":
                 delivered.append(kwargs.get("text", ""))
+                if kwargs.get("text") == "📘 <b>Self-Improvement:</b> proposal pending":
+                    review_delivered.set()
             return {"result": {"message_id": 5}}
 
         with mock.patch.object(telegram, "_api_call", side_effect=api):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=42, identity="telegram:42", text="hi", tool_profile="full")
-            time.sleep(0.15)
-        self.assertIn("📙 <b>Self-Improvement review:</b> active skill unchanged", delivered)
-        self.assertIn("📘 <b>Self-Refinements review:</b> proposal pending", delivered)
+            self.assertTrue(review_delivered.wait(5), "reflection delivery did not complete")
+        self.assertIn("📙 <b>Self-Enhancement:</b> active skill unchanged", delivered)
+        self.assertIn("📘 <b>Self-Improvement:</b> proposal pending", delivered)
         self.assertFalse(any("\n\n" in text for text in delivered))
         self.assertFalse(any(text.startswith("📒 Improvement:") for text in delivered))
 
@@ -2673,12 +2680,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm", "file_path": "references/api.md"}), "📝 Writing skill resource: <code>references/api.md</code>")
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "delete", "name": "dupe", "absorbed_into": "riset-prop-firm"}), "🧬 Merging skills: <code>dupe</code> into <code>riset-prop-firm</code>")
         self.assertEqual(telegram._tool_progress_text("manage_skill", {"action": "list"}), "🗃️ Browsing available skills…")
-        result = telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement).")
-        self.assertEqual(result, "📘 Self-Refinements: Patched private/zeline-development/SKILL.md (1 replacement).")
-        saved = telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
-        self.assertEqual(saved, "📙 Self-Improvement: OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md.")
-        enhanced = telegram._tool_result_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm"}, "Wrote references/checks.md.")
-        self.assertEqual(enhanced, "📗 Self-Enhancements: Wrote references/checks.md.")
+        # Mutasi skill TIDAK lagi dirender dari feed live: karena satu siklus
+        # refleksi memakai beberapa putaran tool, labeling live memunculkan
+        # 📙/📘/📗 sekaligus dalam satu sesi. Self-improvement hanya dilaporkan
+        # sekali oleh agent._format_reflection_actions setelah review selesai.
+        self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "patch", "name": "zeline-development"}, "Patched private/zeline-development/SKILL.md (1 replacement)."))
+        self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "create", "name": "riset-prop-firm"}, "OK, skill 'riset-prop-firm' created at private/riset-prop-firm/SKILL.md."))
+        self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "write_file", "name": "riset-prop-firm"}, "Wrote references/checks.md."))
         # An inventory read is orientation, not an improvement: reporting it would
         # push the private skill list into the chat on every reflection.
         self.assertIsNone(telegram._tool_result_text("manage_skill", {"action": "list"}, "3 skills:\n- a [private/folder]: x"))

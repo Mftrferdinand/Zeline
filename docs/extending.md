@@ -160,6 +160,40 @@ shows exactly which tools arrive, rather than leaving you to find out mid-turn.
 A stdio server is a local process launched by Zeline, so the same
 `workspace`/`full` restriction applies.
 
+### Local code lookup with Sem
+
+Install [Sem](https://github.com/Ataraxy-Labs/sem) on the machine running Zeline
+and check `sem --version` (tested with 0.27.0). Merge this optional entry into
+`mcp.servers` in your config, preserving existing settings:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "sem": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": "sem mcp",
+        "env": {"SEM_REPO": "/absolute/path/to/checkout"}
+      }
+    }
+  }
+}
+```
+
+Replace the path with a trusted checkout visible to Zeline, then run
+`zeline mcp test sem`. Confirm `mcp__sem__sem_find` and `mcp__sem__sem_grep`
+are listed without connection errors. Use a new chat session with an existing
+`workspace` or `full` profile and your usual model configuration. Ask it to
+look up a known symbol with `sem_find`, for example `parse_config`.
+
+Zeline exposes all discovered server tools, not just search: Sem also has
+validation capabilities that can execute commands. `SEM_REPO` selects a
+repository and is not a sandbox. Use a restricted OS account for untrusted
+checkouts. Sem may write a local index, and source returned to an agent goes
+to its configured model. This does not replace Zeline's native tools.
+Remove the entry with `zeline mcp remove sem` and start a new session to disable it.
+
 ### Parallel web search and page fetching
 
 [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)

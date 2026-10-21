@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from zeline import config
+from zeline import compaction, config
 
 # Batas defensif: jangan simpan history tak terbatas untuk bot publik.
 MAX_STORED_MESSAGES = 60
@@ -439,31 +439,81 @@ class SessionPersistence:
         return out
 
     def _trim(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Batasi jumlah & ukuran, tapi jaga integritas tool-call protocol.
+        """Retain task anchors, digest context and indivisible tool/result groups.
 
-        Selalu pertahankan system message (index 0 bila ada) dan potong hanya di
-        awal user turn agar tidak meninggalkan assistant(tool_calls) tanpa hasil
-        tool-nya (yang akan ditolak provider).
+        A single large result must not leave only an orphaned assistant suffix.
+        Message limits are soft only for one indivisible latest tool batch;
+        textual content is shortened explicitly when that batch alone is large.
         """
         if not messages:
             return []
-        system = messages[0] if messages and messages[0].get("role") == "system" else None
-        body = messages[1:] if system else messages
-        if len(body) > MAX_STORED_MESSAGES:
-            tail = body[-MAX_STORED_MESSAGES:]
-            start = next((i for i, m in enumerate(tail) if m.get("role") == "user"), 0)
-            body = tail[start:]
-        # Batasi karakter total dari belakang (percakapan terbaru diutamakan).
-        total = 0
-        kept: list[dict[str, Any]] = []
-        for message in reversed(body):
-            size = len(str(message.get("content", "")))
-            if total + size > MAX_STORED_CHARS and kept:
+        system = messages[0] if messages[0].get("role") == "system" else None
+        body = list(messages[1:] if system else messages)
+        dropped: list[dict[str, Any]] = []
+        while body and (
+            len(body) + bool(dropped) > MAX_STORED_MESSAGES
+            or sum(len(str(m.get("content", ""))) for m in body) > MAX_STORED_CHARS
+        ):
+            next_user = next((i for i, m in enumerate(body[1:], 1)
+                              if m.get("role") == "user"), None)
+            if next_user is not None:
+                dropped.extend(body[:next_user])
+                body = body[next_user:]
+                continue
+            # Within the latest turn, retain its user goal and latest tool batch.
+            # Drop only whole earlier blocks, including all their tool results.
+            first = 1 if body[0].get("role") == "user" else 0
+            latest_call = next((i for i in range(len(body) - 1, -1, -1)
+                                if body[i].get("tool_calls")), None)
+            if first >= len(body) - 1:
                 break
-            total += size
-            kept.append(message)
-        kept.reverse()
-        # Jangan biarkan window dimulai dari assistant/tool orphan.
-        start = next((i for i, m in enumerate(kept) if m.get("role") == "user"), 0)
-        kept = kept[start:]
-        return ([system] + kept) if system else kept
+            if latest_call == first:
+                # Only the call and its contiguous results are indivisible.
+                # Assistant findings after that batch are not exempt from caps.
+                batch_end = first + 1
+                while batch_end < len(body) and body[batch_end].get("role") == "tool":
+                    batch_end += 1
+                if batch_end < len(body) - 1:
+                    dropped.append(body[batch_end])
+                    body = body[:batch_end] + body[batch_end + 1:]
+                    continue
+                # Keep the goal, complete latest batch and newest frontier.
+                break
+            end = first + 1
+            while end < len(body) and body[end].get("role") == "tool":
+                end += 1
+            if end == len(body):
+                break
+            dropped.extend(body[first:end])
+            body = body[:first] + body[end:]
+        summary = None
+        if dropped:
+            summary = {"role": "user", "content": compaction.digest(dropped, None)}
+            # Default summary budget fits comfortably inside the storage budget.
+            summary["content"] = summary["content"][:max(0, MAX_STORED_CHARS // 3)]
+        room = max(0, MAX_STORED_CHARS - (len(summary["content"]) if summary else 0))
+        if sum(len(str(m.get("content", ""))) for m in body) > room:
+            # Preserve latest evidence and next steps while reserving the user goal.
+            minimums = [min(len(str(m.get("content", ""))),
+                            16_000 if m.get("role") == "user" else 512) for m in body]
+            reserved = sum(minimums)
+            shortened = []
+            marker = "\n… [persisted content shortened; use existing findings before re-reading] …\n"
+            for message, minimum in reversed(list(zip(body, minimums))):
+                reserved -= minimum
+                text = str(message.get("content", ""))
+                allocation = max(0, room - reserved)
+                if len(text) > allocation:
+                    if allocation <= len(marker):
+                        text = marker[:allocation]
+                    else:
+                        length = allocation - len(marker)
+                        head = (length + 1) // 2
+                        text = text[:head] + marker + (text[-(length - head):] if length > head else "")
+                    message = {**message, "content": text}
+                room -= len(text)
+                shortened.append(message)
+            body = list(reversed(shortened))
+        if summary:
+            body = [summary, *body]
+        return ([system, *body] if system else body)

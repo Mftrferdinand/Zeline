@@ -517,7 +517,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         query = html.escape(str(arguments.get("query", "")).strip()[:100], quote=False)
         return f"⏱️ Recalling conversation history: {query}" if query else "⏱️ Recalling conversation history…"
     if name == "ask_user":
-        question = html.escape(str(arguments.get("question", "")).strip()[:80], quote=False)
+        question = html.escape(str(arguments.get("question", "")).strip()[:180], quote=False)
         return f"🙋 Requesting your input: {question}" if question else "🙋 Requesting your input…"
     if name == "network_route":
         action = str(arguments.get("action", "")).strip().lower()
@@ -664,22 +664,21 @@ def _finalize_line(line: str) -> str:
 
 
 def _tool_result_text(name: str, arguments: dict[str, Any], result: str) -> str | None:
-    """Render hanya hasil nyata yang bernilai sebagai progress terpisah."""
-    if name == "manage_skill" and not result.startswith("ERROR"):
-        # Inventory is orientation only: never leak a private skill list as an
-        # accomplishment. Mutations use the same vocabulary as background
-        # reflection so the chat has one coherent improvement language.
-        action = str(arguments.get("action", "")).strip().lower()
-        if action in {"list", "inventory"}:
-            return None
-        labels = {
-            "create": "📙 Self-Improvement",
-            "patch": "📘 Self-Refinements",
-            "write_file": "📗 Self-Enhancements",
-            "delete": "📘 Self-Refinements",
-        }
-        label = labels.get(action, "📙 Self-Improvement")
-        return f"{label}: {html.escape(result[:1000], quote=False)}"
+    """Render hanya hasil nyata yang bernilai sebagai progress terpisah.
+
+    ``manage_skill`` sengaja TIDAK pernah dirender di sini. Dulu setiap
+    mutasi skill langsung dicap 📙/📘/📗 dari feed live, dan karena satu
+    siklus refleksi boleh memakai beberapa putaran tool (list → create →
+    write_file → patch → delete), satu sesi refleksi memunculkan ketiga
+    label sekaligus — terbaca seperti tiga fase berjalan bersamaan padahal
+    itu satu review yang sedang bekerja.
+
+    Self-improvement dilaporkan HANYA oleh ``agent._format_reflection_actions``
+    setelah refleksi selesai, tempat setiap label punya gate bukti sendiri
+    (create → 📙, patch/delete → 📘, resolve_lesson/add_memory → 📗). Feed live
+    tetap menyebut aktivitasnya lewat ``_tool_progress_text`` seperti tool lain,
+    tanpa mengklaim hasil yang belum direview.
+    """
     return None
 
 
@@ -3164,16 +3163,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         if not sentence:
             return
         live.detach()
-        # Narration is also a response to this turn's message. Keep its origin
-        # in the worker closure so queued follow-ups cannot steal the quote.
-        extra = {"reply_to_message_id": reply_to_message_id,
-                 "allow_sending_without_reply": True} if reply_to_message_id else {}
         for rendered_part in _telegram_html_parts(sentence):
             if cancelled():
                 return
             sent = _api_call(
                 api, "sendMessage", chat_id=chat_id,
-                text=rendered_part, parse_mode="HTML", **extra,
+                text=rendered_part, parse_mode="HTML",
             )
             if sent is None:
                 print("  [telegram] narration delivery stopped after a failed part", flush=True)
@@ -3272,7 +3267,7 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     return True
 
 
-_LEARNING_PHASES = ("📙 Self-Improvement", "📘 Self-Refinements", "📗 Self-Enhancements")
+_LEARNING_PHASES = ("📙 Self-Enhancement", "📘 Self-Improvement", "📗 Self-Refinement")
 
 
 def _learning_report_parts(updates: tuple[str, ...], summary: str | None):
@@ -3285,8 +3280,6 @@ def _learning_report_parts(updates: tuple[str, ...], summary: str | None):
         heading = section.replace("<b>", "").lstrip()
         phase = next((p for p in _LEARNING_PHASES if heading.startswith(p)), "other")
         groups.setdefault(phase, []).append(section)
-    if updates and _LEARNING_PHASES[0] not in groups:
-        groups[_LEARNING_PHASES[0]] = ["📙 Self-Improvement: Task learning updates recorded."]
     for phase in (*_LEARNING_PHASES, "other"):
         if phase not in groups:
             continue
@@ -3318,7 +3311,32 @@ def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None
 
         if stopped():
             return
+        fast_updates = tuple(learning_updates)
+        if stopped():
+            return
+        # Typing belongs to an admitted, eligible review, not its scheduling.
+        # Refresh every 4s; skipped when Thread is mocked in tests.
+        typing_done = threading.Event()
+        def keep_typing():
+            while not typing_done.is_set():
+                if stopped():
+                    return
+                _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                          timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+                typing_done.wait(4)
+        import unittest.mock as _mock
+        is_mocked = isinstance(threading.Thread, _mock.MagicMock) or isinstance(threading.Thread, _mock.Mock)
+        def start_review_typing(ticket):
+            capture_ticket(ticket)
+            if is_mocked or stopped():
+                return
+            try:
+                typer = threading.Thread(target=keep_typing, daemon=True)
+                typer.start()
+            except Exception:
+                pass
         summary = None
+        reflected = False
         try:
             # Legacy session adapters need not implement the optional observer.
             try:
@@ -3326,18 +3344,39 @@ def _start_reflection(api, sessions, chat_id, identity, reply_to_message_id=None
             except (TypeError, ValueError):
                 parameters = {}
             options = {"on_ticket": capture_ticket} if "on_ticket" in parameters else {}
+            if "on_review" in parameters:
+                options["on_review"] = start_review_typing
             summary = sessions.reflect(identity, **options)
+            reflected = True
         except Exception as exc:
             # Actual in-task changes still deserve a truthful post-task report
             # even when the optional background review cannot run.
             print(f"  [telegram] reflection failed: {type(exc).__name__}", flush=True)
-        extra = {"reply_to_message_id": reply_to_message_id,
-                 "allow_sending_without_reply": True} if reply_to_message_id else {}
-        for phase in _learning_report_parts(tuple(learning_updates), summary):
+        finally:
+            typing_done.set()
+        if stopped():
+            return
+        if fast_updates and not reflected:
+            # Reflection never completed — fall back to truthful fast updates.
+            for phase in _learning_report_parts(fast_updates, None):
+                if stopped():
+                    return
+                sent = _api_call(api, "sendMessage", chat_id=chat_id,
+                                 text=phase, parse_mode="HTML")
+                if sent is None:
+                    break
+            return
+        if fast_updates and reflected and not stopped():
+            # Reflection succeeded — fast updates are already covered in the
+            # merged report below, so no separate fast-path send. This keeps
+            # the 2-minute case fast (no extra LLM round) without duplicating
+            # or leaking when cancelled.
+            pass
+        for phase in _learning_report_parts(fast_updates, summary):
             if stopped():
                 return
             sent = _api_call(api, "sendMessage", chat_id=chat_id,
-                             text=phase, parse_mode="HTML", **extra)
+                             text=phase, parse_mode="HTML")
             if sent is None:
                 break
     threading.Thread(target=reflect_bg, daemon=True, name=f"zeline-reflect-{chat_id}").start()

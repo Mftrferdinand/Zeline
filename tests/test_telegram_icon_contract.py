@@ -108,12 +108,12 @@ class TelegramIconContractTests(unittest.TestCase):
         self.assertEqual(self.telegram._interrupt_ack({"elapsed": 2}),
                          "💥 Interrupting current task (2s elapsed). I'll respond to your message shortly.")
 
-    def test_existing_work_wait_and_learning_labels_are_preserved(self):
+    def test_work_wait_icons_and_review_only_learning_labels_are_preserved(self):
         self.assertTrue(self.telegram._working_status_text(0).startswith("🧑🏻‍💻 Working"))
         self.assertTrue(self.telegram._working_status_text(0, working=False).startswith("💭 Thinking"))
         self.assertTrue(self.telegram._provider_wait_text(0).startswith("⏳ Waiting"))
-        for action, label in (("create", "📙 Self-Improvement"),
-                              ("patch", "📘 Self-Refinements"),
-                              ("write_file", "📗 Self-Enhancements")):
+        self.assertEqual(self.telegram._LEARNING_PHASES,
+                         ("📙 Self-Enhancement", "📘 Self-Improvement", "📗 Self-Refinement"))
+        for action in ("create", "patch", "write_file", "delete", "list", "inventory"):
             with self.subTest(action=action):
-                self.assertTrue(self.telegram._tool_result_text("manage_skill", {"action": action}, "fixture").startswith(label))
+                self.assertIsNone(self.telegram._tool_result_text("manage_skill", {"action": action}, "fixture"))

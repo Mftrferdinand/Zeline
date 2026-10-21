@@ -352,7 +352,8 @@ class SessionStore:
         return had_work or bool(killed)
 
     def reflect(self, identity: str, min_tool_calls: int = 5, *,
-                on_ticket: Callable[[TurnTicket], None] | None = None) -> str | None:
+                on_ticket: Callable[[TurnTicket], None] | None = None,
+                on_review: Callable[[TurnTicket], None] | None = None) -> str | None:
         """Jalankan self-improvement review untuk sesi ini (best-effort).
 
         Dipanggil di akhir sesi penting. Aman: mengembalikan None bila sesi tidak
@@ -385,7 +386,8 @@ class SessionStore:
             if on_ticket is not None:
                 on_ticket(ticket)
             try:
-                result = session.agent.reflect(min_tool_calls=min_tool_calls)
+                options = {"on_review": lambda: on_review(ticket)} if on_review is not None else {}
+                result = session.agent.reflect(min_tool_calls=min_tool_calls, **options)
                 return None if ticket.cancel_event.is_set() else result
             except Exception:
                 return None

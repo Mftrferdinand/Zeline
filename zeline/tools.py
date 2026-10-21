@@ -126,38 +126,16 @@ def _resolve_workspace_path(raw_path: str, workspace: Path) -> Path:
     return resolved
 
 
-def _read_file(path: str, workspace: Path, offset: int = 1, limit: int = 0) -> str:
-    """Read a text file, optionally a line window.
-
-    Offloaded tool payloads live outside the workspace by design, so they are
-    resolved separately instead of widening the workspace sandbox.
-    """
+def _read_file(path: str, workspace: Path, offset: int = 1, limit: int = 0, should_stop=None, byte_offset=None) -> str:
+    """Resolve authorized paths, then read a bounded streaming window."""
     try:
+        from zeline import file_io
         requested = Path(path).expanduser()
-        if requested.is_absolute() and (
-            offload.is_offload_path(requested) or compaction.is_archive_path(requested)
-        ):
-            target = requested.resolve(strict=False)
-        else:
-            target = _resolve_workspace_path(path, workspace)
-        if not target.is_file():
-            return f"ERROR read file: not a file or not found: {target}"
-        content = target.read_text(encoding="utf-8", errors="replace")
-        if offset > 1 or limit > 0:
-            lines = content.splitlines()
-            start = max(offset, 1) - 1
-            if start >= len(lines):
-                return f"ERROR read file: offset {offset} is past the last line ({len(lines)})."
-            end = start + limit if limit > 0 else len(lines)
-            window = lines[start:end]
-            shown = "\n".join(window)
-            remaining = len(lines) - (start + len(window))
-            note = f"[lines {start + 1}-{start + len(window)} of {len(lines)}"
-            note += f"; {remaining} remaining, continue with offset={start + len(window) + 1}]" if remaining else "]"
-            return f"{note}\n{shown}"
-        if len(content) > 20_000:
-            return offload.maybe_offload(content, 20_000)
-        return content
+        special = requested.is_absolute() and (
+            offload.is_offload_path(requested) or compaction.is_archive_path(requested))
+        target = requested.resolve(strict=False) if special else _resolve_workspace_path(path, workspace)
+        return file_io.read_file(str(target), target.parent if special else workspace,
+                                 offset, limit, should_stop=should_stop, byte_offset=byte_offset)
     except Exception as exc:
         return f"ERROR read file: {exc}"
 
@@ -303,25 +281,12 @@ def _update_task(task: str, status: str, identity: str) -> str:
         return f"ERROR task: could not save the board ({exc.__class__.__name__})."
     prefix = f"NOTE: {note}\n" if note else ""
     return f"{prefix}{tasks.render(board)}"
-
-
-def _search_files(query: str, workspace: Path, pattern: str = "*") -> str:
-    try:
-        matches = []
-        for target in workspace.rglob(pattern or "*"):
-            if not target.is_file() or len(matches) >= 100:
-                continue
-            try:
-                for line_number, line in enumerate(target.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
-                    if query.lower() in line.lower():
-                        matches.append(f"{target.relative_to(workspace)}:{line_number}: {line[:300]}")
-                        if len(matches) >= 100:
-                            break
-            except OSError:
-                continue
-        return "\n".join(matches) or "(no results)"
-    except Exception as exc:
-        return f"ERROR search file: {exc}"
+def _search_files(query: str, workspace: Path, pattern: str = "*", should_stop=None,
+                  limit=50, offset=0, target="content", regex=False) -> str:
+    """Run bounded, cancellable literal search without whole-file reads."""
+    from zeline import file_io
+    return file_io.search_files(query, workspace, pattern, should_stop=should_stop,
+                                limit=limit, offset=offset, target=target, regex=regex)
 
 
 def _clamp_timeout(timeout: Any) -> int:
@@ -355,6 +320,7 @@ class _BackgroundJob:
     log_handle: Any = None
     read_offset: int = 0
     finished_at: float | None = None
+    capture: Any = None
 
     def close_log(self) -> None:
         handle, self.log_handle = self.log_handle, None
@@ -367,6 +333,7 @@ class _BackgroundJob:
 
 _BG_JOBS: dict[str, _BackgroundJob] = {}
 _BG_COUNTER = itertools.count(1)
+_BG_LOCK = threading.RLock()
 
 # --------------------------------------------------------- foreground tracking
 # Perintah foreground (run_shell/execute_code tanpa background) dulu dijalankan
@@ -479,76 +446,82 @@ def _run_tracked(
     """
     if should_stop and should_stop():
         return -1, "CANCELLED", False
+    from .process_output import ProcessOutput
+
     process = subprocess.Popen(
-        command,
-        shell=shell,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env={**os.environ},
+        command, shell=shell, cwd=cwd, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, bufsize=0, env={**os.environ},
         **DETACH_KWARGS,
     )
+    capture = None
+    promoted = False
     _fg_track(identity, process)
     try:
-        try:
-            partial_output = b""
-            deadline = time.monotonic() + seconds
-            while True:
-                if should_stop and should_stop():
-                    if interrupt_reason and interrupt_reason() == "interrupt":
-                        job = _promote_foreground(process, identity, command, partial_output)
-                        if interrupt_reason() == "stop":
-                            _terminate_group(process)
-                        return 0, f"started background job={job.job_id} pid={process.pid}\nlog={job.log_path}\nForeground task preserved after user interruption.", False
-                    _terminate_group(process)
-                    output, _ = process.communicate(timeout=5)
-                    return int(process.returncode or -1), output or "CANCELLED", False
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(command, seconds)
-                try:
-                    output, _ = process.communicate(timeout=min(remaining, 0.05))
-                    return int(process.returncode or 0), output or "", False
-                except subprocess.TimeoutExpired as exc:
-                    partial_output = exc.output or b""
-                    continue
-        except subprocess.TimeoutExpired:
-            _terminate_group(process)
-            try:
-                output, _ = process.communicate(timeout=5)
-            except Exception:
-                output = ""
-            return -1, output or "", True
+        capture = ProcessOutput(process)
+        deadline = time.monotonic() + seconds
+        while True:
+            if should_stop and should_stop():
+                if interrupt_reason and interrupt_reason() == "interrupt":
+                    job = _promote_foreground(process, identity, command, capture)
+                    promoted = True
+                    if interrupt_reason() == "stop":
+                        _terminate_group(process)
+                    return 0, f"started background job={job.job_id} pid={process.pid}\nlog={job.log_path}\nForeground task preserved after user interruption.", False
+                _terminate_group(process)
+                capture.finish()
+                return int(process.returncode or -1), capture.render() or "CANCELLED", False
+            if process.poll() is not None:
+                capture.finish()
+                return int(process.returncode or 0), capture.render(), False
+            if time.monotonic() >= deadline:
+                _terminate_group(process)
+                capture.finish()
+                return -1, capture.render(), True
+            time.sleep(.02)
     finally:
-        _fg_untrack(identity, process)
+        try:
+            if not promoted:
+                if process.poll() is None:
+                    _terminate_group(process)
+                if capture is not None:
+                    capture.finish()
+                elif process.stdout is not None:
+                    process.stdout.close()
+        finally:
+            _fg_untrack(identity, process)
 
 
 def _promote_foreground(process, identity, command, prefix=b""):
+    with _BG_LOCK:
+        _bg_reap()
+        _bg_prune_finished()
+        live = sum(job.process.poll() is None for job in tuple(_BG_JOBS.values()))
+        if live >= config.MAX_BACKGROUND_PROCESSES:
+            raise RuntimeError("background process limit reached; interrupted command cannot be preserved")
+        return _promote_foreground_owned(process, identity, command, prefix)
+
+
+def _promote_foreground_owned(process, identity, command, prefix=b""):
     job_id = f"bg{next(_BG_COUNTER)}"
     log_path = _bg_log_dir() / f"{job_id}.log"
     handle = log_path.open("wb", buffering=0)
-    if prefix:
-        handle.write(prefix.encode() if isinstance(prefix, str) else prefix)
-    job = _BackgroundJob(job_id=job_id, command=str(command), process=process,
-                         log_path=log_path, started_at=time.time(), identity=identity)
-    _BG_JOBS[job_id] = job
+    from .process_output import ProcessOutput
 
-    def drain():
-        try:
-            if process.stdout is not None:
-                while True:
-                    data = os.read(process.stdout.fileno(), 65536)
-                    if not data:
-                        break
-                    handle.write(data)
-        except (OSError, ValueError):
-            pass
-        finally:
-            handle.close()
-            if process.stdout is not None:
-                process.stdout.close()
-    threading.Thread(target=drain, daemon=True, name=f"zeline-log-{job_id}").start()
+    try:
+        if isinstance(prefix, ProcessOutput):
+            capture = prefix
+        else:
+            if prefix:
+                handle.write(prefix.encode() if isinstance(prefix, str) else prefix)
+            capture = ProcessOutput(process)
+        capture.promote(handle)
+    except Exception:
+        handle.close()
+        raise
+    job = _BackgroundJob(job_id=job_id, command=str(command), process=process,
+                         log_path=log_path, started_at=time.time(), identity=identity,
+                         capture=capture)
+    _BG_JOBS[job_id] = job
     return job
 
 
@@ -588,23 +561,86 @@ def _bg_prune_finished() -> None:
         _BG_JOBS.pop(job.job_id, None)
 
 
+_BACKGROUND_READ_BYTES = 50_000
+
+
 def _bg_new_output(job: _BackgroundJob) -> str:
-    """Return log bytes written since the last poll and advance the cursor."""
+    """Read one bounded byte window, leaving unread bytes for the next poll."""
     try:
-        with job.log_path.open("r", encoding="utf-8", errors="replace") as handle:
-            handle.seek(job.read_offset)
-            chunk = handle.read()
+        with job.log_path.open("rb") as handle:
+            # Logs may be rotated/truncated externally; restart at the new head.
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(job.read_offset if job.read_offset <= size else 0)
+            chunk = handle.read(_BACKGROUND_READ_BYTES)
             job.read_offset = handle.tell()
+            more = job.read_offset < os.fstat(handle.fileno()).st_size
     except OSError as exc:
         return f"(cannot read log: {exc})"
-    return _truncate_output(chunk)
+    import codecs
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    text = decoder.decode(chunk, final=False)
+    pending = decoder.getstate()[0]
+    if pending and (more or job.process.poll() is None):
+        # Re-read at most three bytes on the next poll rather than replacing
+        # half of a valid character at a byte-window boundary.
+        job.read_offset -= len(pending)
+        more = True
+    else:
+        text += decoder.decode(b"", final=True)
+    body = _truncate_output(text)
+    if more:
+        body += "\n[More output is available; poll again to continue.]"
+    return body
 
 
 def _bg_status(job: _BackgroundJob) -> str:
     code = job.process.poll()
+    capture = getattr(job, "capture", None)
+    failed = capture is not None and capture.error is not None
     if code is None:
-        return "running"
-    return f"exited (exit={code})"
+        return "running (output capture failed)" if failed else "running"
+    suffix = "; output capture failed" if failed else ""
+    return f"exited (exit={code}{suffix})"
+
+
+def _start_background(command: str, workspace: Path, identity: str, should_stop=None) -> str:
+    """Reserve capacity and register a child under one shared launch lock."""
+    with _BG_LOCK:
+        _bg_reap()
+        if len(_BG_JOBS) >= config.MAX_BACKGROUND_PROCESSES:
+            _bg_prune_finished()
+        live = sum(job.process.poll() is None for job in tuple(_BG_JOBS.values()))
+        if live >= config.MAX_BACKGROUND_PROCESSES:
+            return (
+                f"ERROR: too many live background processes ({live}, limit "
+                f"{config.MAX_BACKGROUND_PROCESSES}). Stop one with "
+                "process_control(action='kill') first."
+            )
+        job_id = f"bg{next(_BG_COUNTER)}"
+        handle = None
+        try:
+            log_path = _bg_log_dir() / f"{job_id}.log"
+            handle = log_path.open("w", encoding="utf-8")
+            process = subprocess.Popen(
+                command, shell=True, cwd=str(workspace), stdout=handle,
+                stderr=subprocess.STDOUT, text=True, env={**os.environ}, **DETACH_KWARGS,
+            )
+        except Exception as exc:
+            if handle is not None:
+                handle.close()
+            return f"ERROR starting background command: {exc}"
+        _BG_JOBS[job_id] = _BackgroundJob(
+            job_id=job_id, command=command, process=process, log_path=log_path,
+            started_at=time.time(), log_handle=handle, identity=identity,
+        )
+        if should_stop and should_stop():
+            _terminate_group(process)
+            return "CANCELLED: background launch stopped."
+        return (
+            f"started background job={job_id} pid={process.pid}\n"
+            f"log={log_path}\n"
+            f"Poll it with process_control(action='poll', job_id='{job_id}')."
+        )
 
 
 def _run_shell(command: str, workspace: Path, timeout: Any = None, background: Any = False, identity: str = "cli:local", should_stop=None, interrupt_reason=None) -> str:
@@ -624,50 +660,7 @@ def _run_shell(command: str, workspace: Path, timeout: Any = None, background: A
         return f"ERROR: cannot prepare workspace: {exc}"
 
     if background:
-        _bg_reap()
-        if len(_BG_JOBS) >= config.MAX_BACKGROUND_PROCESSES:
-            _bg_prune_finished()
-        live = sum(1 for job in _BG_JOBS.values() if job.process.poll() is None)
-        if live >= config.MAX_BACKGROUND_PROCESSES:
-            return (
-                f"ERROR: too many live background processes ({live}, limit "
-                f"{config.MAX_BACKGROUND_PROCESSES}). Stop one with "
-                "process_control(action='kill') first."
-            )
-        job_id = f"bg{next(_BG_COUNTER)}"
-        log_path = _bg_log_dir() / f"{job_id}.log"
-        try:
-            handle = log_path.open("w", encoding="utf-8")
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                cwd=str(workspace),
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env={**os.environ},
-                **DETACH_KWARGS,
-            )
-        except Exception as exc:
-            handle.close()
-            return f"ERROR starting background command: {exc}"
-        _BG_JOBS[job_id] = _BackgroundJob(
-            job_id=job_id,
-            command=command,
-            process=process,
-            log_path=log_path,
-            started_at=time.time(),
-            log_handle=handle,
-            identity=identity,
-        )
-        if should_stop and should_stop():
-            _terminate_group(process)
-            return "CANCELLED: background launch stopped."
-        return (
-            f"started background job={job_id} pid={process.pid}\n"
-            f"log={log_path}\n"
-            f"Poll it with process_control(action='poll', job_id='{job_id}')."
-        )
+        return _start_background(command, workspace, identity, should_stop)
 
     seconds = _clamp_timeout(timeout)
     try:
@@ -769,7 +762,11 @@ def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
 
     if action == "log":
         try:
-            text = job.log_path.read_text(encoding="utf-8", errors="replace")
+            with job.log_path.open("rb") as handle:
+                size = os.fstat(handle.fileno()).st_size
+                start = max(0, size - _BACKGROUND_READ_BYTES)
+                handle.seek(start)
+                text = handle.read(_BACKGROUND_READ_BYTES).decode("utf-8", errors="replace")
         except OSError as exc:
             return f"ERROR reading log: {exc}"
         try:
@@ -778,7 +775,8 @@ def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
             tail = 200
         tail = max(1, min(tail, 2000))
         body = "\n".join(text.splitlines()[-tail:])
-        return f"job={job.job_id} status={_bg_status(job)}\n{_truncate_output(body)}"
+        marker = f"\n[Log preview bounded to the last {_BACKGROUND_READ_BYTES} bytes; full log={job.log_path}]" if start else ""
+        return f"job={job.job_id} status={_bg_status(job)}\n{_truncate_output(body)}{marker}"
 
     # action == "kill"
     if job.process.poll() is not None:
@@ -2164,8 +2162,9 @@ TOOL_DEFS: list[ToolDef] = [
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum lines to read; 0 or omitted reads to the end",
+                    "description": "Maximum lines per response; output remains bounded. Follow next_offset for more.",
                 },
+                "byte_offset": {"type": "integer", "description": "Optional next_byte_offset from a previous page; pass its next_offset too. Continues oversized lines without loss."},
             },
             "required": ["path"],
         },
@@ -2198,8 +2197,15 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "search_files",
-        "Search text within workspace files.",
-        {"type": "object", "properties": {"query": {"type": "string"}, "pattern": {"type": "string", "description": "File glob, default *"}}, "required": ["query"]},
+        "Search workspace files with resumable result pages. Use returned next_offset rather than repeating the first page.",
+        {"type": "object", "properties": {
+            "query": {"type": "string"},
+            "pattern": {"type": "string", "description": "File glob, default *"},
+            "limit": {"type": "integer", "description": "Matches per response, default 50"},
+            "offset": {"type": "integer", "description": "Zero-based result offset, default 0"},
+            "target": {"type": "string", "enum": ["content", "files"]},
+            "regex": {"type": "boolean", "description": "Optional regex content search using ripgrep; default false (literal)"},
+        }, "required": ["query"]},
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
@@ -2513,6 +2519,9 @@ class ToolExecutor:
         # Populated only during a normal agent turn, never internal reflection.
         self._skill_telemetry: Any = None
         self._reflection_mode = False
+        # Each worker pins its turn controls. A late worker must not acquire
+        # the next turn's cancellation token, budget or observer.
+        self._invocation_local = threading.local()
         # Started on the first browser call, reused after that.
         self._browser_session: Any | None = None
         # Language servers, started on the first code_intel call. Initialization
@@ -2548,11 +2557,14 @@ class ToolExecutor:
             "browser": lambda action, url="", selector="", text="", submit=False, path="", script="": self._browser(
                 action, url, selector, text, submit, path, script
             ),
-            "read_file": lambda path, offset=1, limit=0: _read_file(path, self.workspace, offset, limit),
+            "read_file": lambda path, offset=1, limit=0, byte_offset=None: _read_file(
+                path, self.workspace, offset, limit, should_stop=self._control("_should_stop"), byte_offset=byte_offset),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),
             "edit_file": lambda path, old_text, new_text: _edit_file(path, old_text, new_text, self.workspace),
             "patch_file": lambda path, old_text, new_text: _patch_file(path, old_text, new_text, self.workspace),
-            "search_files": lambda query, pattern="*": _search_files(query, self.workspace, pattern),
+            "search_files": lambda query, pattern="*", limit=50, offset=0, target="content", regex=False: _search_files(
+                query, self.workspace, pattern, should_stop=self._control("_should_stop"),
+                limit=limit, offset=offset, target=target, regex=regex),
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
@@ -2564,14 +2576,14 @@ class ToolExecutor:
             "resolve_lesson": lambda tool, args_sig_contains, fix: self._resolve_lesson(
                 tool, args_sig_contains, fix
             ),
-            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
-            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, getattr(self, "_should_stop", None), getattr(self, "_interrupt_reason", None)),
+            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, self._control("_should_stop"), self._control("_interrupt_reason")),
+            "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, self._control("_should_stop"), self._control("_interrupt_reason")),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
             "delegate_task": self._delegate_task,
             "recall_history": lambda query="": self._recall_history(query),
             "ask_user": lambda question, options=None: interaction.ask(
                 self.identity, question, options,
-                **({"should_stop": self._should_stop} if getattr(self, "_should_stop", None) else {})),
+                **({"should_stop": self._control("_should_stop")} if self._control("_should_stop") else {})),
         }
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
@@ -2972,7 +2984,46 @@ class ToolExecutor:
             self._lazy_index.all = current
         return self._lazy_index
 
-    def run(self, name: str, args: dict[str, Any]) -> str:
+    def capture_context(self) -> dict[str, Any]:
+        """Capture controls before a call is submitted to a worker queue."""
+        current = getattr(self._invocation_local, "context", None)
+        if current is not None:
+            return dict(current)
+        return {key: getattr(self, key, None) for key in (
+            "_should_stop", "_interrupt_reason", "_run_budget", "_skill_telemetry")}
+
+    @contextlib.contextmanager
+    def invocation_context(self, context):
+        """Bind captured turn controls while keeping the public run callback unchanged."""
+        previous = getattr(self._invocation_local, "context", None)
+        self._invocation_local.context = dict(context)
+        try:
+            yield
+        finally:
+            if previous is None:
+                del self._invocation_local.context
+            else:
+                self._invocation_local.context = previous
+
+    def _control(self, key: str):
+        current = getattr(self._invocation_local, "context", None)
+        return current.get(key) if current is not None else getattr(self, key, None)
+
+    def run(self, name: str, args: dict[str, Any], *, _context=None) -> str:
+        """Pin turn controls and trace boundaries without argument bodies."""
+        from zeline.runtime_trace import tool_span
+        previous = getattr(self._invocation_local, "context", None)
+        self._invocation_local.context = dict(_context) if _context is not None else self.capture_context()
+        try:
+            with tool_span(self.identity, name):
+                return self._run_observed(name, args)
+        finally:
+            if previous is None:
+                del self._invocation_local.context
+            else:
+                self._invocation_local.context = previous
+
+    def _run_observed(self, name: str, args: dict[str, Any]) -> str:
         """Execute a tool, wrapped in the operator's plugin hooks if any.
 
         The hooks are deliberately outside _dispatch so that every kind of tool
@@ -2983,7 +3034,7 @@ class ToolExecutor:
         """
         if self._cancelled():
             return "CANCELLED: turn stopped before tool dispatch."
-        budget = getattr(self, "_run_budget", None)
+        budget = self._control("_run_budget")
         if budget is not None:
             budget.consume("tool_calls")
         if self.plugins is None:
@@ -3004,7 +3055,7 @@ class ToolExecutor:
         return result
 
     def _cancelled(self):
-        check = getattr(self, "_should_stop", None)
+        check = self._control("_should_stop")
         return bool(check and check())
 
     def _execute(self, name: str, args: dict[str, Any]) -> str:
@@ -3047,7 +3098,7 @@ class ToolExecutor:
         tool call into a failed one. Read-only tools are skipped inside
         ``log_tool_call`` so this stays a side-effect index, not an activity log.
         """
-        observer = self._skill_telemetry
+        observer = self._control("_skill_telemetry")
         if observer is not None:
             with contextlib.suppress(Exception):
                 observer.observe(name, args, result, include_private=self.profile == "full")

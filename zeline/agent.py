@@ -12,7 +12,6 @@ import json
 import re
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import requests
@@ -48,12 +47,27 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "deep_research",
 })
 
-# Putaran tool maksimum untuk ``reflect()``. Dulu 3, cukup untuk "simpan satu
-# file". Alur anti-duplikat sekarang butuh lebih: list → patch/create →
-# write_file(references/…) → delete(absorbed_into=…). Dengan 3 putaran refleksi
-# terpotong tepat sebelum penggabungan duplikat dijalankan, yaitu justru langkah
-# yang paling berharga.
-REFLECTION_TOOL_ROUNDS = 5
+# Putaran tool maksimum untuk ``reflect()``.
+#
+# Riwayat: 3 putaran, lalu 5. Angka 5 memberi ruang untuk alur anti-duplikat
+# (list → patch/create → write_file(references/…) → delete(absorbed_into=…)),
+# tetapi tiap putaran adalah satu panggilan LLM penuh dan dijalankan berurutan
+# setelah jawaban final. Di perangkat dengan RAM ketat (Termux/Android) lima
+# putaran berturut-turut menahan satu sesi hidup selama menit-menit, dan itulah
+# yang terbaca sebagai "hang" — bukan komputasi lokal, tapi menunggu provider
+# berurutan sambil konteks menumpuk.
+#
+# Tiga putaran tetap memuat alur yang berharga (orientasi → tulis → rapikan)
+# sambil memangkas dua panggilan terakhir yang paling jarang menghasilkan
+# perubahan berarti.
+REFLECTION_TOOL_ROUNDS = 3
+
+# Berapa kali ``add_memory`` boleh dipanggil dalam SATU siklus refleksi.
+# Tanpa batas ini, model bebas menulis satu fakta per putaran, dan karena
+# refleksi berjalan tiap turn berat, store terisi self-write tanpa pernah
+# ditinjau ulang — 143 dari 200 fakta pernah berasal dari jalur ini. Satu
+# penulisan per siklus memaksa model memilih pelajaran yang paling berharga.
+REFLECTION_MAX_MEMORY_WRITES = 1
 
 
 def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -> str | None:
@@ -67,40 +81,57 @@ def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -
     self_improvement: list[str] = []
     refinements: list[str] = []
     enhancements: list[str] = []
+    seen: set[str] = set()
+
+    def _add(bucket: list[str], text: str) -> None:
+        # Satu siklus refleksi boleh memakai beberapa putaran tool, dan putaran
+        # itu sering menyentuh skill yang sama (patch lalu write_file lalu
+        # patch lagi). Tanpa dedup, satu fase yang sama dilaporkan berkali-kali
+        # dalam satu kartu. Normalisasi ringan agar teks identik tidak ganda.
+        key = " ".join(text.split()).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        bucket.append(text)
+
     for name, args, result in actions:
         clean = str(result).strip()
         if name == "manage_skill":
             action = str(args.get("action", "")).strip().lower()
             skill = html.escape(str(args.get("name", "")).strip() or "skill", quote=False)
             if action == "create":
-                self_improvement.append(
-                    f"SkillForge proposal for <code>{skill}</code> created — active skill unchanged; structural and behavioral review pending."
+                _add(
+                    self_improvement,
+                    f"SkillForge proposal for <code>{skill}</code> created — active skill unchanged; structural and behavioral review pending.",
                 )
-            elif action == "patch":
-                refinements.append(
-                    f"SkillForge revision proposal for <code>{skill}</code> created — active skill unchanged; no effectiveness score is claimed before evaluation."
+            elif action in {"patch", "delete"}:
+                _add(
+                    refinements,
+                    f"SkillForge revision proposal for <code>{skill}</code> created — active skill unchanged; no effectiveness score is claimed before evaluation.",
                 )
             else:
-                self_improvement.append(clean)
+                _add(self_improvement, clean)
         elif name == "resolve_lesson":
-            enhancements.append("Resolved a recorded lesson after a verified successful retry.")
+            _add(enhancements, "Resolved a recorded lesson after a verified successful retry.")
         elif name == "add_memory":
-            enhancements.append("Saved a low-confidence reflection memory for future-session guidance.")
+            _add(enhancements, "Saved a low-confidence reflection memory for future-session guidance.")
     lines = []
-    # A reflection is an improvement review by definition.  Keep this primary
-    # phase mandatory whenever reflection produced a learning outcome; the two
-    # follow-up phases remain conditional on their actual evidence.
+    # Setiap fase punya gate buktinya sendiri. Dulu satu refleksi dengan
+    # beberapa mutasi skill memunculkan 📙, 📘, dan 📗 sekaligus, dan itu
+    # terbaca seolah tiga tahap berjalan bersamaan — padahal itu satu review.
+    # Sekarang fase hanya muncul bila aksinya benar-benar terjadi:
+    #   📙 hanya bila ADA proposal skill baru / perubahan tak-terklasifikasi
+    #   📘 hanya bila ADA revisi skill (patch/delete)
+    #   📗 hanya bila ADA lesson yang tuntas atau memori refleksi tersimpan
+    # Refleksi yang berjalan tapi tidak menghasilkan bukti apa pun tidak
+    # mengirim fase apa-apa (mengembalikan None) — bukan "no separate proposal
+    # was needed" yang cuma jadi noise tiap turn berat.
     if self_improvement:
-        lines.append("📙 <b>Self-Improvement review:</b> " + " ".join(self_improvement))
-    elif refinements or enhancements:
-        lines.append(
-            "📙 <b>Self-Improvement review:</b> Reviewed verified task evidence; "
-            "no separate reusable-skill proposal was needed."
-        )
+        lines.append("📙 <b>Self-Enhancement:</b> " + " ".join(self_improvement))
     if refinements:
-        lines.append("📘 <b>Self-Refinements review:</b> " + " ".join(refinements))
+        lines.append("📘 <b>Self-Improvement:</b> " + " ".join(refinements))
     if enhancements:
-        lines.append("📗 <b>Self-Enhancements review:</b> " + " ".join(enhancements))
+        lines.append("📗 <b>Self-Refinement:</b> " + " ".join(enhancements))
     # A blank-line delimiter is intentional: Telegram emits each phase as a
     # separate message rather than merging unrelated review outcomes into one
     # noisy card.
@@ -938,7 +969,15 @@ class Zeline:
         self._trim_history()
         self._force_stop = threading.Event()
         self._should_stop = should_stop
-        self.executor._should_stop = self._cancelled
+        # A worker retains this turn's event/predicate even after send() resets
+        # the agent's active fields for the next message.
+        force_stop = self._force_stop
+        def tool_cancelled():
+            try:
+                return force_stop.is_set() or bool(should_stop and should_stop())
+            except Exception:
+                return True
+        self.executor._should_stop = tool_cancelled
         self.executor._interrupt_reason = interrupt_reason
         self._turn_skill_context = ""
         self._turn_memory_context = ""
@@ -1047,6 +1086,12 @@ class Zeline:
     ) -> str:
         turn_started = time.monotonic()
         narration_gate = NarrationGate()
+        turn_deadline = turn_started + config.MAX_TURN_SECONDS
+        turn_stop = self.executor._should_stop
+        waiting_for_user = False
+        self.executor._should_stop = lambda: (
+            bool(turn_stop and turn_stop())
+            or (not waiting_for_user and time.monotonic() >= turn_deadline))
         repeated_failures = 0  # tool call berturut yang balik ERROR
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
@@ -1096,8 +1141,11 @@ class Zeline:
             self.last_turn_tool_calls += len(tool_calls)
             self._tool_calls_since_reflection += len(tool_calls)
 
-            # Select only pre-tool chat updates. Keep the raw model message in
-            # history and leave all tool/progress callbacks and final text alone.
+            # Narasi live: teks yang menyertai tool call (mis. "Gua cek dulu
+            # konfignya lalu benerin") adalah kalimat rencana model. Kirim ke
+            # user sebagai bubble tersendiri SEBELUM tool jalan — inilah yang
+            # bikin alurnya kebaca seperti Zeline (bubble penjelasan →
+            # terminal → temuan), bukan diam lalu tiba-tiba dump panjang.
             narration = str(message.get("content") or "").strip()
             if narration and on_narration:
                 selected = narration_gate.select(narration)
@@ -1145,34 +1193,42 @@ class Zeline:
                 self._research_since_reflection = True
             recorded_results: list[dict[str, Any]] = []
             if run_parallel:
-                with ThreadPoolExecutor(max_workers=min(len(parsed_calls), 5)) as pool:
-                    futures = [pool.submit(self.executor.run, name, args)
-                               for _call, name, args in parsed_calls]
-                    completed = []
-                    failure = None
-                    for (call, _name, _args), future in zip(parsed_calls, futures):
-                        try:
-                            completed.append((call, future.result()))
-                        except Exception as exc:
-                            if failure is None:
-                                failure = exc
-                    if failure is not None:
-                        # Drain all futures: a later submission may have finished
-                        # even if an earlier one exhausted the shared budget.
-                        self.messages.extend(
-                            {"role": "tool", "tool_call_id": str(call.get("id", "")),
-                             "content": str(result)} for call, result in completed
-                        )
-                        self._checkpoint()
-                        raise failure
-                    results = [result for _call, result in completed]
+                from zeline.parallel_runtime import ParallelRuntime
+                runtime = getattr(self, "_parallel_runtime", None)
+                if runtime is None:
+                    runtime = self._parallel_runtime = ParallelRuntime(
+                        getattr(config, "MAX_PARALLEL_TOOLS", 5))
+                invocation = self.executor.capture_context()
+                original_stop = invocation.get("_should_stop")
+
+                def invoke(item, batch_cancelled):
+                    _call, name, args = item
+                    context = dict(invocation)
+                    context["_should_stop"] = lambda: (
+                        batch_cancelled() or bool(original_stop and original_stop()))
+                    with self.executor.invocation_context(context):
+                        return self.executor.run(name, args)
+
+                batch = runtime.run(parsed_calls, invoke, self._cancelled, turn_deadline)
                 recorded_results = [
-                    {"role": "tool", "tool_call_id": str(call.get("id", "")), "content": str(result)}
-                    for (call, _name, _args), result in zip(parsed_calls, results)
+                    {"role": "tool", "tool_call_id": str(parsed_calls[index][0].get("id", "")),
+                     "content": str(batch.results[index])}
+                    for index in sorted(batch.results)
                 ]
-                # Persist evidence before the checkpoint callback can fail.
+                # Detached workers only update their private batch object. Only
+                # this waiting thread may write evidence into the transcript.
                 self.messages.extend(recorded_results)
                 self._checkpoint()
+                if batch.error is not None:
+                    raise batch.error
+                if batch.reason == "cancelled":
+                    raise _TurnCancelled()
+                if batch.reason == "deadline":
+                    self._drop_incomplete_tail()
+                    answer = self._force_final_answer(should_stop, on_stream_delta=on_stream_delta)
+                    self._trim_history()
+                    return answer
+                results = [batch.results[index] for index in range(len(parsed_calls))]
             else:
                 # Serial: cek pembatalan SEBELUM tiap tool, jadi /stop tidak
                 # perlu menunggu seluruh rangkaian tool selesai.
@@ -1182,13 +1238,15 @@ class Zeline:
                         if should_stop and should_stop():
                             break
                         human_wait_started = time.monotonic() if name == "ask_user" else None
+                        waiting_for_user = human_wait_started is not None
                         try:
                             result = self.executor.run(name, args)
                         finally:
                             if human_wait_started is not None:
-                                # Human input is idle time, not active execution.
-                                # A late answer must not force an early final reply.
-                                turn_started += time.monotonic() - human_wait_started
+                                idle_seconds = time.monotonic() - human_wait_started
+                                turn_started += idle_seconds
+                                turn_deadline += idle_seconds
+                            waiting_for_user = False
                         results.append(result)
                         recorded = {
                             "role": "tool",
@@ -1249,7 +1307,6 @@ class Zeline:
 
             steer_text = take_steer() if take_steer else None
             if steer_text:
-                # The same blocker after new user guidance is a new useful update.
                 narration_gate = NarrationGate()
             for recorded, (tool_call, name, args), result in zip(recorded_results, parsed_calls, results):
                 if on_tool_result:
@@ -1318,7 +1375,8 @@ class Zeline:
             "Coba pecah pertanyaannya jadi bagian lebih kecil."
         )
 
-    def reflect(self, min_tool_calls: int = 5) -> str | None:
+    def reflect(self, min_tool_calls: int = 5, *,
+                on_review: Callable[[], None] | None = None) -> str | None:
         """Self-improvement review di akhir sesi penting (profile full saja).
 
         Menyuruh model meninjau percakapan yang baru saja terjadi lalu, bila ada
@@ -1342,6 +1400,9 @@ class Zeline:
             # LLM/SkillForge review for lightweight turns; it never skips the
             # mandatory evidence-learning path.
             return None
+        # Admission observers must not announce a review skipped by this gate.
+        if on_review is not None:
+            on_review()
         # Snapshot history saat ini; refleksi tidak boleh mencemari percakapan
         # utama, jadi kita kerjakan di salinan pesan yang dibuang setelah selesai.
         saved_messages = copy.deepcopy(self.messages)
@@ -1366,10 +1427,6 @@ class Zeline:
                 "role": "user",
                 "content": (
                     "REFLEKSI SELF-IMPROVEMENT (internal, jangan tampilkan ke user). "
-                    "Review is mandatory after substantial work, including failed attempts. "
-                    "Extract reusable lessons from observed tool outcomes, not guesses. "
-                    "Save actionable, durable guidance only; never store credentials or task logs. "
-                    "Failures without a verified fix must remain unresolved, not claimed as solved. "
                     "Tinjau singkat percakapan barusan. "
                     "(A) Apakah ada prosedur reusable, alur kerja non-trivial, atau "
                     "error tricky yang berhasil diatasi dan layak jadi skill? "
@@ -1413,6 +1470,7 @@ class Zeline:
         previous_reflection = self.executor._reflection_mode
         self.executor._reflection_mode = True
         review_completed = False
+        memory_writes = 0
         try:
             for _ in range(REFLECTION_TOOL_ROUNDS):
                 message = self._call_llm()
@@ -1431,6 +1489,22 @@ class Zeline:
                             args = {}
                     except json.JSONDecodeError:
                         args = {}
+                    # ``add_memory`` dibatasi per siklus. Tanpa ini model menulis
+                    # satu fakta per putaran, dan karena refleksi berjalan tiap
+                    # turn berat, store terisi self-write yang tidak pernah
+                    # ditinjau — 143 dari 200 fakta pernah datang dari jalur ini.
+                    # Batasnya memaksa model memilih pelajaran paling berharga,
+                    # bukan membuang semuanya ke memori.
+                    if name == "add_memory" and memory_writes >= REFLECTION_MAX_MEMORY_WRITES:
+                        result = (
+                            "ERROR: reflection memory write budget exhausted for this "
+                            "review. Extra facts are dropped by design — keep the single "
+                            "most valuable lesson next time."
+                        )
+                        self.messages.append(
+                            {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}
+                        )
+                        continue
                     result = self.executor.run(name, args)
                     # ``list`` hanya orientasi (cek duplikat) — bukan perubahan, jadi
                     # tidak dilaporkan sebagai hasil self-improvement. Tanpa filter ini
@@ -1441,6 +1515,8 @@ class Zeline:
                     )
                     is_lesson_change = name == "resolve_lesson"
                     is_reflection_memory = name == "add_memory"
+                    if is_reflection_memory and not result.startswith("ERROR"):
+                        memory_writes += 1
                     if (is_skill_change or is_lesson_change or is_reflection_memory) and not result.startswith("ERROR"):
                         actions.append((name, args, result))
                     self.messages.append(
@@ -1465,15 +1541,9 @@ class Zeline:
             self._refresh_system_prompt()
         summary = _format_reflection_actions(actions)
         if not review_completed:
+            # Failure is observable without inventing an evidence-gated phase.
+            # Keep pending counters so the next eligible review can retry.
             notice = "Review incomplete: provider review failed; learning remains pending."
-            if summary:
-                return summary.replace("</b>", "</b> " + notice, 1)
-            return "📙 <b>Self-Improvement review:</b> " + notice
-        if summary:
-            return summary
-        # A completed review is observable even when no new change is justified.
-        # Do not fabricate secondary phases or claim active skills were updated.
-        unresolved = f" {len(pending_lessons)} recorded lesson(s) still need a verified fix." if pending_lessons else ""
-        return (f"📙 <b>Self-Improvement review:</b> Reviewed {observed_tool_calls} tool call(s); "
-                "no new reusable change was verified. Active skills unchanged." + unresolved)
+            return f"{summary}\n\n{notice}" if summary else notice
+        return summary
 

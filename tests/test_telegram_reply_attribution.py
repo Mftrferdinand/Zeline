@@ -10,7 +10,7 @@ from tests import test_turn_admission as admission
 class ReplyAttributionTests(unittest.TestCase):
     setUp = admission.TurnAdmissionTests.setUp
 
-    def test_interruption_ack_and_narration_quote_their_own_messages(self):
+    def test_interruption_and_final_keep_origin_while_narration_is_unquoted(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         session = self.store.get_or_create(self.identity, "safe")
         entered, release = threading.Event(), threading.Event()
@@ -52,16 +52,19 @@ class ReplyAttributionTests(unittest.TestCase):
         acknowledgements = [p for p in sent if "Interrupting current task" in p["text"]]
         self.assertTrue(acknowledgements)
         self.assertEqual(acknowledgements[0].get("reply_to_message_id"), 202)
-        expected = {"Narration for first": 101, "Narration for second": 202,
-                    "Narration for third": 303, "Answer for second": 202, "Answer for third": 303}
+        expected = {"Answer for second": 202, "Answer for third": 303}
         for text, target in expected.items():
             with self.subTest(text=text):
                 payload = next(p for p in sent if p["text"] == text)
                 self.assertEqual(payload.get("reply_to_message_id"), target)
                 self.assertTrue(payload.get("allow_sending_without_reply"))
+        for text in ("Narration for first", "Narration for second", "Narration for third"):
+            with self.subTest(narration=text):
+                payload = next(p for p in sent if p["text"] == text)
+                self.assertNotIn("reply_to_message_id", payload)
         self.assertFalse(any(p["text"] == "obsolete first answer" for p in sent))
 
-    def test_single_turn_narration_and_final_quote_original_without_interrupt(self):
+    def test_single_turn_narration_is_unquoted_and_final_quotes_original(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
         session = self.store.get_or_create(self.identity, "safe")
 
@@ -78,4 +81,4 @@ class ReplyAttributionTests(unittest.TestCase):
                 text="request", tool_profile="safe", reply_to_message_id=404)
         messages = [c.kwargs for c in api.call_args_list if c.args[1] == "sendMessage"]
         self.assertEqual(len(messages), 2)
-        self.assertEqual([p.get("reply_to_message_id") for p in messages], [404, 404])
+        self.assertEqual([p.get("reply_to_message_id") for p in messages], [None, 404])

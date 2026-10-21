@@ -38,6 +38,118 @@ def _fresh(home: Path):
     return importlib.import_module("zeline.memory")
 
 
+class MemoryConsolidationTests(unittest.TestCase):
+    """Capacity is a character budget with automatic consolidation.
+
+    A hard fact cap turned filling up into a dead end: reflection keeps calling
+    add_memory, every call is refused, and no fact is ever revisited — so stale
+    self-writes accumulated (143 of 200 live facts at the time of writing).
+    These tests pin the replacement contract: at the soft ceiling the store
+    retires its least valuable entries to admit the write, and explicit
+    operator facts are never silently discarded.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name) / "home"
+        self.old_home = os.environ.get("ZELINE_HOME")
+        self.memory = _fresh(self.home)
+
+    def tearDown(self):
+        if self.old_home is None:
+            os.environ.pop("ZELINE_HOME", None)
+        else:
+            os.environ["ZELINE_HOME"] = self.old_home
+        self.temp.cleanup()
+
+    def _record(self, rid, text, source, confidence=1.0, created=None):
+        now = time.time()
+        return {
+            "id": rid, "text": text, "kind": "fact", "source": source,
+            "confidence": confidence,
+            "created_at": now if created is None else created,
+            "updated_at": now, "expires_at": None, "revision": 1, "state": "active",
+        }
+
+    def test_no_consolidation_below_the_soft_ceiling(self):
+        modest = [self._record("a", "x" * 100, "reflection", 0.6)]
+        self.assertEqual(self.memory._consolidate(modest), [])
+
+    def test_consolidation_retires_reflection_but_never_user_facts(self):
+        now = time.time()
+        records = [self._record(f"r{i}", "R" * 1000, "reflection", 0.6, created=now - i * 100)
+                   for i in range(40)]
+        records += [self._record(f"u{i}", "U" * 1000, "user", 1.0) for i in range(20)]
+
+        retired = self.memory._consolidate(records)
+
+        survivors_user = [r for r in self.memory._live(records) if r["source"] == "user"]
+        self.assertEqual(len(survivors_user), 20, "operator facts must survive")
+        self.assertTrue(all(r.startswith("r") for r in retired), retired)
+        self.assertLessEqual(len(retired), self.memory.CONSOLIDATE_MAX_REMOVALS)
+        self.assertLess(sum(len(r["text"]) for r in self.memory._live(records)),
+                        self.memory.CONSOLIDATE_AT_CHARACTERS + 1000)
+
+    def test_expired_reflection_is_retired_first(self):
+        now = time.time()
+        old = now - (self.memory.REFLECTION_TTL_SECONDS + 86400)
+        records = []
+        for _ in range(10):
+            records.append(self._record("expired", "E" * 2000, "reflection", 0.6, created=old))
+            records.append(self._record("fresh", "F" * 2000, "reflection", 0.6, created=now))
+            records.append(self._record("op", "U" * 2000, "user", 1.0))
+        retired = self.memory._consolidate(records)
+        self.assertTrue(retired)
+        self.assertTrue(all(r == "expired" for r in retired), retired)
+
+    def test_add_at_capacity_consolidates_instead_of_refusing(self):
+        store = self.memory.MemoryStore("telegram:cap")
+        # Fill to just past the soft ceiling with reflection-sourced facts.
+        now = time.time()
+        with store._transaction() as (conn, records):
+            for i in range(50):
+                records.append(self._record(f"r{i}", "R" * 1000, "reflection", 0.6, created=now - i))
+            store._save(conn, records)
+
+        result = store.add("A new lesson worth keeping", source="reflection")
+        self.assertIn("saved", result.lower(), result)
+        self.assertIn("consolidated", result.lower(), result)
+        # The write was admitted (not refused) and the store came back down
+        # under the soft ceiling. Exactly how many are retired depends on the
+        # char math, so assert the contract rather than a magic count.
+        live = store.records()
+        self.assertLessEqual(len(live), 50)
+        self.assertLess(sum(len(r["text"]) for r in live),
+                        self.memory.CONSOLIDATE_AT_CHARACTERS + 1000)
+        self.assertTrue(any("new lesson" in r["text"].lower() for r in live),
+                        "the new fact must be present")
+
+    def test_pure_operator_store_still_refuses_at_the_hard_limit(self):
+        store = self.memory.MemoryStore("telegram:useronly")
+        now = time.time()
+        with store._transaction() as (conn, records):
+            for i in range(40):
+                records.append(self._record(f"u{i}", "U" * 2000, "user", 1.0, created=now - i))
+            store._save(conn, records)
+
+        result = store.add("One more operator fact")
+        self.assertIn("ERROR", result)
+        self.assertIn("memory limit", result)
+        # Nothing was quietly dropped to make room.
+        self.assertEqual(len(store.records()), 40)
+
+    def test_reflection_facts_receive_a_ttl(self):
+        store = self.memory.MemoryStore("telegram:ttl")
+        self.assertIn("saved", store.add("Inferred lesson", source="reflection").lower())
+        rec = store.records()[0]
+        self.assertIsNotNone(rec["expires_at"], "reflection facts must expire")
+        self.assertGreater(rec["expires_at"], time.time())
+        # Operator facts stay permanent.
+        store.add("Operator preference", source="user")
+        user_rec = [r for r in store.records() if r["source"] == "user"][0]
+        self.assertIsNone(user_rec["expires_at"])
+
+
 class MemoryRecordTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

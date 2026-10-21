@@ -20,7 +20,7 @@ class ReflectionDeliveryTests(unittest.TestCase):
                 return mock.Mock(start=kwargs["target"])
             return real_thread(*args, **kwargs)
 
-        summary = "📙 <b>Self-Improvement review:</b> Saved verified learning evidence."
+        summary = "📗 <b>Self-Refinement:</b> Saved verified learning evidence."
         with mock.patch.object(session.agent, "send", return_value="Task complete"), \
              mock.patch.object(session.agent, "reflect", return_value=summary) as reflect, \
              mock.patch.object(telegram, "_api_call", return_value={"ok": True}) as api, \
@@ -35,17 +35,17 @@ class ReflectionDeliveryTests(unittest.TestCase):
         delivered = [c.kwargs for c in api.call_args_list if c.args[1] == "sendMessage"]
         self.assertTrue(any(p.get("text") == summary for p in delivered))
 
-    def test_eligible_review_without_changes_is_visible_not_a_fake_improvement(self):
+    def test_eligible_review_without_changes_has_no_fabricated_learning_phase(self):
         module = importlib.import_module("zeline.agent")
         agent = module.Zeline(identity=self.identity, tool_profile="full")
         agent.last_turn_tool_calls = 8
-        with mock.patch.object(agent, "_call_llm", return_value={"content": "NO_ACTION"}):
-            summary = agent.reflect()
-        self.assertIsNotNone(summary)
-        self.assertIn("📙", summary)
-        self.assertIn("unchanged", summary)
-        self.assertNotIn("📘", summary)
-        self.assertNotIn("📗", summary)
+        observer = mock.Mock()
+        with mock.patch.object(agent, "_call_llm", return_value={"content": "NO_ACTION"}) as provider:
+            summary = agent.reflect(on_review=observer)
+        self.assertIsNone(summary)
+        observer.assert_called_once_with()
+        provider.assert_called_once()
+        self.assertEqual(agent.last_turn_tool_calls, 0)
 
     def test_provider_failure_is_visible_and_does_not_reset_pending_learning(self):
         module = importlib.import_module("zeline.agent")
@@ -55,7 +55,10 @@ class ReflectionDeliveryTests(unittest.TestCase):
             summary = agent.reflect()
         self.assertIsNotNone(summary)
         self.assertIn("incomplete", summary)
+        self.assertTrue(all(phase not in summary for phase in ("📙", "📘", "📗")))
         self.assertEqual(agent._tool_calls_since_reflection, 8)
+        self.assertFalse(agent.executor._reflection_mode)
+        self.assertEqual(agent.executor.memory.default_source, "user")
 
     def test_reflection_saves_a_real_memory_visible_to_the_next_agent(self):
         module = importlib.import_module("zeline.agent")
@@ -66,7 +69,7 @@ class ReflectionDeliveryTests(unittest.TestCase):
             "function": {"name": "add_memory", "arguments": __import__("json").dumps({"fact": fact})}}]}
         with mock.patch.object(agent, "_call_llm", side_effect=[save, {"content": "NO_ACTION"}]):
             summary = agent.reflect()
-        self.assertIn("📙", summary)
+        self.assertNotIn("📙", summary)
         self.assertIn("📗", summary)
         self.assertNotIn("📘", summary)
         records = agent.executor.memory.records()
@@ -92,11 +95,11 @@ class ReflectionDeliveryTests(unittest.TestCase):
         self.assertTrue(result.startswith("ERROR"))
         with mock.patch.object(agent, "_call_llm", return_value={"content": "NO_ACTION"}):
             summary = agent.reflect()
-        self.assertIn("still need a verified fix", summary)
+        self.assertIsNone(summary)
         records = module.lessons.unresolved_lessons(self.identity)
         self.assertTrue(records)
         self.assertFalse(module.lessons.resolved_lessons(self.identity))
-        self.assertNotIn("📗", summary)
+
 
     def test_waiting_for_human_does_not_consume_the_active_work_budget(self):
         module = importlib.import_module("zeline.agent")
@@ -145,4 +148,5 @@ class ReflectionDeliveryTests(unittest.TestCase):
         with mock.patch.object(agent, "_call_llm", return_value={"content": "NO_ACTION"}) as provider:
             summary = agent.reflect()
         provider.assert_called_once()
-        self.assertIsNotNone(summary)
+        self.assertIsNone(summary)
+        self.assertFalse(agent._research_since_reflection)

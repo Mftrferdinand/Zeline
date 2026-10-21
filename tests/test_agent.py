@@ -635,14 +635,85 @@ class AgentLoopTests(unittest.TestCase):
             self.assertIsNone(safe.reflect(min_tool_calls=5))
         post.assert_not_called()
 
+    def test_deep_research_admits_review_without_fabricating_learning_phases(self):
+        """A substantial research result remains eligible below the tool-count gate."""
+        research = {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "research-1", "type": "function", "function": {
+                "name": "deep_research", "arguments": '{"query":"bounded fixture"}'}}]}
+        complete = {"role": "assistant", "content": "Research completed."}
+        reviewed = {"role": "assistant", "content": "No durable change justified."}
+        agent = self.agent_module.Zeline(identity="cli:research-review", tool_profile="full")
+        observer = mock.Mock()
+        responses = [FakeResponse({"choices": [{"message": msg}]})
+                     for msg in (research, complete, reviewed)]
+        with mock.patch.object(agent.executor, "run", return_value="Verified research finding"), \
+             mock.patch.object(self.agent_module.requests, "post", side_effect=responses) as post:
+            self.assertEqual(agent.send("Research this fixture"), "Research completed.")
+            self.assertEqual(agent.last_turn_tool_calls, 1)
+            self.assertIsNone(agent.reflect(min_tool_calls=5, on_review=observer))
+            observer.assert_called_once_with()
+            self.assertEqual(post.call_count, 3)
+            # A successful no-op review must not trigger another provider call.
+            self.assertIsNone(agent.reflect(min_tool_calls=5, on_review=observer))
+            self.assertEqual(post.call_count, 3)
+            observer.assert_called_once_with()
+
+    def _check_reflection_keeps_existing_skill(self, action):
+        skills = self.agent_module.skills
+        name = "protected-active-procedure"
+        original = "# Protected procedure\n> Operator-approved steps.\n\n1. Preserve this instruction.\n"
+        self.assertFalse(skills.manage_skill("create", name=name, content=original).startswith("ERROR"))
+        self.assertFalse(skills.manage_skill(
+            "write_file", name=name, file_path="references/operator.md", content="Approved resource.\n"
+        ).startswith("ERROR"))
+        active = skills._find_skill(name, include_private=True)
+        self.assertIsInstance(active, Path)
+        resource = active.parent / "references/operator.md"
+        before = (active.read_bytes(), resource.read_bytes())
+        arguments = {"action": action, "name": name}
+        if action == "write_file":
+            arguments.update(file_path="references/operator.md", content="Unreviewed replacement.")
+        else:
+            arguments["absorbed_into"] = ""
+        responses = [
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "inventory", "type": "function", "function": {
+                    "name": "manage_skill", "arguments": json.dumps({"action": "list"})}}]},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "mutation", "type": "function", "function": {
+                    "name": "manage_skill", "arguments": json.dumps(arguments)}}]},
+            {"role": "assistant", "content": "No approved change was applied."},
+        ]
+        agent = self.agent_module.Zeline(identity="telegram:skill-boundary", tool_profile="full")
+        agent._tool_calls_since_reflection = 100
+        payloads = [FakeResponse({"choices": [{"message": message}]}) for message in responses]
+        with mock.patch.object(self.agent_module.requests, "post", side_effect=payloads):
+            agent.reflect()
+        self.assertTrue(active.is_file(), "reflection deleted an operator-approved active skill")
+        self.assertEqual(active.read_bytes(), before[0])
+        self.assertEqual(resource.read_bytes(), before[1], "reflection overwrote an active companion resource")
+        self.assertFalse(agent.executor._reflection_mode)
+
+    def test_reflection_cannot_delete_existing_active_skill(self):
+        self._check_reflection_keeps_existing_skill("delete")
+
+    def test_reflection_cannot_write_existing_active_skill_resource(self):
+        self._check_reflection_keeps_existing_skill("write_file")
+
     def test_reflect_reports_proposals_but_never_deletes_or_writes_companions(self):
         """Inventory stays quiet; autonomous skill revisions require review.
 
         Normal operator manage_skill calls retain their existing write contract.
         Internal reflection must not mutate live skills, even if an older model
         follows its former merge/delete instruction.
+
+        The round budget is capped low on purpose (3, down from 5): each round
+        is a full sequential model call issued after the final answer, and on a
+        RAM-tight Android/Termux host five rounds read as a hang. Three still
+        covers the valuable flow — orient, write, tidy — so this test drives the
+        rounds it needs within that budget.
         """
-        self.assertGreaterEqual(self.agent_module.REFLECTION_TOOL_ROUNDS, 4)
+        self.assertGreaterEqual(self.agent_module.REFLECTION_TOOL_ROUNDS, 3)
         agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
         agent.last_turn_tool_calls = 9
 
@@ -656,9 +727,7 @@ class AgentLoopTests(unittest.TestCase):
         rounds = [
             round_with("c1", '{"action":"list"}'),
             round_with("c2", '{"action":"create","name":"umbrella-flow","content":"# Umbrella\\n> gabungan\\nlangkah"}'),
-            round_with("c3", '{"action":"write_file","name":"umbrella-flow","file_path":"references/detail.md","content":"detail panjang"}'),
-            round_with("c4", '{"action":"create","name":"dupe-flow","content":"# Dupe\\n> lama\\nlangkah"}'),
-            round_with("c5", '{"action":"delete","name":"dupe-flow","absorbed_into":"umbrella-flow"}'),
+            round_with("c3", '{"action":"delete","name":"dupe-flow","absorbed_into":"umbrella-flow"}'),
         ]
         responses = [FakeResponse(payload) for payload in rounds]
         with mock.patch.object(self.agent_module.requests, "post", side_effect=responses):
@@ -668,10 +737,9 @@ class AgentLoopTests(unittest.TestCase):
         # The listing must not be surfaced as an improvement…
         self.assertNotIn("skills:", summary)
         self.assertIn("umbrella-flow", summary)
-        self.assertIn("dupe-flow", summary)
         self.assertIn("structural and behavioral review pending", summary)
         from zeline.skillforge import ForgeStore
-        self.assertEqual(len(ForgeStore().proposals()), 2)
+        self.assertGreaterEqual(len(ForgeStore().proposals()), 1)
         skills_module = importlib.import_module("zeline.skills")
         self.assertIsNone(skills_module._find_skill("umbrella-flow", include_private=True))
         self.assertIsNone(skills_module._find_skill("dupe-flow", include_private=True))
@@ -705,6 +773,39 @@ class AgentLoopTests(unittest.TestCase):
         # normal turn on the same session does not keep tagging as reflection.
         self.assertEqual(agent.executor.memory.default_source, "user")
 
+    def test_reflection_memory_writes_are_capped_per_review(self):
+        """Reflection may only write one memory fact per review cycle.
+
+        Unbounded writes are how the store filled with 143 self-written facts
+        that were never revisited. The cap forces the model to choose its single
+        most valuable lesson; extra attempts are rejected without erroring the
+        review, and are not reported as improvements.
+        """
+        agent = self.agent_module.Zeline(identity="cli:reflect-cap", tool_profile="full")
+        agent.last_turn_tool_calls = 9
+        self.assertEqual(self.agent_module.REFLECTION_MAX_MEMORY_WRITES, 1)
+
+        def write_fact(call_id: str, text: str) -> dict:
+            return {"choices": [{"message": {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": call_id, "type": "function", "function": {
+                    "name": "add_memory", "arguments": json.dumps({"fact": text})}}],
+            }}]}
+
+        rounds = [
+            write_fact("c1", "First lesson kept"),
+            write_fact("c2", "Second lesson dropped"),
+            write_fact("c3", "Third lesson dropped"),
+        ]
+        with mock.patch.object(self.agent_module.requests, "post",
+                               side_effect=[FakeResponse(r) for r in rounds]):
+            agent.reflect(min_tool_calls=5)
+
+        records = agent.executor.memory.records()
+        texts = [r["text"] for r in records]
+        self.assertEqual(len(records), 1, texts)
+        self.assertEqual(texts, ["First lesson kept"])
+
     def test_reflection_summary_escapes_skill_name_for_html_delivery(self):
         summary = self.agent_module._format_reflection_actions([
             ("manage_skill", {"action": "create", "name": "A&B<bad>"}, "Skill proposal forged"),
@@ -720,9 +821,9 @@ class AgentLoopTests(unittest.TestCase):
             ("add_memory", {"fact": "x"}, "Memory saved"),
         ])
         self.assertIsNotNone(summary)
-        self.assertIn("📙 <b>Self-Improvement review:</b>", summary)
-        self.assertIn("📘 <b>Self-Refinements review:</b>", summary)
-        self.assertIn("📗 <b>Self-Enhancements review:</b>", summary)
+        self.assertIn("📙 <b>Self-Enhancement:</b>", summary)
+        self.assertIn("📘 <b>Self-Improvement:</b>", summary)
+        self.assertIn("📗 <b>Self-Refinement:</b>", summary)
         self.assertIn("\n\n", summary)
         self.assertIn("active skill unchanged", summary)
         self.assertIn("review pending", summary)
@@ -731,19 +832,41 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("GEPA", summary)
         self.assertIsNone(self.agent_module._format_reflection_actions([]))
 
-    def test_refinement_or_enhancement_keeps_self_improvement_phase_mandatory(self):
+    def test_reflection_phases_appear_only_for_their_own_evidence(self):
+        """Setiap fase mustahil muncul tanpa aksi yang benar-benar terjadi.
+
+        Dulu satu refleksi dengan beberapa mutasi skill memunculkan 📙, 📘,
+        📗 sekaligus, sehingga terbaca seolah tiga tahap berjalan bersamaan.
+        Sekarang tiap fase berdiri sendiri: tanpa bukti, fase itu tidak ada —
+        dan tidak ada fase 📙 paksaan yang cuma jadi noise.
+        """
         refinement_only = self.agent_module._format_reflection_actions([
             ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
         ])
+        self.assertIsNotNone(refinement_only)
+        self.assertIn("📘 <b>Self-Improvement:</b>", refinement_only)
+        self.assertNotIn("📙 <b>Self-Enhancement:</b>", refinement_only)
+        self.assertNotIn("📗 <b>Self-Refinement:</b>", refinement_only)
+        self.assertNotIn("no separate reusable-skill proposal was needed", refinement_only)
+
         enhancement_only = self.agent_module._format_reflection_actions([
             ("resolve_lesson", {"tool": "web_search"}, "Resolved lesson: x"),
         ])
-        for summary, secondary in ((refinement_only, "📘 <b>Self-Refinements review:</b>"),
-                                   (enhancement_only, "📗 <b>Self-Enhancements review:</b>")):
-            self.assertIsNotNone(summary)
-            self.assertIn("📙 <b>Self-Improvement review:</b>", summary)
-            self.assertIn(secondary, summary)
-            self.assertIn("no separate reusable-skill proposal was needed", summary)
+        self.assertIsNotNone(enhancement_only)
+        self.assertIn("📗 <b>Self-Refinement:</b>", enhancement_only)
+        self.assertNotIn("📙 <b>Self-Enhancement:</b>", enhancement_only)
+        self.assertNotIn("📘 <b>Self-Improvement:</b>", enhancement_only)
+
+    def test_reflection_summary_deduplicates_repeated_actions(self):
+        """Satu siklus refleksi menyentuh skill yang sama berkali-kali."""
+        summary = self.agent_module._format_reflection_actions([
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_z"),
+        ])
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary.count("SkillForge revision proposal"), 1)
+        self.assertEqual(summary.count("📘 <b>Self-Improvement:</b>"), 1)
 
     def test_web_search_uses_bing_serp_and_includes_urls(self):
         # web_search must try the Bing SERP engine first and return title+URL

@@ -109,7 +109,9 @@ class CompactionTests(unittest.TestCase):
         assert second is not None
         self.assertEqual(second["content"].count(compaction.DIGEST_MARKER), 1)
         self.assertIn("langkah dua", second["content"])
-        self.assertNotIn("langkah satu", second["content"])
+        self.assertIn("langkah satu", second["content"])
+        self.assertIn("a.py", second["content"])
+        self.assertIn("b.py", second["content"])
 
     def test_archive_path_is_readable_but_arbitrary_paths_are_not(self):
         compaction.compact([_user("halo"), *_tool_turn("write_file", {"path": "x.py"})], "cli:local")
@@ -228,7 +230,9 @@ class TrimHistoryIntegrationTests(unittest.TestCase):
         self.assertEqual(agent.messages[0]["role"], "system")
         self.assertEqual(agent.messages[1]["role"], "user")
         self.assertIn(compaction.DIGEST_MARKER, agent.messages[1]["content"])
-        self.assertIn("src/mod0.py", agent.messages[1]["content"])
+        self.assertIn("src/mod14.py", agent.messages[1]["content"])
+        archived = next(compaction.archive_root().glob("*.md"))
+        self.assertIn("src/mod0.py", archived.read_text())
         self.assertEqual(len(list(compaction.archive_root().glob("*.md"))), 1)
 
     def test_second_trim_leaves_exactly_one_digest_at_the_front(self):

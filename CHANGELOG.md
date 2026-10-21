@@ -41,6 +41,10 @@ release's documented one-liner keeps working after a newer release ships.
 - `zeline skillforge` operator CLI and owner-only Telegram `/skillforge` overview, plus a package-safe legacy script entry point.
 
 ### Changed
+- Restore bounded, resumable tool I/O and evidence-preserving session compaction, with explicit UTF-8 failures and cancellation-safe process ownership.
+- Preserve approved Telegram icons, compact questions and receipts, unquoted live narration, and final-answer attribution. Render self-improvement phases only for actual verified actions.
+- Keep substantial research eligible for review; surface incomplete reviews without inventing completed phases or discarding pending work.
+- Include documented installers and release guides in source distributions; retain the last published installer pins until release assets exist.
 - Internal self-improvement now proposes skill changes instead of silently editing/deleting active procedures. Ordinary operator-requested skill management remains unchanged.
 
 ## [0.3.2] — 2026-09-06

@@ -1,3 +1,6 @@
+include install.sh install.ps1 CHANGELOG.md
+include .github/RELEASE_NOTES.md
+recursive-include docs *.md
 include zeline/SOUL.md
 recursive-include zeline/skills *
 recursive-include zeline/zenith_tools *

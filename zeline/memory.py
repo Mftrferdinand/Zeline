@@ -25,8 +25,23 @@ from zeline import config
 
 MEMORY_DIR = config.DATA_DIR / "memory"
 LEGACY_FILE = config.DATA_DIR / "memory.json"
-MAX_FACTS_PER_IDENTITY = 200
-MAX_CHARACTERS_PER_IDENTITY = 100_000
+# Capacity is measured in characters, matching how memory actually reaches the
+# model: ``MAX_PROMPT_CHARACTERS`` is what the prompt can afford. A hard *fact*
+# cap turns filling up into a dead end — reflection keeps calling add_memory,
+# each call is refused, and no fact is ever revisited, so stale self-writes
+# accumulate forever. Character capacity plus automatic consolidation (below)
+# keeps the store dense instead: at capacity, the oldest low-confidence
+# self-writes are retired to make room, the way an operator would tidy a note.
+MAX_FACTS_PER_IDENTITY = 400
+MAX_CHARACTERS_PER_IDENTITY = 60_000
+#: Soft ceiling that triggers consolidation before the hard character limit.
+CONSOLIDATE_AT_CHARACTERS = 48_000
+#: How many records one consolidation pass may retire. Bounded so a single
+#: write never silently discards a large slice of the operator's memory.
+CONSOLIDATE_MAX_REMOVALS = 12
+#: Facts written by reflection expire on their own; operator facts do not.
+#: Without this, 143 of 200 live facts were self-writes that never aged out.
+REFLECTION_TTL_SECONDS = 60 * 60 * 24 * 30
 MAX_IDENTITIES = 1_000
 REFLECTION_CONFIDENCE = 0.6
 MAX_PROMPT_CHARACTERS = 6000
@@ -90,6 +105,68 @@ def _live(records: list[dict[str, Any]], now: float | None = None) -> list[dict[
     moment = time.time() if now is None else now
     return [r for r in records if r.get("state", "active") == "active"
             and (r.get("expires_at") is None or float(r["expires_at"]) > moment)]
+
+
+def _consolidate(records: list[dict[str, Any]]) -> list[str]:
+    """Retire the least valuable live records so a write can be admitted.
+
+    At capacity the previous behaviour was to refuse the write outright, which
+    left the store permanently full of stale self-writes. Instead we make room
+    the way an operator would: drop what is least likely to still matter.
+
+    Ordering is deliberately conservative — the *last* things to go are the
+    operator's own facts and the most recently confirmed lessons:
+
+      1. Reflection facts older than their TTL (already past usefulness).
+      2. Oldest, lowest-confidence reflection facts.
+      3. Oldest low-confidence facts of any origin.
+
+    Operator facts (``source == "user"``) at full confidence are never retired,
+    and at most ``CONSOLIDATE_MAX_REMOVALS`` records are touched per pass, so
+    one write can never discard a large slice of memory.
+
+    Returns the retired record ids.
+    """
+    now = time.time()
+    live = _live(records, now)
+    budget = sum(len(r["text"]) for r in live)
+
+    def rank(r: dict[str, Any]) -> tuple[int, float, float]:
+        # Lower tuple sorts first = retired first.
+        expired_reflection = (
+            r.get("source") == "reflection"
+            and r.get("created_at") is not None
+            and now - float(r["created_at"]) > REFLECTION_TTL_SECONDS
+        )
+        tier = 0 if expired_reflection else (1 if r.get("source") == "reflection" else 2)
+        return (tier, float(r.get("confidence", 1.0)), float(r.get("created_at") or 0))
+
+    retired: list[str] = []
+    for record in sorted(live, key=rank):
+        if budget < CONSOLIDATE_AT_CHARACTERS:
+            break
+        if len(retired) >= CONSOLIDATE_MAX_REMOVALS:
+            break
+        # Never silently retire an explicit operator fact.
+        if record.get("source") == "user" and float(record.get("confidence", 1.0)) >= 1.0:
+            continue
+        record["state"] = "deleted"
+        record["revision"] = record.get("revision", 1) + 1
+        record["updated_at"] = now
+        budget -= len(record["text"])
+        retired.append(record["id"])
+    return retired
+
+
+def _enforce_capacity(records: list[dict[str, Any]]) -> list[str]:
+    """Apply consolidation, then reject only if the store is still over limit."""
+    retired = _consolidate(records)
+    live = _live(records)
+    if len(live) > MAX_FACTS_PER_IDENTITY:
+        raise ValueError(f"reached the {MAX_FACTS_PER_IDENTITY}-fact memory limit")
+    if sum(len(r["text"]) for r in live) > MAX_CHARACTERS_PER_IDENTITY:
+        raise ValueError(f"reached the {MAX_CHARACTERS_PER_IDENTITY}-character memory limit")
+    return retired
 
 
 class MemoryStore:
@@ -290,8 +367,12 @@ class MemoryStore:
                         if any(r["text"] == text for r in _live(records)):
                             continue
                         source = self.default_source
+                        expires_at = op.get("expires_at")
+                        if expires_at is None and source == "reflection":
+                            expires_at = time.time() + REFLECTION_TTL_SECONDS
                         record = _coerce_record({**op, "text": text, "source": source,
                                                 "confidence": REFLECTION_CONFIDENCE if source == "reflection" else 1.0,
+                                                "expires_at": expires_at,
                                                 "id": uuid.uuid4().hex, "revision": 1, "state": "active"})
                         assert record is not None
                         records.append(record)
@@ -318,13 +399,10 @@ class MemoryStore:
                         raise ValueError("Unknown memory action")
                     assert record is not None
                     changed.append(record["id"])
-                live = _live(records)
-                if len(live) > MAX_FACTS_PER_IDENTITY:
-                    raise ValueError(f"reached the {MAX_FACTS_PER_IDENTITY}-fact memory limit")
-                if sum(len(r["text"]) for r in live) > MAX_CHARACTERS_PER_IDENTITY:
-                    raise ValueError(f"reached the {MAX_CHARACTERS_PER_IDENTITY}-character memory limit")
+                retired = _enforce_capacity(records)
                 self._save(conn, records)
-                return {"success": True, "changed": changed, "total": len(live)}
+                return {"success": True, "changed": changed, "total": len(_live(records)),
+                        "consolidated": retired}
         except (ValueError, TypeError, OSError, sqlite3.Error) as exc:
             return {"success": False, "error": str(exc)}
 
@@ -347,20 +425,23 @@ class MemoryStore:
                 if any(r["text"] == fact for r in _live(records)):
                     return "That fact is already in memory."
                 effective_source = source or self.default_source or "user"
+                # Reflection facts carry a TTL so they cannot accumulate for
+                # ever: they are low-confidence inferences, not operator facts.
+                ttl = REFLECTION_TTL_SECONDS if effective_source == "reflection" else None
                 record = _coerce_record({"text": fact, "kind": kind, "source": effective_source,
                                         "confidence": confidence if confidence is not None else
                                         REFLECTION_CONFIDENCE if effective_source == "reflection" else 1.0,
-                                        "expires_at": expires_at})
-                live = _live(records)
-                if len(live) >= MAX_FACTS_PER_IDENTITY:
-                    raise ValueError(f"reached the {MAX_FACTS_PER_IDENTITY}-fact memory limit")
-                if sum(len(r["text"]) for r in live) + len(fact) > MAX_CHARACTERS_PER_IDENTITY:
-                    raise ValueError(f"reached the {MAX_CHARACTERS_PER_IDENTITY}-character memory limit")
+                                        "expires_at": expires_at if expires_at is not None
+                                        else (time.time() + ttl if ttl else None)})
                 assert record is not None
                 records.append(record)
+                # Consolidate rather than refuse: at capacity, retire the
+                # least valuable old self-writes so the new fact fits.
+                retired = _enforce_capacity(records)
                 self._save(conn, records)
                 total = len(_live(records))
-            return f"OK, saved. Total {total} facts in this conversation's memory."
+            note = f" (consolidated {len(retired)} stale entries)" if retired else ""
+            return f"OK, saved. Total {total} facts in this conversation's memory.{note}"
         except (ValueError, OSError, sqlite3.Error) as exc:
             return f"ERROR: {exc}"
 

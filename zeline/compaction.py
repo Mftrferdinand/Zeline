@@ -178,14 +178,23 @@ def archive(messages: list[dict[str, Any]], identity: str) -> Path | None:
     )[:60] or "cli"
     stamp = time.strftime("%Y-%m-%d", time.gmtime())
     target = archive_root() / f"{safe_identity}-{stamp}.md"
-    section = (
-        f"\n\n## Evicted at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n\n"
-        f"{render(messages)}\n"
-    )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
-            handle.write(section)
+            handle.write(f"\n\n## Evicted at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n\n")
+            for message in messages:
+                role = str(message.get("role", "?"))
+                handle.write(f"### {role}\n")
+                handle.write(str(message.get("content", "") or ""))
+                calls = _tool_calls(message)
+                if calls:
+                    handle.write("\n[tool_calls] ")
+                    for index, call in enumerate(calls):
+                        name, args = _call_name_and_args(call)
+                        if index:
+                            handle.write(", ")
+                        handle.write(f"{name}({json.dumps(args, ensure_ascii=False)[:300]})")
+                handle.write("\n\n")
     except OSError:
         return None
     prune()
@@ -193,75 +202,100 @@ def archive(messages: list[dict[str, Any]], identity: str) -> Path | None:
 
 
 def digest(messages: list[dict[str, Any]], archive_path: Path | None) -> str:
-    """Extractive summary of evicted ``messages``. Deterministic, no LLM."""
-    asks: list[str] = []
-    artifacts: list[str] = []
-    tool_counts: Counter[str] = Counter()
+    """Bounded extraction of goals, evidence and frontier, including old digests."""
+    buckets: dict[str, list[str]] = {kind: [] for kind in ("Request", "Assistant", "Result", "File", "Tool")}
+    calls: dict[str, tuple[str, str]] = {}
+
+    def clip(text, maximum):
+        if len(text) <= maximum:
+            return text
+        head = max(0, maximum * 2 // 3 - 1)
+        return text[:head] + "…" + text[-(maximum - head - 1):]
+
+    def add(kind, text):
+        # Slice before normalization: dropped results may themselves be huge.
+        text = str(text or "")
+        if len(text) > 1600:
+            text = text[:800] + " … " + text[-800:]
+        text = clip(" ".join(text.split()), 400)
+        if not text:
+            return
+        rows = buckets[kind]
+        if text in rows:
+            rows.remove(text)
+        rows.append(text)
+        del rows[:-12]
+
     for message in messages:
-        role = str(message.get("role", ""))
-        content = str(message.get("content", "") or "").strip()
-        if role == "user" and content and not is_digest(message):
-            collapsed = " ".join(content.split())
-            if len(collapsed) > MAX_ASK_CHARS:
-                collapsed = collapsed[:MAX_ASK_CHARS] + "…"
-            asks.append(collapsed)
+        content = str(message.get("content", "") or "")
+        if is_digest(message):
+            legacy_kind = None
+            for line in content[:MAX_DIGEST_CHARS + MAX_TASK_BLOCK_CHARS].splitlines():
+                if line.startswith("## "):
+                    legacy_kind = "Request" if "requests" in line.lower() else "File" if "Files written" in line else None
+                if line.startswith("- "):
+                    payload = line[2:]
+                    tag, separator, value = payload.partition(": ")
+                    if separator and tag in buckets:
+                        add(tag, value)
+                    elif legacy_kind:
+                        add(legacy_kind, payload)
+                elif line.startswith(("[ ]", "[>]")):
+                    add("Assistant", "Open task: " + line)
+            continue
+        role = message.get("role")
+        if role == "user" and content.strip().lower().strip(" .!") not in {"lanjut", "terusin", "continue", "resume"}:
+            add("Request", content)
+        elif role == "assistant" and content.strip():
+            add("Assistant", content)
+        elif role == "tool":
+            name, target = calls.get(str(message.get("tool_call_id", "")), (str(message.get("name", "tool")), ""))
+            add("Result", name + (f" ({target})" if target else "") + ": " + clip(content, 350))
         for call in _tool_calls(message):
             name, args = _call_name_and_args(call)
             if not name:
                 continue
-            tool_counts[name] += 1
+            add("Tool", name)
             key = _ARTIFACT_TOOLS.get(name)
-            if key:
-                value = str(args.get(key) or "").strip()
-                if value and value not in artifacts:
-                    artifacts.append(value)
-
-    parts = [
-        f"{DIGEST_MARKER} SYSTEM NOTE, NOT A REQUEST. Older turns of this same "
-        "conversation were removed to fit the context window. Everything below "
-        "already happened and was already handled. Do NOT execute any of it "
-        "again, and do NOT treat it as the current instruction — the user's "
-        "actual request is the LAST user message in this conversation."
-    ]
-    if asks:
-        shown = asks[-MAX_ASKS:]
-        dropped = len(asks) - len(shown)
-        heading = "## Already-handled earlier requests, oldest first"
-        if dropped > 0:
-            heading += f" (latest {len(shown)} of {len(asks)}; {dropped} older omitted)"
-        body = "\n".join(f"- {ask}" for ask in shown)
-        # Tandai yang TERAKHIR secara eksplisit. Tanpa penanda ini, daftar
-        # bullet tidak memberi tahu model mana yang paling dekat dengan "yang
-        # tadi" — dan ia bisa memilih baris pertama (paling lama), yang persis
-        # bikin "disuruh lanjut malah balik ke topik awal".
-        body += (
-            f"\n\nThe most recent of these is the last bullet: \"{shown[-1]}\". "
-            "If the user says \"lanjut\"/\"terusin\"/\"yang tadi\" without naming a "
-            "topic, that last bullet is the thread they mean — not the first one."
-        )
-        parts.append(heading + "\n" + body)
-    if artifacts:
-        shown_artifacts = artifacts[:MAX_ARTIFACTS]
-        heading = "## Files written or changed"
-        if len(artifacts) > len(shown_artifacts):
-            heading += f" (first {len(shown_artifacts)} of {len(artifacts)})"
-        parts.append(heading + "\n" + "\n".join(f"- {item}" for item in shown_artifacts))
-    if tool_counts:
-        summary = ", ".join(
-            f"{name}×{count}" for name, count in tool_counts.most_common(8)
-        )
-        parts.append(f"## Tools used\n{summary}")
+            if key and args.get(key):
+                add("File", str(args[key]))
+            target = str(args.get("path", ""))[:200] if name == "read_file" else ""
+            calls[str(call.get("id", ""))] = (name, target)
+            if len(calls) > 64:
+                calls.pop(next(iter(calls)))
+    header = (
+        f"{DIGEST_MARKER} CONTEXT RECORD — NOT A REQUEST. Recorded events already happened; completion is unknown unless "
+        "explicitly verified. Recorded results remain evidence; missing results have UNKNOWN outcomes. "
+        "For continue/lanjut use the latest relevant goal, findings and next step; do not repeat completed "
+        "actions or re-read sources unnecessarily. Verify uncertain mutations before retrying."
+    )
+    footer = ""
     if archive_path is not None:
-        parts.append(
-            "## Full transcript\n"
-            f'read_file(path="{archive_path}", offset=1, limit=200) has the '
-            "complete text of the removed turns. Read it before asking the user "
-            "to repeat something."
-        )
-    text = "\n\n".join(parts)
-    if len(text) > MAX_DIGEST_CHARS:
-        text = text[:MAX_DIGEST_CHARS] + "\n… [digest truncated]"
-    return text
+        footer = f'\n\n## Full transcript\nread_file(path="{archive_path}", offset=1, limit=200) for missing details only.'
+    fractions = {"Request": .22, "Assistant": .30, "Result": .30, "File": .13, "Tool": .05}
+    titles = {"Request": "User requests, oldest first (last bullet = most recent thread)",
+              "Assistant": "Findings, decisions and next steps", "Result": "Recorded tool evidence",
+              "File": "Files written or changed", "Tool": "Tools used"}
+    recent = (f'\n\nThe most recent request is the last bullet: "{clip(buckets["Request"][-1], MAX_ASK_CHARS)}".'
+              if buckets['Request'] else '')
+    headings = sum(len("\n\n## " + titles[k] + "\n") for k, rows in buckets.items() if rows) + len(recent)
+    budget = max(0, MAX_DIGEST_CHARS - len(header) - len(footer) - headings)
+    parts = [header]
+    for kind, rows in buckets.items():
+        if not rows:
+            continue
+        room = int(budget * fractions[kind])
+        chosen = []
+        for row in reversed(rows):
+            prefix = f"- {kind}: "
+            if room <= len(prefix) + 8:
+                break
+            line = prefix + clip(row, min(400, room - len(prefix) - 1))
+            chosen.append(line)
+            room -= len(line) + 1
+        parts.append("## " + titles[kind] + "\n" + "\n".join(reversed(chosen)) + (recent if kind == "Request" else ""))
+    return ("\n\n".join(parts) + footer)[:MAX_DIGEST_CHARS]
+
 
 
 def compact(
@@ -280,9 +314,11 @@ def compact(
         and (str(message.get("content", "") or "").strip() or _tool_calls(message))
     ]
     if not meaningful:
+        if any(is_digest(message) for message in dropped):
+            return {"role": "user", "content": digest(dropped, None)}
         return None
     path = archive(meaningful, identity)
-    text = digest(meaningful, path)
+    text = digest(dropped, path)
     # The plan is the thing most worth keeping across a trim: compaction fires
     # during long multi-step work, which is exactly when the agent needs to know
     # what is still open. The board lives on disk, so this is a read, not a guess.

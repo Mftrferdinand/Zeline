@@ -14,7 +14,10 @@ class CronMaturityTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         # macOS /var and Windows 8.3 temp aliases canonicalize in production.
         self.home = Path(self.tmp.name).resolve()
-        self.env = patch.dict(os.environ, {"ZELINE_HOME": str(self.home / "state")})
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.startswith("ZELINE_")}
+        environment.update(HOME=str(self.home), ZELINE_HOME=str(self.home / "state"))
+        self.env = patch.dict(os.environ, environment, clear=True)
         self.env.start()
         for name in list(sys.modules):
             if name == "zeline" or name.startswith("zeline."):

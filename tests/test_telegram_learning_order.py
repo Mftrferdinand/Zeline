@@ -7,7 +7,7 @@ from unittest import mock
 from tests import test_turn_admission as admission
 
 
-PHASES = ("📙 Self-Improvement", "📘 Self-Refinements", "📗 Self-Enhancements")
+PHASES = ("📙 Self-Enhancement", "📘 Self-Improvement", "📗 Self-Refinement")
 
 
 class LearningOrderTests(unittest.TestCase):
@@ -61,7 +61,7 @@ class LearningOrderTests(unittest.TestCase):
             self.assertEqual(len(reports), 1, phase)
             i, payload = reports[0]
             self.assertGreater(i, final)
-            self.assertEqual(payload["reply_to_message_id"], 42)
+            self.assertNotIn("reply_to_message_id", payload)
             self.assertFalse(any(other in payload["text"] for other in PHASES if other != phase))
             self.assertNotIn("Creating skill", payload["text"])
 
@@ -187,14 +187,14 @@ class LearningOrderTests(unittest.TestCase):
         import html
         telegram = importlib.import_module("zeline.gateways.telegram")
         evidence = "😀<literal>&" * 1000
-        summary = "📙 <b>Self-Improvement review:</b> " + html.escape(evidence)
+        summary = "📙 <b>Self-Enhancement:</b> " + html.escape(evidence)
         parts = list(telegram._learning_report_parts((), summary))
         self.assertGreater(len(parts), 1)
         reconstructed = ""
         for part in parts:
             self.assertLessEqual(len(part.encode("utf-16-le")) // 2, 3500)
             reconstructed += html.unescape(part).removeprefix(PHASES[0] + "\n")
-        self.assertEqual(reconstructed, "📙 Self-Improvement review: " + evidence)
+        self.assertEqual(reconstructed, "📙 Self-Enhancement: " + evidence)
 
     def test_post_review_cancellation_prevents_report_delivery(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
