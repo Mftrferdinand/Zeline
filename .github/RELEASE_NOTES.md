@@ -102,3 +102,5 @@ checksum. Run `zeline setup` after a new install. Existing installations can use
 
 Artifacts are built from the immutable release tag in merged `main` history.
 GitHub Release and PyPI receive the same wheel and source archive.
+
+*Agent-generated release notes.*
