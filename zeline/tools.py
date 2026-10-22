@@ -36,6 +36,7 @@ import requests
 
 from zeline import config
 from zeline import compaction
+from zeline import hash_tools
 from zeline import memory
 from zeline import offload
 from zeline import skills
@@ -1347,7 +1348,13 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
-    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+    addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    # ANY internal record blocks the host, not just ALL of them. A DNS name
+    # resolving to one public and one private address would pass an all()-check
+    # and still let the OS connect over the private record (classic mixed-record
+    # / rebinding bypass). Fail closed: a public service never publishes an
+    # internal A/AAAA record.
+    return any(_addr_is_internal(addr) for addr in addresses)
 
 
 def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
@@ -2228,6 +2235,20 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "hash_check",
+        "Compute a file's SHA-256/SHA-1/MD5 digest in the workspace, optionally comparing against an expected checksum to verify a download or a written artifact.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to the workspace"},
+                "algorithm": {"type": "string", "enum": ["sha256", "sha1", "md5"], "description": "Default sha256"},
+                "expected": {"type": "string", "description": "Optional digest to compare against; result says MATCH or MISMATCH"},
+            },
+            "required": ["path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "undo_file",
         (
             "Put a workspace file back to the content it had before you wrote to "
@@ -2572,6 +2593,8 @@ class ToolExecutor:
                 query, self.workspace, pattern, should_stop=self._control("_should_stop"),
                 limit=limit, offset=offset, target=target, regex=regex),
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
+            "hash_check": lambda path, algorithm="sha256", expected="": hash_tools._hash_check(
+                path, self.workspace, algorithm=algorithm, expected=expected),
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
             ),

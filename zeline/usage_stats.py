@@ -240,10 +240,14 @@ def cost_for(model: str, prompt_tokens: int, completion_tokens: int) -> float | 
     entry = prices.get(model)
     if entry is None:
         # Allow a prefix match so 'gpt-4o' can price 'gpt-4o-2024-08-06'.
+        # Pick the LONGEST matching prefix: when both 'gpt-4o' and
+        # 'gpt-4o-2024-08-06' are priced, the specific entry must win,
+        # regardless of the order the operator happened to write them in.
+        best_len = 0
         for name, value in prices.items():
-            if model.startswith(name):
+            if model.startswith(name) and len(name) > best_len:
+                best_len = len(name)
                 entry = value
-                break
     if entry is None:
         return None
     return (prompt_tokens / 1_000_000 * entry["input"]) + (
