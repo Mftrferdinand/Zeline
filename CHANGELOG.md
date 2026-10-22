@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.2] — 2026-10-22
+
+This release packages the merged terminal runtime UI and updater hardening on
+top of the retained v0.3.4 baseline. It does not restore the removed v0.3.5–v0.3.9
+code wholesale.
+
+### Added
+- Responsive blue terminal runtime dashboard with paired capability panels,
+  narrow-terminal fallback, local command handling, live activity, and an
+  interactive chat composer ([#326](https://github.com/Mftrferdinand/Zeline/pull/326)).
+- PTY, terminal layout, router-probe, MCP deadline, and updater UI regression
+  coverage, including Windows encoding and non-interactive fallbacks.
+
+### Changed
+- Add bounded loopback 9Router detection and deadline-bounded parallel MCP
+  discovery so optional services cannot stall startup.
+- Present updater work as explicit plan, download, checksum, and install stages
+  while preserving native installer output.
+
+### Fixed
+- Restore a paused gateway when checksum parsing, verification, or installer
+  startup fails instead of leaving the service stopped.
+- Keep terminal and PTY smoke paths aligned with the actual prompt/composer
+  input contract and prevent sensitive tool arguments from reaching scrollback.
+
 ## [0.4.1] — 2026-10-21
 
 This release packages reviewed changes from the retained v0.3.4 baseline. It does
@@ -413,4 +438,5 @@ Release notes for 0.2.5 and earlier are on the
 [#231]: https://github.com/Mftrferdinand/Zeline/pull/231
 [#232]: https://github.com/Mftrferdinand/Zeline/pull/232
 [#233]: https://github.com/Mftrferdinand/Zeline/pull/233
+[0.4.2]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.2
 [0.4.1]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.1

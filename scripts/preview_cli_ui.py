@@ -27,7 +27,7 @@ Deploy selesai. Tiga hal yang berubah:
 |------|--------|
 | Build | lulus |
 | Publisher | lulus |
-| PyPI | 0.4.1 live |
+| PyPI | 0.4.2 live |
 
 ```python
 def greet(name: str) -> str:
@@ -50,7 +50,7 @@ def screen(width: int, color: bool, unicode_ok: bool) -> str:
         tool_profile="full (local operator)",
     )
     ui.notice("Type your message  \u2022  /help  \u2022  exit")
-    ui.user("tolong cek status rilis v0.4.1")
+    ui.user("tolong cek status rilis v0.4.2")
     ui.tool("run_shell")
     ui.tool("write_file")
     ui.reply(REPLY, agent="Zeline")

@@ -2,4 +2,4 @@
 
 The internal ``zeline`` import path remains temporarily for compatibility.
 """
-__version__ = "0.4.1"
+__version__ = "0.4.2"
