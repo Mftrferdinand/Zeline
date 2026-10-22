@@ -1284,6 +1284,169 @@ def _send_file(path: str, workspace: Path, identity: str, caption: str = "") -> 
     return delivery.send(identity, target, caption)
 
 
+def _json_query(data: str, query: str, workspace: Path) -> str:
+    """Query/transform JSON with a small safe expression language.
+
+    Inspired by tools like jq/JMESPath but dependency-free and deliberately
+    tiny: dot paths, array slices, wildcards, simple comparisons, and '|'
+    pipes cover the 90% case — pulling exact fields out of large API
+    responses without dumping the whole payload into context. No eval/exec:
+    every stage is parsed into a narrow AST before it touches the data.
+    """
+    data = (data or "").strip()
+    if not data:
+        return "ERROR: data is empty."
+    # Accept a workspace file path as input.
+    if data.startswith(("{", "[", '"')):
+        try:
+            doc = json.loads(data)
+        except json.JSONDecodeError as exc:
+            return f"ERROR: invalid JSON: {exc}"
+    else:
+        try:
+            source = _resolve_workspace_path(data, workspace)
+            doc = json.loads(source.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        except (OSError, json.JSONDecodeError) as exc:
+            return f"ERROR reading JSON file: {exc}"
+
+    stages = [part.strip() for part in (query or "").split("|") if part.strip()]
+    try:
+        current = doc
+        for stage in stages:
+            current = _json_query_stage(current, stage)
+    except _JsonQueryError as exc:
+        return f"ERROR: {exc}"
+    try:
+        result = json.dumps(current, ensure_ascii=False, default=str)
+    except (TypeError, ValueError) as exc:
+        return f"ERROR: result not serializable: {exc}"
+    if len(result) > 12_000:
+        result = result[:12_000] + "\n... [truncated]"
+    return result
+
+
+class _JsonQueryError(ValueError):
+    pass
+
+
+_COMPARISON_RE = re.compile(r"^(.+?)(==|!=|>=|<=|>|<)(.+)$")
+
+
+def _json_query_stage(node: Any, stage: str) -> Any:
+    """Apply one pipe stage to the current value."""
+    if stage == "*":
+        return node
+    match = _COMPARISON_RE.match(stage)
+    if match and not stage.startswith("."):
+        return _json_query_filter(node, match.group(1).strip(), match.group(2), match.group(3).strip())
+    if isinstance(node, dict) and "." not in stage and "[" not in stage and stage in node:
+        return node[stage]
+    if isinstance(node, list) and "." not in stage and ":" not in stage and stage != "*":
+        # A bare key after a filter or slice maps over the remaining objects:
+        # users | age>=30 | name  ->  ["ana", "citra"]
+        if all(isinstance(item, dict) and stage in item for item in node) and node:
+            return [item[stage] for item in node]
+    if isinstance(node, list) and "." in stage:
+        # Dotted path over a list of objects maps per element:
+        # users.0:2.name  ->  walk each element's path.
+        mapped = []
+        for item in node:
+            try:
+                mapped.append(_json_query_stage(item, stage))
+            except _JsonQueryError:
+                continue
+        if mapped:
+            return mapped
+    return _json_query_path(node, stage)
+
+
+def _json_query_path(node: Any, path: str) -> Any:
+    """Walk a dotted path: keys, integer indices, slices, and '*' wildcards."""
+    if path.startswith("$."):
+        path = path[2:]
+    parts = path.split(".") if path else []
+    current = node
+    for index, part in enumerate(parts):
+        if part == "*":
+            if isinstance(current, list):
+                rest = ".".join(parts[index + 1:])
+                current = [_json_query_path(item, rest) for item in current]
+                return current
+            if isinstance(current, dict):
+                rest = ".".join(parts[index + 1:])
+                current = [_json_query_path(item, rest) for item in current.values()]
+                return current
+            raise _JsonQueryError(f"'*' used on non-collection at '{part}'")
+        if ":" in part:
+            sliced = part.split(":")
+            if not isinstance(current, list):
+                raise _JsonQueryError(f"slice '{part}' needs a list")
+            start = int(sliced[0]) if sliced[0] else None
+            end = int(sliced[1]) if sliced[1] else None
+            current = current[start:end]
+            rest = ".".join(parts[index + 1:])
+            if rest:
+                current = [_json_query_path(item, rest) for item in current]
+            return current
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError):
+                raise _JsonQueryError(f"index '{part}' invalid for list") from None
+        elif isinstance(current, dict):
+            if part not in current:
+                raise _JsonQueryError(f"key '{part}' not found")
+            current = current[part]
+        else:
+            raise _JsonQueryError(f"cannot descend into {type(current).__name__} at '{part}'")
+    return current
+
+
+def _json_query_filter(node: Any, key: str, op: str, raw_value: str) -> Any:
+    """Filter a list of objects/ scalars by comparison, e.g. age>30."""
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        value = raw_value.strip("\"'")
+    if not isinstance(node, list):
+        raise _JsonQueryError("comparison filter needs a list to filter")
+
+    def matches(item: Any) -> bool:
+        if isinstance(item, dict):
+            if key not in item:
+                return False
+            actual = item[key]
+        elif isinstance(key, str) and key.isdigit() and isinstance(item, list):
+            try:
+                actual = item[int(key)]
+            except IndexError:
+                return False
+        else:
+            actual = item
+        try:
+            if op == "==":
+                return actual == value
+            if op == "!=":
+                return actual != value
+            if actual is None or value is None:
+                return False
+            if op == ">":
+                return actual > value
+            if op == ">=":
+                return actual >= value
+            if op == "<":
+                return actual < value
+            if op == "<=":
+                return actual <= value
+        except TypeError:
+            return False
+        return False
+
+    return [item for item in node if matches(item)]
+
+
 def _system_env() -> str:
     """Ringkasan lingkungan sistem: OS/arch, tool/runtime terpasang, port lokal aktif.
 
@@ -2155,6 +2318,19 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "json_query",
+        "Query/transform a JSON string or a workspace .json file and get a compact result. Supports dot paths (a.b.0.c), array slicing (users.0:5), wildcards (users.*.name), comparisons (age>30, status==active), and piping multiple stages with '|'. Use to pull exact fields out of large API responses or config files without loading them fully into context.",
+        {
+            "type": "object",
+            "properties": {
+                "data": {"type": "string", "description": "JSON text, or a path to a .json file in the workspace"},
+                "query": {"type": "string", "description": "Query expression, e.g. 'items | price<100 | name' or 'users.*.email'. Empty = pretty-print compact summary."},
+            },
+            "required": ["data"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "read_file",
         "Read a text file inside the allowed workspace. Use offset/limit to page "
         "through a large file or an offloaded tool result instead of re-running work.",
@@ -2557,6 +2733,7 @@ class ToolExecutor:
             ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
+            "json_query": lambda data, query="": _json_query(data, query, self.workspace),
             "code_intel": lambda action, path="", line=0, character=0: self._code_intel(
                 action, path, line, character
             ),
