@@ -427,6 +427,14 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
             b = html.escape(_short_path(str(arguments.get("path_b", "")))[:80], quote=False)
             return f"⚖️ Diffing <code>{a}</code> vs <code>{b}</code>…"
         return "⚖️ Diffing texts…"
+    if name == "text_stats":
+        return "📊 Counting text statistics…"
+    if name == "time_convert":
+        zones = html.escape(str(arguments.get("timezones", "UTC"))[:60], quote=False)
+        return f"🕒 Converting time across {zones}…"
+    if name == "regex_test":
+        pattern = html.escape(str(arguments.get("pattern", ""))[:60], quote=False)
+        return f"🧫 Testing regex: <code>{pattern}</code>…"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
     if name == "read_file":
         # Zeline read_file membaca seluruh file (tanpa offset/limit); rentang

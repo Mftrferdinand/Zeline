@@ -41,6 +41,7 @@ from zeline import diff_tools
 from zeline import hash_tools
 from zeline import memory
 from zeline import offload
+from zeline import text_tools
 from zeline import skills
 from zeline import tasks
 from zeline import transcribe
@@ -2282,6 +2283,46 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "text_stats",
+        "Count characters, words, lines and estimated tokens of a text, plus its most frequent terms. Use before long writes to budget context.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to measure"},
+                "top": {"type": "integer", "description": "How many top terms to return (0 disables, default 10, max 50)"},
+            },
+            "required": ["text"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "time_convert",
+        "Render one moment (Unix timestamp or 'YYYY-MM-DD HH:MM' text) across several IANA timezones, e.g. 'UTC,Asia/Jakarta,Europe/Berlin'. Never guess a user's local time.",
+        {
+            "type": "object",
+            "properties": {
+                "timestamp": {"type": "number", "description": "Unix seconds; omit or 0 to use the current moment"},
+                "timezones": {"type": "string", "description": "Comma-separated IANA zones (max 8), default 'UTC,Asia/Jakarta'"},
+                "text_time": {"type": "string", "description": "Alternatively a wall-clock string like '2026-10-23 09:30'"},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "regex_test",
+        "Test a regular expression against a text and list up to 50 matches with positions and groups. Prove a pattern here before using it in code.",
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Python re pattern"},
+                "text": {"type": "string", "description": "Text to search (max 200k characters)"},
+                "flags": {"type": "string", "description": "Reserved for future use"},
+            },
+            "required": ["pattern", "text"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "undo_file",
         (
             "Put a workspace file back to the content it had before you wrote to "
@@ -2633,6 +2674,10 @@ class ToolExecutor:
             "diff_text": lambda path_a="", path_b="", text_a="", text_b="", label_a="a", label_b="b": diff_tools._diff_text(
                 path_a=path_a, path_b=path_b, workspace=self.workspace,
                 text_a=text_a, text_b=text_b, label_a=label_a, label_b=label_b),
+            "text_stats": lambda text, top=10: json.dumps(text_tools._text_stats(text, top=top), ensure_ascii=False),
+            "time_convert": lambda timestamp=0.0, timezones="UTC,Asia/Jakarta", text_time="": text_tools._time_convert(
+                timestamp=timestamp, timezones=timezones, text_time=text_time),
+            "regex_test": lambda pattern, text, flags="": text_tools._regex_test(pattern, text, flags=flags),
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
             ),
