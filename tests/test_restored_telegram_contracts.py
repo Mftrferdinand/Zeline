@@ -158,6 +158,10 @@ class TelegramIconContractTests(unittest.TestCase):
             ("send_file", {}, "📤 Sending a file"),
             ("diff_files", {}, "🔍 Comparing two files"),
             ("diff_files", {"path_a": "a.py", "path_b": "b.py"}, "🔍 Comparing"),
+            ("archive_file", {"action": "extract"}, "📦 Extracting"),
+            ("archive_file", {"action": "create", "source": "src"}, "📦 Archiving"),
+            ("checksum_file", {"path": "f.bin"}, "#️⃣ Hashing"),
+            ("find_duplicate_files", {}, "👯 Scanning for duplicate files"),
         )
         for tool, arguments, expected in cases:
             with self.subTest(tool=tool, arguments=arguments):
