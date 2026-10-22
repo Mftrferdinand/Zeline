@@ -2210,7 +2210,7 @@ TOOL_DEFS: list[ToolDef] = [
             "limit": {"type": "integer", "description": "Matches per response, default 50"},
             "offset": {"type": "integer", "description": "Zero-based result offset, default 0"},
             "target": {"type": "string", "enum": ["content", "files"]},
-            "regex": {"type": "boolean", "description": "Optional regex content search using ripgrep; default false (literal)"},
+            "regex": {"type": "boolean", "description": "Optional regex content search (ripgrep when available, else native); default false (literal)"},
         }, "required": ["query"]},
         frozenset({"workspace", "full"}),
     ),
