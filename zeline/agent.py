@@ -1524,7 +1524,7 @@ class Zeline:
                     )
             review_completed = True
         except ZelineError:
-            actions = actions  # refleksi bersifat best-effort; error diabaikan
+            pass  # Refleksi bersifat best-effort; error diabaikan.
         finally:
             # Kembalikan source default; instance memory dipakai lagi di sesi ini.
             self.executor.memory.default_source = previous_source

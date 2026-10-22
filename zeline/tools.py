@@ -36,8 +36,12 @@ import requests
 
 from zeline import config
 from zeline import compaction
+from zeline import data_tools
+from zeline import diff_tools
+from zeline import hash_tools
 from zeline import memory
 from zeline import offload
+from zeline import text_tools
 from zeline import skills
 from zeline import tasks
 from zeline import transcribe
@@ -1347,7 +1351,13 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
-    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+    addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    # ANY internal record blocks the host, not just ALL of them. A DNS name
+    # resolving to one public and one private address would pass an all()-check
+    # and still let the OS connect over the private record (classic mixed-record
+    # / rebinding bypass). Fail closed: a public service never publishes an
+    # internal A/AAAA record.
+    return any(_addr_is_internal(addr) for addr in addresses)
 
 
 def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
@@ -2228,6 +2238,91 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "hash_check",
+        "Compute a file's SHA-256/SHA-1/MD5 digest in the workspace, optionally comparing against an expected checksum to verify a download or a written artifact.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to the workspace"},
+                "algorithm": {"type": "string", "enum": ["sha256", "sha1", "md5"], "description": "Default sha256"},
+                "expected": {"type": "string", "description": "Optional digest to compare against; result says MATCH or MISMATCH"},
+            },
+            "required": ["path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "data_convert",
+        "Convert a workspace data file between JSON, CSV, YAML, and TOML (format detected from the file extension), or validate its syntax. Optional output_path writes the result into the workspace.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Input file relative to the workspace; format comes from its extension (.json/.csv/.yaml/.yml/.toml)"},
+                "to_format": {"type": "string", "enum": ["json", "csv", "yaml", "toml"], "description": "Target format, default json"},
+                "output_path": {"type": "string", "description": "Optional workspace path to write the converted result to; omit to return it inline"},
+                "validate_only": {"type": "boolean", "description": "Only check that the file parses; report the exact error location when it does not"},
+            },
+            "required": ["path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "diff_text",
+        "Unified diff between two workspace files (path_a, path_b) or two inline texts (text_a, text_b). Use it to show an exact change instead of describing it.",
+        {
+            "type": "object",
+            "properties": {
+                "path_a": {"type": "string", "description": "Left side: workspace file path"},
+                "path_b": {"type": "string", "description": "Right side: workspace file path"},
+                "text_a": {"type": "string", "description": "Left side: inline text (used when path_a is omitted)"},
+                "text_b": {"type": "string", "description": "Right side: inline text (used when path_b is omitted)"},
+                "label_a": {"type": "string", "description": "Header label for the left side, default a"},
+                "label_b": {"type": "string", "description": "Header label for the right side, default b"},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "text_stats",
+        "Count characters, words, lines and estimated tokens of a text, plus its most frequent terms. Use before long writes to budget context.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to measure"},
+                "top": {"type": "integer", "description": "How many top terms to return (0 disables, default 10, max 50)"},
+            },
+            "required": ["text"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "time_convert",
+        "Render one moment (Unix timestamp or 'YYYY-MM-DD HH:MM' text) across several IANA timezones, e.g. 'UTC,Asia/Jakarta,Europe/Berlin'. Never guess a user's local time.",
+        {
+            "type": "object",
+            "properties": {
+                "timestamp": {"type": "number", "description": "Unix seconds; omit or 0 to use the current moment"},
+                "timezones": {"type": "string", "description": "Comma-separated IANA zones (max 8), default 'UTC,Asia/Jakarta'"},
+                "text_time": {"type": "string", "description": "Alternatively a wall-clock string like '2026-10-23 09:30'"},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "regex_test",
+        "Test a regular expression against a text and list up to 50 matches with positions and groups. Prove a pattern here before using it in code.",
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Python re pattern"},
+                "text": {"type": "string", "description": "Text to search (max 200k characters)"},
+                "flags": {"type": "string", "description": "Reserved for future use"},
+            },
+            "required": ["pattern", "text"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "undo_file",
         (
             "Put a workspace file back to the content it had before you wrote to "
@@ -2572,6 +2667,17 @@ class ToolExecutor:
                 query, self.workspace, pattern, should_stop=self._control("_should_stop"),
                 limit=limit, offset=offset, target=target, regex=regex),
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
+            "hash_check": lambda path, algorithm="sha256", expected="": hash_tools._hash_check(
+                path, self.workspace, algorithm=algorithm, expected=expected),
+            "data_convert": lambda path, to_format="json", output_path="", validate_only=False: data_tools._data_convert(
+                path, self.workspace, to_format=to_format, output_path=output_path, validate_only=validate_only),
+            "diff_text": lambda path_a="", path_b="", text_a="", text_b="", label_a="a", label_b="b": diff_tools._diff_text(
+                path_a=path_a, path_b=path_b, workspace=self.workspace,
+                text_a=text_a, text_b=text_b, label_a=label_a, label_b=label_b),
+            "text_stats": lambda text, top=10: json.dumps(text_tools._text_stats(text, top=top), ensure_ascii=False),
+            "time_convert": lambda timestamp=0.0, timezones="UTC,Asia/Jakarta", text_time="": text_tools._time_convert(
+                timestamp=timestamp, timezones=timezones, text_time=text_time),
+            "regex_test": lambda pattern, text, flags="": text_tools._regex_test(pattern, text, flags=flags),
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
             ),
