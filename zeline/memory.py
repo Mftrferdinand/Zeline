@@ -256,10 +256,20 @@ class MemoryStore:
 
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         # Retain legacy sort semantics for public/native search: equal scores keep
-        # storage order. Recall below deliberately uses a stable ID tie-breaker.
+        # storage order, so ties are ranked stably by a monotonic sequence number
+        # instead of letting ``reverse=True`` flip them. Recall below deliberately
+        # uses an ID tie-breaker for order-independent reproducibility.
         scored = self._scored_records(query)
-        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return [item[3] for item in scored[:max(1, min(50, int(limit)))]]
+        # Two-pass stable sort: primary (overlap, recency) descending, then ties
+        # restored to storage order with a stable pass on the record's position,
+        # which ``reverse=True`` alone would flip. Sort tuples rather than
+        # mutating the record with a transient key, which would leak into saves.
+        decorated = [
+            (item[0], item[1], -position, item[3])
+            for position, item in enumerate(scored)
+        ]
+        decorated.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        return [item[3] for item in decorated[:max(1, min(50, int(limit)))]]
 
     def recall(
         self,
