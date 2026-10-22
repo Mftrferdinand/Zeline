@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -817,6 +817,49 @@ def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str
         return f"ERROR running code: {exc}"
 
 
+def _validate_url_for_ssrf(url: str) -> str | None:
+    """Validate the *initial* URL of an outbound request.
+
+    Redirects are re-validated separately (see ``_SSRFSafeRedirectHook``):
+    checking only the first hop is not enough, because a public URL can
+    302-redirect to 169.254.169.254 or another internal address.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "URL must be a valid http/https URL."
+    host = parsed.hostname or ""
+    if not host or _is_internal_ip(host):
+        return "URL points to an internal address and is blocked."
+    return None
+
+
+class _SSRFSafeRedirectHook:
+    """Block redirects that hop to an internal address.
+
+    ``requests`` resolves each redirect hop itself, so a hostname check on the
+    original URL says nothing about where the connection actually lands. This
+    hook inspects every redirect target and aborts the request chain when it
+    points inside the private network, closing the classic
+    ``allow_redirects=True`` SSRF bypass.
+    """
+
+    def __init__(self, max_hops: int = 5) -> None:
+        self._hops_left = max_hops
+
+    def __call__(self, response: requests.Response, **_: Any) -> requests.Response | None:
+        if not response.is_redirect:
+            return None
+        if self._hops_left <= 0:
+            raise requests.RequestException("too many redirects")
+        self._hops_left -= 1
+        location = response.headers.get("Location", "")
+        next_url = urljoin(response.url, location)
+        problem = _validate_url_for_ssrf(next_url)
+        if problem is not None:
+            raise requests.RequestException(f"redirect blocked (SSRF protection): {problem}")
+        return None  # None = let requests follow the (now validated) redirect
+
+
 def _http_request(method: str, url: str, headers: str = "", body: str = "") -> str:
     """Panggil REST API dengan method bebas (GET/POST/PUT/PATCH/DELETE).
 
@@ -852,6 +895,7 @@ def _http_request(method: str, url: str, headers: str = "", body: str = "") -> s
     try:
         response = requests.request(
             method, url, headers=hdrs, data=data, timeout=WEB_TIMEOUT, allow_redirects=True,
+            hooks={"response": [_SSRFSafeRedirectHook()]},
         )
     except requests.RequestException as exc:
         return f"ERROR request: {exc.__class__.__name__}: {exc}"
@@ -882,7 +926,8 @@ def _download_file(url: str, path: str, workspace: Path) -> str:
         return f"ERROR: {exc}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True) as response:
+        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True,
+                          hooks={"response": [_SSRFSafeRedirectHook()]}) as response:
             if not response.ok:
                 return f"ERROR: HTTP {response.status_code} {response.reason}."
             size = 0
@@ -1337,7 +1382,12 @@ _JINA_READER = "https://r.jina.ai/"
 
 
 def _is_internal_ip(host: str) -> bool:
-    """True jika hostname/IP menunjuk ke jaringan internal (proteksi SSRF)."""
+    """True jika hostname/IP menunjuk ke jaringan internal (proteksi SSRF).
+
+    DNS yang mengandung SATU SAJA alamat internal sudah cukup untuk memblokir
+    (any, bukan all): record campuran publik + internal adalah bypass klasik
+    karena ``requests`` bebas memakai alamat mana pun yang resolve duluan.
+    """
     try:
         addr = ipaddress.ip_address(host.strip("[]"))
         return _addr_is_internal(addr)
@@ -1347,7 +1397,7 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
-    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+    return any(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
 
 
 def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
@@ -1655,6 +1705,7 @@ def _fetch_with_network_routes(url: str) -> str | None:
                 proxies=network_routes.proxies(str(route["proxy_url"])),
                 timeout=WEB_TIMEOUT,
                 allow_redirects=True,
+                hooks={"response": [_SSRFSafeRedirectHook()]},
                 stream=True,
             )
             chunks: list[bytes] = []
@@ -1714,6 +1765,7 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
             headers={"User-Agent": _UA},
             timeout=WEB_TIMEOUT,
             allow_redirects=True,
+            hooks={"response": [_SSRFSafeRedirectHook()]},
             stream=True,
         )
         if response.ok:
