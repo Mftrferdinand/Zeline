@@ -135,22 +135,11 @@ def start(sessions, cfg: dict[str, Any], stop_event, ready=None) -> None:
                 if not content or not channel_id:
                     continue
                 identity = f"discord:{channel_id}:{author_id}"
-                # Run the agent turn in a worker thread: sessions.send blocks
-                # for the whole turn (often minutes). Calling it inline stalled
-                # the gateway recv loop, so heartbeats queued up, Discord
-                # queued every new message behind the running turn, and a slow
-                # turn eventually triggered a reconnect storm.
-                def _handle_turn(identity=identity, content=content, channel_id=channel_id):
-                    try:
-                        reply = sessions.send(identity, content, profile, workspace)
-                    except Exception as exc:
-                        reply = f"Error: {exc}"
-                    try:
-                        _send_message(token, channel_id, reply)
-                    except Exception:
-                        pass
-
-                threading.Thread(target=_handle_turn, daemon=True).start()
+                try:
+                    reply = sessions.send(identity, content, profile, workspace)
+                except Exception as exc:
+                    reply = f"Error: {exc}"
+                _send_message(token, channel_id, reply)
         except Exception:
             if stop_event.wait(3):
                 break

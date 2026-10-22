@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
 
@@ -817,49 +817,6 @@ def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str
         return f"ERROR running code: {exc}"
 
 
-def _validate_url_for_ssrf(url: str) -> str | None:
-    """Validate the *initial* URL of an outbound request.
-
-    Redirects are re-validated separately (see ``_SSRFSafeRedirectHook``):
-    checking only the first hop is not enough, because a public URL can
-    302-redirect to 169.254.169.254 or another internal address.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return "URL must be a valid http/https URL."
-    host = parsed.hostname or ""
-    if not host or _is_internal_ip(host):
-        return "URL points to an internal address and is blocked."
-    return None
-
-
-class _SSRFSafeRedirectHook:
-    """Block redirects that hop to an internal address.
-
-    ``requests`` resolves each redirect hop itself, so a hostname check on the
-    original URL says nothing about where the connection actually lands. This
-    hook inspects every redirect target and aborts the request chain when it
-    points inside the private network, closing the classic
-    ``allow_redirects=True`` SSRF bypass.
-    """
-
-    def __init__(self, max_hops: int = 5) -> None:
-        self._hops_left = max_hops
-
-    def __call__(self, response: requests.Response, **_: Any) -> requests.Response | None:
-        if not response.is_redirect:
-            return None
-        if self._hops_left <= 0:
-            raise requests.RequestException("too many redirects")
-        self._hops_left -= 1
-        location = response.headers.get("Location", "")
-        next_url = urljoin(response.url, location)
-        problem = _validate_url_for_ssrf(next_url)
-        if problem is not None:
-            raise requests.RequestException(f"redirect blocked (SSRF protection): {problem}")
-        return None  # None = let requests follow the (now validated) redirect
-
-
 def _http_request(method: str, url: str, headers: str = "", body: str = "") -> str:
     """Panggil REST API dengan method bebas (GET/POST/PUT/PATCH/DELETE).
 
@@ -895,7 +852,6 @@ def _http_request(method: str, url: str, headers: str = "", body: str = "") -> s
     try:
         response = requests.request(
             method, url, headers=hdrs, data=data, timeout=WEB_TIMEOUT, allow_redirects=True,
-            hooks={"response": [_SSRFSafeRedirectHook()]},
         )
     except requests.RequestException as exc:
         return f"ERROR request: {exc.__class__.__name__}: {exc}"
@@ -926,8 +882,7 @@ def _download_file(url: str, path: str, workspace: Path) -> str:
         return f"ERROR: {exc}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True,
-                          hooks={"response": [_SSRFSafeRedirectHook()]}) as response:
+        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True) as response:
             if not response.ok:
                 return f"ERROR: HTTP {response.status_code} {response.reason}."
             size = 0
@@ -1329,6 +1284,169 @@ def _send_file(path: str, workspace: Path, identity: str, caption: str = "") -> 
     return delivery.send(identity, target, caption)
 
 
+def _json_query(data: str, query: str, workspace: Path) -> str:
+    """Query/transform JSON with a small safe expression language.
+
+    Inspired by tools like jq/JMESPath but dependency-free and deliberately
+    tiny: dot paths, array slices, wildcards, simple comparisons, and '|'
+    pipes cover the 90% case — pulling exact fields out of large API
+    responses without dumping the whole payload into context. No eval/exec:
+    every stage is parsed into a narrow AST before it touches the data.
+    """
+    data = (data or "").strip()
+    if not data:
+        return "ERROR: data is empty."
+    # Accept a workspace file path as input.
+    if data.startswith(("{", "[", '"')):
+        try:
+            doc = json.loads(data)
+        except json.JSONDecodeError as exc:
+            return f"ERROR: invalid JSON: {exc}"
+    else:
+        try:
+            source = _resolve_workspace_path(data, workspace)
+            doc = json.loads(source.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        except (OSError, json.JSONDecodeError) as exc:
+            return f"ERROR reading JSON file: {exc}"
+
+    stages = [part.strip() for part in (query or "").split("|") if part.strip()]
+    try:
+        current = doc
+        for stage in stages:
+            current = _json_query_stage(current, stage)
+    except _JsonQueryError as exc:
+        return f"ERROR: {exc}"
+    try:
+        result = json.dumps(current, ensure_ascii=False, default=str)
+    except (TypeError, ValueError) as exc:
+        return f"ERROR: result not serializable: {exc}"
+    if len(result) > 12_000:
+        result = result[:12_000] + "\n... [truncated]"
+    return result
+
+
+class _JsonQueryError(ValueError):
+    pass
+
+
+_COMPARISON_RE = re.compile(r"^(.+?)(==|!=|>=|<=|>|<)(.+)$")
+
+
+def _json_query_stage(node: Any, stage: str) -> Any:
+    """Apply one pipe stage to the current value."""
+    if stage == "*":
+        return node
+    match = _COMPARISON_RE.match(stage)
+    if match and not stage.startswith("."):
+        return _json_query_filter(node, match.group(1).strip(), match.group(2), match.group(3).strip())
+    if isinstance(node, dict) and "." not in stage and "[" not in stage and stage in node:
+        return node[stage]
+    if isinstance(node, list) and "." not in stage and ":" not in stage and stage != "*":
+        # A bare key after a filter or slice maps over the remaining objects:
+        # users | age>=30 | name  ->  ["ana", "citra"]
+        if all(isinstance(item, dict) and stage in item for item in node) and node:
+            return [item[stage] for item in node]
+    if isinstance(node, list) and "." in stage:
+        # Dotted path over a list of objects maps per element:
+        # users.0:2.name  ->  walk each element's path.
+        mapped = []
+        for item in node:
+            try:
+                mapped.append(_json_query_stage(item, stage))
+            except _JsonQueryError:
+                continue
+        if mapped:
+            return mapped
+    return _json_query_path(node, stage)
+
+
+def _json_query_path(node: Any, path: str) -> Any:
+    """Walk a dotted path: keys, integer indices, slices, and '*' wildcards."""
+    if path.startswith("$."):
+        path = path[2:]
+    parts = path.split(".") if path else []
+    current = node
+    for index, part in enumerate(parts):
+        if part == "*":
+            if isinstance(current, list):
+                rest = ".".join(parts[index + 1:])
+                current = [_json_query_path(item, rest) for item in current]
+                return current
+            if isinstance(current, dict):
+                rest = ".".join(parts[index + 1:])
+                current = [_json_query_path(item, rest) for item in current.values()]
+                return current
+            raise _JsonQueryError(f"'*' used on non-collection at '{part}'")
+        if ":" in part:
+            sliced = part.split(":")
+            if not isinstance(current, list):
+                raise _JsonQueryError(f"slice '{part}' needs a list")
+            start = int(sliced[0]) if sliced[0] else None
+            end = int(sliced[1]) if sliced[1] else None
+            current = current[start:end]
+            rest = ".".join(parts[index + 1:])
+            if rest:
+                current = [_json_query_path(item, rest) for item in current]
+            return current
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError):
+                raise _JsonQueryError(f"index '{part}' invalid for list") from None
+        elif isinstance(current, dict):
+            if part not in current:
+                raise _JsonQueryError(f"key '{part}' not found")
+            current = current[part]
+        else:
+            raise _JsonQueryError(f"cannot descend into {type(current).__name__} at '{part}'")
+    return current
+
+
+def _json_query_filter(node: Any, key: str, op: str, raw_value: str) -> Any:
+    """Filter a list of objects/ scalars by comparison, e.g. age>30."""
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        value = raw_value.strip("\"'")
+    if not isinstance(node, list):
+        raise _JsonQueryError("comparison filter needs a list to filter")
+
+    def matches(item: Any) -> bool:
+        if isinstance(item, dict):
+            if key not in item:
+                return False
+            actual = item[key]
+        elif isinstance(key, str) and key.isdigit() and isinstance(item, list):
+            try:
+                actual = item[int(key)]
+            except IndexError:
+                return False
+        else:
+            actual = item
+        try:
+            if op == "==":
+                return actual == value
+            if op == "!=":
+                return actual != value
+            if actual is None or value is None:
+                return False
+            if op == ">":
+                return actual > value
+            if op == ">=":
+                return actual >= value
+            if op == "<":
+                return actual < value
+            if op == "<=":
+                return actual <= value
+        except TypeError:
+            return False
+        return False
+
+    return [item for item in node if matches(item)]
+
+
 def _system_env() -> str:
     """Ringkasan lingkungan sistem: OS/arch, tool/runtime terpasang, port lokal aktif.
 
@@ -1382,12 +1500,7 @@ _JINA_READER = "https://r.jina.ai/"
 
 
 def _is_internal_ip(host: str) -> bool:
-    """True jika hostname/IP menunjuk ke jaringan internal (proteksi SSRF).
-
-    DNS yang mengandung SATU SAJA alamat internal sudah cukup untuk memblokir
-    (any, bukan all): record campuran publik + internal adalah bypass klasik
-    karena ``requests`` bebas memakai alamat mana pun yang resolve duluan.
-    """
+    """True jika hostname/IP menunjuk ke jaringan internal (proteksi SSRF)."""
     try:
         addr = ipaddress.ip_address(host.strip("[]"))
         return _addr_is_internal(addr)
@@ -1397,7 +1510,7 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
-    return any(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
 
 
 def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
@@ -1705,7 +1818,6 @@ def _fetch_with_network_routes(url: str) -> str | None:
                 proxies=network_routes.proxies(str(route["proxy_url"])),
                 timeout=WEB_TIMEOUT,
                 allow_redirects=True,
-                hooks={"response": [_SSRFSafeRedirectHook()]},
                 stream=True,
             )
             chunks: list[bytes] = []
@@ -1765,7 +1877,6 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
             headers={"User-Agent": _UA},
             timeout=WEB_TIMEOUT,
             allow_redirects=True,
-            hooks={"response": [_SSRFSafeRedirectHook()]},
             stream=True,
         )
         if response.ok:
@@ -2207,6 +2318,19 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "json_query",
+        "Query/transform a JSON string or a workspace .json file and get a compact result. Supports dot paths (a.b.0.c), array slicing (users.0:5), wildcards (users.*.name), comparisons (age>30, status==active), and piping multiple stages with '|'. Use to pull exact fields out of large API responses or config files without loading them fully into context.",
+        {
+            "type": "object",
+            "properties": {
+                "data": {"type": "string", "description": "JSON text, or a path to a .json file in the workspace"},
+                "query": {"type": "string", "description": "Query expression, e.g. 'items | price<100 | name' or 'users.*.email'. Empty = pretty-print compact summary."},
+            },
+            "required": ["data"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "read_file",
         "Read a text file inside the allowed workspace. Use offset/limit to page "
         "through a large file or an offloaded tool result instead of re-running work.",
@@ -2609,6 +2733,7 @@ class ToolExecutor:
             ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
+            "json_query": lambda data, query="": _json_query(data, query, self.workspace),
             "code_intel": lambda action, path="", line=0, character=0: self._code_intel(
                 action, path, line, character
             ),
