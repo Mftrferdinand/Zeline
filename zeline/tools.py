@@ -36,6 +36,8 @@ import requests
 
 from zeline import config
 from zeline import compaction
+from zeline import data_tools
+from zeline import diff_tools
 from zeline import hash_tools
 from zeline import memory
 from zeline import offload
@@ -2249,6 +2251,37 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "data_convert",
+        "Convert a workspace data file between JSON, CSV, YAML, and TOML (format detected from the file extension), or validate its syntax. Optional output_path writes the result into the workspace.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Input file relative to the workspace; format comes from its extension (.json/.csv/.yaml/.yml/.toml)"},
+                "to_format": {"type": "string", "enum": ["json", "csv", "yaml", "toml"], "description": "Target format, default json"},
+                "output_path": {"type": "string", "description": "Optional workspace path to write the converted result to; omit to return it inline"},
+                "validate_only": {"type": "boolean", "description": "Only check that the file parses; report the exact error location when it does not"},
+            },
+            "required": ["path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "diff_text",
+        "Unified diff between two workspace files (path_a, path_b) or two inline texts (text_a, text_b). Use it to show an exact change instead of describing it.",
+        {
+            "type": "object",
+            "properties": {
+                "path_a": {"type": "string", "description": "Left side: workspace file path"},
+                "path_b": {"type": "string", "description": "Right side: workspace file path"},
+                "text_a": {"type": "string", "description": "Left side: inline text (used when path_a is omitted)"},
+                "text_b": {"type": "string", "description": "Right side: inline text (used when path_b is omitted)"},
+                "label_a": {"type": "string", "description": "Header label for the left side, default a"},
+                "label_b": {"type": "string", "description": "Header label for the right side, default b"},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "undo_file",
         (
             "Put a workspace file back to the content it had before you wrote to "
@@ -2595,6 +2628,11 @@ class ToolExecutor:
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
             "hash_check": lambda path, algorithm="sha256", expected="": hash_tools._hash_check(
                 path, self.workspace, algorithm=algorithm, expected=expected),
+            "data_convert": lambda path, to_format="json", output_path="", validate_only=False: data_tools._data_convert(
+                path, self.workspace, to_format=to_format, output_path=output_path, validate_only=validate_only),
+            "diff_text": lambda path_a="", path_b="", text_a="", text_b="", label_a="a", label_b="b": diff_tools._diff_text(
+                path_a=path_a, path_b=path_b, workspace=self.workspace,
+                text_a=text_a, text_b=text_b, label_a=label_a, label_b=label_b),
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
             ),

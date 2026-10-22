@@ -415,6 +415,18 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if arguments.get("expected"):
             return f"🔐 Verifying {algo} checksum: <code>{path}</code>"
         return f"🔐 Hashing file ({algo}): <code>{path}</code>"
+    if name == "data_convert":
+        path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
+        if arguments.get("validate_only"):
+            return f"🧪 Validating data file: <code>{path}</code>"
+        target = str(arguments.get("to_format", "json")).strip().lower() or "json"
+        return f"🔄 Converting <code>{path}</code> to {target}…"
+    if name == "diff_text":
+        if arguments.get("path_a") and arguments.get("path_b"):
+            a = html.escape(_short_path(str(arguments.get("path_a", "")))[:80], quote=False)
+            b = html.escape(_short_path(str(arguments.get("path_b", "")))[:80], quote=False)
+            return f"⚖️ Diffing <code>{a}</code> vs <code>{b}</code>…"
+        return "⚖️ Diffing texts…"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
     if name == "read_file":
         # Zeline read_file membaca seluruh file (tanpa offset/limit); rentang
