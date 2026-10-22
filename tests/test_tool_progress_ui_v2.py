@@ -43,6 +43,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "search_files": {"query": "handler"},
             "download_file": {"url": "https://example.com/app.zip", "path": "app.zip"},
             "undo_file": {"action": "list"},
+            "diff_files": {"path_a": "draft.md", "path_b": "final.md"},
             "update_task": {"task": "Test UI", "status": "in_progress"},
             "manage_skill": {"action": "list"},
             "resolve_lesson": {"tool": "read_file"},
