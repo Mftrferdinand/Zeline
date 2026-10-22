@@ -5,6 +5,8 @@ A load is not a successful task. Unknown/cancelled outcomes do not improve score
 """
 from __future__ import annotations
 
+from zeline.command_ui import emit as print
+
 from contextlib import closing, contextmanager
 import hashlib
 import json

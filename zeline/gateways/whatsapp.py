@@ -10,6 +10,8 @@ Dua sisi localhost memakai token acak per runtime. Pesan outgoing diabaikan
 """
 from __future__ import annotations
 
+from zeline.command_ui import emit as print, raw_print
+
 import hmac
 import json
 import os
@@ -351,8 +353,8 @@ def start(sessions, cfg: dict[str, Any], stop_event) -> None:
         if process.stdout is None:
             return
         for line in process.stdout:
-            sys.stdout.write("  [wa-bridge] " + line.decode(errors="replace"))
-            sys.stdout.flush()
+            # Preserve QR geometry; never wrap or recolour bridge output.
+            raw_print("  [wa-bridge] " + line.decode(errors="replace"), end="", flush=True)
 
     threading.Thread(target=pump_output, daemon=True).start()
     print("  [whatsapp] bridge start; scan QR yang tampil di terminal", flush=True)

@@ -15,6 +15,8 @@ reverse proxy/tunnel yang HTTPS di depannya dan gunakan token yang kuat.
 """
 from __future__ import annotations
 
+from zeline.command_ui import emit as print
+
 import hmac
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

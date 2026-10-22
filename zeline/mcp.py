@@ -33,8 +33,10 @@ import requests
 from zeline import __version__
 
 MCP_TOOL_PREFIX = "mcp__"
-_RPC_TIMEOUT = 30
-_INIT_TIMEOUT = 20
+_RPC_TIMEOUT = 12
+_INIT_TIMEOUT = 5
+# Total wall-clock budget for listing tools across ALL MCP servers.
+_DISCOVERY_DEADLINE = 6.0
 PROTOCOL_VERSION = "2024-11-05"
 
 
@@ -334,15 +336,41 @@ class MCPRegistry:
         return cls(servers)
 
     def schemas(self) -> list[dict[str, Any]]:
-        """Semua tool dari semua server (cached). Server error dilewati."""
+        """Tools from every server (cached). A slow or dead server is skipped.
+
+        Discovery used to run sequentially, so one unreachable server added its
+        whole timeout to every first turn. Now each server is probed in its own
+        thread under one shared deadline: total wait is bounded by the deadline,
+        not by the number of broken servers.
+        """
         if self._tool_cache is not None:
             return self._tool_cache
         collected: list[dict[str, Any]] = []
-        for name, server in self.servers.items():
+        if not self.servers:
+            self._tool_cache = collected
+            return collected
+
+        results: dict[str, list[dict[str, Any]]] = {}
+
+        def probe(name: str, server: Any) -> None:
             try:
-                collected.extend(server.list_tools())
-            except Exception as exc:
+                results[name] = list(server.list_tools())
+            except Exception as exc:  # noqa: BLE001 - reported, never raised
                 self._errors[name] = f"{exc.__class__.__name__}: {exc}"
+
+        threads = [
+            threading.Thread(target=probe, args=(name, server), daemon=True)
+            for name, server in self.servers.items()
+        ]
+        for thread in threads:
+            thread.start()
+        deadline = time.monotonic() + _DISCOVERY_DEADLINE
+        for name, thread in zip(self.servers, threads):
+            thread.join(max(0.0, deadline - time.monotonic()))
+            if thread.is_alive():
+                self._errors[name] = "TimeoutError: discovery deadline exceeded"
+        for name in self.servers:
+            collected.extend(results.get(name, []))
         self._tool_cache = collected
         return collected
 

@@ -28,10 +28,14 @@ classifiers = [
   "Topic :: Communications :: Chat",
 ]
 dependencies = [
-  "requests[socks]>=2.28",
-  "PyYAML>=6.0",
-  "pypdf>=4.0",
-  "tzdata>=2024.1",
+    "requests[socks]>=2.28",
+    "PyYAML>=6.0",
+    "pypdf>=4.0",
+    "tzdata>=2024.1",
+    # Local chat UI: Markdown/code rendering and the multiline composer.
+    # Both degrade to plain output when unavailable, so the CLI never hard-fails.
+    "rich>=13.9",
+    "prompt-toolkit>=3.0.48",
 ]
 
 [project.optional-dependencies]

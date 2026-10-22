@@ -13,6 +13,8 @@ sebagai plugin tanpa mengubah agent core.
 """
 from __future__ import annotations
 
+from zeline.command_ui import emit as print
+
 import threading
 import traceback
 from dataclasses import dataclass

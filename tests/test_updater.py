@@ -131,6 +131,7 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
         service = mock.MagicMock()
         module = _stub_gateway_service(active=True, state=state, recorder=service)
         with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+             mock.patch.object(importlib.import_module("zeline"), "gateway_service", module, create=True), \
              mock.patch.object(self.updater, "_checkout_root", return_value=Path("/tmp/zl")), \
              mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(self.updater, "_run_installer", return_value=0):
@@ -155,6 +156,7 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
         service = mock.MagicMock()
         module = _stub_gateway_service(active=False, recorder=service)
         with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+             mock.patch.object(importlib.import_module("zeline"), "gateway_service", module, create=True), \
              mock.patch.object(self.updater, "_checkout_root", return_value=Path("/tmp/zl")), \
              mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(self.updater, "_run_installer", return_value=0):
@@ -175,6 +177,7 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
         module.drain_then_stop = lambda: (calls.append("stop") or (True, "stopped"))
         module.start = lambda only=None: (calls.append(f"start:{only}") or (True, "started"))
         with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+             mock.patch.object(importlib.import_module("zeline"), "gateway_service", module, create=True), \
              mock.patch.object(self.updater, "_checkout_root", return_value=Path("/tmp/zl")), \
              mock.patch.object(Path, "is_file", return_value=True), \
              mock.patch.object(self.updater, "_run_installer", return_value=0):
@@ -188,8 +191,49 @@ class GatewaySelectionAcrossUpdateTests(unittest.TestCase):
             active=True, state={"pid": 9, "only": ["telegram"]}, recorder=service
         )
         with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+             mock.patch.object(importlib.import_module("zeline"), "gateway_service", module, create=True), \
              mock.patch.object(self.updater, "_checkout_root", return_value=None), \
              mock.patch.object(self.updater, "_latest_tag", side_effect=RuntimeError("offline")):
+            code = self.updater.update()
+        self.assertEqual(code, 1)
+        service.start.assert_called_once_with(["telegram"])
+
+
+    def test_malformed_checksum_manifest_restores_gateway(self):
+        service = mock.MagicMock()
+        module = _stub_gateway_service(
+            active=True, state={"pid": 9, "only": ["telegram"]}, recorder=service
+        )
+        installer_name = self.updater._installer_name()
+
+        def fake_get(url, accept=""):
+            if url.endswith("SHA256SUMS"):
+                return b"not a checksum manifest"
+            if url.endswith(installer_name):
+                return b"installer"
+            raise AssertionError(url)
+
+        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+             mock.patch.object(importlib.import_module("zeline"), "gateway_service", module, create=True), \
+             mock.patch.object(self.updater, "_checkout_root", return_value=None), \
+             mock.patch.object(self.updater, "_latest_tag", return_value="v9.9.9"), \
+             mock.patch.object(self.updater, "_https_get", side_effect=fake_get), \
+             mock.patch.object(self.updater, "_run_installer") as run:
+            code = self.updater.update()
+        self.assertEqual(code, 1)
+        run.assert_not_called()
+        service.start.assert_called_once_with(["telegram"])
+
+    def test_installer_launch_failure_restores_gateway(self):
+        service = mock.MagicMock()
+        module = _stub_gateway_service(
+            active=True, state={"pid": 9, "only": ["telegram"]}, recorder=service
+        )
+        with mock.patch.dict(sys.modules, {"zeline.gateway_service": module}), \
+             mock.patch.object(importlib.import_module("zeline"), "gateway_service", module, create=True), \
+             mock.patch.object(self.updater, "_checkout_root", return_value=Path("/tmp/zl")), \
+             mock.patch.object(Path, "is_file", return_value=True), \
+             mock.patch.object(self.updater, "_run_installer", side_effect=FileNotFoundError("bash")):
             code = self.updater.update()
         self.assertEqual(code, 1)
         service.start.assert_called_once_with(["telegram"])

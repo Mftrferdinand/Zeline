@@ -6,6 +6,8 @@ Setiap chat mendapat identity ``telegram:<chat_id>`` sendiri sehingga history
 """
 from __future__ import annotations
 
+from zeline.command_ui import emit as print
+
 import io
 import html
 import json

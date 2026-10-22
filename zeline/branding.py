@@ -27,13 +27,60 @@ WORDMARK_FULL = (
 )
 FULL_WIDTH = 45
 
+# Compact ASCII wordmark for narrow screens (Termux, split panes). Pure ASCII so
+# it survives a cp1252 console, 4 rows so it fits a phone without scrolling.
 WORDMARK_COMPACT = (
-    ' _______ _    ___ _  _ ___ ',
-    '|_  / __| |  |_ _| \\| | __|',
-    ' / /| _|| |__ | || .` | _| ',
-    '/___|___|____|___|_|\\_|___|',
+    '  ____  _____ _     ___ _   _ _____ ',
+    ' |_  / | ____| |   |_ _| \\ | | ____|',
+    '  / /  |  _| | |    | ||  \\| |  _|  ',
+    ' /___| |_____|_____|___|_| \\_|_____|',
 )
-COMPACT_WIDTH = 27
+COMPACT_WIDTH = 36
+
+
+WORDMARK_AGENTIC = (
+    ' █████╗  ██████╗ ███████╗███╗   ██╗████████╗██╗ ██████╗    █████╗ ██╗',
+    '██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝██║██╔════╝   ██╔══██╗██║',
+    '███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ██║██║        ███████║██║',
+    '██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ██║██║        ██╔══██║██║',
+    '██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ██║╚██████╗   ██║  ██║██║',
+    '╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝ ╚═════╝   ╚═╝  ╚═╝╚═╝',
+)
+AGENTIC_WIDTH = 69
+
+# The one-line mark: 'ZELINE AGENTIC AI' in the small shadow font.
+# Three rows so the whole lockup reads as a single block of text.
+# Narrow fallback: the same lockup split over two stacked lines so a
+# phone panel keeps every glyph instead of clipping the art.
+
+# Same lockup at a 69-col budget: one line of text, four rows of art,
+# used when the panel cannot fit the 74-col original.
+TITLE_ONELINE = 'Z E L I N E   A G E N T I C   A I'
+TITLE_ONELINE_WIDTH = 33
+
+# Full block lockup: the original 6-row ZELINE glyph set, extended to the
+# whole phrase so it reads as one wordmark on a wide terminal.
+# Full 6-row block lockup. ZELINE sits on top and AGENTIC AI underneath,
+# each word rendered one line wide in the original glyph set.
+# 6-row block lockup: ZELINE over AGENTIC AI, both centred inside one
+# shared width so the two blocks share a clean vertical axis.
+# 6-row block logotype. ZELINE is letter-spaced to the exact width of
+# AGENTIC AI so both lines form one rectangle, centred.
+# 6-row block logotype. Both lines occupy the same 68-col box: ZELINE is
+# letter-spaced to match AGENTIC AI so the lockup forms one rectangle.
+# 6-row block lockup, no letter-spacing: ZELINE on top, AGENTIC AI
+# below, both centred on shared width so the pair reads as one mark.
+# The approved lockup: ZELINE in 6-row block art, with AGENTIC AI as a
+# single wordmark line beneath it (rendered by cli_ui).
+WORDMARK_TITLE = (
+    '███████╗███████╗██╗     ██╗███╗   ██╗███████╗',
+    '╚══███╔╝██╔════╝██║     ██║████╗  ██║██╔════╝',
+    '  ███╔╝ █████╗  ██║     ██║██╔██╗ ██║█████╗  ',
+    ' ███╔╝  ██╔══╝  ██║     ██║██║╚██╗██║██╔══╝  ',
+    '███████╗███████╗███████╗██║██║ ╚████║███████╗',
+    '╚══════╝╚══════╝╚══════╝╚═╝╚═╝  ╚═══╝╚══════╝',
+)
+TITLE_WIDTH = 45
 
 CREDIT = "AGENTIC AI BY ZEROLINEAR"
 

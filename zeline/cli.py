@@ -44,6 +44,7 @@ from zeline import delivery
 from zeline import interaction
 from zeline import project_rules
 from zeline.sessions import SessionStore
+from zeline.command_ui import CommandArgumentParser, current_screen, emit as print, menu_frame, menu_label, present_command, raw_print, read_input as input
 
 
 def _terminal_color_enabled() -> bool:
@@ -78,13 +79,148 @@ def _label(text: str) -> str:
     return _paint(text, COLOR_BLUE)
 
 
+def _tool_count() -> int:
+    """How many tools this profile exposes — a dashboard number, never a guess."""
+    try:
+        from zeline import tools as tools_module
+
+        executor = tools_module.ToolExecutor(
+            "cli:local", config.CLI_TOOL_PROFILE, _workspace_for_display()
+        )
+        return len(executor.all_schemas)
+    except Exception:
+        return 0
+
+
+def _skill_count() -> int:
+    """Bundled + private skills discovered on disk (dashboard number)."""
+    try:
+        from zeline.skills import list_skills
+
+        return len(list_skills())
+    except Exception:
+        return 0
+
+
+def _tool_lines(limit: int = 6) -> list[str]:
+    """Group the active profile's tools into display lines for the banner."""
+    try:
+        from zeline import tools as tools_module
+
+        executor = tools_module.ToolExecutor(
+            "cli:local", config.CLI_TOOL_PROFILE, _workspace_for_display()
+        )
+        names = sorted(
+            str((schema.get("function") or {}).get("name", "")) for schema in executor.all_schemas
+        )
+        names = [name for name in names if name]
+    except Exception:
+        return []
+    lines, current = [], ""
+    for name in names:
+        candidate = f"{current}, {name}" if current else name
+        if len(candidate) > 46:
+            lines.append(current)
+            current = name
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines[:limit]
+
+
+def _skill_lines(limit: int = 4) -> list[str]:
+    """Skill categories with counts, e.g. ``engineering (12)``."""
+    try:
+        from zeline.skills import list_skills
+
+        entries = list_skills()
+    except Exception:
+        return []
+    counts: dict[str, int] = {}
+    for entry in entries:
+        # list_skills() yields (name, title, description) tuples; derive a
+        # category from the leading word of the skill name.
+        name = str(entry[0]) if isinstance(entry, (tuple, list)) and entry else str(entry)
+        category = _category_of(name)
+        counts[category] = counts.get(category, 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [f"{category} ({count})" for category, count in ordered[:limit]]
+
+
+def _category_of(name: str) -> str:
+    return name.split("-")[0] if "-" in name else "general"
+
+
+def _short_config_path() -> str:
+    """Config path with $HOME collapsed, so the table stays readable."""
+    try:
+        return str(Path(getattr(config, "CONFIG_FILE", "")).expanduser()).replace(
+            str(Path.home()), "~", 1
+        )
+    except Exception:
+        return ""
+
+
+def _runtime_lines() -> list[str]:
+    """Facts an operator actually needs before typing: limits and fallbacks."""
+    stored = config.stored_config_copy()
+    agent = stored.get("agent") or {}
+    tools_cfg = stored.get("tools") or {}
+    out: list[str] = []
+    rounds = agent.get("max_tool_rounds")
+    if rounds:
+        out.append(f"tool rounds/turn: {rounds}")
+    if tools_cfg.get("max_parallel_subagents"):
+        out.append(f"parallel subagents: {tools_cfg['max_parallel_subagents']}")
+    fallback = agent.get("fallback_model")
+    if fallback:
+        out.append(f"fallback: {str(fallback).split('/')[-1]}")
+    if agent.get("max_sessions"):
+        out.append(f"sessions kept: {agent['max_sessions']}")
+    return out
+
+
+def _session_lines() -> list[str]:
+    """Live reach: gateways enabled, MCP tools, provider endpoint."""
+    stored = config.stored_config_copy()
+    out: list[str] = []
+    enabled = [
+        name for name, spec in (stored.get("gateways") or {}).items()
+        if isinstance(spec, dict) and spec.get("enabled")
+    ]
+    if enabled:
+        out.append(f"gateways on: {', '.join(sorted(enabled))}")
+    try:
+        endpoint = config.BASE_URL.split("/")[2]
+        out.append(f"endpoint: {endpoint}")
+    except Exception:
+        pass
+    return out
+
+
+def _workspace_for_display() -> str:
+    """Current directory for the dashboard, without ever crashing the REPL.
+
+    ``Path.cwd()`` raises FileNotFoundError when the shell's directory was
+    removed (a deleted checkout, an unmounted path). The dashboard is cosmetic,
+    so a missing cwd must degrade to a readable placeholder instead of killing
+    ``zeline chat`` with a traceback.
+    """
+    try:
+        return str(Path.cwd())
+    except OSError:
+        return "(directory unavailable)"
+
+
 def _print_banner() -> None:
     """Render the shared Zeline wordmark (full block art, or compact ASCII).
 
     Delegates to zeline.branding so the CLI, installer, and every screen show
     one identity. Auto-detects colour, unicode capability, and terminal width.
     """
-    print(branding.banner(__version__))
+    if current_screen() is None:
+        print(branding.banner(__version__))
 
 
 def _provider_display() -> str:
@@ -129,6 +265,9 @@ def _read_secret_key() -> str:
 
 def _masked_secret_input(prompt: str) -> str:
     """Read a secret while rendering one star per character."""
+    screen = current_screen()
+    if screen is not None:
+        screen.close()
     return read_secret(prompt)
 
 
@@ -276,7 +415,7 @@ def _select_gateway() -> str:
             while True:
                 for index, (_value, label) in enumerate(GATEWAY_OPTIONS):
                     cursor = _paint(chevron, COLOR_BLUE) if index == selected else " "
-                    print(f"\r\033[K  {cursor} {bullet} {label}")
+                    raw_print(f"\r\033[K  {cursor} {bullet} {label}")
                 key = _read_menu_key()
                 if key == "up":
                     selected = (selected - 1) % len(GATEWAY_OPTIONS)
@@ -284,7 +423,7 @@ def _select_gateway() -> str:
                     selected = (selected + 1) % len(GATEWAY_OPTIONS)
                 elif key == "enter":
                     return GATEWAY_OPTIONS[selected][0]
-                print(f"\033[{len(GATEWAY_OPTIONS)}A", end="", flush=True)
+                raw_print(f"\033[{len(GATEWAY_OPTIONS)}A", end="", flush=True)
         finally:
             print()
 
@@ -745,10 +884,12 @@ def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
     """
     if not options:
         return -1
+    display_options = [menu_label(option) for option in options]
+    title = menu_label(title)
     bullet = branding.marker()
     if not sys.stdin.isatty():
         print(title)
-        for index, label in enumerate(options, 1):
+        for index, label in enumerate(display_options, 1):
             print(f"  {index}. {bullet} {label}")
         while True:
             answer = input(f"Choice [1-{len(options)}] (empty = cancel): ").strip()
@@ -759,14 +900,24 @@ def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
             print("  Invalid choice.")
 
     selected = max(0, min(start, len(options) - 1))
-    chevron = branding.prompt_glyph()
-    print(title + "  (\u2191/\u2193 then Enter, Esc = cancel)")
+    screen = current_screen()
+    if screen is not None:
+        screen.close()  # Finish normal-output panels BEFORE raw mode disables OPOST.
+    try:
+        height = os.get_terminal_size(sys.stdout.fileno()).lines
+    except (AttributeError, OSError, ValueError):
+        height = 24
+    limit = max(1, min(8, height - 7))
+    previous_height = 0
     with raw_mode():
         try:
             while True:
-                for index, label in enumerate(options):
-                    cursor = _paint(chevron, COLOR_BLUE) if index == selected else " "
-                    print(f"\r\033[K  {cursor} {bullet} {label}")
+                rows = menu_frame(title, display_options, selected, limit=limit)
+                rewind = f"\033[{previous_height}A" if previous_height else ""
+                # setraw disables newline translation. Bare LF causes the
+                # staircase borders seen on Termux, so write explicit CRLF.
+                raw_print("\r" + rewind + "\r\n".join(rows) + "\r\n", end="", flush=True)
+                previous_height = len(rows)
                 key = _read_menu_key()
                 if key == "up":
                     selected = (selected - 1) % len(options)
@@ -776,9 +927,8 @@ def _arrow_menu(title: str, options: list[str], *, start: int = 0) -> int:
                     return selected
                 elif key == "cancel":
                     return -1
-                print(f"\033[{len(options)}A", end="", flush=True)
         finally:
-            print()
+            raw_print("\r", end="", flush=True)
 
 
 def cmd_model() -> int:
@@ -788,18 +938,33 @@ def cmd_model() -> int:
         return 2
     cfg = config.stored_config_copy()
     while True:
-        # Action menu (rows get the [•] bullet from _arrow_menu).
+        screen = current_screen()
+        if screen is not None:
+            from urllib.parse import urlsplit
+            provider = cfg.get("provider", {})
+            try:
+                url = urlsplit(str(provider.get("base_url", "")))
+                endpoint = url.hostname or "not configured"
+                if url.port:
+                    endpoint += f":{url.port}"
+            except ValueError:
+                endpoint = "invalid endpoint"
+            screen.facts("Active configuration", [
+                ("Provider", str(provider.get("name") or "not configured")),
+                ("Model", str(provider.get("model") or "not configured")),
+                ("Endpoint", endpoint),
+                ("Saved providers", str(len(cfg.get("providers", {})))),
+            ])
         rows = [
-            "Add url provider",
+            "Add provider / model",
             "Remove provider",
-            "View provider",
-            "Cancel",
+            "View providers",
+            "Back",
         ]
         idx_add, idx_remove, idx_view, idx_cancel = 0, 1, 2, 3
 
         choice = _arrow_menu("Provider & model:", rows)
         if choice == -1 or choice == idx_cancel:
-            print("Done.")
             return 0
         if choice == idx_add:
             _model_add_provider(cfg)
@@ -836,30 +1001,49 @@ def cmd_chat(query: str | None = None) -> int:
     if not config.API_KEY:
         print("[!] API key is empty. Run: zeline setup")
         return 2
-    _print_banner()
-    _print_session_header()
+    # The UI owns the banner: it prints the wordmark and the dashboard as one
+    # block. Calling _print_banner() here too would draw the wordmark twice.
+    from zeline.cli_input import ChatInput
+    from zeline.cli_ui import ChatUI
+
+    ui = ChatUI()
+    ui.welcome(
+        version=__version__,
+        agent=config.NAME,
+        model=config.MODEL,
+        provider=_provider_display(),
+        workspace=_workspace_for_display(),
+        tool_profile=config.CLI_TOOL_PROFILE,
+        tools=_tool_count(),
+        skills=_skill_count(),
+        memory=True,
+        clock=time.strftime("%H:%M"),
+        config_path=_short_config_path(),
+        tool_lines=_tool_lines(),
+        skill_lines=_skill_lines(),
+        runtime_lines=_runtime_lines(),
+        session_lines=_session_lines(),
+    )
     sessions = SessionStore(max_sessions=1)
+
+    # Renderer + composer live in their own modules so the REPL below only
+    # decides *what* to show, never how a Markdown table, a control sequence or
+    # a narrow terminal is handled. Both degrade to plain output off-TTY.
+    composer = ChatInput(width=ui.width)
 
     # In the CLI the operator is right here at the keyboard, so ask_user can be
     # answered SYNCHRONOUSLY — no waiting on an event, no timeout. Registering a
     # renderer that returns a string short-circuits interaction.ask().
     def _cli_ask(entry: Any) -> str:
-        print()
-        print(f"  {_label('question:')} {entry.question}")
-        if entry.options:
-            for index, option in enumerate(entry.options, start=1):
-                print(f"    {index}) {option}")
-            print("    (type a number, or your own answer)")
+        options = [str(option) for option in entry.options]
+        ui.question(entry.question, options)
         try:
-            reply = input("  answer › ").strip()
+            reply = composer.choose(entry.question, options)
         except (EOFError, KeyboardInterrupt):
-            print()
+            ui.answer("(cancelled)")
             return "CANCELLED: the user cancelled this question."
-        if entry.options and reply.isdigit():
-            choice = int(reply)
-            if 1 <= choice <= len(entry.options):
-                return entry.options[choice - 1]
-        return reply or "(empty answer)"
+        ui.answer(reply)
+        return reply
 
     interaction.register_channel("cli:local", _cli_ask)
 
@@ -868,16 +1052,16 @@ def cmd_chat(query: str | None = None) -> int:
     # "NOT DELIVERED" dan model bisa menyimpulkan filenya gagal dibuat —
     # padahal file ADA, cuma kanal chatnya tidak ada.
     def _cli_deliver(path: Any, caption: str, kind: str) -> bool:
-        note = f" — {caption}" if caption else ""
-        print(f"  {_label('file:')} {path} ({kind}){note}")
+        ui.file(path, caption, kind)
         return True
 
     delivery.register_channel("cli:local", _cli_deliver)
 
     def ask(text: str) -> str:
         def on_tool(name: str, arguments: dict[str, Any]) -> None:
-            preview = ", ".join(f"{key}={str(value)[:48]}" for key, value in arguments.items())
-            print(f"  \033[90m⚙ {name}({preview})\033[0m")
+            # Arguments are deliberately not rendered: tool payloads carry API
+            # keys, tokens and message bodies that must not reach scrollback.
+            ui.tool(name)
 
         return sessions.send(
             identity="cli:local",
@@ -888,50 +1072,72 @@ def cmd_chat(query: str | None = None) -> int:
 
     if query is not None:
         try:
-            print(ask(query))
+            ui.reply(ask(query))
             return 0
         except ZelineError as exc:
-            print(f"[error] {exc}")
+            ui.notice(str(exc), kind="error")
             return 1
 
     unicode_ok = branding.supports_unicode()
-    color = _terminal_color_enabled()
-    chevron = branding.prompt_glyph(unicode_ok)
     sep = "\u2022" if unicode_ok else "-"
-    hint = f"Type your message.  {sep}  undo  {sep}  exit"
-    print(f"{_paint(hint, COLOR_BLUE) if color else hint}\n")
-    you_prompt = f"You {chevron}"
-    you_rendered = f"{_paint(you_prompt, COLOR_LIGHT_BLUE) if color else you_prompt} "
+    ui.footer()
     while True:
         try:
-            text = input(you_rendered).strip()
+            # Only the REPL's own slash commands are stripped; message text is
+            # passed through with its indentation and code fences intact.
+            raw = composer.read()
+            text = raw.strip()
         except (EOFError, KeyboardInterrupt):
             _run_reflection(sessions)
-            print("\nGoodbye!")
+            ui.goodbye("\nGoodbye!")
             return 0
         if not text:
             continue
-        if text.lower() in {"keluar", "exit", "quit", "q"}:
+        lowered = text.lower()
+        if lowered in {"keluar", "exit", "quit", "q"}:
             _run_reflection(sessions)
-            print("Goodbye!")
+            ui.goodbye("Goodbye!")
             return 0
+        if lowered in {"/help", "help", "?"}:
+            ui.help()
+            continue
+        if lowered in {"/status", "status"}:
+            ui.status([
+                ("Version", __version__),
+                ("Agent", config.NAME),
+                ("Model", config.MODEL),
+                ("Provider", _provider_display()),
+                ("Tools", config.CLI_TOOL_PROFILE),
+            ])
+            continue
+        if lowered in {"/clear", "clear"}:
+            sessions = SessionStore(max_sessions=1)
+            ui.notice("Fresh context. Earlier turns stay in history until you exit.")
+            continue
         # Handled in the REPL rather than sent to the model: the operator wants
         # the file back now, not a turn spent asking the agent to do it.
-        lowered = text.lower()
         if lowered in {"undo", "/undo"}:
             cmd_undo()
-            print()
+            ui._write()
             continue
         if lowered in {"undo --list", "/undo --list", "undos", "/undos"}:
             cmd_undo(show_list=True)
-            print()
+            ui._write()
             continue
+        # The composer already leaves the accepted message in scrollback.
+        # Do not echo it again in a second user panel.
         try:
             answer = ask(text)
-            reply_prompt = f"{config.NAME} {chevron}"
-            print(f"{_paint(reply_prompt, COLOR_DARK_BLUE) if color else reply_prompt} {answer}\n")
+        except KeyboardInterrupt:
+            # Ctrl+C during a turn stops the work and keeps the REPL alive.
+            sessions.stop("cli:local")
+            ui.notice("Stopped. Progress so far is saved; send 'continue' to resume.", kind="warn")
+            continue
         except ZelineError as exc:
-            print(f"{_paint(f'[error] {exc}', COLOR_RED) if color else f'[error] {exc}'}\n")
+            ui.notice(str(exc), kind="error")
+            continue
+        if answer:
+            ui.reply(answer)
 
 
 def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "") -> int:
@@ -1158,8 +1364,17 @@ def cmd_gateway_restart(only: list[str] | None = None) -> int:
 
 
 def cmd_gateway_service_status() -> int:
-    active, message, _state = gateway_service.status()
-    print(message)
+    active, message, state = gateway_service.status()
+    screen = current_screen()
+    if screen is not None:
+        screen.facts("Gateway service", [
+            ("State", "running" if active else "stopped"),
+            ("PID", str((state or {}).get("pid", "-"))),
+            ("Details", message),
+            ("Control", "zeline gateway start | stop | log"),
+        ])
+    else:
+        print(message)
     return 0 if active else 1
 
 
@@ -1209,17 +1424,41 @@ def cmd_gateway_run(only: list[str] | None = None) -> int:
         lock.release()
 
 
+def _router_diagnostics():
+    """Read-only local discovery, independent of the configured model provider."""
+    from zeline.router_probe import detect_9router
+    return detect_9router(config.BASE_URL, _provider_display())
+
+
 def _run_gateway_loop(only: list[str] | None) -> int:
     """Loop gateway foreground. Dipisah agar kunci proses dilepas di satu tempat."""
     _print_banner()
+    screen = current_screen()
+    if screen is not None:
+        selected = [name for name, data in config.GATEWAYS.items()
+                    if data.get("enabled") and (not only or name in only)]
+        screen.facts("Gateway runtime", [
+            ("Mode", "foreground"), ("Process", str(os.getpid())),
+            ("Agent", config.NAME), ("Provider", _provider_display()),
+            ("Model", config.MODEL), ("Adapters", ", ".join(selected)),
+            ("Lifecycle", "starting; connection results follow below"),
+            ("Stop", "Ctrl+C (graceful shutdown)"),
+        ])
+    router_facts = []
+    if screen is not None:
+        screen.set_state("STARTING", "checking local router; initialising adapters")
+        router_facts = _router_diagnostics()
     print("==> Starting gateway…")
+    for label, value in router_facts:
+        print(f"  {label}: {value}", flush=True)
     _wake_active, wake_message = gateway_service.ensure_termux_wake_lock()
     if wake_message:
-        prefix = "  ✅" if _wake_active else "  ⚠️"
-        print(f"{prefix} {wake_message}", flush=True)
+        print(f"  {wake_message}", flush=True)
     sessions = SessionStore()
     runtime = run_all(sessions, config.GATEWAYS, names=only)
     if not runtime.threads:
+        if screen is not None:
+            screen.set_state("FAILED", "no gateway passed validation")
         print("No gateway passed validation.")
         return 2
 
@@ -1243,6 +1482,8 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     durable_worker.start()
 
     def shutdown(_signal=None, _frame=None):
+        if screen is not None:
+            screen.set_state("STOPPING", "graceful shutdown")
         print("\n==> Stopping gateway…", flush=True)
         durable_worker.stop()
         cron.stop()
@@ -1257,6 +1498,8 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         dan turn baru ditolak dengan pesan yang jelas.
         """
         timeout = float(getattr(config, "RESTART_DRAIN_TIMEOUT", 30.0))
+        if screen is not None:
+            screen.set_state("DRAINING", "finishing in-flight work")
         print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
         # Stop arming new jobs first, or a tick during the drain starts work we
         # are about to kill.
@@ -1285,7 +1528,12 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     if sigbreak is not None:
         previous_break = signal.signal(sigbreak, shutdown)
     try:
-        while runtime.alive:
+        while True:
+            alive = runtime.alive
+            if not alive:
+                break
+            if screen is not None:
+                screen.set_state("RUNNING", "Adapter threads alive: " + ", ".join(alive))
             time.sleep(0.5)
     except KeyboardInterrupt:
         shutdown()
@@ -1302,7 +1550,48 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     return 0
 
 
-def cmd_doctor() -> int:
+def cmd_doctor(*, show_logo: bool = True) -> int:
+    screen = current_screen()
+    if screen is None:
+        return _doctor_plain()
+    problems, warnings = [], []
+    for name, value in (("API key", config.API_KEY), ("Provider base URL", config.BASE_URL),
+                        ("Model", config.MODEL)):
+        if not value:
+            problems.append(f"{name} is empty. Run zeline setup.")
+    if not Path(config.WORKSPACE).expanduser().exists():
+        warnings.append(f"Workspace not found: {config.WORKSPACE}")
+    active, message, state = gateway_service.status()
+    configured = gateway_status(config.GATEWAYS)
+    for name, enabled, errors in configured:
+        if enabled:
+            problems.extend(f"{name}: {error}" for error in errors)
+    screen.facts("Runtime", [
+        ("Version", __version__), ("Agent", config.NAME),
+        ("Provider", _provider_display()), ("Model", config.MODEL or "not configured"),
+        ("API key", "configured (hidden)" if config.API_KEY else "missing"),
+        ("Python", sys.version.split()[0]),
+    ])
+    screen.facts("Workspace & configuration", [
+        ("Workspace", config.WORKSPACE), ("Home", str(config.DATA_DIR)),
+        ("Config", str(config.CONFIG_FILE)),
+        ("Config file", "present" if config.CONFIG_FILE.exists() else "not created"),
+    ])
+    rows = [("Service", "running" if active else "stopped"), ("Details", message)]
+    if active and state:
+        rows.append(("PID", str(state.get("pid", "unknown"))))
+    rows.extend((name, "configured" if not errors else "invalid configuration")
+                for name, enabled, errors in configured if enabled)
+    rows.append(("Control", "zeline gateway status | start | log"))
+    screen.facts("Gateways", rows)
+    result = "NEEDS ATTENTION" if problems else "WARNINGS" if warnings else "HEALTHY"
+    screen.facts("Diagnostics", [("Result", result)]
+                 + [("Warning", item) for item in warnings]
+                 + [("Fix", item) for item in problems])
+    return 1 if problems else 0
+
+
+def _doctor_plain() -> int:
     _print_banner()
     problems: list[str] = []
     warnings: list[str] = []
@@ -2196,7 +2485,7 @@ def cmd_tools(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="zeline", description="Zeline agentic AI framework by Zerolinear")
+    parser = CommandArgumentParser(prog="zeline", description="Zeline agentic AI framework by Zerolinear")
     parser.add_argument("--version", action="version", version=f"zeline {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -2459,7 +2748,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_gateway_run(namespace.only)
         return cmd_gateway_list()
     if command in {"doctor", "status"}:
-        return cmd_doctor()
+        return cmd_doctor(show_logo=command == "status")
     if command in {"update", "upgrade"}:
         from zeline import updater
         return updater.update()
@@ -2580,6 +2869,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     parser.print_help()
     return 2
+
+
+# All command entry points share presentation, including aliases and direct calls.
+# The decorator opts out for raw outputs and redirected/non-terminal contexts.
+for _command_name, _command_function in list(globals().items()):
+    if _command_name.startswith("cmd_") and callable(_command_function):
+        globals()[_command_name] = present_command(_command_function)
 
 
 if __name__ == "__main__":

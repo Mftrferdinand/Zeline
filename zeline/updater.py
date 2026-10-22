@@ -12,8 +12,11 @@ User data under `~/.zeline` is never touched.
 """
 from __future__ import annotations
 
+from zeline.command_ui import current_screen, emit as print, present_command
+
 import hashlib
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -25,7 +28,8 @@ from zeline import __version__
 
 REPO = "Mftrferdinand/Zeline"
 LATEST_API = f"https://api.github.com/repos/{REPO}/releases/latest"
-_TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+")
+_TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+$")
+_MAX_DOWNLOAD = 8 * 1024 * 1024
 
 POSIX_INSTALLER = "install.sh"
 WINDOWS_INSTALLER = "install.ps1"
@@ -83,7 +87,10 @@ def _https_get(url: str, *, accept: str = "") -> bytes:
         headers["Accept"] = accept
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read()
+        payload = response.read(_MAX_DOWNLOAD + 1)
+    if len(payload) > _MAX_DOWNLOAD:
+        raise ValueError("download exceeds the updater safety limit")
+    return payload
 
 
 def _latest_tag() -> str:
@@ -91,7 +98,7 @@ def _latest_tag() -> str:
 
     data = json.loads(_https_get(LATEST_API, accept="application/vnd.github+json").decode("utf-8"))
     tag = str(data.get("tag_name", "")).strip()
-    if not _TAG_RE.match(tag):
+    if not _TAG_RE.fullmatch(tag):
         raise ValueError(f"release tag looks invalid: {tag!r}")
     return tag
 
@@ -111,6 +118,9 @@ def _run_installer(installer: Path, source: Path | None = None) -> int:
     # Avoid module shadowing when launched from inside a running Zeline session.
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
+    screen = current_screen()
+    if screen is not None:
+        screen.close()  # Native installer owns its terminal output until it exits.
     completed = subprocess.run(_installer_command(installer, source), env=env, check=False)
     return completed.returncode
 
@@ -161,58 +171,146 @@ def _resume_gateway_after_update(only: list[str] | None) -> None:
         print("  Start it manually: zeline gateway start")
 
 
+def _ui_plan(installer: str) -> None:
+    """TTY-only presentation; redirected output keeps its original contract."""
+    screen = current_screen()
+    if screen is None:
+        print(f"Zeline updater · current version {__version__}")
+        return
+    if _is_windows():
+        host = "Windows / PowerShell"
+    elif os.environ.get("TERMUX_VERSION") or "com.termux" in str(Path.home()):
+        host = "Termux / Bash"
+    else:
+        host = f"{platform.system()} / Bash"
+    screen.facts("Update plan", [
+        ("Installed", __version__),
+        ("Platform", host),
+        ("Installer", installer),
+        ("Source", "Auto-detect checkout or latest release"),
+        ("User data", f"{Path.home() / '.zeline'} (retained)"),
+    ])
+
+
+def _ui_stage(title: str, detail: str = "") -> None:
+    screen = current_screen()
+    if screen is not None:
+        screen.section(title)
+        if detail:
+            screen.text(detail)
+
+
+def _ui_result(code: int, target: str, *, blocked: bool = False) -> None:
+    screen = current_screen()
+    if screen is None:
+        return
+    title = "Update blocked" if blocked else ("Update complete" if code == 0 else "Update failed")
+    screen.facts(title, [
+        ("Target", target),
+        ("Exit code", str(code)),
+        ("Result", "Installer completed successfully" if code == 0 else "Not completed; see details above"),
+        ("Next", "Open a new session: zeline" if code == 0 else "Resolve the error, then retry zeline update"),
+    ])
+
+
+@present_command
 def update() -> int:
     installer_name = _installer_name()
-    print(f"Zeline updater · current version {__version__}")
+    _ui_plan(installer_name)
     # ``None`` = nothing was running; ``[]`` = all enabled gateways; a list =
     # exactly those. Kept as-is so the restart mirrors the operator's choice.
     resume_only = _pause_gateway_for_update()
-    checkout = _checkout_root()
-    if checkout is not None:
-        local_installer = checkout / installer_name
-        if local_installer.is_file():
-            print(f"  Source checkout detected: {checkout}")
-            print(f"  Updating from local source via {installer_name} (--source)")
-            code = _run_installer(local_installer, checkout)
-            if resume_only is not None:
-                _resume_gateway_after_update(resume_only)
-            return code
-        print(f"  Source checkout detected but {installer_name} is missing; using the release installer.")
+    resumed = False
+    target = "Latest release"
+
+    def restore_gateway() -> None:
+        # Every exit path, including malformed release metadata and installer
+        # launch failures, must return the gateway to its previous selection.
+        nonlocal resumed
+        if resume_only is not None and not resumed:
+            _resume_gateway_after_update(resume_only)
+            resumed = True
 
     try:
-        tag = _latest_tag()
-    except Exception as exc:  # noqa: BLE001 — updater must report, never crash
-        print(f"  ERROR: could not read latest release ({exc.__class__.__name__}: {exc}).")
-        print("  Check your connection, or re-run the install command from the docs.")
-        if resume_only is not None:
-            _resume_gateway_after_update(resume_only)
-        return 1
+        checkout = _checkout_root()
+        if checkout is not None:
+            local_installer = checkout / installer_name
+            if local_installer.is_file():
+                target = "Local source checkout"
+                _ui_stage("1 / 2 · Local source")
+                print(f"  Source checkout detected: {checkout}")
+                print(f"  Updating from local source via {installer_name} (--source)")
+                _ui_stage("2 / 2 · Installation", "Running the source installer; native output follows.")
+                try:
+                    code = _run_installer(local_installer, checkout)
+                except Exception as exc:  # noqa: BLE001 — report, then restore the gateway
+                    print(f"  ERROR: installer failed ({exc.__class__.__name__}).")
+                    code = 1
+                restore_gateway()
+                _ui_result(code, target)
+                return code
+            print(f"  Source checkout detected but {installer_name} is missing; using the release installer.")
 
-    print(f"  Latest release: {tag}")
-    base = f"https://github.com/{REPO}/releases/download/{tag}"
-    with tempfile.TemporaryDirectory(prefix="zeline-update.") as raw:
-        tmp = Path(raw)
-        installer = tmp / installer_name
+        _ui_stage("1 / 4 · Release lookup", "Checking the latest release metadata.")
         try:
-            sums_text = _https_get(f"{base}/SHA256SUMS").decode("utf-8")
-            installer_bytes = _https_get(f"{base}/{installer_name}")
+            tag = _latest_tag()
         except Exception as exc:  # noqa: BLE001 — updater must report, never crash
-            print(f"  ERROR: download failed ({exc.__class__.__name__}: {exc}).")
-            if resume_only is not None:
-                _resume_gateway_after_update(resume_only)
+            print(f"  ERROR: could not read latest release ({exc.__class__.__name__}: {exc}).")
+            print("  Check your connection, or re-run the install command from the docs.")
+            restore_gateway()
+            _ui_result(1, "Latest release")
             return 1
-        expected = _expected_sha(sums_text, installer_name)
-        actual = hashlib.sha256(installer_bytes).hexdigest()
-        if actual != expected:
-            print(f"  ERROR: {installer_name} checksum mismatch — refusing to run.")
-            if resume_only is not None:
-                _resume_gateway_after_update(resume_only)
-            return 1
-        print(f"  {installer_name} SHA-256 verified.")
-        installer.write_bytes(installer_bytes)
-        code = _run_installer(installer)
-    if resume_only is not None:
-        _resume_gateway_after_update(resume_only)
-    elif code == 0:
-        print("\nZeline updated. Restart the gateway to load it: zeline gateway restart")
-    return code
+
+        target = tag
+        print(f"  Latest release: {tag}")
+        base = f"https://github.com/{REPO}/releases/download/{tag}"
+        with tempfile.TemporaryDirectory(prefix="zeline-update.") as raw:
+            tmp = Path(raw)
+            installer = tmp / installer_name
+            _ui_stage("2 / 4 · Download", "Fetching installer and checksum manifest.")
+            try:
+                sums_text = _https_get(f"{base}/SHA256SUMS").decode("utf-8")
+                installer_bytes = _https_get(f"{base}/{installer_name}")
+            except Exception as exc:  # noqa: BLE001 — updater must report, never crash
+                print(f"  ERROR: download failed ({exc.__class__.__name__}: {exc}).")
+                restore_gateway()
+                _ui_result(1, tag)
+                return 1
+
+            _ui_stage("3 / 4 · Verification", "Checking SHA-256 against the release manifest.")
+            try:
+                expected = _expected_sha(sums_text, installer_name)
+                actual = hashlib.sha256(installer_bytes).hexdigest()
+            except Exception as exc:  # noqa: BLE001 — malformed metadata is a blocked update
+                print(f"  ERROR: verification failed ({exc.__class__.__name__}).")
+                restore_gateway()
+                _ui_result(1, tag, blocked=True)
+                return 1
+            if actual != expected:
+                print(f"  ERROR: {installer_name} checksum mismatch — refusing to run.")
+                restore_gateway()
+                _ui_result(1, tag, blocked=True)
+                return 1
+            print(f"  {installer_name} SHA-256 verified.")
+            installer.write_bytes(installer_bytes)
+            _ui_stage("4 / 4 · Installation", "Running the platform installer; native output follows.")
+            try:
+                code = _run_installer(installer)
+            except Exception as exc:  # noqa: BLE001 — report, then restore the gateway
+                print(f"  ERROR: installer failed ({exc.__class__.__name__}).")
+                code = 1
+
+        restore_gateway()
+        if code == 0 and resume_only is None and current_screen() is None:
+            print("\nZeline updated. Restart the gateway to load it: zeline gateway restart")
+        _ui_result(code, tag)
+        return code
+    except Exception as exc:  # noqa: BLE001 — unexpected updater failures are still recoverable
+        print(f"  ERROR: update failed ({exc.__class__.__name__}).")
+        restore_gateway()
+        _ui_result(1, target)
+        return 1
+    finally:
+        # The explicit calls above keep normal UI ordering; this is the safety
+        # net for any future return path or exception added to the updater.
+        restore_gateway()
