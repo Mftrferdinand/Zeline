@@ -712,7 +712,7 @@ class ForgeStore:
             skills_data[s][row["outcome"]] += row["cnt"]
             skills_data[s]["last_used"] = max(skills_data[s]["last_used"], row["last_used"])
         result = []
-        for s, data in sorted(skills_data.items()):
+        for _s, data in sorted(skills_data.items()):
             denominator = data["success"] + data["failure"]
             data["success_rate"] = round(100 * data["success"] / denominator, 1) if denominator else None
             result.append(data)

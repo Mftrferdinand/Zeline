@@ -365,7 +365,7 @@ class MCPRegistry:
         for thread in threads:
             thread.start()
         deadline = time.monotonic() + _DISCOVERY_DEADLINE
-        for name, thread in zip(self.servers, threads):
+        for name, thread in zip(self.servers, threads, strict=True):
             thread.join(max(0.0, deadline - time.monotonic()))
             if thread.is_alive():
                 self._errors[name] = "TimeoutError: discovery deadline exceeded"

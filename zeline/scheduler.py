@@ -800,7 +800,7 @@ def _run_script(job: Job, should_stop=None) -> str:
             pipe.close()
 
     readers = [threading.Thread(target=read_pipe, args=(pipe, target), daemon=True)
-               for pipe, target in zip((process.stdout, process.stderr), output)]
+               for pipe, target in zip((process.stdout, process.stderr), output, strict=True)]
     try:
         for reader in readers:
             reader.start()
@@ -1099,9 +1099,10 @@ class Scheduler:
             extra += "\n\nExplicitly attached job procedures:\n" + loaded
         target = (job.deliver or "").strip()
         if target.startswith("telegram:"):
+            chat_id = target.split(":", 1)[1].strip()
             delivery.register_channel(
                 identity,
-                lambda path, caption, kind, chat=target.split(":", 1)[1].strip(): _deliver_file_telegram(
+                lambda path, caption, kind, chat=chat_id: _deliver_file_telegram(
                     chat, path, caption, kind
                 ),
             )

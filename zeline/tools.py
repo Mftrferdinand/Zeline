@@ -1468,7 +1468,7 @@ def _reader_get(target_url: str):
     kasus 0-hasil-padahal-engine-hidup tanpa menggantung lama.
     """
     last_exc: Exception | None = None
-    for attempt in range(2):
+    for _attempt in range(2):
         try:
             resp = requests.get(
                 _JINA_READER + target_url,

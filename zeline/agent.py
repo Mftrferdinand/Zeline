@@ -583,8 +583,12 @@ class Zeline:
                     if budget is not None:
                         budget.consume("provider_requests")
                     response = self._wait_io(
-                        lambda: requests.post(endpoint, headers=headers, json=request_payload,
-                                              timeout=180, stream=stream),
+                        # Default-arg binding: the worker thread inside wait_io must
+                        # see THIS iteration's payload/backoff, not a loop variable
+                        # that a delayed thread start could read after it changed.
+                        lambda payload=request_payload: requests.post(
+                            endpoint, headers=headers, json=payload,
+                            timeout=180, stream=stream),
                         dispose=cancellation.close_async,
                     )
                     if self._cancelled():
@@ -596,7 +600,8 @@ class Zeline:
                     self._close_response(response)
                     # Small bounded backoff: enough for a router connection to
                     # rotate/recover without making Telegram wait for minutes.
-                    self._wait_io(lambda: time.sleep(0.5 + 0.5 * attempt + 0.25 * model_index))
+                    self._wait_io(
+                        lambda delay=0.5 + 0.5 * attempt + 0.25 * model_index: time.sleep(delay))
                 if response is not None and response.status_code not in retryable:
                     break
             if response is None:
@@ -634,7 +639,7 @@ class Zeline:
                 # returns the final answer for the same conversation. Retry once
                 # without SSE; force_stream=False prevents recursive fallback.
                 if self._cancelled():
-                    raise _TurnCancelled()
+                    raise _TurnCancelled() from None
                 return self._call_llm(
                     use_tools=use_tools,
                     on_stream_delta=on_stream_delta,
@@ -764,7 +769,7 @@ class Zeline:
                         slot["function"]["name"] = str(function["name"])
                     if function.get("arguments"):
                         slot["function"]["arguments"] += str(function["arguments"])
-        except (requests.exceptions.RequestException,) as exc:
+        except requests.exceptions.RequestException as exc:
             raise ZelineError(
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
@@ -864,7 +869,7 @@ class Zeline:
                             pass
                 elif etype == "message_stop":
                     break
-        except (requests.exceptions.RequestException,) as exc:
+        except requests.exceptions.RequestException as exc:
             raise ZelineError(
                 f"The stream from '{self.model}' was interrupted ({exc.__class__.__name__}). Please try again."
             ) from exc
@@ -1201,7 +1206,10 @@ class Zeline:
                 invocation = self.executor.capture_context()
                 original_stop = invocation.get("_should_stop")
 
-                def invoke(item, batch_cancelled):
+                def invoke(item, batch_cancelled, invocation=invocation, original_stop=original_stop):
+                    # Default-arg binding keeps this closure independent of any
+                    # loop variable in the enclosing scope (parallel_runtime runs
+                    # invoke on worker threads; late starts must not rebind).
                     _call, name, args = item
                     context = dict(invocation)
                     context["_should_stop"] = lambda: (
@@ -1262,8 +1270,9 @@ class Zeline:
                     # A later call can exhaust the shared budget after earlier
                     # calls already performed side effects. Those results are
                     # already recorded; checkpoint them before callbacks.
+                    # results is intentionally a prefix of parsed_calls here.
                     self._checkpoint()
-                    for (_tool_call, completed_name, completed_args), result in zip(parsed_calls, results):
+                    for (_tool_call, completed_name, completed_args), result in zip(parsed_calls, results, strict=False):
                         if on_tool_result:
                             on_tool_result(completed_name, completed_args, result)
                     raise
@@ -1308,7 +1317,7 @@ class Zeline:
             steer_text = take_steer() if take_steer else None
             if steer_text:
                 narration_gate = NarrationGate()
-            for recorded, (tool_call, name, args), result in zip(recorded_results, parsed_calls, results):
+            for recorded, (_tool_call, name, args), result in zip(recorded_results, parsed_calls, results, strict=True):
                 if on_tool_result:
                     on_tool_result(name, args, result)
                 if steer_text:

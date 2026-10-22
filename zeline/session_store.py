@@ -401,7 +401,7 @@ class SessionPersistence:
         # title. Jeda diukur antar-turn berurutan, bukan terhadap turn terbaru,
         # supaya sesi panjang yang aktif terus tidak terpotong di tengah.
         kept: list[Any] = [rows[0]]
-        for previous, row in zip(rows, rows[1:]):
+        for previous, row in zip(rows, rows[1:], strict=False):
             gap = float(previous[2] or 0.0) - float(row[2] or 0.0)
             if gap > _THREAD_GAP_SECONDS:
                 break
@@ -499,7 +499,7 @@ class SessionPersistence:
             reserved = sum(minimums)
             shortened = []
             marker = "\n… [persisted content shortened; use existing findings before re-reading] …\n"
-            for message, minimum in reversed(list(zip(body, minimums))):
+            for message, minimum in reversed(list(zip(body, minimums, strict=True))):
                 reserved -= minimum
                 text = str(message.get("content", ""))
                 allocation = max(0, room - reserved)
