@@ -38,6 +38,7 @@ from zeline import config
 from zeline import compaction
 from zeline import memory
 from zeline import offload
+from zeline import file_utils
 from zeline import skills
 from zeline import tasks
 from zeline import transcribe
@@ -2328,6 +2329,64 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "archive_file",
+        (
+            "Create or extract an archive inside the workspace. action='create' "
+            "zips a file or directory tree into target (.zip, .tar.gz, .tgz, "
+            ".tar); action='extract' unpacks an archive into a target directory. "
+            "Use this instead of shell zip/tar so extraction stays inside the "
+            "workspace and zip-slip members are rejected. Entry count is capped "
+            "to keep a hostile archive from flooding the run."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["create", "extract"]},
+                "source": {"type": "string", "description": "File or directory to archive (create), or the archive to unpack (extract)."},
+                "target": {"type": "string", "description": "Archive filename to create (create), or destination directory (extract)."},
+            },
+            "required": ["action", "source", "target"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "checksum_file",
+        (
+            "Hash a workspace file (sha256 by default, or sha1/md5) and return "
+            "the digest. Pass 'verify' with an expected digest to confirm a "
+            "download or a copied file is intact — the reply states OK or "
+            "MISMATCH explicitly, so a verification claim is backed by output."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "algorithm": {"type": "string", "enum": ["sha256", "sha1", "md5"]},
+                "verify": {"type": "string", "description": "Optional expected digest; when given, the reply is OK or MISMATCH."},
+            },
+            "required": ["path"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
+        "find_duplicate_files",
+        (
+            "Find files in the workspace with identical content, grouped and "
+            "sized, so cleanup keeps one copy and deletes the rest. Compares by "
+            "size first, then a full sha256 — identical names do not matter, "
+            "identical bytes do. Optional 'pattern' narrows the scan (e.g. "
+            "'*.csv'). Read-only."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Optional fnmatch glob for file names; default everything."},
+            },
+            "required": [],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "update_task",
         (
             "Track a multi-step plan on a persistent board. Call when a task starts, "
@@ -2643,6 +2702,15 @@ class ToolExecutor:
             ),
             "diff_files": lambda path_a, path_b, context=2: _diff_files(
                 path_a, path_b, self.workspace, context
+            ),
+            "archive_file": lambda action, source, target: file_utils.archive_file(
+                action, source, target, self.workspace
+            ),
+            "checksum_file": lambda path, algorithm="sha256", verify="": file_utils.checksum_file(
+                path, self.workspace, algorithm, verify
+            ),
+            "find_duplicate_files": lambda pattern="*": file_utils.find_duplicate_files(
+                self.workspace, pattern
             ),
             "update_task": lambda task, status: _update_task(task, status, self.identity),
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
