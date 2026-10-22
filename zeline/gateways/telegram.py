@@ -448,6 +448,19 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if a and b:
             return f"🔍 Comparing <code>{a}</code> ↔ <code>{b}</code>"
         return "🔍 Comparing two files…"
+    if name == "archive_file":
+        action = str(arguments.get("action", "")).strip().lower()
+        src = html.escape(_short_path(str(arguments.get("source", "")))[:80], quote=False)
+        if action == "extract":
+            return f"📦 Extracting <code>{src}</code>…" if src else "📦 Extracting archive…"
+        if action == "create":
+            return f"📦 Archiving <code>{src}</code>…" if src else "📦 Creating archive…"
+        return "📦 Working with an archive…"
+    if name == "checksum_file":
+        target = html.escape(_short_path(str(arguments.get("path", "")))[:80], quote=False)
+        return f"#️⃣ Hashing <code>{target}</code>…" if target else "#️⃣ Computing checksum…"
+    if name == "find_duplicate_files":
+        return "👯 Scanning for duplicate files…"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
