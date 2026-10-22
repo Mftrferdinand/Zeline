@@ -1347,7 +1347,13 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
-    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+    addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    # ANY internal record blocks the host, not just ALL of them. A DNS name
+    # resolving to one public and one private address would pass an all()-check
+    # and still let the OS connect over the private record (classic mixed-record
+    # / rebinding bypass). Fail closed: a public service never publishes an
+    # internal A/AAAA record.
+    return any(_addr_is_internal(addr) for addr in addresses)
 
 
 def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
