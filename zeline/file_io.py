@@ -264,6 +264,35 @@ def _rg_rows(executable, query, root, pattern, should_stop, target, regex):
             process.stdout.close()
 
 
+def _regex_rows(query, root, pattern, should_stop):
+    """Native regex content search, used when ripgrep is unavailable."""
+    try:
+        needle = re.compile(query, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f'invalid regex: {exc}') from exc
+    for path in _walk_files(root, should_stop):
+        relative = str(path.relative_to(root))
+        if not (fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative, pattern)):
+            continue
+        try:
+            with path.open('rb') as stream:
+                line = 1
+                while True:
+                    if _stopped(should_stop):
+                        return
+                    raw = stream.readline()
+                    if not raw:
+                        break
+                    if b'\x00' in raw:
+                        break
+                    text = raw.decode('utf-8', errors='replace')
+                    if needle.search(text):
+                        yield f'{relative}:{line}: ' + text.rstrip('\r\n')
+                    line += 1
+        except OSError:
+            continue
+
+
 def search_files(query: str, workspace: Path, pattern: str = '*',
                  should_stop: Callable[[], bool] | None = None,
                  limit: int = MAX_SEARCH_RESULTS, offset: int = 0,
@@ -281,10 +310,14 @@ def search_files(query: str, workspace: Path, pattern: str = '*',
     root = Path(workspace).expanduser().resolve(strict=False)
     offset, limit = max(0, int(offset)), max(1, int(limit))
     executable = shutil.which('rg')
-    if regex and (not executable or target == 'files'):
-        return 'ERROR search files: regex content search requires ripgrep.'
-    rows = (_rg_rows(executable, query, root, pattern, should_stop, target, regex) if executable
-            else _literal_rows(query, root, pattern, should_stop, target))
+    if regex and target == 'files':
+        return 'ERROR search files: regex is not supported for file name search.'
+    if executable:
+        rows = _rg_rows(executable, query, root, pattern, should_stop, target, regex)
+    elif regex:
+        rows = _regex_rows(query, root, pattern, should_stop)
+    else:
+        rows = _literal_rows(query, root, pattern, should_stop, target)
     retained = bytearray()
     seen = count = 0
     more = False
