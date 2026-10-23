@@ -174,6 +174,42 @@ final page does not prove complete/reachable program coverage. Inline data,
 mixed ARM/Thumb modes, missing prior Thumb IT state and alternate instruction
 boundaries remain limitations; `whole_program_complete` is always false.
 
+## Static PE import-slot references
+
+Use `{"action":"references","path":"artifacts/program.exe","import_iat_rva":4352,"limit":50}`
+after reading the standard import table with `binary`. Select the table entry's
+`iat_rva`, not its lookup thunk RVA, raw file offset, import name, or a loaded
+function pointer. Exactly one of `symbol`, `target_address`, or `import_iat_rva`
+is required. This selector supports PE x86/x64 only.
+
+The bounded import scan validates the whole standard import table, even after
+finding a matching slot, and retains at most two candidates to reject duplicate
+slot declarations. Selection works beyond the first display page. Missing,
+malformed, ambiguous, cancelled, and over-budget tables produce no partial
+success. A bound IAT without an original lookup table is rejected. Delay imports
+and provider lookup are unsupported. Normal table scans retain their existing
+256-descriptor/16,384-thunk/string budgets; no input or worker cap is increased.
+
+Only decoded pointer-width near `CALL`/`JMP` memory operands addressing that
+static IAT slot match: x86 absolute, and x64 RIP-relative or absolute forms with
+no segment/index/address-size override. Far transfers, register/dataflow-based
+calls, direct branches into the slot, and other addressing forms are not import
+matches. The slot VA is computed from the **preferred** image base, not runtime
+relocations. `target.address_role` is `iat_slot_preferred_va`; `target.import`
+preserves the declared DLL/name or ordinal and table byte/RVA provenance.
+`matches[].static_import_iat_rva` links each observation to that declaration.
+
+**Static identity is not runtime resolution.** `matches[].target`,
+`target.runtime_target`, and `target.runtime_provider` remain `null`. These
+indirect calls/jumps still count in `unresolved_calls_jumps`, even when their
+static declaration matches. A patched/hooked IAT or forwarder may use a different
+runtime provider; no destination is inferred from on-disk IAT values.
+
+Follow `next_byte_offset` using the same `import_iat_rva`, full SHA256 and source
+ISA. Do **not** switch to `target_address`: that selects direct instruction
+immediates and is a different query. Instruction/byte budgets, undecodable stops,
+page-local coverage, and `whole_program_complete: false` remain unchanged.
+
 ## Evidence and limits
 
 Every successful operation returns `schema_version`, `engine`, `operation`,

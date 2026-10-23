@@ -211,7 +211,27 @@ def _flow(cs, insn, architecture):
     address_max = (1 << (32 if architecture in ('x86', 'arm', 'thumb') else 64)) - 1
     if fallthrough > address_max or (kind in ('return', 'jump', 'trap') and not conditional):
         fallthrough = None
-    return dict(kind=kind, target=target, conditional=conditional, fallthrough=fallthrough)
+    flow = dict(kind=kind, target=target, conditional=conditional, fallthrough=fallthrough)
+    if architecture in ('x86', 'x86_64') and kind in ('call', 'jump') and target is None:
+        from capstone.x86 import X86_INS_CALL, X86_INS_JMP, X86_REG_RIP
+        width = 4 if architecture == 'x86' else 8
+        # Capstone can label FF /3 far memory calls as CALL with pointer-size
+        # operands too. Only FF /2 and FF /4 denote the near slot transfers.
+        near_slot = insn.opcode[0] == 0xff and (insn.modrm >> 3) & 7 == (2 if kind == 'call' else 4)
+        if near_slot and insn.id in (X86_INS_CALL, X86_INS_JMP) and len(insn.operands) == 1:
+            operand = insn.operands[0]
+            if operand.type == cs.CS_OP_MEM and operand.size == width and insn.addr_size == width:
+                memory = operand.mem
+                if not memory.segment and not memory.index:
+                    slot, basis = None, None
+                    if architecture == 'x86_64' and memory.base == X86_REG_RIP:
+                        slot, basis = insn.address + insn.size + memory.disp, 'rip_relative'
+                    elif not memory.base:
+                        slot, basis = memory.disp, 'absolute'
+                    if slot is not None:
+                        flow['memory_reference'] = dict(address=slot & ((1 << (width * 8)) - 1),
+                                                        width=width, basis=basis)
+    return flow
 
 
 def _blocks(instructions):

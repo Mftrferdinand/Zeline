@@ -190,7 +190,7 @@ def _zip_inventory(data, artifact, offset, limit, should_stop):
 
 def analyze(action: str, path: str, workspace: Path, *, offset=0, limit=50,
             min_length=4, language='', byte_offset=None, architecture='', base_address=None,
-            symbol='', target_address=None, should_stop=None) -> dict:
+            symbol='', target_address=None, import_iat_rva=None, should_stop=None) -> dict:
     """Return reproducible evidence for an explicit static-only operation."""
     _check_stop(should_stop)
     if action not in {'inspect', 'strings', 'inventory', 'binary', 'source', 'disassemble', 'references'}:
@@ -210,8 +210,12 @@ def analyze(action: str, path: str, workspace: Path, *, offset=0, limit=50,
         raise ValueError('disassemble/references use byte_offset, not entry offset')
     if target_address is not None and action != 'references':
         raise ValueError('target_address is references-only')
-    if action == 'references' and (base_address is not None or bool(symbol) == (target_address is not None)):
-        raise ValueError('references requires exactly one symbol/target_address and no base_address')
+    if import_iat_rva is not None:
+        if action != 'references' or type(import_iat_rva) is not int or not 0 <= import_iat_rva < 2**32:
+            raise ValueError('import_iat_rva is references-only and must be a nonnegative 32-bit integer')
+    if action == 'references' and (base_address is not None or
+            sum((bool(symbol), target_address is not None, import_iat_rva is not None)) != 1):
+        raise ValueError('references requires exactly one symbol/target_address/import_iat_rva and no base_address')
     root, relative = _relative_path(path, workspace)
     if action == 'inventory':
         try:
@@ -225,7 +229,7 @@ def analyze(action: str, path: str, workspace: Path, *, offset=0, limit=50,
         return _zip_inventory(data, artifact, offset, limit, should_stop)
     if action == 'references':
         from zeline.reverse_references import scan_references
-        findings = scan_references(data, symbol=symbol, target_address=target_address,
+        findings = scan_references(data, symbol=symbol, target_address=target_address, import_iat_rva=import_iat_rva,
                                    byte_offset=byte_offset, architecture=architecture,
                                    limit=limit, should_stop=should_stop)
         limitations = findings.pop('limitations')

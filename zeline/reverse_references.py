@@ -1,4 +1,4 @@
-"""Paged incoming direct-transfer observations; no target execution or CFG recovery."""
+"""Paged direct-target or static PE IAT-operand observations; never runtime resolution."""
 from zeline.reverse_binary import inspect_binary
 from zeline.reverse_code_regions import select_code_region
 from zeline.reverse_disassembly import decode_instructions
@@ -9,7 +9,7 @@ def _check(should_stop):
         raise InterruptedError('reference scan cancelled')
 
 
-def scan_references(data: bytes, *, target_address=None, symbol='', byte_offset=None,
+def scan_references(data: bytes, *, target_address=None, symbol='', import_iat_rva=None, byte_offset=None,
                     architecture='', limit=50, should_stop=None) -> dict:
     """Decode at most one 4096-byte/100-instruction page, preserving gaps."""
     if not isinstance(data, bytes) or len(data) > 8 * 1024 * 1024:
@@ -18,8 +18,8 @@ def scan_references(data: bytes, *, target_address=None, symbol='', byte_offset=
         raise ValueError('reference limit is an instruction budget between 1 and 100')
     if should_stop is not None and not callable(should_stop):
         raise ValueError('should_stop must be callable')
-    if not isinstance(symbol, str) or bool(symbol) == (target_address is not None):
-        raise ValueError('provide exactly one symbol or target_address')
+    if not isinstance(symbol, str) or sum((bool(symbol), target_address is not None, import_iat_rva is not None)) != 1:
+        raise ValueError('provide exactly one symbol, target_address or import_iat_rva')
     _check(should_stop)
     header = inspect_binary(data)
     kind = header['format']
@@ -44,6 +44,15 @@ def scan_references(data: bytes, *, target_address=None, symbol='', byte_offset=
     # Shared mapping validates all regions, widths, reserved spans and overlaps.
     selection = select_code_region(data, byte_offset=start, architecture=architecture, should_stop=should_stop)
     target = {}
+    imported = None
+    if import_iat_rva is not None:
+        if kind != 'pe' or selection['architecture'] not in ('x86', 'x86_64'):
+            raise ValueError('import references support PE x86/x86_64 static slot operands only')
+        from zeline.reverse_pe_imports import select_pe_import
+        imported = select_pe_import(data, import_iat_rva, should_stop=should_stop)
+        target_address = header['metadata']['image_base'] + import_iat_rva
+        target = {'address_role': 'iat_slot_preferred_va', 'import': imported,
+                  'runtime_target': None, 'runtime_provider': None}
     if symbol:
         from zeline.reverse_symbol_navigation import resolve_code_symbol
         # Target declaration mode is independent from the source scan ISA.
@@ -71,9 +80,17 @@ def scan_references(data: bytes, *, target_address=None, symbol='', byte_offset=
             continue
         if flow['target'] is None:
             unresolved += 1
-        elif flow['target'] == target_address:
-            matches.append({**{key: row[key] for key in ('address', 'file_offset', 'size', 'bytes_hex', 'mnemonic', 'op_str')},
-                            'kind': flow['kind'], 'target': flow['target'], 'conditional': flow['conditional']})
+        memory = flow.get('memory_reference') or {}
+        matched = (flow['target'] == target_address if imported is None else
+                   flow['target'] is None and memory.get('address') == target_address
+                   and memory.get('width') == imported['pointer_width'])
+        if matched:
+            match = {**{key: row[key] for key in ('address', 'file_offset', 'size', 'bytes_hex', 'mnemonic', 'op_str')},
+                     'kind': flow['kind'], 'target': flow['target'], 'conditional': flow['conditional']}
+            if imported is not None:
+                match.update(static_import_iat_rva=import_iat_rva, iat_slot_address=target_address,
+                             operand_basis=memory['basis'])
+            matches.append(match)
     remaining = selection['bytes_remaining'] - consumed
     region_index = next(i for i, region in enumerate(regions) if region['offset'] <= start < region['offset'] + region['size'])
     before = sum(region['size'] for region in regions[:region_index]) + start - regions[region_index]['offset']
@@ -83,7 +100,11 @@ def scan_references(data: bytes, *, target_address=None, symbol='', byte_offset=
     if consumed and decoded['stop_reason'] != 'undecodable':
         next_offset = start + consumed if remaining else next_region
     limitations = selection['limitations'] + decoded['limitations'] + [
-        'Only direct call/jump immediate targets in this linear page are matched; indirect/PLT/IAT providers are unresolved.',
+        ('Only pointer-width x86 near CALL/JMP static IAT memory operands in this page are matched; register dataflow, '
+         'segment/index/address-size overrides, delay imports and runtime providers are unresolved.' if imported is not None else
+         'Only direct call/jump immediate targets in this linear page are matched; indirect/PLT/IAT providers are unresolved.'),
+        'Static memory slot addresses are not loaded destinations; imported name/ordinal is not proof of the runtime callee.',
+        'PE import names use ASCII replacement decoding; IAT RVA and table offsets, not normalized text, identify declarations.',
         'No matches is not proof of absence; caller cursors do not prove earlier pages were scanned.',
         'Coverage is page-local declared executable bytes, not reachable code or whole-program completeness.',
         'One uniform source ISA/mode per page; target symbol mode does not establish caller code mode.',

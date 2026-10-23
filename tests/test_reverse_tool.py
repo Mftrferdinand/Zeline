@@ -34,6 +34,22 @@ class ReverseToolTests(unittest.TestCase):
         public = self.tools.ToolExecutor('telegram:fixture', 'safe', self.workspace)
         self.assertTrue(public.run('reverse_engineer', {'action': 'inspect', 'path': 'target.bin'}).startswith('ERROR'))
 
+    def test_static_import_selector_uses_real_dispatch_and_schema(self):
+        from tests.test_reverse_import_references import import_image
+        data, _ = import_image()
+        (self.workspace / 'image.dll').write_bytes(data)
+        executor = self.tools.ToolExecutor('cli:static-test', 'workspace', self.workspace)
+        raw = executor.run('reverse_engineer', {'action': 'references', 'path': 'image.dll',
+                                               'import_iat_rva': 0x1100})
+        self.assertFalse(raw.startswith('ERROR'), raw)
+        result = json.loads(raw)
+        self.assertEqual(result['findings']['target']['import']['name'], 'ExitProcess')
+        self.assertIsNone(result['findings']['target']['runtime_target'])
+        definitions = {d.name: d for d in self.tools.TOOL_DEFS}
+        prop = definitions['reverse_engineer'].parameters['properties']['import_iat_rva']
+        self.assertEqual(prop['type'], 'integer')
+        self.assertEqual(prop['maximum'], 2**32 - 1)
+
     def test_outside_path_is_denied_by_real_dispatch(self):
         (self.root / 'private.bin').write_bytes(b'PRIVATE_FIXTURE')
         executor = self.tools.ToolExecutor('cli:static-test', 'workspace', self.workspace)

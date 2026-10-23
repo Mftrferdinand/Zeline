@@ -142,14 +142,14 @@ def _read_file(path: str, workspace: Path, offset: int = 1, limit: int = 0, shou
 
 def _reverse_engineer(action: str, path: str, workspace: Path, offset=0, limit=50,
                       min_length=4, language='', should_stop=None, *, byte_offset=None,
-                      architecture='', base_address=None, symbol='', target_address=None) -> str:
+                      architecture='', base_address=None, symbol='', target_address=None, import_iat_rva=None) -> str:
     """Lazily bind the default static inspector; no MCP/Node/daemon required."""
     try:
         from zeline.reverse_engine import analyze
         result = analyze(action, path, workspace, offset=offset, limit=limit,
                          min_length=min_length, language=language, byte_offset=byte_offset,
                          architecture=architecture, base_address=base_address, symbol=symbol,
-                         target_address=target_address, should_stop=should_stop)
+                         target_address=target_address, import_iat_rva=import_iat_rva, should_stop=should_stop)
         return json.dumps(result, ensure_ascii=True)
     except (OSError, ValueError, RuntimeError) as exc:
         return f"ERROR static analysis: {exc}"
@@ -2145,7 +2145,8 @@ TOOL_DEFS: list[ToolDef] = [
         "ELF/PE headers, sections and paged imports/exports/symbol observations; "
         "source: Python/JavaScript syntax imports/definitions; disassemble: bounded static "
         "x86/x64/ARM/Thumb/AArch64 instructions, direct xrefs and page-local CFG; references: "
-        "paged incoming direct call/jump matches to symbol or target_address in linked ELF/PE. "
+        "paged incoming direct call/jump matches to symbol or target_address in linked ELF/PE, or "
+        "PE x86/x64 static IAT-slot operand matches selected by import_iat_rva (not runtime callee resolution). "
         "Returns reproducible evidence IDs and limitations. Never executes targets or "
         "decompiles. Source/disassembly use memory/time-limited trusted workers, not an OS sandbox. "
         "Files <=8 MiB, source <=1 MiB; offset/limit also page each binary "
@@ -2161,6 +2162,7 @@ TOOL_DEFS: list[ToolDef] = [
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Per-category page size or disassembly/references decoded-instruction budget (not hit count), default 50."},
             "symbol": {"type": "string", "maxLength": 512, "description": "Exact ELF code name/local PE export. Disassembly: selects start, excludes byte_offset/base_address. References: selects target, excludes target_address; byte_offset is scan cursor. Lossless UTF-8 ELF/ASCII PE. Not a function bound."},
             "target_address": {"type": "integer", "minimum": 0, "description": "References only: declared virtual target, exclusive with symbol. Direct calls/jumps only; no IAT/PLT/provider resolution. Zero is valid."},
+            "import_iat_rva": {"type": "integer", "minimum": 0, "maximum": 2**32 - 1, "description": "References only: standard PE import IAT slot RVA, exclusive with symbol/target_address. Matches static x86/x64 CALL/JMP memory operands, not the loaded function pointer. Runtime target/provider stay unknown. Preserve this selector across byte_offset pages."},
             "byte_offset": {"type": "integer", "minimum": 0, "description": "Absolute file-byte cursor. Disassembly defaults to entry/first code; references defaults to first code section, not target/entrypoint. Follow next_byte_offset preserving SHA256 and source ISA."},
             "architecture": {"type": "string", "enum": ["x86", "x86_64", "arm", "thumb", "aarch64"], "description": "Source decode ISA: inferred for ELF/PE, required for raw disassembly. Only ARM/Thumb family overrides. References has no raw support; target symbol mode does not determine calling code mode."},
             "base_address": {"type": "integer", "minimum": 0, "description": "Disassembly raw-only: virtual address corresponding to file byte zero, default 0. Not a binary relocation override."},
@@ -2610,10 +2612,10 @@ class ToolExecutor:
             "browser": lambda action, url="", selector="", text="", submit=False, path="", script="": self._browser(
                 action, url, selector, text, submit, path, script
             ),
-            "reverse_engineer": lambda action, path, offset=0, limit=50, min_length=4, language="", byte_offset=None, architecture="", base_address=None, symbol="", target_address=None: _reverse_engineer(
+            "reverse_engineer": lambda action, path, offset=0, limit=50, min_length=4, language="", byte_offset=None, architecture="", base_address=None, symbol="", target_address=None, import_iat_rva=None: _reverse_engineer(
                 action, path, self.workspace, offset, limit, min_length, language,
                 should_stop=self._control("_should_stop"), byte_offset=byte_offset,
-                architecture=architecture, base_address=base_address, symbol=symbol, target_address=target_address),
+                architecture=architecture, base_address=base_address, symbol=symbol, target_address=target_address, import_iat_rva=import_iat_rva),
             "read_file": lambda path, offset=1, limit=0, byte_offset=None: _read_file(
                 path, self.workspace, offset, limit, should_stop=self._control("_should_stop"), byte_offset=byte_offset),
             "write_file": lambda path, content: _write_file(path, content, self.workspace),

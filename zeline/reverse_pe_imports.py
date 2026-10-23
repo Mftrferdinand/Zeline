@@ -126,7 +126,7 @@ def _finish(page, limit):
     page['next_offset'] = None if page['exhausted'] else following
 
 
-def _imports(pe, page, limit):
+def _imports(pe, page, limit, *, selected_iat_rva=None):
     directory = pe.directory(1)
     if directory is None:
         return
@@ -140,7 +140,9 @@ def _imports(pe, page, limit):
         values = pe.unpack('<IIIII', descriptor_rva)
         if not any(values):
             return
-        original, _, _, name_rva, first = values
+        original, timestamp, _, name_rva, first = values
+        if selected_iat_rva is not None and not original and timestamp:
+            raise ValueError("Bound IAT without a lookup table has no reliable static import identity")
         if not name_rva or not first:
             raise ValueError("Malformed PE import descriptor")
         dll = pe.string(name_rva)
@@ -170,7 +172,8 @@ def _imports(pe, page, limit):
                 hint, = pe.unpack('<H', value)
                 item.update(hint=hint, name=pe.string(value + 2),
                             name_rva=value + 2, name_offset=pe.map(value + 2, 1))
-            _append(page, item, limit)
+            if selected_iat_rva is None or iat_rva == selected_iat_rva:
+                _append(page, item, limit)
     raise ValueError("Unterminated PE descriptors or descriptor budget exceeded")
 
 
@@ -250,3 +253,20 @@ def inspect_pe_imports(data: bytes, *, offset=0, limit=50, should_stop=None) -> 
     for category in ('imports', 'exports'):
         _finish(result[category], limit)
     return result
+
+
+def select_pe_import(data: bytes, iat_rva: int, *, should_stop=None) -> dict:
+    """Validate the bounded standard table, retaining at most two slot matches."""
+    if not isinstance(data, bytes) or len(data) > 8 * 1024 * 1024:
+        raise ValueError("PE import selection requires bytes, at most 8 MiB")
+    if type(iat_rva) is not int or not 0 <= iat_rva < 2**32:
+        raise ValueError("import_iat_rva must be a nonnegative 32-bit integer")
+    if should_stop is not None and not callable(should_stop):
+        raise ValueError("should_stop must be callable")
+    pe = _PE(data, should_stop)
+    pe.map(iat_rva, pe.bits // 8)
+    page = _page(0)
+    _imports(pe, page, 2, selected_iat_rva=iat_rva)
+    if page['total_entries'] != 1:
+        raise ValueError("Standard PE import IAT slot missing or ambiguous; delay/runtime resolution unsupported")
+    return dict(page['entries'][0], pointer_width=pe.bits // 8)
