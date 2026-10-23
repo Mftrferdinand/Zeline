@@ -246,6 +246,10 @@ jobs:
           python-version: "3.12"
       - name: Diagnose macOS worker memory controls
         if: runner.os == 'macOS'
+        env:
+          # Match the production worker allocator before interpreter startup;
+          # the probe still measures its own baseline and denies 256 MiB growth.
+          MallocSpaceEfficient: '1'
         run: |
           python - <<'PY'
           import platform, resource, runpy, traceback
