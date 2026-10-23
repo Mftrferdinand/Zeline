@@ -35,9 +35,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
-        run: python -m pip install --upgrade pip && python -m pip install .
+        run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
+      - name: Install native search test prerequisite
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Darwin allocator A/B diagnostic (worker caps unchanged)
+        if: runner.os == 'macOS'
+        run: python .github/scripts/probe_native_allocator.py
+      - name: Native worker preflight
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests/test_reverse_source.py tests/test_reverse_disassembly.py tests/test_source_worker_limits.py -q
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests -q
       - name: Compile package
         run: python -m compileall -q zeline
 
@@ -62,10 +73,21 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install .
+          python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
 
+      - name: Install native search test prerequisite
+        run: choco install ripgrep --yes --no-progress
+      - name: Darwin allocator A/B diagnostic (worker caps unchanged)
+        if: runner.os == 'macOS'
+        run: python .github/scripts/probe_native_allocator.py
+      - name: Native worker preflight
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests/test_reverse_source.py tests/test_reverse_disassembly.py tests/test_source_worker_limits.py -q
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests -q
 
       - name: Compile package
         run: python -m compileall -q zeline
@@ -159,9 +181,20 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install package
-        run: python -m pip install .
+        run: python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
+      - name: Install native search test prerequisite
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
+      - name: Darwin allocator A/B diagnostic (worker caps unchanged)
+        if: runner.os == 'macOS'
+        run: python .github/scripts/probe_native_allocator.py
+      - name: Native worker preflight
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests/test_reverse_source.py tests/test_reverse_disassembly.py tests/test_source_worker_limits.py -q
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests -q
       - name: Exercise install.sh in an isolated runtime
         env:
           ZELINE_PYTHON: python3
@@ -198,3 +231,51 @@ jobs:
           assert not blocked, f"local state leaked into wheel: {blocked}"
           print(wheel, "OK")
           PY
+
+  native-wheel:
+    name: native-wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Diagnose macOS worker memory controls
+        if: runner.os == 'macOS'
+        env:
+          # Match the production worker allocator before interpreter startup;
+          # the probe still measures its own baseline and denies 256 MiB growth.
+          MallocSpaceEfficient: '1'
+        run: |
+          python - <<'PY'
+          import platform, resource, runpy, traceback
+          print('WORKER_LIMIT_PROBE', platform.platform(), platform.machine(), flush=True)
+          for name in ('RLIMIT_DATA', 'RLIMIT_AS', 'RLIMIT_CORE'):
+              print(name, resource.getrlimit(getattr(resource, name)), flush=True)
+          try:
+              runpy.run_path('zeline/source_worker_limits.py')['set_memory_limit'](128 * 1024 * 1024)
+              print('WORKER_LIMIT_SETUP_PASSED', flush=True)
+              # Trusted bounded allocation probe, never an input artifact.
+              allocations = []
+              blocked = False
+              try:
+                  for _ in range(32):
+                      allocations.append(bytearray(8 * 1024 * 1024))
+              except MemoryError:
+                  blocked = True
+              allocations.clear()
+              assert blocked, 'Darwin 128MiB growth cap did not stop 256MiB allocation'
+              print('WORKER_LIMIT_ALLOCATION_ENFORCED', flush=True)
+          except BaseException as error:
+              print('WORKER_LIMIT_SETUP_FAILED', type(error).__name__, str(error), flush=True)
+              traceback.print_exc()
+              raise
+          PY
+      - name: Build native candidate wheel
+        run: python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Fresh installed native engine and CLI from neutral directory
+        run: python .github/scripts/check_native_wheel.py

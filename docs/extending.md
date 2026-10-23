@@ -263,3 +263,10 @@ profile — is a change to this repository, and it is not a one-file change: the
 `ToolDef` in `zeline/tools.py`, its handler, a title in the Telegram and app
 gateway progress renderers, and an entry in the compaction artifact map all have
 to agree. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Native static artifact analysis
+
+The development branch includes the default `reverse_engineer` tool on
+workspace/full profiles. It does not require external MCP setup.
+See [built-in reverse engineering](reverse-engineering.md) for operations,
+evidence format, parser dependencies, and safety/resource limits.

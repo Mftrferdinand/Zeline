@@ -32,6 +32,11 @@ dependencies = [
     "PyYAML>=6.0",
     "pypdf>=4.0",
     "tzdata>=2024.1",
+    # Native static JavaScript parsing; no Node.js, REA, daemon or remote service.
+    "tree-sitter==0.26.0",
+    "tree-sitter-javascript==0.25.0",
+    # Static instruction decoding in a bounded trusted worker; no target execution.
+    "capstone==5.0.9",
     # Local chat UI: Markdown/code rendering and the multiline composer.
     # Both degrade to plain output when unavailable, so the CLI never hard-fails.
     "rich>=13.9",
@@ -39,7 +44,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1.2", "ruff>=0.16"]
+dev = ["build>=1.2", "ruff>=0.16", "pytest>=8,<10", "pytest-subtests>=0.14,<1"]
 
 [project.scripts]
 zeline = "zeline.cli:main"

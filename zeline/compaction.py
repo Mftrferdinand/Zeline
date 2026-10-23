@@ -45,6 +45,8 @@ MAX_DIGEST_CHARS = 3_000
 MAX_TASK_BLOCK_CHARS = 800
 
 #: Tool calls whose arguments name a file the agent created or changed.
+_READ_TARGET_TOOLS = frozenset({"read_file", "reverse_engineer"})
+
 _ARTIFACT_TOOLS = {
     "write_file": "path",
     "edit_file": "path",
@@ -259,7 +261,7 @@ def digest(messages: list[dict[str, Any]], archive_path: Path | None) -> str:
             key = _ARTIFACT_TOOLS.get(name)
             if key and args.get(key):
                 add("File", str(args[key]))
-            target = str(args.get("path", ""))[:200] if name == "read_file" else ""
+            target = str(args.get("path", ""))[:200] if name in _READ_TARGET_TOOLS else ""
             calls[str(call.get("id", ""))] = (name, target)
             if len(calls) > 64:
                 calls.pop(next(iter(calls)))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import codecs
+from contextlib import contextmanager
 import fnmatch
 import os
 from pathlib import Path
@@ -202,6 +203,49 @@ def _literal_rows(query, root, pattern, should_stop, target):
             continue
 
 
+def _windows_pipe_reader(stream):
+    """Poll an anonymous pipe without select(), sockets, or reader threads."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    import msvcrt
+    import time
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    peek = kernel.PeekNamedPipe
+    peek.argtypes = [w.HANDLE, c.c_void_p, w.DWORD, c.POINTER(w.DWORD),
+                     c.POINTER(w.DWORD), c.POINTER(w.DWORD)]
+    peek.restype = w.BOOL
+    descriptor = stream.fileno()
+    handle = msvcrt.get_osfhandle(descriptor)
+
+    def read():
+        available = w.DWORD()
+        if not peek(handle, None, 0, None, c.byref(available), None):
+            error = c.get_last_error()
+            if error in (109, 233):  # ERROR_BROKEN_PIPE / ERROR_PIPE_NOT_CONNECTED.
+                return b''
+            raise OSError(error, 'cannot poll native search pipe')
+        if available.value:
+            # There is exactly one reader. Never request more than is available,
+            # so ReadFile/os.read cannot block waiting for a producer chunk.
+            return os.read(descriptor, min(READ_CHUNK_BYTES, available.value))
+        time.sleep(0.05)
+        return None
+
+    return read
+
+
+@contextmanager
+def _pipe_reader(stream):
+    if os.name == 'nt':
+        yield _windows_pipe_reader(stream)
+    else:
+        with selectors.DefaultSelector() as selector:
+            selector.register(stream, selectors.EVENT_READ)
+            def read():
+                return os.read(stream.fileno(), READ_CHUNK_BYTES) if selector.select(0.05) else None
+            yield read
+
+
 def _rg_rows(executable, query, root, pattern, should_stop, target, regex):
     """Drain bounded native search rows and reap on page end or cancellation."""
     args = [executable, '--sort', 'path', '--no-ignore', '--color', 'never', '--no-messages']
@@ -219,15 +263,14 @@ def _rg_rows(executable, query, root, pattern, should_stop, target, regex):
     process = subprocess.Popen(args, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     buffer = bytearray()
     try:
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
+        with _pipe_reader(process.stdout) as read:
             done = False
             while not done:
                 if _stopped(should_stop):
                     return
-                if not selector.select(0.05):
+                data = read()
+                if data is None:
                     continue
-                data = os.read(process.stdout.fileno(), READ_CHUNK_BYTES)
                 done = not data
                 buffer.extend(data)
                 while b'\n' in buffer or (done and buffer):
@@ -235,7 +278,7 @@ def _rg_rows(executable, query, root, pattern, should_stop, target, regex):
                     split = len(buffer) if split < 0 else split
                     row = bytes(buffer[:split]).decode('utf-8', errors='replace')
                     del buffer[:split + 1]
-                    if row.startswith('./'):
+                    if row.startswith('./') or (os.name == 'nt' and row.startswith('.\\')):
                         row = row[2:]
                     if target == 'files':
                         needle = query.casefold()

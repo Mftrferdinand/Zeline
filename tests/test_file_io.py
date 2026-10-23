@@ -3,7 +3,7 @@ import tracemalloc
 
 
 def test_offset_without_limit_and_empty_file(tmp_path):
-    (tmp_path / 'rows').write_text('one\ntwo\nthree\n')
+    (tmp_path / 'rows').write_bytes(b'one\ntwo\nthree\n')
     result = file_io.read_file('rows', tmp_path, 2)
     assert result == '[lines 2-3 of 3; more_results=false]\ntwo\nthree\n'
     (tmp_path / 'empty').touch()
@@ -128,7 +128,7 @@ def test_search_utf8_literal_across_chunk_boundary(tmp_path):
 
 
 def test_small_reads_and_paginated_reads(tmp_path):
-    (tmp_path / 'note.txt').write_text('one\ntwo\nthree\n')
+    (tmp_path / 'note.txt').write_bytes(b'one\ntwo\nthree\n')
     assert file_io.read_file('note.txt', tmp_path) == 'one\ntwo\nthree\n'
     assert file_io.read_file('note.txt', tmp_path, 2, 1) == (
         '[lines 2-2 of 3; truncated page; more_results=true; next_offset=3; next_byte_offset=8]\ntwo'
