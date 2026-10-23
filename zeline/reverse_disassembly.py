@@ -253,6 +253,7 @@ def _blocks(instructions):
 
 def _worker_main():
     import faulthandler
+    import traceback  # Trusted stdlib startup; diagnostics must not import after OOM.
     faulthandler.enable()
     global _LIMITS_READY
     import importlib.util
@@ -274,7 +275,6 @@ def _worker_main():
         response = dict(ok=True, result=_decode_worker(json.loads(raw)))
     except Exception as exc:
         if isinstance(exc, MemoryError):
-            import traceback
             traceback.print_exc(limit=6)
         response = dict(ok=False, kind=type(exc).__name__, error=str(exc)[:400])
     output = json.dumps(response, ensure_ascii=True)

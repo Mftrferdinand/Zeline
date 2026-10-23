@@ -3,6 +3,53 @@ import unittest
 
 
 class SourceInspectionTests(unittest.TestCase):
+    def test_javascript_locations_do_not_allocate_native_point_objects(self):
+        # CI CPython 3.10 crashes in native positional access. Byte spans are
+        # sufficient and preserve LF/CRLF and UTF-8 line accounting exactly.
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from zeline import reverse_source as source
+        data = "// café\r\nclass Box {}\n".encode('utf-8')
+        name_start = data.index(b'Box')
+
+        class Node:
+            type = 'class_declaration'
+            has_error = False
+            start_byte = data.index(b'class')
+            end_byte = len(data)
+
+            @property
+            def start_point(self):
+                raise AssertionError('native Point allocation must not be used')
+
+            @property
+            def end_point(self):
+                raise AssertionError('native Point allocation must not be used')
+
+            def child_by_field_name(self, name):
+                return SimpleNamespace(start_byte=name_start, end_byte=name_start + 3)
+
+            def walk(self):
+                return SimpleNamespace(node=self, goto_first_child=lambda: False,
+                                       goto_next_sibling=lambda: False, goto_parent=lambda: False)
+
+        modules = {
+            'tree_sitter': SimpleNamespace(Language=lambda capsule: capsule,
+                                          Parser=lambda language: SimpleNamespace(
+                                              parse=lambda value: SimpleNamespace(root_node=Node()))),
+            'tree_sitter_javascript': SimpleNamespace(language=lambda: object()),
+        }
+        with patch.dict(sys.modules, modules):
+            result = source._inspect_source_local(data, 'javascript')
+        self.assertEqual(result['definitions'], [dict(name='Box', kind='class_declaration',
+                         line=2, end_line=3, start_byte=data.index(b'class'), end_byte=len(data))])
+        for start, end in [(-1, 0), (0, len(data) + 1), (4, 3)]:
+            with self.subTest(start=start, end=end), patch.dict(sys.modules, modules):
+                Node.start_byte, Node.end_byte = start, end
+                with self.assertRaisesRegex(ValueError, 'invalid byte span'):
+                    source._inspect_source_local(data, 'javascript')
+
     def test_cancel_after_worker_exit_closes_all_pipes(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory

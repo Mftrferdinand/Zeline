@@ -38,6 +38,9 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
       - name: Install native search test prerequisite
         run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Darwin allocator A/B diagnostic (worker caps unchanged)
+        if: runner.os == 'macOS'
+        run: python .github/scripts/probe_native_allocator.py
       - name: Native worker preflight
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'
@@ -74,6 +77,9 @@ jobs:
 
       - name: Install native search test prerequisite
         run: choco install ripgrep --yes --no-progress
+      - name: Darwin allocator A/B diagnostic (worker caps unchanged)
+        if: runner.os == 'macOS'
+        run: python .github/scripts/probe_native_allocator.py
       - name: Native worker preflight
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'
@@ -178,6 +184,9 @@ jobs:
         run: python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
       - name: Install native search test prerequisite
         run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
+      - name: Darwin allocator A/B diagnostic (worker caps unchanged)
+        if: runner.os == 'macOS'
+        run: python .github/scripts/probe_native_allocator.py
       - name: Native worker preflight
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'

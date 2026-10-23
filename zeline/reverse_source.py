@@ -207,6 +207,13 @@ def _javascript(data, result):
         return data[node.start_byte:min(node.end_byte, node.start_byte + MAX_LABEL_BYTES)].decode(
             'utf-8', errors='ignore')
 
+    # Avoid allocating native Point wrappers per node. Their construction is a
+    # crashing CI path on CPython 3.10; byte spans already provide exact LF rows.
+    # Packed offsets cost at most four bytes per input byte (source <=1 MiB),
+    # rather than rescanning a long prefix for each of up to MAX_NODES nodes.
+    from array import array
+    from bisect import bisect_left
+    newlines = array('I', (index for index, value in enumerate(data) if value == 10))
     cursor = root.walk()
     visited = 0
     while True:
@@ -215,8 +222,12 @@ def _javascript(data, result):
         if visited > MAX_NODES:
             _note(result, f'Node traversal truncated at {MAX_NODES} nodes.')
             break
-        location = dict(line=node.start_point.row + 1, end_line=node.end_point.row + 1,
-                        start_byte=node.start_byte, end_byte=node.end_byte)
+        start, end = node.start_byte, node.end_byte
+        if not 0 <= start <= end <= len(data):
+            raise ValueError('source parser returned an invalid byte span')
+        location = dict(line=bisect_left(newlines, start) + 1,
+                        end_line=bisect_left(newlines, end) + 1,
+                        start_byte=start, end_byte=end)
         if node.type in ('import_statement', 'export_statement'):
             source = node.child_by_field_name('source')
             if source:
@@ -250,6 +261,7 @@ def _javascript(data, result):
 
 def _worker_main():
     import faulthandler
+    import traceback  # Trusted stdlib startup; diagnostics must not import after OOM.
     faulthandler.enable()
     # Import only a trusted adjacent helper. -I excludes cwd/PYTHONPATH and the
     # script directory; never add the artifact workspace to the import path.
@@ -277,7 +289,6 @@ def _worker_main():
         result = _inspect_source_local(data, request['language'])
         response = {'ok': True, 'result': result}
     except MemoryError:
-        import traceback
         traceback.print_exc(limit=6)
         response = {'ok': False, 'kind': 'MemoryError',
                     'error': 'source parser memory resource limit exceeded'}
