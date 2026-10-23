@@ -39,6 +39,8 @@ jobs:
       - name: Install native search test prerequisite
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Run test suite
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
         run: python -m pytest tests -q
       - name: Compile package
         run: python -m compileall -q zeline
@@ -69,6 +71,8 @@ jobs:
       - name: Install native search test prerequisite
         run: choco install ripgrep --yes --no-progress
       - name: Run test suite
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
         run: python -m pytest tests -q
 
       - name: Compile package
@@ -167,6 +171,8 @@ jobs:
       - name: Install native search test prerequisite
         run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
       - name: Run test suite
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
         run: python -m pytest tests -q
       - name: Exercise install.sh in an isolated runtime
         env:
