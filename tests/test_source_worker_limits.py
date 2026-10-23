@@ -74,9 +74,12 @@ def test_worker_environment_is_scoped_and_darwin_space_efficient():
     original = {'PATH': '/trusted/bin', 'ZELINE_API_KEY': 'not-a-real-key',
                 'PYTHONPATH': '/untrusted/python', 'MallocSpaceEfficient': '0'}
     with patch.dict(os.environ, original, clear=True):
+        # Windows canonicalizes environment keys; compare the actual native
+        # mapping before/after the helper, not the caller's mixed-case fixture.
+        before = dict(os.environ)
         with patch('sys.platform', 'darwin'):
             environment = limits.worker_environment()
             assert environment == {'PATH': '/trusted/bin', 'MallocSpaceEfficient': '1'}
         with patch('sys.platform', 'linux'):
             assert limits.worker_environment() == {'PATH': '/trusted/bin'}
-        assert dict(os.environ) == original
+        assert dict(os.environ) == before
