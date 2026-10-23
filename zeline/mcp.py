@@ -319,11 +319,17 @@ class MCPRegistry:
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "MCPRegistry":
+        from zeline import mcp_config
+
         raw = (cfg.get("mcp") or {}).get("servers") or {}
         servers: list[MCPServer] = []
         for name, spec in raw.items():
             if not isinstance(spec, dict) or not spec.get("enabled", True):
                 continue
+            try:
+                spec = mcp_config.expand_spec(spec)
+            except mcp_config.ConfigReferenceError as exc:
+                raise ValueError(f"MCP server '{name}': {exc}") from exc
             transport = str(spec.get("transport") or ("http" if spec.get("url") else "stdio"))
             servers.append(MCPServer(
                 name=str(name),
