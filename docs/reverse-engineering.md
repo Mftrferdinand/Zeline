@@ -246,3 +246,15 @@ execution policies still apply. No read-only operation is recorded as creating
 an artifact. Advanced REA MCP remains separate and optional; it is not required
 by the native engine. This feature makes no percentage improvement claim without
 an agent-level benchmark using the same model, tasks, and budget.
+
+### Worker memory accounting
+
+Workers are resource-limited, not OS sandboxes. Linux/Android keep a 128 MiB
+absolute data/heap limit, with the virtual-address limit adjusted for interpreter
+startup mappings. Windows uses a 128 MiB per-process memory Job. On Darwin, XNU
+checks **both** `RLIMIT_DATA` and `RLIMIT_AS` against the VM map size, including
+large startup mappings. The worker measures its own baseline using Apple's
+`PROC_PIDTASKINFO` ABI and sets both kernel limits to that baseline plus 128 MiB.
+This is a **new virtual-memory growth budget**, not a 128 MiB absolute RSS claim.
+Missing or incomplete baseline data fails closed. Native macOS CI also verifies
+that a bounded trusted allocation probe cannot allocate 256 MiB under that budget.

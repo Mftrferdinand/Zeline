@@ -20,7 +20,10 @@ def set_memory_limit(memory_bytes):
             baseline_virtual = _darwin_virtual_size()
         elif statm.exists():
             baseline_virtual = int(statm.read_text().split()[0]) * os.sysconf('SC_PAGE_SIZE')
-        for which, desired in ((resource.RLIMIT_DATA, memory_bytes),
+        # XNU vm_map_set_data_limit checks vm_map->size too, not just heap
+        # bytes. Darwin limits NEW VM growth beyond startup mappings; not RSS.
+        data_limit = baseline_virtual + memory_bytes if sys.platform == 'darwin' else memory_bytes
+        for which, desired in ((resource.RLIMIT_DATA, data_limit),
                                (resource.RLIMIT_AS, baseline_virtual + memory_bytes)):
             hard = resource.getrlimit(which)[1]
             maximum = min(desired, hard) if hard != resource.RLIM_INFINITY else desired

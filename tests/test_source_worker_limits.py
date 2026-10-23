@@ -20,9 +20,19 @@ class DarwinBaselineTests(unittest.TestCase):
                 patch.object(resource, 'setrlimit') as set_limit:
             limits.set_memory_limit(budget)
         measured.assert_called_once_with()
-        set_limit.assert_any_call(resource.RLIMIT_DATA, (budget, budget))
+        set_limit.assert_any_call(resource.RLIMIT_DATA, (baseline + budget, baseline + budget))
         set_limit.assert_any_call(resource.RLIMIT_AS, (baseline + budget, baseline + budget))
         set_limit.assert_any_call(resource.RLIMIT_CORE, (0, 0))
+
+    def test_linux_retains_absolute_data_budget(self):
+        budget = 128 * 1024 * 1024
+        with patch('sys.platform', 'linux'), patch.object(Path, 'exists', return_value=False), \
+                patch.object(limits, '_darwin_virtual_size') as measured, \
+                patch.object(resource, 'getrlimit', return_value=(resource.RLIM_INFINITY, resource.RLIM_INFINITY)), \
+                patch.object(resource, 'setrlimit') as set_limit:
+            limits.set_memory_limit(budget)
+        measured.assert_not_called()
+        set_limit.assert_any_call(resource.RLIMIT_DATA, (budget, budget))
 
     def test_failed_darwin_measurement_never_installs_zero_baseline_limit(self):
         with patch('sys.platform', 'darwin'), \

@@ -36,6 +36,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
+      - name: Install native search test prerequisite
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Run test suite
         run: python -m pytest tests -q
       - name: Compile package
@@ -64,6 +66,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
 
+      - name: Install native search test prerequisite
+        run: choco install ripgrep --yes --no-progress
       - name: Run test suite
         run: python -m pytest tests -q
 
@@ -160,6 +164,8 @@ jobs:
           python-version: "3.12"
       - name: Install package
         run: python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
+      - name: Install native search test prerequisite
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
       - name: Run test suite
         run: python -m pytest tests -q
       - name: Exercise install.sh in an isolated runtime
@@ -213,7 +219,6 @@ jobs:
           python-version: "3.12"
       - name: Diagnose macOS worker memory controls
         if: runner.os == 'macOS'
-        continue-on-error: true
         run: |
           python - <<'PY'
           import platform, resource, runpy, traceback
@@ -223,6 +228,17 @@ jobs:
           try:
               runpy.run_path('zeline/source_worker_limits.py')['set_memory_limit'](128 * 1024 * 1024)
               print('WORKER_LIMIT_SETUP_PASSED', flush=True)
+              # Trusted bounded allocation probe, never an input artifact.
+              allocations = []
+              blocked = False
+              try:
+                  for _ in range(32):
+                      allocations.append(bytearray(8 * 1024 * 1024))
+              except MemoryError:
+                  blocked = True
+              allocations.clear()
+              assert blocked, 'Darwin 128MiB growth cap did not stop 256MiB allocation'
+              print('WORKER_LIMIT_ALLOCATION_ENFORCED', flush=True)
           except BaseException as error:
               print('WORKER_LIMIT_SETUP_FAILED', type(error).__name__, str(error), flush=True)
               traceback.print_exc()

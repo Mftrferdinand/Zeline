@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1.2", "ruff>=0.16"]
+dev = ["build>=1.2", "ruff>=0.16", "pytest>=8,<10", "pytest-subtests>=0.14,<1"]
 
 [project.scripts]
 zeline = "zeline.cli:main"

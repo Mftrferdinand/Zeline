@@ -195,12 +195,13 @@ def test_early_worker_exit_fails_closed_and_closes_pipes(monkeypatch):
 
 
 def test_cancellation_polled_during_real_worker_startup(monkeypatch):
-    import time
     module, workers = _track_workers(monkeypatch)
-    started = time.monotonic()
+    # Cancel after the actual owned child exists; fast CPUs may finish before
+    # an arbitrary wall-clock threshold, which is not a cancellation failure.
     with pytest.raises(InterruptedError):
         module.decode_instructions(b'\x90' * 4096, 'x86',
-                                   should_stop=lambda: time.monotonic() - started > 0.08)
+                                   should_stop=lambda: bool(workers))
+    assert len(workers) == 1
     _assert_clean(workers)
     assert not module._WORKER_LOCK.locked()
 
