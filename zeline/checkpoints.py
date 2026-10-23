@@ -26,7 +26,7 @@ Guarantees:
 """
 from __future__ import annotations
 
-import hashlib
+import secrets
 import json
 import os
 import shutil
@@ -175,8 +175,9 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
     try:
         _ensure_root()
         moment = time.time()
-        digest = hashlib.sha256(f"{target}:{moment}".encode()).hexdigest()[:16]
-        checkpoint_id = f"{int(moment)}-{digest[:8]}"
+        # Wall-clock ticks are not unique (notably on Windows). A restore
+        # snapshots the same path again and must never overwrite its source.
+        checkpoint_id = f"{int(moment)}-{secrets.token_hex(16)}"
         blob_name = f"{checkpoint_id}.blob"
         shutil.copy2(target, _root() / blob_name)
         try:
