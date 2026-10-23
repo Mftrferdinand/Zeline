@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.3] — 2026-10-23
+
+This release adds the reviewed bounded native static engine to v0.4.2. It does
+not restore the removed v0.3.5–v0.3.9 code line.
+
+### Added
+- Built-in `reverse_engineer` for bounded ELF/PE inspection, source inventory,
+  validated symbol navigation, native disassembly and paginated references
+  ([#338](https://github.com/Mftrferdinand/Zeline/pull/338)).
+- PE32/PE64 import-slot references preserve static table identity and explicitly
+  leave runtime targets/providers unknown; unsupported addressing is not guessed.
+- Linux, Windows and macOS fresh-wheel/native-worker verification in CI.
+
+### Fixed
+- Scope asynchronous callback state to its own provider request or tool batch
+  ([#330](https://github.com/Mftrferdinand/Zeline/pull/330)).
+- Preserve native worker memory/time controls, deterministic checkpoint IDs,
+  Windows pipe handling and cross-platform test portability.
+
 ## [0.4.2] — 2026-10-22
 
 This release packages the merged terminal runtime UI and updater hardening on
@@ -440,3 +459,5 @@ Release notes for 0.2.5 and earlier are on the
 [#233]: https://github.com/Mftrferdinand/Zeline/pull/233
 [0.4.2]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.2
 [0.4.1]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.1
+
+[0.4.3]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.3

@@ -1,52 +1,31 @@
-# Zeline v0.4.2
+# Zeline v0.4.3
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
-This release brings the reviewed runtime and Telegram improvements on `main`
-into a versioned distribution. It builds on the retained v0.3.4 baseline; it is
-not a wholesale restoration of the removed v0.3.5–v0.3.9 code line.
+This release adds the reviewed bounded native static engine to v0.4.2 and
+includes audited asynchronous callback bindings. It is not a wholesale
+restoration of the removed v0.3.5–v0.3.9 code line.
 
 ## Highlights
 
-- **Terminal runtime dashboard and chat composer.** Responsive paired panels,
-  readable narrow-terminal fallback, local command handling, live tool activity,
-  gateway/QR presentation, and PTY coverage keep the operator view stable
-  without echoing sensitive tool arguments.
-- **Safer staged updater.** Update plans now show the target and verification
-  stages, verify SHA-256 before installation, bound release payloads, and always
-  restore a paused gateway when verification or installer startup fails.
-- **Bounded local discovery.** Loopback 9Router probing and parallel MCP discovery
-  use explicit deadlines and bounded reads so an unavailable optional service
-  cannot stall the runtime indefinitely.
-
-- **Bounded, resumable tool I/O.** Read files in bounded pages, resume with
-  validated cursors, and preserve complete process output in bounded spools.
-  Invalid UTF-8 and incomplete capture remain visible failures rather than
-  silently truncated success. Process ownership and cleanup respect cancellation.
-- **Evidence-preserving context.** Session compaction and stored context windows
-  retain tool-call/result integrity and continuation evidence rather than merely
-  trimming the newest messages.
-- **Safer self-improvement.** Internal reflection proposes skill changes instead
-  of silently overwriting or deleting active procedures. SkillForge supports
-  observed usage, revision proposals, test gates, explicit review and backups.
-  Routine operator-requested skill management remains available.
-- **Truthful learning phases.** 📙 Self-Enhancement, 📘 Self-Improvement and
-  📗 Self-Refinement are emitted only for supported actions and evidence. Empty,
-  cancelled or failed reviews do not fabricate completed phases; incomplete
-  reviews remain visible. Substantial research can qualify for review.
-- **Updated Telegram activity UI.** Restored activity icons, including
-  `📂 Executing browser script…`, compact letter-choice questions with durable
-  receipts, separate post-task learning messages, unquoted live narration,
-  preserved final-answer attribution and explicit stop confirmation. Progress
-  favors findings, blockers and decisions over repetitive routine narration.
-- **Runtime and cron hardening.** Reviewed execution-policy, cancellation,
-  continuation and scheduler fixes, including macOS cleanup race handling.
-  Subprocess cleanup never group-signals a shared or foreign group; owned
-  descendants and Windows tree termination retain their cleanup behavior.
-  This defensive fix does not establish the cause of any past host outage.
-- **Optional MCP integrations.** Documented Parallel Search and local Sem code
-  lookup. These are optional external servers, not new built-in runtime tools;
-  their access and side effects are documented in the integration guide.
+- **Built-in bounded static reverse engineering.** `reverse_engineer` inspects
+  ELF/PE metadata and source inventory, validates symbols/imports, and provides
+  native disassembly plus paginated references. It never executes the analyzed
+  binary or source. Capstone/tree-sitter are packaged dependencies rather than
+  a separate manually configured service.
+- **Explicit static versus runtime identity.** PE32/PE64 import-slot references
+  bind to validated IAT metadata. Runtime callees and provider resolution remain
+  unknown; unsupported/far/addressing forms are not attributed by guesswork.
+- **Worker and pagination controls.** Memory/time budgets, cancellation,
+  fail-closed validation, evidence digests and bounded retained rows remain in
+  force. These controls are not an OS sandbox, universal RSS cap or claim of
+  whole-program completeness.
+- **Audited callback bindings.** Provider payload/backoff and asynchronous
+  batch invocation state are bound to their own iteration instead of a later
+  loop value. Existing cancellation and evidence-preservation behavior remains.
+- **Cross-platform verification.** Full configured pytest and fresh-wheel
+  native probes cover Linux, Windows and macOS. Test skips and platform warnings
+  remain visible; warnings are not silently reclassified as fixes.
 
 ## Verification
 
@@ -62,25 +41,25 @@ repository. GitHub Actions uploads the verified distributions without rebuilding
 PyPI, inside a virtual environment:
 
 ```sh
-python -m pip install --upgrade zeline==0.4.2
+python -m pip install --upgrade zeline==0.4.3
 ```
 
 Or install in an isolated tool environment:
 
 ```sh
-uv tool install zeline==0.4.2
+uv tool install zeline==0.4.3
 ```
 
 POSIX installer — Termux, Linux, macOS and iSH:
 
 ```sh
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.3/install.sh && bash install.sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.3/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 The installers download the matching versioned wheel and verify its SHA-256
@@ -88,6 +67,12 @@ checksum. Run `zeline setup` after a new install. Existing installations can use
 `zeline update`, or `/update` in Telegram.
 
 ## Upgrade notes
+
+The new engine performs static analysis only. It does not run targets, load
+imports, resolve live loader state or provide a network/OS sandbox. Existing
+network tooling is not a multi-tenant isolation boundary. PRs held by the
+maintainer audit are not included in this release.
+
 
 - Back up your existing configuration before upgrading. No manual configuration
   migration is required by this release; explicit operator settings are retained.
@@ -99,15 +84,16 @@ checksum. Run `zeline setup` after a new install. Existing installations can use
 
 ## Documentation
 
-- [Installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/docs/installation.md)
-- [Changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/CHANGELOG.md)
-- [Bounded runtime I/O](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/docs/bounded-tool-runtime.md)
-- [Optional MCP setup](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/docs/extending.md)
+- [Installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.4.3/docs/installation.md)
+- [Static reverse engineering](https://github.com/Mftrferdinand/Zeline/blob/v0.4.3/docs/reverse-engineering.md)
+- [Changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.4.3/CHANGELOG.md)
+- [Bounded runtime I/O](https://github.com/Mftrferdinand/Zeline/blob/v0.4.3/docs/bounded-tool-runtime.md)
+- [Optional MCP setup](https://github.com/Mftrferdinand/Zeline/blob/v0.4.3/docs/extending.md)
 
 ## Release assets
 
-- `zeline-0.4.2-py3-none-any.whl`
-- `zeline-0.4.2.tar.gz`
+- `zeline-0.4.3-py3-none-any.whl`
+- `zeline-0.4.3.tar.gz`
 - `install.sh` and `install.ps1`
 - `SHA256SUMS`
 
@@ -115,3 +101,5 @@ Artifacts are built from the immutable release tag in merged `main` history.
 GitHub Release and PyPI receive the same wheel and source archive.
 
 *Agent-generated release notes.*
+
+*Agent-generated release notes. Publication is gated by repository CI and artifact verification.*
