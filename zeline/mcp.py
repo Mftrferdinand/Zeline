@@ -316,6 +316,10 @@ class MCPRegistry:
         self.servers: dict[str, MCPServer] = {s.name: s for s in (servers or [])}
         self._tool_cache: list[dict[str, Any]] | None = None
         self._errors: dict[str, str] = {}
+        # Per-server tool gates from config: (allowed, denied). Allowed is empty
+        # when no allowlist was configured, meaning "everything the server
+        # exposes". Denied always wins over allowed.
+        self._gates: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "MCPRegistry":
@@ -323,6 +327,7 @@ class MCPRegistry:
 
         raw = (cfg.get("mcp") or {}).get("servers") or {}
         servers: list[MCPServer] = []
+        gates: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
         for name, spec in raw.items():
             if not isinstance(spec, dict) or not spec.get("enabled", True):
                 continue
@@ -330,6 +335,16 @@ class MCPRegistry:
                 spec = mcp_config.expand_spec(spec)
             except mcp_config.ConfigReferenceError as exc:
                 raise ValueError(f"MCP server '{name}': {exc}") from exc
+            allow = spec.get("allowed_tools") or spec.get("tools")
+            deny = spec.get("denied_tools") or []
+            if allow is not None and not isinstance(allow, list) or deny is not None and not isinstance(deny, list):
+                raise ValueError(
+                    f"MCP server '{name}': allowed_tools/denied_tools must be lists of tool names")
+            if allow is not None or deny:
+                gates[str(name)] = (
+                    frozenset(str(item) for item in (allow or [])),
+                    frozenset(str(item) for item in (deny or [])),
+                )
             transport = str(spec.get("transport") or ("http" if spec.get("url") else "stdio"))
             servers.append(MCPServer(
                 name=str(name),
@@ -339,7 +354,9 @@ class MCPRegistry:
                 headers={str(k): str(v) for k, v in (spec.get("headers") or {}).items()},
                 env={str(k): str(v) for k, v in (spec.get("env") or {}).items()},
             ))
-        return cls(servers)
+        registry = cls(servers)
+        registry._gates = gates
+        return registry
 
     def schemas(self) -> list[dict[str, Any]]:
         """Tools from every server (cached). A slow or dead server is skipped.
@@ -376,9 +393,31 @@ class MCPRegistry:
             if thread.is_alive():
                 self._errors[name] = "TimeoutError: discovery deadline exceeded"
         for name in self.servers:
-            collected.extend(results.get(name, []))
+            allowed, denied = self._gates.get(name, (frozenset(), frozenset()))
+            for schema in results.get(name, []):
+                tool_name = str(schema.get("name", ""))
+                if tool_name in denied:
+                    continue
+                if allowed and tool_name not in allowed:
+                    continue
+                collected.append(schema)
         self._tool_cache = collected
         return collected
+
+    def _gate_check(self, name: str) -> str | None:
+        """Return a refusal when a per-server gate blocks this tool call."""
+        parsed = parse_tool_name(name)
+        if not parsed:
+            return None
+        server, tool = parsed
+        allowed, denied = self._gates.get(server, (frozenset(), frozenset()))
+        if tool in denied:
+            return (f"ERROR: MCP tool '{tool}' on server '{server}' is denied by "
+                    "denied_tools in the config. This is a local policy decision — do not retry.")
+        if allowed and tool not in allowed:
+            return (f"ERROR: MCP tool '{tool}' on server '{server}' is not in allowed_tools "
+                    "in the config. This is a local policy decision — do not retry.")
+        return None
 
     def has_tool(self, name: str) -> bool:
         parsed = parse_tool_name(name)
@@ -392,6 +431,11 @@ class MCPRegistry:
         server = self.servers.get(server_name)
         if not server:
             return f"ERROR: MCP server '{server_name}' tidak terdaftar."
+        # Per-server gate: a tool hidden from schemas must also be refused at
+        # call time, because the model can name a tool it never saw listed.
+        refused = self._gate_check(name)
+        if refused:
+            return refused
         try:
             return server.call_tool(tool, arguments)
         except Exception as exc:

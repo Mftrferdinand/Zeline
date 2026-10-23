@@ -79,5 +79,61 @@ class ExpandTests(unittest.TestCase):
         self.assertIn("NOPE_VAR", str(ctx.exception))
 
 
+class GateTests(unittest.TestCase):
+    """Per-server allowed_tools/denied_tools gating."""
+
+    def _registry(self, spec):
+        from zeline import mcp
+
+        return mcp.MCPRegistry.from_config({"mcp": {"servers": {"srv": spec}}})
+
+    def _fake_server(self, registry, tools=("alpha", "beta", "gamma")):
+        """Register a fake connected server without spawning a process."""
+        from zeline import mcp as mcp_module
+
+        server = mcp_module.MCPServer(name="srv", transport="stdio", command="")
+        server.list_tools = lambda: [{"name": name, "description": "", "inputSchema": {}} for name in tools]
+        registry.servers["srv"] = server
+        registry._tool_cache = None
+        return server
+
+    def test_allowlist_hides_other_tools(self):
+        registry = self._registry({"command": "x", "allowed_tools": ["alpha"]})
+        self._fake_server(registry)
+        names = {schema["name"] for schema in registry.schemas()}
+        self.assertEqual(names, {"alpha"})
+
+    def test_denylist_wins_over_allowlist(self):
+        registry = self._registry({"command": "x", "allowed_tools": ["alpha", "beta"], "denied_tools": ["beta"]})
+        self._fake_server(registry)
+        names = {schema["name"] for schema in registry.schemas()}
+        self.assertEqual(names, {"alpha"})
+
+    def test_call_refused_for_denied(self):
+        registry = self._registry({"command": "x", "denied_tools": ["beta"]})
+        self._fake_server(registry)
+        out = registry.call("mcp__srv__beta", {})
+        self.assertIn("denied by denied_tools", out)
+
+    def test_call_refused_for_not_allowed(self):
+        registry = self._registry({"command": "x", "allowed_tools": ["alpha"]})
+        self._fake_server(registry)
+        out = registry.call("mcp__srv__gamma", {})
+        self.assertIn("not in allowed_tools", out)
+
+    def test_call_allowed_reaches_server(self):
+        registry = self._registry({"command": "x", "allowed_tools": ["alpha"]})
+        self._fake_server(registry)
+        calls = []
+        server = registry.servers["srv"]
+        server.initialize = lambda: None
+        server.call_tool = lambda tool, args: f"ran {tool}"
+        self.assertEqual(registry.call("mcp__srv__alpha", {}), "ran alpha")
+
+    def test_invalid_gate_config_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self._registry({"command": "x", "allowed_tools": "alpha"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,7 @@ class DiscoveryDeadlineTests(unittest.TestCase):
         pool.servers = servers
         pool._errors = {}
         pool._tool_cache = None
+        pool._gates = {}
         return pool
 
     def test_one_hanging_server_does_not_block_the_good_one(self):
