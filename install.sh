@@ -152,10 +152,10 @@ platform_label() {
 
 platform_package_command() {
   case "$PLATFORM" in
-    termux) printf 'pkg install python curl -y' ;;
+    termux) printf 'pkg install python curl clang make -y' ;;
     linux) printf 'Debian/Ubuntu: sudo apt install python3 python3-venv curl -y' ;;
     macos) printf 'xcode-select --install; brew install python' ;;
-    ios-ish) printf 'apk add bash curl python3 py3-pip' ;;
+    ios-ish) printf 'apk add bash curl python3 py3-pip build-base python3-dev' ;;
   esac
 }
 

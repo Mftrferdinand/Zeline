@@ -35,6 +35,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "http_request": {"url": "https://example.com/api"},
             "browser": {"action": "open", "url": "https://example.com"},
             "code_intel": {"action": "diagnostics", "path": "app.py"},
+            "reverse_engineer": {"action": "references", "path": "artifacts/program", "target_address": 4096},
             "system_env": {},
             "read_file": {"path": "app.py"},
             "write_file": {"path": "app.py"},

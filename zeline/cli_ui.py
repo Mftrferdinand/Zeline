@@ -50,6 +50,7 @@ _CTRL = re.compile(
 _TOOL_NAMES = {
     "run_shell": "shell",
     "read_file": "read",
+    "reverse_engineer": "static analysis",
     "write_file": "write",
     "patch_file": "edit",
     "search_files": "search",

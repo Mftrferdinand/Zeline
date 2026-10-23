@@ -35,9 +35,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
-        run: python -m pip install --upgrade pip && python -m pip install .
+        run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        run: python -m pytest -q
       - name: Compile package
         run: python -m compileall -q zeline
 
@@ -62,10 +62,10 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install .
+          python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
 
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        run: python -m pytest -q
 
       - name: Compile package
         run: python -m compileall -q zeline
@@ -159,9 +159,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install package
-        run: python -m pip install .
+        run: python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        run: python -m pytest -q
       - name: Exercise install.sh in an isolated runtime
         env:
           ZELINE_PYTHON: python3
@@ -198,3 +198,20 @@ jobs:
           assert not blocked, f"local state leaked into wheel: {blocked}"
           print(wheel, "OK")
           PY
+
+  native-wheel:
+    name: native-wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build native candidate wheel
+        run: python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Fresh installed native engine and CLI from neutral directory
+        run: python .github/scripts/check_native_wheel.py
