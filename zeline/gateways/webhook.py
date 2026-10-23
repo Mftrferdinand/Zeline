@@ -19,12 +19,47 @@ from zeline.command_ui import emit as print
 
 import hmac
 import json
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 from zeline.agent import ZelineError
 
 MAX_BODY_BYTES = 32_000
+#: Sliding-window rate limit per client identity. A public webhook without a
+#: rate limit lets one noisy client flood the agent session queue and starve
+#: every other chat; 30 requests / minute per identity is generous for a
+#: conversational endpoint but stops naive floods.
+RATE_LIMIT_MAX_REQUESTS = 30
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+class _RateLimiter:
+    """Per-identity sliding-window limiter, safe under ThreadingHTTPServer."""
+
+    def __init__(self, max_requests: int, window_seconds: float) -> None:
+        self._max = max_requests
+        self._window = window_seconds
+        self._lock = threading.Lock()
+        self._hits: dict[str, list[float]] = {}
+
+    def allow(self, identity: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            hits = [t for t in self._hits.get(identity, []) if now - t < self._window]
+            if len(hits) >= self._max:
+                self._hits[identity] = hits
+                return False
+            hits.append(now)
+            self._hits[identity] = hits
+            # opportunistic cleanup so the map cannot grow without bound
+            if len(self._hits) > 1024:
+                self._hits = {
+                    key: keep for key, keep in self._hits.items()
+                    if keep and now - keep[-1] < self._window
+                }
+            return True
 
 
 def info() -> dict[str, str]:
@@ -91,6 +126,10 @@ def start(
             if self.path.rstrip("/") != "/message":
                 self._json(404, {"error": "not found"})
                 return
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            if not rate_limiter.allow(client_ip):
+                self._json(429, {"error": "rate limited; slow down and retry later"})
+                return
             if not _is_authorized(self.headers, token):
                 self._json(401, {"error": "unauthorized"})
                 return
@@ -136,6 +175,7 @@ def start(
             return
 
     server = ThreadingHTTPServer((host, port), Handler)
+    rate_limiter = _RateLimiter(RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS)
     server.timeout = 0.5
     bound_port = int(server.server_address[1])
     if ready is not None:

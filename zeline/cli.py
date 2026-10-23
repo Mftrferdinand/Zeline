@@ -2536,6 +2536,11 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_test = mcp_sub.add_parser("test", help="test connection & list tools")
     mcp_test.add_argument("name", nargs="?")
 
+    subparsers.add_parser(
+        "mcp-server",
+        help="run Zeline itself as a stdio MCP server (for Claude Desktop, Cursor, Zed)",
+    )
+
     subparsers.add_parser("doctor", aliases=["status"], help="check dependencies and configuration")
     subparsers.add_parser("update", aliases=["upgrade"], help="update Zeline in place (keeps ~/.zeline data)")
     subparsers.add_parser("version", help="show the installed version and the latest release")
@@ -2811,6 +2816,10 @@ def main(argv: list[str] | None = None) -> int:
             command=getattr(namespace, "mcp_cmd", ""),
             url=getattr(namespace, "url", ""),
         )
+    if command == "mcp-server":
+        from zeline.mcp_server import ZelineMcpServer
+        ZelineMcpServer().serve()
+        return 0
     if command in {"skills", "skill"}:
         return cmd_skills()
     if command == "memory":

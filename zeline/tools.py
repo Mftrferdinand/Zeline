@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -817,6 +817,49 @@ def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str
         return f"ERROR running code: {exc}"
 
 
+def _validate_url_for_ssrf(url: str) -> str | None:
+    """Validate the *initial* URL of an outbound request.
+
+    Redirects are re-validated separately (see ``_SSRFSafeRedirectHook``):
+    checking only the first hop is not enough, because a public URL can
+    302-redirect to 169.254.169.254 or another internal address.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "URL must be a valid http/https URL."
+    host = parsed.hostname or ""
+    if not host or _is_internal_ip(host):
+        return "URL points to an internal address and is blocked."
+    return None
+
+
+class _SSRFSafeRedirectHook:
+    """Block redirects that hop to an internal address.
+
+    ``requests`` resolves each redirect hop itself, so a hostname check on the
+    original URL says nothing about where the connection actually lands. This
+    hook inspects every redirect target and aborts the request chain when it
+    points inside the private network, closing the classic
+    ``allow_redirects=True`` SSRF bypass.
+    """
+
+    def __init__(self, max_hops: int = 5) -> None:
+        self._hops_left = max_hops
+
+    def __call__(self, response: requests.Response, **_: Any) -> requests.Response | None:
+        if not response.is_redirect:
+            return None
+        if self._hops_left <= 0:
+            raise requests.RequestException("too many redirects")
+        self._hops_left -= 1
+        location = response.headers.get("Location", "")
+        next_url = urljoin(response.url, location)
+        problem = _validate_url_for_ssrf(next_url)
+        if problem is not None:
+            raise requests.RequestException(f"redirect blocked (SSRF protection): {problem}")
+        return None  # None = let requests follow the (now validated) redirect
+
+
 def _http_request(method: str, url: str, headers: str = "", body: str = "") -> str:
     """Panggil REST API dengan method bebas (GET/POST/PUT/PATCH/DELETE).
 
@@ -852,6 +895,7 @@ def _http_request(method: str, url: str, headers: str = "", body: str = "") -> s
     try:
         response = requests.request(
             method, url, headers=hdrs, data=data, timeout=WEB_TIMEOUT, allow_redirects=True,
+            hooks={"response": [_SSRFSafeRedirectHook()]},
         )
     except requests.RequestException as exc:
         return f"ERROR request: {exc.__class__.__name__}: {exc}"
@@ -882,7 +926,8 @@ def _download_file(url: str, path: str, workspace: Path) -> str:
         return f"ERROR: {exc}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True) as response:
+        with requests.get(url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True, allow_redirects=True,
+                          hooks={"response": [_SSRFSafeRedirectHook()]},) as response:
             if not response.ok:
                 return f"ERROR: HTTP {response.status_code} {response.reason}."
             size = 0
@@ -1284,6 +1329,357 @@ def _send_file(path: str, workspace: Path, identity: str, caption: str = "") -> 
     return delivery.send(identity, target, caption)
 
 
+def _json_query(data: str, query: str, workspace: Path) -> str:
+    """Query/transform JSON with a small safe expression language.
+
+    Inspired by tools like jq/JMESPath but dependency-free and deliberately
+    tiny: dot paths, array slices, wildcards, simple comparisons, and '|'
+    pipes cover the 90% case — pulling exact fields out of large API
+    responses without dumping the whole payload into context. No eval/exec:
+    every stage is parsed into a narrow AST before it touches the data.
+    """
+    data = (data or "").strip()
+    if not data:
+        return "ERROR: data is empty."
+    # Accept a workspace file path as input.
+    if data.startswith(("{", "[", '"')):
+        try:
+            doc = json.loads(data)
+        except json.JSONDecodeError as exc:
+            return f"ERROR: invalid JSON: {exc}"
+    else:
+        try:
+            source = _resolve_workspace_path(data, workspace)
+            doc = json.loads(source.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        except (OSError, json.JSONDecodeError) as exc:
+            return f"ERROR reading JSON file: {exc}"
+
+    stages = [part.strip() for part in (query or "").split("|") if part.strip()]
+    try:
+        current = doc
+        for stage in stages:
+            current = _json_query_stage(current, stage)
+    except _JsonQueryError as exc:
+        return f"ERROR: {exc}"
+    try:
+        result = json.dumps(current, ensure_ascii=False, default=str)
+    except (TypeError, ValueError) as exc:
+        return f"ERROR: result not serializable: {exc}"
+    if len(result) > 12_000:
+        result = result[:12_000] + "\n... [truncated]"
+    return result
+
+
+class _JsonQueryError(ValueError):
+    pass
+
+
+_COMPARISON_RE = re.compile(r"^(.+?)(==|!=|>=|<=|>|<)(.+)$")
+
+
+def _json_query_stage(node: Any, stage: str) -> Any:
+    """Apply one pipe stage to the current value."""
+    if stage == "*":
+        return node
+    match = _COMPARISON_RE.match(stage)
+    if match and not stage.startswith("."):
+        return _json_query_filter(node, match.group(1).strip(), match.group(2), match.group(3).strip())
+    if isinstance(node, dict) and "." not in stage and "[" not in stage and stage in node:
+        return node[stage]
+    if isinstance(node, list) and "." not in stage and ":" not in stage and stage != "*":
+        # A bare key after a filter or slice maps over the remaining objects:
+        # users | age>=30 | name  ->  ["ana", "citra"]
+        if all(isinstance(item, dict) and stage in item for item in node) and node:
+            return [item[stage] for item in node]
+    if isinstance(node, list) and "." in stage:
+        # Dotted path over a list of objects maps per element:
+        # users.0:2.name  ->  walk each element's path.
+        mapped = []
+        for item in node:
+            try:
+                mapped.append(_json_query_stage(item, stage))
+            except _JsonQueryError:
+                continue
+        if mapped:
+            return mapped
+    return _json_query_path(node, stage)
+
+
+def _json_query_path(node: Any, path: str) -> Any:
+    """Walk a dotted path: keys, integer indices, slices, and '*' wildcards."""
+    if path.startswith("$."):
+        path = path[2:]
+    parts = path.split(".") if path else []
+    current = node
+    for index, part in enumerate(parts):
+        if part == "*":
+            if isinstance(current, list):
+                rest = ".".join(parts[index + 1:])
+                current = [_json_query_path(item, rest) for item in current]
+                return current
+            if isinstance(current, dict):
+                rest = ".".join(parts[index + 1:])
+                current = [_json_query_path(item, rest) for item in current.values()]
+                return current
+            raise _JsonQueryError(f"'*' used on non-collection at '{part}'")
+        if ":" in part:
+            sliced = part.split(":")
+            if not isinstance(current, list):
+                raise _JsonQueryError(f"slice '{part}' needs a list")
+            start = int(sliced[0]) if sliced[0] else None
+            end = int(sliced[1]) if sliced[1] else None
+            current = current[start:end]
+            rest = ".".join(parts[index + 1:])
+            if rest:
+                current = [_json_query_path(item, rest) for item in current]
+            return current
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError):
+                raise _JsonQueryError(f"index '{part}' invalid for list") from None
+        elif isinstance(current, dict):
+            if part not in current:
+                raise _JsonQueryError(f"key '{part}' not found")
+            current = current[part]
+        else:
+            raise _JsonQueryError(f"cannot descend into {type(current).__name__} at '{part}'")
+    return current
+
+
+def _json_query_filter(node: Any, key: str, op: str, raw_value: str) -> Any:
+    """Filter a list of objects/ scalars by comparison, e.g. age>30."""
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        value = raw_value.strip("\"'")
+    if not isinstance(node, list):
+        raise _JsonQueryError("comparison filter needs a list to filter")
+
+    def matches(item: Any) -> bool:
+        if isinstance(item, dict):
+            if key not in item:
+                return False
+            actual = item[key]
+        elif isinstance(key, str) and key.isdigit() and isinstance(item, list):
+            try:
+                actual = item[int(key)]
+            except IndexError:
+                return False
+        else:
+            actual = item
+        try:
+            if op == "==":
+                return actual == value
+            if op == "!=":
+                return actual != value
+            if actual is None or value is None:
+                return False
+            if op == ">":
+                return actual > value
+            if op == ">=":
+                return actual >= value
+            if op == "<":
+                return actual < value
+            if op == "<=":
+                return actual <= value
+        except TypeError:
+            return False
+        return False
+
+    return [item for item in node if matches(item)]
+
+
+def _generate_speech(text: str, path: str, workspace: Path, voice: str = "alloy") -> str:
+    """Text-to-speech via the provider's OpenAI-compatible ``/audio/speech`` endpoint.
+
+    Zeline already turns voice notes into text (transcribe.py); this is the
+    mirror direction, so the agent can answer with a voice note, pre-render an
+    announcement, or produce audio content. Model follows ZELINE_TTS_MODEL.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "ERROR: need text to speak."
+    if len(text) > 4_096:
+        return "ERROR: text too long (maximum 4,096 characters per request). Split it and generate parts."
+    tts_model = str(getattr(config, "TTS_MODEL", "") or os.environ.get("ZELINE_TTS_MODEL", "") or "").strip()
+    if not config.API_KEY or not config.BASE_URL:
+        return "ERROR: provider is not configured for speech generation."
+    if not tts_model:
+        return (
+            "ERROR: no text-to-speech model is configured. The owner can set one with "
+            "`zeline setup` (audio model) or the ZELINE_TTS_MODEL environment variable, "
+            "e.g. tts-1 or tts-1-hd."
+        )
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() not in {".mp3", ".wav", ".opus", ".aac", ".flac"}:
+        return "ERROR: output path must end in .mp3/.wav/.opus/.aac/.flac."
+    voice = (voice or "alloy").strip()
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/audio/speech",
+            headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
+            json={"model": tts_model, "input": text, "voice": voice, "response_format": dest.suffix.lower()[1:]},
+            timeout=180,
+        )
+    except requests.exceptions.Timeout:
+        return f"ERROR: the TTS model '{tts_model}' did not respond within 180s. Try again or use a shorter text."
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the speech provider ({exc.__class__.__name__})."
+    if not response.ok:
+        from zeline.agent import PROVIDER_STATUS_HINTS
+        hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}" if response.status_code in PROVIDER_STATUS_HINTS else ""
+        if response.status_code == 404:
+            hint += f" — the model '{tts_model}' or the /audio/speech route was not found on this provider."
+        return f"ERROR: speech provider HTTP {response.status_code}{hint}"
+    dest.write_bytes(response.content)
+    return f"OK, generated speech ({len(response.content)} bytes) to {dest}"
+
+
+def _generate_video(prompt: str, path: str, workspace: Path, seconds: int = 5, size: str = "720p") -> str:
+    """Text-to-video via the provider's video generation endpoint (Sora-style /videos)."""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return "ERROR: need a text prompt describing the video to generate."
+    video_model = str(getattr(config, "VIDEO_MODEL", "") or os.environ.get("ZELINE_VIDEO_MODEL", "") or "").strip()
+    if not config.API_KEY or not config.BASE_URL:
+        return "ERROR: provider is not configured for video generation."
+    if not video_model:
+        return (
+            "ERROR: no text-to-video model is configured. The owner can set one with the "
+            "ZELINE_VIDEO_MODEL environment variable, e.g. sora-2."
+        )
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".mp4":
+        return "ERROR: output path must end in .mp4."
+    seconds = max(1, min(int(seconds or 5), 20))
+    try:
+        response = requests.post(
+            f"{config.BASE_URL}/videos",
+            headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
+            json={"model": video_model, "prompt": prompt, "seconds": str(seconds), "size": size},
+            timeout=600,
+        )
+    except requests.exceptions.Timeout:
+        return (
+            f"ERROR: the video model '{video_model}' did not respond within 600s. "
+            "Video renders are slow — retry with a shorter clip (seconds=4) or run this again later."
+        )
+    except requests.RequestException as exc:
+        return f"ERROR: network error contacting the video provider ({exc.__class__.__name__})."
+    if not response.ok:
+        from zeline.agent import PROVIDER_STATUS_HINTS
+        hint = f" — {PROVIDER_STATUS_HINTS[response.status_code]}" if response.status_code in PROVIDER_STATUS_HINTS else ""
+        if response.status_code == 404:
+            hint += f" — the model '{video_model}' or the /videos route was not found on this provider."
+        return f"ERROR: video provider HTTP {response.status_code}{hint}"
+    try:
+        payload = response.json()
+    except ValueError:
+        return "ERROR: video provider returned an unexpected response."
+    video_url = payload.get("url") or (payload.get("data") or [{}])[0].get("url") if isinstance(payload, dict) else None
+    b64 = payload.get("b64_json") if isinstance(payload, dict) else None
+    if not video_url and not b64:
+        job_id = payload.get("id") if isinstance(payload, dict) else None
+        if job_id:
+            return (
+                f"Video render queued (job id: {job_id}). Poll it with http_request: "
+                f"GET {config.BASE_URL}/videos/{job_id}"
+            )
+        return "ERROR: video provider returned neither video data, a URL, nor a job id."
+    raw: bytes
+    if b64:
+        try:
+            raw = base64.b64decode(b64)
+        except (ValueError, TypeError):
+            return "ERROR: video provider returned invalid base64 data."
+    else:
+        try:
+            with requests.get(video_url, headers={"User-Agent": _UA}, timeout=WEB_TIMEOUT, stream=True) as dl:
+                if not dl.ok:
+                    return f"ERROR: could not download generated video (HTTP {dl.status_code})."
+                chunks = []
+                size_total = 0
+                for chunk in dl.iter_content(65536):
+                    chunks.append(chunk)
+                    size_total += len(chunk)
+                    if size_total > 200 * 1024 * 1024:
+                        return "ERROR: generated video exceeds the 200 MB limit."
+                raw = b"".join(chunks)
+        except requests.RequestException as exc:
+            return f"ERROR: could not download generated video ({exc.__class__.__name__})."
+    dest.write_bytes(raw)
+    return f"OK, generated video ({len(raw)} bytes, {seconds}s) to {dest}"
+
+
+def _qr_code(data: str, path: str, workspace: Path) -> str:
+    """Render a QR code PNG into the workspace (built-in encoder, zero deps)."""
+    data = (data or "").strip()
+    if not data:
+        return "ERROR: need data to encode."
+    if len(data.encode("utf-8")) > 290:
+        return "ERROR: data too long for this built-in QR generator (max 290 bytes). Shorten it or use a URL."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".png":
+        return "ERROR: output path must end in .png."
+    try:
+        from zeline import qr
+        png = qr.encode_png(data)
+    except Exception as exc:
+        return f"ERROR: QR generation failed ({type(exc).__name__})."
+    dest.write_bytes(png)
+    return f"OK, QR code ({dest.stat().st_size} bytes) written to {dest}"
+
+
+def _render_chart(kind: str, data: str, path: str, workspace: Path, title: str = "") -> str:
+    """Render a bar/line/pie chart PNG from 'label=value' data (zero deps)."""
+    kind = (kind or "bar").strip().lower()
+    if kind not in {"bar", "line", "pie"}:
+        return "ERROR: unsupported chart kind. Use bar, line, or pie."
+    rows: list[tuple[str, float]] = []
+    for chunk in (data or "").replace("\n", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" in chunk:
+            label, _, raw = chunk.partition("=")
+            label = label.strip()[:24] or "?"
+        else:
+            label, raw = f"item {len(rows) + 1}", chunk
+        try:
+            rows.append((label, float(raw.strip())))
+        except ValueError:
+            return f"ERROR: cannot parse value in '{chunk}'. Format: label=value."
+    if not rows:
+        return "ERROR: no data points. Format: 'Mon=12, Tue=30'."
+    if len(rows) > 24:
+        return "ERROR: too many data points (max 24)."
+    try:
+        dest = _resolve_workspace_path(path, workspace)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    if dest.suffix.lower() != ".png":
+        return "ERROR: output path must end in .png."
+    try:
+        from zeline import charts
+        png = charts.render_png(kind, rows, title=title.strip()[:80])
+    except Exception as exc:
+        return f"ERROR: chart rendering failed ({type(exc).__name__})."
+    dest.write_bytes(png)
+    return f"OK, chart ({dest.stat().st_size} bytes) written to {dest}"
+
+
 def _system_env() -> str:
     """Ringkasan lingkungan sistem: OS/arch, tool/runtime terpasang, port lokal aktif.
 
@@ -1347,7 +1743,8 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
-    return all(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
+    # any, bukan all: satu record internal pada DNS campuran adalah bypass.
+    return any(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
 
 
 def _addr_is_internal(addr: ipaddress._BaseAddress) -> bool:
@@ -1655,6 +2052,7 @@ def _fetch_with_network_routes(url: str) -> str | None:
                 proxies=network_routes.proxies(str(route["proxy_url"])),
                 timeout=WEB_TIMEOUT,
                 allow_redirects=True,
+                hooks={"response": [_SSRFSafeRedirectHook()]},
                 stream=True,
             )
             chunks: list[bytes] = []
@@ -1714,6 +2112,7 @@ def _web_fetch(url: str, use_private_routes: bool = False) -> str:
             headers={"User-Agent": _UA},
             timeout=WEB_TIMEOUT,
             allow_redirects=True,
+            hooks={"response": [_SSRFSafeRedirectHook()]},
             stream=True,
         )
         if response.ok:
@@ -1989,6 +2388,23 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "memory_query",
+        "Structured memory query with metadata filters and cursor pagination — complements recall/list_memory. Filter by kind (preference/fact/procedure/correction/other), source (user/reflection), min confidence, or time range; page through large result sets deterministically. Use for memory audits, bulk inspection, and cleanup.",
+        {
+            "type": "object",
+            "properties": {
+                "kinds": {"type": "array", "items": {"type": "string"}, "description": "Filter by kind"},
+                "sources": {"type": "array", "items": {"type": "string"}, "description": "Filter by source (user/reflection)"},
+                "min_confidence": {"type": "number", "description": "0-1 minimum confidence"},
+                "observed_after": {"type": "number", "description": "Unix ts: updated after"},
+                "observed_before": {"type": "number", "description": "Unix ts: updated before"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "cursor": {"type": "string", "description": "Opaque cursor from a previous page's next_cursor"},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "load_skill",
         "Read the full content of a skill/procedure by its skill file name.",
         {
@@ -2152,6 +2568,76 @@ TOOL_DEFS: list[ToolDef] = [
         "system_env",
         "Show environment info: OS/arch/CPU, installed runtimes & tools (python/node/go/git/docker/ffmpeg), and active local ports. Call before running commands to see which tools are available.",
         {"type": "object", "properties": {}},
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "json_query",
+        "Query/transform a JSON string or a workspace .json file and get a compact result. Supports dot paths (a.b.0.c), array slicing (users.0:5), wildcards (users.*.name), comparisons (age>30, status==active), and piping multiple stages with '|'. Use to pull exact fields out of large API responses or config files without loading them fully into context.",
+        {
+            "type": "object",
+            "properties": {
+                "data": {"type": "string", "description": "JSON text, or a path to a .json file in the workspace"},
+                "query": {"type": "string", "description": "Query expression, e.g. 'items | price<100 | name' or 'users.*.email'. Empty = pretty-print compact summary."},
+            },
+            "required": ["data"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "generate_speech",
+        "Convert text to speech audio and save it into the workspace (.mp3/.wav/.opus). Use when the user asks to speak, read aloud, or produce an audio/voice version of text. Requires the owner to have configured a TTS model.",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to speak (max 4096 chars)"},
+                "path": {"type": "string", "description": "Output file path in the workspace, e.g. reply.mp3"},
+                "voice": {"type": "string", "description": "Voice name, e.g. alloy, echo, fable, onyx, nova, shimmer. Optional (default alloy)."},
+            },
+            "required": ["text", "path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "generate_video",
+        "Generate a short video from a text prompt (text-to-video) and save it as MP4 in the workspace. Use when the user asks to create/render a video clip. Requires the owner to have configured a video model (ZELINE_VIDEO_MODEL). Slow — up to several minutes.",
+        {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Detailed description of the video scene"},
+                "path": {"type": "string", "description": "Output file path, must end in .mp4"},
+                "seconds": {"type": "integer", "description": "Clip length 1-20s (default 5)"},
+                "size": {"type": "string", "description": "Resolution preset, e.g. 720p or 1080p (default 720p)"},
+            },
+            "required": ["prompt", "path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "qr_code",
+        "Generate a QR code PNG in the workspace that encodes a URL, text, WiFi credentials, or a token (max 290 bytes). Use when the user wants a QR/scannable code.",
+        {
+            "type": "object",
+            "properties": {
+                "data": {"type": "string", "description": "The content to encode"},
+                "path": {"type": "string", "description": "Output file path, must end in .png"},
+            },
+            "required": ["data", "path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
+        "render_chart",
+        "Render a simple bar/line/pie chart PNG from numeric data, e.g. 'Mon=12, Tue=30'. Use to visualize small datasets in reports or answers.",
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "description": "bar, line, or pie"},
+                "data": {"type": "string", "description": "Data points as 'label=value' separated by commas or newlines"},
+                "path": {"type": "string", "description": "Output file path, must end in .png"},
+                "title": {"type": "string", "description": "Optional chart title"},
+            },
+            "required": ["kind", "data", "path"],
+        },
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
@@ -2539,6 +3025,7 @@ class ToolExecutor:
             "add_memory": self.memory.add,
             "remove_memory": self.memory.remove,
             "list_memory": self.memory.formatted,
+            "memory_query": self._memory_query,
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
@@ -2557,6 +3044,11 @@ class ToolExecutor:
             ),
             "http_request": lambda method, url, headers="", body="": _http_request(method, url, headers, body),
             "system_env": lambda: _system_env(),
+            "json_query": lambda data, query="": _json_query(data, query, self.workspace),
+            "generate_speech": lambda text, path, voice="alloy": _generate_speech(text, path, self.workspace, voice),
+            "generate_video": lambda prompt, path, seconds=5, size="720p": _generate_video(prompt, path, self.workspace, seconds, size),
+            "qr_code": lambda data, path: _qr_code(data, path, self.workspace),
+            "render_chart": lambda kind, data, path, title="": _render_chart(kind, data, path, self.workspace, title),
             "code_intel": lambda action, path="", line=0, character=0: self._code_intel(
                 action, path, line, character
             ),
@@ -2743,6 +3235,24 @@ class ToolExecutor:
             return registry.hover(target, int(line), int(character or 0))
         except lsp_module.LspError as exc:
             return f"ERROR code_intel: {exc}"
+
+    def _memory_query(self, **kwargs: Any) -> str:
+        """Structured, filtered, paginated memory query (audit/bulk-inspection path)."""
+        import sqlite3 as _sqlite3
+        try:
+            result = self.memory.query(
+                kinds=kwargs.get("kinds"),
+                sources=kwargs.get("sources"),
+                tags_any=kwargs.get("tags_any"),
+                min_confidence=kwargs.get("min_confidence"),
+                observed_after=kwargs.get("observed_after"),
+                observed_before=kwargs.get("observed_before"),
+                limit=kwargs.get("limit", 20),
+                cursor=kwargs.get("cursor", ""),
+            )
+            return json.dumps(result, ensure_ascii=False, default=str)
+        except (OSError, ValueError, TypeError, _sqlite3.Error):
+            return "ERROR: memory unavailable; existing storage preserved for recovery."
 
     def _recall_history(self, query: str = "") -> str:
         """Cari transkrip percakapan lama chat ini (archive permanen).
