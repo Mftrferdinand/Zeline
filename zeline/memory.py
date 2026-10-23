@@ -9,6 +9,7 @@ identify replacements.
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
+import base64
 import hashlib
 from html import escape
 import json
@@ -330,6 +331,76 @@ class MemoryStore:
             # Memory is an enhancement; a corrupt/unavailable store must not
             # prevent the current user turn from reaching the provider.
             return {"records": [], "context": "", "retrieval": "unavailable", "truncated": False}
+
+    def query(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        sources: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        min_confidence: float | None = None,
+        observed_after: float | None = None,
+        observed_before: float | None = None,
+        limit: int = 20,
+        cursor: str = "",
+    ) -> dict[str, Any]:
+        """Structured, filterable, cursor-paginated memory query.
+
+        ``recall`` answers "what's relevant to this turn"; this answers
+        "show me exactly the records matching these metadata filters" —
+        audits, bulk inspection, and cleanup need deterministic filtering,
+        not relevance ranking. Cursor is an opaque offset token so callers
+        never reason about indexes.
+        """
+        records = self.records()
+        kinds = [str(k).strip().lower() for k in (kinds or []) if str(k).strip()]
+        sources = [str(s).strip().lower() for s in (sources or []) if str(s).strip()]
+        tags_any = [str(t).strip().lower() for t in (tags_any or []) if str(t).strip()]
+
+        def matches(r: dict[str, Any]) -> bool:
+            if kinds and str(r.get("kind", "")).lower() not in kinds:
+                return False
+            if sources and str(r.get("source", "")).lower() not in sources:
+                return False
+            if tags_any:
+                record_tags = {str(t).lower() for t in (r.get("tags") or [])}
+                if not record_tags & {t.lower() for t in tags_any}:
+                    return False
+            if min_confidence is not None and float(r.get("confidence", 0)) < float(min_confidence):
+                return False
+            if observed_after is not None and float(r.get("updated_at", 0)) <= float(observed_after):
+                return False
+            if observed_before is not None and float(r.get("updated_at", 0)) >= float(observed_before):
+                return False
+            return True
+
+        filtered = [r for r in records if matches(r)]
+        # Deterministic order independent of storage layout: newest first, ID tie-break.
+        filtered.sort(key=lambda r: (-float(r.get("updated_at", 0)), str(r["id"])))
+
+        limit = max(1, min(100, int(limit or 20)))
+        offset = 0
+        if cursor:
+            try:
+                payload = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                offset = max(0, int(payload.get("o", 0)))
+                # Refuse cursors that do not match the current filter set,
+                # otherwise pagination would silently mix result sets.
+                if payload.get("f") != [kinds, sources, tags_any, min_confidence,
+                                        observed_after, observed_before]:
+                    return {"records": [], "next_cursor": "", "total_matched": len(filtered),
+                            "error": "cursor does not match the current filters"}
+            except (ValueError, TypeError, json.JSONDecodeError):
+                return {"records": [], "next_cursor": "", "total_matched": len(filtered),
+                        "error": "invalid cursor"}
+        page = filtered[offset:offset + limit]
+        next_cursor = ""
+        if offset + limit < len(filtered):
+            token = json.dumps({"o": offset + limit,
+                                "f": [kinds, sources, tags_any, min_confidence,
+                                      observed_after, observed_before]})
+            next_cursor = base64.urlsafe_b64encode(token.encode()).decode()
+        return {"records": page, "next_cursor": next_cursor, "total_matched": len(filtered)}
 
     def formatted(self, query: str = "", include_metadata: bool = False, limit: int = 20) -> str:
         try:

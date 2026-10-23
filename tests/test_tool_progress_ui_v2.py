@@ -25,6 +25,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "add_memory": {"fact": "test"},
             "remove_memory": {"substring": "test"},
             "list_memory": {},
+            "memory_query": {"kinds": ["fact"]},
             "load_skill": {"name": "testing"},
             "web_search": {"query": "agent framework"},
             "web_fetch": {"url": "https://example.com"},

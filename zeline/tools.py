@@ -2388,6 +2388,23 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset(SAFE_PROFILES),
     ),
     ToolDef(
+        "memory_query",
+        "Structured memory query with metadata filters and cursor pagination — complements recall/list_memory. Filter by kind (preference/fact/procedure/correction/other), source (user/reflection), min confidence, or time range; page through large result sets deterministically. Use for memory audits, bulk inspection, and cleanup.",
+        {
+            "type": "object",
+            "properties": {
+                "kinds": {"type": "array", "items": {"type": "string"}, "description": "Filter by kind"},
+                "sources": {"type": "array", "items": {"type": "string"}, "description": "Filter by source (user/reflection)"},
+                "min_confidence": {"type": "number", "description": "0-1 minimum confidence"},
+                "observed_after": {"type": "number", "description": "Unix ts: updated after"},
+                "observed_before": {"type": "number", "description": "Unix ts: updated before"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "cursor": {"type": "string", "description": "Opaque cursor from a previous page's next_cursor"},
+            },
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "load_skill",
         "Read the full content of a skill/procedure by its skill file name.",
         {
@@ -3008,6 +3025,7 @@ class ToolExecutor:
             "add_memory": self.memory.add,
             "remove_memory": self.memory.remove,
             "list_memory": self.memory.formatted,
+            "memory_query": self._memory_query,
             "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
@@ -3217,6 +3235,24 @@ class ToolExecutor:
             return registry.hover(target, int(line), int(character or 0))
         except lsp_module.LspError as exc:
             return f"ERROR code_intel: {exc}"
+
+    def _memory_query(self, **kwargs: Any) -> str:
+        """Structured, filtered, paginated memory query (audit/bulk-inspection path)."""
+        import sqlite3 as _sqlite3
+        try:
+            result = self.memory.query(
+                kinds=kwargs.get("kinds"),
+                sources=kwargs.get("sources"),
+                tags_any=kwargs.get("tags_any"),
+                min_confidence=kwargs.get("min_confidence"),
+                observed_after=kwargs.get("observed_after"),
+                observed_before=kwargs.get("observed_before"),
+                limit=kwargs.get("limit", 20),
+                cursor=kwargs.get("cursor", ""),
+            )
+            return json.dumps(result, ensure_ascii=False, default=str)
+        except (OSError, ValueError, TypeError, _sqlite3.Error):
+            return "ERROR: memory unavailable; existing storage preserved for recovery."
 
     def _recall_history(self, query: str = "") -> str:
         """Cari transkrip percakapan lama chat ini (archive permanen).
