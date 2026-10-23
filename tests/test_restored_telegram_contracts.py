@@ -156,6 +156,14 @@ class TelegramIconContractTests(unittest.TestCase):
             ("analyze_media", {"path_or_url": "fixture.mp4"}, "🎞️ Analyzing video"),
             ("analyze_media", {"path_or_url": "fixture.ogg"}, "🎧 Analyzing audio"),
             ("send_file", {}, "📤 Sending a file"),
+            ("diff_files", {}, "🔍 Comparing two files"),
+            ("diff_files", {"path_a": "a.py", "path_b": "b.py"}, "🔍 Comparing"),
+            ("archive_file", {"action": "extract"}, "📦 Extracting"),
+            ("archive_file", {"action": "create", "source": "src"}, "📦 Archiving"),
+            ("checksum_file", {"path": "f.bin"}, "#️⃣ Hashing"),
+            ("find_duplicate_files", {}, "👯 Scanning for duplicate files"),
+            ("get_time", {}, "🕒 Checking the current time"),
+            ("get_time", {"timezone": "Asia/Jakarta"}, "🕒 Checking the time in"),
         )
         for tool, arguments, expected in cases:
             with self.subTest(tool=tool, arguments=arguments):
