@@ -13,11 +13,12 @@ def main():
     from zeline import reverse_disassembly as decoder
     original = subprocess.Popen
     trusted = Path(decoder.__file__).resolve()
-    modes = [('control', {}), ('nano-off', {'MallocNanoZone': '0'}),
+    modes = [('control', {'MallocSpaceEfficient': '0'}),
+             ('nano-off', {'MallocNanoZone': '0', 'MallocSpaceEfficient': '0'}),
              ('space-efficient', {'MallocSpaceEfficient': '1'}),
              ('nano-off-space-efficient', {'MallocNanoZone': '0', 'MallocSpaceEfficient': '1'})]
     for name, overrides in modes:
-        for repeat in range(3):
+        for repeat in range(10):
             observed = {}
 
             def launch(command, *args, **kwargs):

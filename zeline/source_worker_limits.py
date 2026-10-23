@@ -5,6 +5,21 @@ artifact code. Unsupported or denied limit setup fails closed before input read.
 """
 
 
+def worker_environment():
+    """Keep platform bootstrap variables, never provider/config credentials."""
+    import os
+    import sys
+    allowed = {'PATH', 'HOME', 'PREFIX', 'LD_LIBRARY_PATH', 'LD_PRELOAD', 'SYSTEMROOT',
+               'WINDIR', 'COMSPEC', 'PATHEXT', 'TMP', 'TEMP', 'TMPDIR', 'LANG', 'LC_ALL',
+               'ANDROID_ROOT', 'ANDROID_DATA'}
+    environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    if sys.platform == 'darwin':
+        # Apple's documented memory-constrained allocator policy reduces caching
+        # and VM reservations. It does not change DATA/AS caps or disable guards.
+        environment['MallocSpaceEfficient'] = '1'
+    return environment
+
+
 def set_memory_limit(memory_bytes):
     import os
     if os.name != 'nt':

@@ -54,11 +54,13 @@ def inspect_source(data: bytes, language: str, *, should_stop=None) -> dict:
         payload = json.dumps({'data': base64.b64encode(data).decode('ascii'), 'language': language,
                               'limits': [MAX_SOURCE_BYTES, MAX_NODES, MAX_FINDINGS,
                                          MAX_LABEL_BYTES]}).encode('ascii')
+        from .source_worker_limits import worker_environment
         process = subprocess.Popen(
             [sys.executable, '-I', '-B', str(Path(__file__).resolve()),
              '--worker', str(SOURCE_MEMORY_BYTES)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            env=worker_environment(),
         )
         pending = payload
         while True:

@@ -66,14 +66,12 @@ def decode_instructions(data: bytes, architecture: str, *, address=0, file_offse
                                   architecture=architecture, address=address,
                                   file_offset=file_offset, limit=limit,
                                   endianness=endianness)).encode('ascii')
+        from .source_worker_limits import worker_environment
         process = subprocess.Popen(
             [sys.executable, '-I', '-B', str(Path(__file__).resolve()), '--worker'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-            env={key: value for key, value in os.environ.items() if key.upper() in {
-                'PATH', 'HOME', 'PREFIX', 'LD_LIBRARY_PATH', 'LD_PRELOAD', 'SYSTEMROOT',
-                'WINDIR', 'COMSPEC', 'PATHEXT', 'TMP', 'TEMP', 'TMPDIR', 'LANG', 'LC_ALL',
-                'ANDROID_ROOT', 'ANDROID_DATA'}})
+            env=worker_environment())
         pending = payload
         while True:
             check()

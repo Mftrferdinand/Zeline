@@ -65,3 +65,18 @@ class LibprocAbiTests(unittest.TestCase):
     def test_zero_taskinfo_rejected(self):
         with self.assertRaises(OSError):
             self.probe(empty=True)
+
+
+def test_worker_environment_is_scoped_and_darwin_space_efficient():
+    import os
+    from unittest.mock import patch
+    from zeline import source_worker_limits as limits
+    original = {'PATH': '/trusted/bin', 'ZELINE_API_KEY': 'not-a-real-key',
+                'PYTHONPATH': '/untrusted/python', 'MallocSpaceEfficient': '0'}
+    with patch.dict(os.environ, original, clear=True):
+        with patch('sys.platform', 'darwin'):
+            environment = limits.worker_environment()
+            assert environment == {'PATH': '/trusted/bin', 'MallocSpaceEfficient': '1'}
+        with patch('sys.platform', 'linux'):
+            assert limits.worker_environment() == {'PATH': '/trusted/bin'}
+        assert dict(os.environ) == original
