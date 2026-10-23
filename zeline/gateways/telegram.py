@@ -461,6 +461,9 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return f"#️⃣ Hashing <code>{target}</code>…" if target else "#️⃣ Computing checksum…"
     if name == "find_duplicate_files":
         return "👯 Scanning for duplicate files…"
+    if name == "get_time":
+        zone = str(arguments.get("timezone", "")).strip()
+        return f"🕒 Checking the time in <code>{zone}</code>…" if zone else "🕒 Checking the current time…"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()
