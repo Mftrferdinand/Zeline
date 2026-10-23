@@ -47,6 +47,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "archive_file": {"action": "create", "source": "src", "target": "src.zip"},
             "checksum_file": {"path": "f.bin"},
             "find_duplicate_files": {},
+            "get_time": {"timezone": "Asia/Jakarta"},
             "update_task": {"task": "Test UI", "status": "in_progress"},
             "manage_skill": {"action": "list"},
             "resolve_lesson": {"tool": "read_file"},

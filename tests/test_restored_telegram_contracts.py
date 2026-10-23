@@ -162,6 +162,8 @@ class TelegramIconContractTests(unittest.TestCase):
             ("archive_file", {"action": "create", "source": "src"}, "📦 Archiving"),
             ("checksum_file", {"path": "f.bin"}, "#️⃣ Hashing"),
             ("find_duplicate_files", {}, "👯 Scanning for duplicate files"),
+            ("get_time", {}, "🕒 Checking the current time"),
+            ("get_time", {"timezone": "Asia/Jakarta"}, "🕒 Checking the time in"),
         )
         for tool, arguments, expected in cases:
             with self.subTest(tool=tool, arguments=arguments):
