@@ -38,6 +38,10 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
       - name: Install native search test prerequisite
         run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Native worker preflight
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests/test_reverse_source.py tests/test_reverse_disassembly.py tests/test_source_worker_limits.py -q
       - name: Run test suite
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'
@@ -70,6 +74,10 @@ jobs:
 
       - name: Install native search test prerequisite
         run: choco install ripgrep --yes --no-progress
+      - name: Native worker preflight
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests/test_reverse_source.py tests/test_reverse_disassembly.py tests/test_source_worker_limits.py -q
       - name: Run test suite
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'
@@ -170,6 +178,10 @@ jobs:
         run: python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
       - name: Install native search test prerequisite
         run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
+      - name: Native worker preflight
+        env:
+          ZELINE_CI_WORKER_DIAGNOSTICS: '1'
+        run: python -m pytest tests/test_reverse_source.py tests/test_reverse_disassembly.py tests/test_source_worker_limits.py -q
       - name: Run test suite
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'

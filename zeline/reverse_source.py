@@ -249,6 +249,8 @@ def _javascript(data, result):
 
 
 def _worker_main():
+    import faulthandler
+    faulthandler.enable()
     # Import only a trusted adjacent helper. -I excludes cwd/PYTHONPATH and the
     # script directory; never add the artifact workspace to the import path.
     import importlib.util
@@ -275,7 +277,10 @@ def _worker_main():
         result = _inspect_source_local(data, request['language'])
         response = {'ok': True, 'result': result}
     except MemoryError:
-        response = {'ok': False, 'error': 'source parser memory resource limit exceeded'}
+        import traceback
+        traceback.print_exc(limit=6)
+        response = {'ok': False, 'kind': 'MemoryError',
+                    'error': 'source parser memory resource limit exceeded'}
     except Exception as exc:
         response = {'ok': False, 'kind': type(exc).__name__, 'error': str(exc)[:400]}
     print(json.dumps(response, ensure_ascii=True))

@@ -252,6 +252,8 @@ def _blocks(instructions):
 
 
 def _worker_main():
+    import faulthandler
+    faulthandler.enable()
     global _LIMITS_READY
     import importlib.util
     spec = importlib.util.spec_from_file_location(
@@ -271,6 +273,9 @@ def _worker_main():
             raise ValueError('disassembly worker request limit exceeded')
         response = dict(ok=True, result=_decode_worker(json.loads(raw)))
     except Exception as exc:
+        if isinstance(exc, MemoryError):
+            import traceback
+            traceback.print_exc(limit=6)
         response = dict(ok=False, kind=type(exc).__name__, error=str(exc)[:400])
     output = json.dumps(response, ensure_ascii=True)
     if len(output) > MAX_RESPONSE_BYTES:
