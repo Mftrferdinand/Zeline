@@ -15,7 +15,10 @@ def set_memory_limit(memory_bytes):
         from pathlib import Path
         baseline_virtual = 0
         statm = Path('/proc/self/statm')
-        if statm.exists():
+        import sys
+        if sys.platform == 'darwin':
+            baseline_virtual = _darwin_virtual_size()
+        elif statm.exists():
             baseline_virtual = int(statm.read_text().split()[0]) * os.sysconf('SC_PAGE_SIZE')
         for which, desired in ((resource.RLIMIT_DATA, memory_bytes),
                                (resource.RLIMIT_AS, baseline_virtual + memory_bytes)):
@@ -25,6 +28,32 @@ def set_memory_limit(memory_bytes):
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         return None
     return _windows_memory_job(memory_bytes)
+
+
+def _darwin_virtual_size():
+    """Read the current task VM reservation, not RSS, through Apple's libproc ABI."""
+    import ctypes as c
+    import os
+
+    # xnu/bsd/sys/proc_info.h: PROC_PIDTASKINFO = 4, struct proc_taskinfo.
+    class TaskInfo(c.Structure):
+        _fields_ = [(name, c.c_uint64) for name in
+                    ('pti_virtual_size', 'pti_resident_size', 'pti_total_user',
+                     'pti_total_system', 'pti_threads_user', 'pti_threads_system')]
+        _fields_ += [(name, c.c_int32) for name in
+                     ('pti_policy', 'pti_faults', 'pti_pageins', 'pti_cow_faults',
+                      'pti_messages_sent', 'pti_messages_received', 'pti_syscalls_mach',
+                      'pti_syscalls_unix', 'pti_csw', 'pti_threadnum',
+                      'pti_numrunning', 'pti_priority')]
+
+    library = c.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    library.proc_pidinfo.argtypes = [c.c_int, c.c_int, c.c_uint64, c.c_void_p, c.c_int]
+    library.proc_pidinfo.restype = c.c_int
+    info = TaskInfo()
+    received = library.proc_pidinfo(os.getpid(), 4, 0, c.byref(info), c.sizeof(info))
+    if received != c.sizeof(info) or not info.pti_virtual_size:
+        raise OSError(c.get_errno(), 'cannot measure Darwin worker virtual-memory baseline')
+    return int(info.pti_virtual_size)
 
 
 def _windows_memory_job(memory_bytes):
