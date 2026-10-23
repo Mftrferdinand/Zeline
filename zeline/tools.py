@@ -247,6 +247,42 @@ def _diff_files(path_a: str, path_b: str, workspace: Path, context: int = 2) -> 
     return text.decode("utf-8", errors="replace")
 
 
+def _get_time(timezone: str = "") -> str:
+    """Current date/time as ISO-8601, optionally in a named IANA zone.
+
+    The one fact a model cannot carry in its weights is *now*. Without this
+    tool an agent on the safe profile (messaging gateways, no shell) answers
+    date questions from training-data guesses. Machine-readable first, human
+    hint second, so the reply is directly usable in scheduling arithmetic.
+    """
+    from datetime import datetime, timezone as dt_timezone
+    from zoneinfo import ZoneInfo
+
+    name = (timezone or "").strip()
+    try:
+        if name:
+            zone = ZoneInfo(name)
+            now = datetime.now(zone)
+            offset = now.strftime("%z")
+            offset_colon = offset[:3] + ":" + offset[3:] if offset else ""
+            stamp = now.strftime("%Y-%m-%dT%H:%M:%S") + offset_colon
+        else:
+            now = datetime.now().astimezone()
+            offset_colon = now.strftime("%z")
+            offset_colon = offset_colon[:3] + ":" + offset_colon[3:] if offset_colon else ""
+            stamp = now.strftime("%Y-%m-%dT%H:%M:%S") + offset_colon
+            name = now.tzname() or "local"
+    except Exception:
+        # zoneinfo.UnknownTimeZoneError covers the common case, but a zone
+        # name that only tzdata rejects must not crash the turn either.
+        return f"ERROR get_time: unknown timezone '{name}'. Use an IANA name such as Asia/Jakarta or UTC."
+    return (
+        f"{stamp} ({name})\n"
+        f"weekday: {now.strftime('%A')}\n"
+        f"utc: {datetime.now(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    )
+
+
 def _undo_file(action: str, workspace: Path, path: str = "", checkpoint_id: str = "") -> str:
     """Revert a file to the bytes it had before a write in THIS workspace.
 
@@ -2387,6 +2423,26 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "get_time",
+        (
+            "Get the current date and time — for the user's timezone or the "
+            "host's. Call this whenever absolute time matters (scheduling, "
+            "'today', deadlines, timestamps in output) instead of guessing: "
+            "your training data has no idea what day it is. Returns an ISO-8601 "
+            "timestamp with UTC offset plus the week day. The 'timezone' "
+            "parameter accepts any IANA name (Asia/Jakarta, UTC, …); omit it "
+            "for host-local time."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "timezone": {"type": "string", "description": "IANA timezone such as Asia/Jakarta or UTC. Empty uses the host clock."},
+            },
+            "required": [],
+        },
+        frozenset({"safe", "workspace", "full"}),
+    ),
+    ToolDef(
         "update_task",
         (
             "Track a multi-step plan on a persistent board. Call when a task starts, "
@@ -2712,6 +2768,7 @@ class ToolExecutor:
             "find_duplicate_files": lambda pattern="*": file_utils.find_duplicate_files(
                 self.workspace, pattern
             ),
+            "get_time": lambda timezone="": _get_time(timezone),
             "update_task": lambda task, status: _update_task(task, status, self.identity),
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
                 action, name, content, old_text, new_text, file_path, category, absorbed_into
