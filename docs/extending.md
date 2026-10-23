@@ -245,6 +245,53 @@ This adds separate MCP tools; it does not replace the native `web_search` or
 fetched URLs to Parallel. To remove the server, run `zeline mcp remove parallel`
 and start a new session.
 
+### Secrets and tool gating in server config
+
+Server specs support two config-time features that keep `config.json`
+shareable and MCP servers least-privilege:
+
+**`${VAR}` expansion.** `headers`, `env`, `url` and `command` values may
+reference environment variables:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "github": {
+        "enabled": true,
+        "transport": "http",
+        "url": "${GITHUB_MCP_URL}/mcp",
+        "headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}
+      }
+    }
+  }
+}
+```
+
+The token lives in the environment, never in the file. A reference to a
+variable that is unset or empty is a startup error naming the variable
+(`MCP server 'github': config references ${GITHUB_TOKEN}...`) — a missing
+secret fails once and loudly, not as a broken request on every call.
+
+**Per-server tool gates.** `allowed_tools` and `denied_tools` limit which of
+a server's tools Zeline exposes:
+
+```json
+"github": {
+  "enabled": true,
+  "transport": "http",
+  "url": "https://api.githubcopilot.com/mcp",
+  "headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"},
+  "allowed_tools": ["create_issue", "list_issues", "get_file_contents"],
+  "denied_tools": ["delete_file"]
+}
+```
+
+Gated tools are hidden from the model's schema and also refused at call time
+(a model can name a tool it never saw listed). `denied_tools` wins over
+`allowed_tools`. An allowlist means least-privilege by default: a server that
+gains a dangerous new tool upstream does not silently expose it here.
+
 ---
 
 ## Choosing between them
