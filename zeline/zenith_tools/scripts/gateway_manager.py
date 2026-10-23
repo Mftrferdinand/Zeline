@@ -87,20 +87,29 @@ class GatewayConfig:
     domain: str = ""
 
     def to_env(self) -> str:
-        """Generate .env file content."""
+        """Generate .env file content.
+
+        Values are wrapped in double quotes with escapes so a value
+        containing ``#``, whitespace, or a newline cannot corrupt the
+        surrounding assignments or comment out the lines after it.
+        """
+        def q(value: str) -> str:
+            escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+            return f'"{escaped}"'
+
         lines = [
             f"GATEWAY_PORT={self.port}",
-            f"GATEWAY_HOST={self.host}",
-            f"GATEWAY_API_KEY={self.api_key}",
+            f"GATEWAY_HOST={q(self.host)}",
+            f"GATEWAY_API_KEY={q(self.api_key)}",
             f"CF_ACCOUNTS={json.dumps(self.cf_accounts)}" if self.cf_accounts else "# CF_ACCOUNTS=[]",
-            f"OPENROUTER_API_KEY={self.openrouter_key}" if self.openrouter_key else "# OPENROUTER_API_KEY=",
-            f"GROQ_API_KEY={self.groq_key}" if self.groq_key else "# GROQ_API_KEY=",
-            f"TOGETHER_API_KEY={self.together_key}" if self.together_key else "# TOGETHER_API_KEY=",
-            f"HF_API_KEY={self.hf_key}" if self.hf_key else "# HF_API_KEY=",
-            f"COHERE_API_KEY={self.cohere_key}" if self.cohere_key else "# COHERE_API_KEY=",
+            f"OPENROUTER_API_KEY={q(self.openrouter_key)}" if self.openrouter_key else "# OPENROUTER_API_KEY=",
+            f"GROQ_API_KEY={q(self.groq_key)}" if self.groq_key else "# GROQ_API_KEY=",
+            f"TOGETHER_API_KEY={q(self.together_key)}" if self.together_key else "# TOGETHER_API_KEY=",
+            f"HF_API_KEY={q(self.hf_key)}" if self.hf_key else "# HF_API_KEY=",
+            f"COHERE_API_KEY={q(self.cohere_key)}" if self.cohere_key else "# COHERE_API_KEY=",
             f"CF_COOLDOWN_429={self.cooldown_429}",
             f"MAX_RETRIES={self.max_retries}",
-            f"LOG_LEVEL={self.log_level}",
+            f"LOG_LEVEL={q(self.log_level)}",
         ]
         return "\n".join(lines)
 
@@ -173,16 +182,33 @@ class GatewayManager:
     def save_config(self):
         """Save configuration to .env file."""
         self.install_dir.mkdir(parents=True, exist_ok=True)
-        (self.install_dir / ".env").write_text(self.config.to_env())
+        env_path = self.install_dir / ".env"
+        env_path.write_text(self.config.to_env())
+        try:
+            # The .env holds provider API keys; keep it owner-only.
+            env_path.chmod(0o600)
+        except OSError:
+            pass
 
     def deploy(self, repo_url: str = "https://github.com/waguriagentic/cf-proxy.git",
                branch: str = "main") -> dict:
         """Deploy the gateway from source."""
+        # Validate inputs before they reach a subprocess: deploy() may be
+        # driven by agent tool calls, so repo_url/branch must not smuggle
+        # shell metacharacters into the clone command.
+        for name, value in (("repo_url", repo_url), ("branch", branch)):
+            if not value or any(c in value for c in ";|&$`\\\n'\"\t "):
+                return {"steps": [{"step": "validate", "ok": False,
+                                   "output": f"invalid {name}"}], "success": False}
+        if not repo_url.startswith(("https://", "git@")):
+            return {"steps": [{"step": "validate", "ok": False,
+                               "output": "repo_url must be https:// or git@"}],
+                    "success": False}
         results = {"steps": [], "success": True}
 
         # Step 1: Clone
         if not self.install_dir.exists():
-            cmd = f"git clone -b {branch} {repo_url} {self.install_dir}"
+            cmd = ["git", "clone", "-b", branch, repo_url, str(self.install_dir)]
             r = self._run(cmd)
             results["steps"].append({"step": "clone", "ok": r["ok"], "output": r["out"]})
             if not r["ok"]:
@@ -294,9 +320,12 @@ class GatewayManager:
             capacity += 5000
         return capacity
 
-    def _run(self, cmd: str) -> dict:
+    def _run(self, cmd: str | list[str]) -> dict:
         try:
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+            # list form avoids a shell; str form is kept for the pm2/npm
+            # invocations whose arguments are built from trusted constants.
+            r = subprocess.run(cmd, shell=isinstance(cmd, str),
+                               capture_output=True, text=True, timeout=120)
             return {"ok": r.returncode == 0, "out": r.stdout[-500:] if r.stdout else "",
                     "err": r.stderr[-500:] if r.stderr else ""}
         except subprocess.TimeoutExpired:

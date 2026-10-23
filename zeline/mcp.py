@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -134,11 +135,30 @@ class MCPServer:
     url: str = ""  # untuk http
     headers: dict[str, str] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
+    # Per-server tool filtering: only tools matching an `allow` glob (and not
+    # matching a `deny` glob) are exposed to the model. Both are fnmatch
+    # patterns against the raw tool name. deny wins over allow.
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+    # Sent as a header on every HTTP request so remote servers that key
+    # behavior on caller identity (per-user limits, audit trails, multi-tenant
+    # routing) can tell turns apart. Format: {"Header-Name": "value"}.
+    identity: dict[str, str] = field(default_factory=dict)
 
     _process: subprocess.Popen | None = field(default=None, repr=False)
     _rpc_id: int = field(default=0, repr=False)
     _lock: Any = field(default_factory=threading.Lock, repr=False)
     _initialized: bool = field(default=False, repr=False)
+
+    def tool_visible(self, tool_name: str) -> bool:
+        """Apply this server's allow/deny filter to a raw tool name."""
+        import fnmatch
+        for pattern in self.deny:
+            if fnmatch.fnmatchcase(tool_name, pattern):
+                return False
+        if not self.allow:
+            return True
+        return any(fnmatch.fnmatchcase(tool_name, pattern) for pattern in self.allow)
 
     def _next_id(self) -> int:
         self._rpc_id += 1
@@ -214,6 +234,7 @@ class MCPServer:
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             **self.headers,
+            **self.identity,
         }
         response = requests.post(self.url, headers=headers, json=message, timeout=timeout)
         if not response.ok:
@@ -261,6 +282,8 @@ class MCPServer:
         for tool in tools:
             if not isinstance(tool, dict) or not tool.get("name"):
                 continue
+            if not self.tool_visible(str(tool["name"])):
+                continue
             schemas.append({
                 "type": "function",
                 "function": {
@@ -276,6 +299,63 @@ class MCPServer:
         self.initialize()
         result = self._rpc("tools/call", {"name": tool, "arguments": arguments}) or {}
         return _content_to_text(result)
+
+    # ---- resources & prompts ----
+    def list_resources(self) -> list[dict[str, Any]]:
+        """Resources the server exposes: [{uri, name, description, mimeType}]."""
+        self.initialize()
+        try:
+            result = self._rpc("resources/list", {}) or {}
+        except RuntimeError:
+            # Servers without the resources capability return a JSON-RPC error;
+            # an empty list is the correct "nothing offered" answer.
+            return []
+        items = result.get("resources", []) if isinstance(result, dict) else []
+        return [r for r in items if isinstance(r, dict) and r.get("uri")]
+
+    def read_resource(self, uri: str) -> str:
+        """Read one resource; returns its text content (or a JSON dump)."""
+        self.initialize()
+        result = self._rpc("resources/read", {"uri": uri}) or {}
+        contents = result.get("contents", []) if isinstance(result, dict) else []
+        parts: list[str] = []
+        for item in contents:
+            if not isinstance(item, dict):
+                continue
+            if item.get("text") is not None:
+                parts.append(str(item["text"]))
+            elif item.get("blob") is not None:
+                parts.append(f"[binary resource: {item.get('mimeType', 'unknown')}, "
+                             f"{len(str(item['blob']))} base64 chars]")
+        return "\n".join(parts) if parts else "(resource kosong atau tidak ditemukan)"
+
+    def list_prompts(self) -> list[dict[str, Any]]:
+        """Prompt templates the server offers: [{name, description, arguments}]."""
+        self.initialize()
+        try:
+            result = self._rpc("prompts/list", {}) or {}
+        except RuntimeError:
+            return []
+        items = result.get("prompts", []) if isinstance(result, dict) else []
+        return [p for p in items if isinstance(p, dict) and p.get("name")]
+
+    def get_prompt(self, name: str, arguments: dict[str, str] | None = None) -> str:
+        """Render a server prompt template; returns the message texts joined."""
+        self.initialize()
+        params: dict[str, Any] = {"name": name}
+        if arguments:
+            params["arguments"] = arguments
+        result = self._rpc("prompts/get", params) or {}
+        messages = result.get("messages", []) if isinstance(result, dict) else []
+        parts: list[str] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role", "user"))
+            content = msg.get("content", {})
+            text = content.get("text", "") if isinstance(content, dict) else str(content)
+            parts.append(f"[{role}] {text}")
+        return "\n".join(parts) if parts else "(prompt kosong)"
 
     def close(self) -> None:
         process = self._process
@@ -332,6 +412,9 @@ class MCPRegistry:
                 url=str(spec.get("url", "")),
                 headers={str(k): str(v) for k, v in (spec.get("headers") or {}).items()},
                 env={str(k): str(v) for k, v in (spec.get("env") or {}).items()},
+                allow=[str(p) for p in (spec.get("allow") or [])],
+                deny=[str(p) for p in (spec.get("deny") or [])],
+                identity={str(k): str(v) for k, v in (spec.get("identity_header") or {}).items()},
             ))
         return cls(servers)
 
@@ -398,3 +481,45 @@ class MCPRegistry:
     @property
     def errors(self) -> dict[str, str]:
         return dict(self._errors)
+
+    def server(self, name: str) -> MCPServer | None:
+        return self.servers.get(name)
+
+
+def import_claude_mcp_servers(claude_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Convert a Claude Code / Cursor ``mcpServers`` block to Zeline config.
+
+    Claude and Cursor store servers under ``mcpServers`` as
+    ``{name: {command, args, env}}`` (stdio) or
+    ``{name: {url, headers?}}`` (HTTP). Zeline's ``mcp.servers`` block
+    uses the same keys, so the mapping is mostly renaming ``args`` into
+    a single ``command`` string for stdio servers.
+    """
+    raw = claude_config.get("mcpServers") or {}
+    out: dict[str, dict[str, Any]] = {}
+    for name, spec in raw.items():
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("url"):
+            entry: dict[str, Any] = {"transport": "http", "url": str(spec["url"])}
+            if spec.get("headers"):
+                entry["headers"] = {str(k): str(v) for k, v in spec["headers"].items()}
+        elif spec.get("command"):
+            args = [str(a) for a in (spec.get("args") or [])]
+            entry = {"transport": "stdio",
+                     "command": " ".join(_shell_quote_join(str(spec["command"]), args))}
+            if spec.get("env"):
+                entry["env"] = {str(k): str(v) for k, v in spec["env"].items()}
+        else:
+            continue  # neither stdio nor http: skip with no error
+        out[str(name)] = entry
+    return out
+
+
+def _shell_quote_join(command: str, args: list[str]) -> list[str]:
+    """Join command + args into one command string, quoting where needed."""
+    import shlex
+    quoted = [command if not re.search(r"[\s\"']", command) else shlex.quote(command)]
+    for arg in args:
+        quoted.append(shlex.quote(arg) if re.search(r"[\s\"']", arg) else arg)
+    return quoted
