@@ -55,7 +55,13 @@ def test_non_utf8_filename_keeps_exact_filter_path(tmp_path, backend, target):
         pytest.skip('requires POSIX arbitrary-byte filenames')
     name = os.fsdecode(b'odd\xff:12:\nname')
     path = tmp_path / name
-    path.write_text('needle PRIVATE\n')
+    try:
+        path.write_text('needle PRIVATE\n')
+    except OSError as exc:
+        import errno
+        if exc.errno == errno.EILSEQ:
+            pytest.skip('filesystem rejects invalid UTF-8 filenames')
+        raise
     seen = []
     result = file_io.search_files('needle' if target == 'content' else '*', tmp_path,
                                  target=target,

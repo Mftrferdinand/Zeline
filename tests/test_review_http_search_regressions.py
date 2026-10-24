@@ -16,7 +16,13 @@ from zeline import file_io
 def test_public_non_utf8_filename_survives_fallback(tmp_path, monkeypatch, target):
     if os.name == 'nt':
         pytest.skip('POSIX arbitrary-byte filename')
-    (tmp_path / os.fsdecode(b'public\xff.txt')).write_text('NEEDLE\n')
+    try:
+        (tmp_path / os.fsdecode(b'public\xff.txt')).write_text('NEEDLE\n')
+    except OSError as exc:
+        import errno
+        if exc.errno == errno.EILSEQ:
+            pytest.skip('filesystem rejects invalid UTF-8 filenames')
+        raise
     monkeypatch.setattr(file_io.shutil, 'which', lambda *args: None)
     result = file_io.search_files('NEEDLE' if target == 'content' else 'public',
                                  tmp_path, target=target)

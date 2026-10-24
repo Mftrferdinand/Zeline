@@ -69,22 +69,12 @@ class ContributingAccuracyTests(unittest.TestCase):
         self.text = _read("CONTRIBUTING.md")
 
     def test_it_documents_the_runner_ci_actually_uses(self):
-        """CI runs unittest and has no pytest; telling people otherwise wastes a
-        contributor's first pull request.
-
-        The negative half matters more than the positive one: a guide can mention
-        unittest in passing and still hand out a ``pytest tests/`` command that
-        fails in CI, so no line may present pytest as the way to run the suite.
-        """
+        """The documented command must collect unittest methods and pytest functions."""
         workflow = _read(".github", "workflows", "tests.yml")
-        self.assertIn("python -m unittest discover -s tests", workflow)
-        self.assertIn("python -m unittest discover -s tests", self.text)
-        self.assertIn("unittest`, not `pytest", self.text)
-        offenders = [
-            line for line in self.text.splitlines()
-            if re.match(r"\s*(python -m )?pytest\b", line)
-        ]
-        self.assertEqual(offenders, [])
+        self.assertIn("python -m pytest tests -q", workflow)
+        self.assertIn("python -m pytest tests -q", self.text)
+        self.assertIn('pytest>=8,<10', workflow)
+        self.assertNotIn("unittest`, not `pytest", self.text)
 
     def test_it_documents_the_same_lint_command_ci_blocks_on(self):
         workflow = _read(".github", "workflows", "tests.yml")
