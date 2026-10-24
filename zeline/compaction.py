@@ -23,7 +23,9 @@ become the thing that overflows the window.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -45,6 +47,8 @@ MAX_DIGEST_CHARS = 3_000
 MAX_TASK_BLOCK_CHARS = 800
 
 #: Tool calls whose arguments name a file the agent created or changed.
+_READ_TARGET_TOOLS = frozenset({"read_file", "reverse_engineer"})
+
 _ARTIFACT_TOOLS = {
     "write_file": "path",
     "edit_file": "path",
@@ -131,6 +135,22 @@ def is_archive_path(path: Path) -> bool:
     return True
 
 
+def is_owned_archive_path(path: Path, identity: str) -> bool:
+    """Authorize the workspace archive exception for new owner-keyed files.
+
+    Legacy names cannot prove ownership. Resolve symlinks before checking the
+    canonical directory and owner key. This is not an OS-user security boundary.
+    """
+    try:
+        resolved = path.resolve(strict=False)
+        if resolved.parent != archive_root().resolve(strict=False):
+            return False
+        owner = hashlib.sha256((identity or "cli").encode("utf-8")).hexdigest()[:32]
+        return re.fullmatch(r".+-" + owner + r"-\d{4}-\d{2}-\d{2}\.md", resolved.name) is not None
+    except (OSError, ValueError):
+        return False
+
+
 def _tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     calls = message.get("tool_calls")
     return list(calls) if isinstance(calls, list) else []
@@ -175,9 +195,13 @@ def archive(messages: list[dict[str, Any]], identity: str) -> Path | None:
     safe_identity = "".join(
         character if character.isalnum() or character in "-_" else "_"
         for character in (identity or "cli")
-    )[:60] or "cli"
+    )[:24] or "cli"
+    # Sanitization and prefix truncation are not identity keys: distinct users
+    # can share both. Keep a readable label but scope new files by the full ID.
+    # Never merge legacy archives, whose original owner may be ambiguous.
+    owner_key = hashlib.sha256((identity or "cli").encode("utf-8")).hexdigest()[:32]
     stamp = time.strftime("%Y-%m-%d", time.gmtime())
-    target = archive_root() / f"{safe_identity}-{stamp}.md"
+    target = archive_root() / f"{safe_identity}-{owner_key}-{stamp}.md"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
@@ -259,7 +283,7 @@ def digest(messages: list[dict[str, Any]], archive_path: Path | None) -> str:
             key = _ARTIFACT_TOOLS.get(name)
             if key and args.get(key):
                 add("File", str(args[key]))
-            target = str(args.get("path", ""))[:200] if name == "read_file" else ""
+            target = str(args.get("path", ""))[:200] if name in _READ_TARGET_TOOLS else ""
             calls[str(call.get("id", ""))] = (name, target)
             if len(calls) > 64:
                 calls.pop(next(iter(calls)))

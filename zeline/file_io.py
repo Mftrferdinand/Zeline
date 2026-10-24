@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import codecs
+from contextlib import contextmanager
 import fnmatch
 import os
 from pathlib import Path
@@ -164,12 +165,18 @@ def _walk_files(root: Path, should_stop: Callable[[], bool] | None = None) -> It
                 yield target
 
 
-def _literal_rows(query, root, pattern, should_stop, target):
+def _literal_rows(query, root, pattern, should_stop, target, path_filter=None):
     needle = query.casefold()
     for path in _walk_files(root, should_stop):
         relative = str(path.relative_to(root))
         if not (fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative, pattern)):
             continue
+        if path_filter is not None:
+            try:
+                if not path_filter(path):
+                    continue
+            except Exception:
+                continue
         if target == 'files':
             if needle in relative.casefold() or fnmatch.fnmatch(relative.casefold(), needle):
                 yield relative
@@ -202,7 +209,50 @@ def _literal_rows(query, root, pattern, should_stop, target):
             continue
 
 
-def _rg_rows(executable, query, root, pattern, should_stop, target, regex):
+def _windows_pipe_reader(stream):
+    """Poll an anonymous pipe without select(), sockets, or reader threads."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    import msvcrt
+    import time
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    peek = kernel.PeekNamedPipe
+    peek.argtypes = [w.HANDLE, c.c_void_p, w.DWORD, c.POINTER(w.DWORD),
+                     c.POINTER(w.DWORD), c.POINTER(w.DWORD)]
+    peek.restype = w.BOOL
+    descriptor = stream.fileno()
+    handle = msvcrt.get_osfhandle(descriptor)
+
+    def read():
+        available = w.DWORD()
+        if not peek(handle, None, 0, None, c.byref(available), None):
+            error = c.get_last_error()
+            if error in (109, 233):  # ERROR_BROKEN_PIPE / ERROR_PIPE_NOT_CONNECTED.
+                return b''
+            raise OSError(error, 'cannot poll native search pipe')
+        if available.value:
+            # There is exactly one reader. Never request more than is available,
+            # so ReadFile/os.read cannot block waiting for a producer chunk.
+            return os.read(descriptor, min(READ_CHUNK_BYTES, available.value))
+        time.sleep(0.05)
+        return None
+
+    return read
+
+
+@contextmanager
+def _pipe_reader(stream):
+    if os.name == 'nt':
+        yield _windows_pipe_reader(stream)
+    else:
+        with selectors.DefaultSelector() as selector:
+            selector.register(stream, selectors.EVENT_READ)
+            def read():
+                return os.read(stream.fileno(), READ_CHUNK_BYTES) if selector.select(0.05) else None
+            yield read
+
+
+def _rg_rows(executable, query, root, pattern, should_stop, target, regex, path_filter=None):
     """Drain bounded native search rows and reap on page end or cancellation."""
     args = [executable, '--sort', 'path', '--no-ignore', '--color', 'never', '--no-messages']
     args += ['--glob', pattern]
@@ -210,42 +260,63 @@ def _rg_rows(executable, query, root, pattern, should_stop, target, regex):
         args += ['--glob', f'!**/{name}/**']
     args += ['--glob', '!**/.*']
     if target == 'files':
-        args += ['--files', '.']
+        args += ['--null', '--files', '.']
     else:
-        args += ['--line-number', '--with-filename', '--no-heading', '--max-columns', '300', '--max-columns-preview']
+        args += ['--null', '--line-number', '--with-filename', '--no-heading', '--max-columns', '300', '--max-columns-preview']
         if not regex:
             args += ['--fixed-strings']
         args += ['--ignore-case', '--', query, '.']
     process = subprocess.Popen(args, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     buffer = bytearray()
     try:
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
+        with _pipe_reader(process.stdout) as read:
             done = False
             while not done:
                 if _stopped(should_stop):
                     return
-                if not selector.select(0.05):
+                data = read()
+                if data is None:
                     continue
-                data = os.read(process.stdout.fileno(), READ_CHUNK_BYTES)
                 done = not data
                 buffer.extend(data)
-                while b'\n' in buffer or (done and buffer):
-                    split = buffer.find(b'\n')
-                    split = len(buffer) if split < 0 else split
-                    row = bytes(buffer[:split]).decode('utf-8', errors='replace')
+                while buffer:
+                    # rg --null separates the exact filename from line/text.
+                    # A filename may contain both newlines and ':digits:'.
+                    nul = buffer.find(b'\x00') if target != 'files' else -1
+                    if target != 'files' and nul < 0:
+                        if done:
+                            raise ValueError('invalid native search filename record')
+                        break
+                    split = (buffer.find(b'\x00') if target == 'files'
+                             else buffer.find(b'\n', nul + 1))
+                    if split < 0:
+                        if not done:
+                            break
+                        split = len(buffer)
+                    raw = bytes(buffer[:split])
                     del buffer[:split + 1]
-                    if row.startswith('./'):
-                        row = row[2:]
                     if target == 'files':
+                        path_text = os.fsdecode(raw)
+                        row = raw.decode('utf-8', errors='replace')
                         needle = query.casefold()
                         if needle not in row.casefold() and not fnmatch.fnmatch(row.casefold(), needle):
                             continue
                     else:
-                        match = re.match(r'^(.+?:[0-9]+:)(.*)$', row)
+                        path_raw, content = raw.split(b'\x00', 1)
+                        path_text = os.fsdecode(path_raw)
+                        match = re.match(rb'^([0-9]+:)(.*)$', content)
                         if not match:
+                            raise ValueError('invalid native search line record')
+                        row = (path_raw + b':' + match.group(1) + b' ' + match.group(2)).decode('utf-8', errors='replace')
+                    candidate = Path(path_text)
+                    if row.startswith('./') or (os.name == 'nt' and row.startswith('.\\')):
+                        row = row[2:]
+                    if path_filter is not None:
+                        try:
+                            if not path_filter(root / candidate):
+                                continue
+                        except Exception:
                             continue
-                        row = match.group(1) + ' ' + match.group(2)
                     yield row
                 if len(buffer) > MAX_OUTPUT_BYTES:
                     raise ValueError('search row exceeds output window')
@@ -267,7 +338,8 @@ def _rg_rows(executable, query, root, pattern, should_stop, target, regex):
 def search_files(query: str, workspace: Path, pattern: str = '*',
                  should_stop: Callable[[], bool] | None = None,
                  limit: int = MAX_SEARCH_RESULTS, offset: int = 0,
-                 target: str = 'content', regex: bool = False) -> str:
+                 target: str = 'content', regex: bool = False,
+                 path_filter: Callable[[Path], bool] | None = None) -> str:
     """Search a response window, not a permanently capped prefix of the tree."""
     query = str(query or '')
     if not query.strip():
@@ -283,8 +355,8 @@ def search_files(query: str, workspace: Path, pattern: str = '*',
     executable = shutil.which('rg')
     if regex and (not executable or target == 'files'):
         return 'ERROR search files: regex content search requires ripgrep.'
-    rows = (_rg_rows(executable, query, root, pattern, should_stop, target, regex) if executable
-            else _literal_rows(query, root, pattern, should_stop, target))
+    rows = (_rg_rows(executable, query, root, pattern, should_stop, target, regex, path_filter) if executable
+            else _literal_rows(query, root, pattern, should_stop, target, path_filter))
     retained = bytearray()
     seen = count = 0
     more = False
@@ -295,7 +367,10 @@ def search_files(query: str, workspace: Path, pattern: str = '*',
             if seen < offset:
                 seen += 1
                 continue
-            encoded = row.encode('utf-8')
+            # Filesystem surrogateescape must not make a public search fail.
+            # Ownership has already checked the original, lossless Path above.
+            encoded = row.encode('utf-8', errors='surrogateescape').decode(
+                'utf-8', errors='replace').encode('utf-8')
             if count >= limit or (retained and len(retained) + len(encoded) + 1 > MAX_OUTPUT_BYTES - 1024):
                 more = True
                 break

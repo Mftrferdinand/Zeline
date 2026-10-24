@@ -721,7 +721,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def iter_content(self, n):
                 yield cf_page.encode()
 
-        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+        # Stub DNS as well as HTTP; this unit test must not use a live resolver.
+        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[
+            (tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,
+             "", ("93.184.216.34", 443)),
+        ]), mock.patch.object(tools.requests, "get", return_value=Resp()), \
              mock.patch.object(tools, "_fetch_via_wayback", return_value="[via arsip web] Isi FTMO asli.") as wb:
             out = tools._web_fetch("https://ftmo.com/en/how-it-works/")
         wb.assert_called_once()
@@ -738,7 +742,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def iter_content(self, n):
                 yield cf_page.encode()
 
-        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+        # Stub DNS as well as HTTP; this unit test must not use a live resolver.
+        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[
+            (tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,
+             "", ("93.184.216.34", 443)),
+        ]), mock.patch.object(tools.requests, "get", return_value=Resp()), \
              mock.patch.object(tools, "_fetch_via_wayback", return_value=None):
             out = tools._web_fetch("https://ftmo.com/en/how-it-works/")
         self.assertIn("ERROR", out)
@@ -777,7 +785,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def iter_content(self, n):
                 yield b"Page not found region country geo"
 
-        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+        # Stub DNS as well as HTTP; this unit test must not use a live resolver.
+        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[
+            (tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,
+             "", ("93.184.216.34", 443)),
+        ]), mock.patch.object(tools.requests, "get", return_value=Resp()), \
              mock.patch.object(tools, "_fetch_via_wayback", return_value=None), \
              mock.patch.object(tools, "_fetch_with_network_routes", return_value="[via network route uk] FTMO PRICING") as routed:
             out = tools._web_fetch("https://ftmo.com/en/pricing/", use_private_routes=True)

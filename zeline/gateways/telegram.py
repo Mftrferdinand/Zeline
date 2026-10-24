@@ -555,6 +555,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if action == "close":
             return "📴 Closing browser session…"
         return "🌐 Driving the browser…"
+    if name == "reverse_engineer":
+        action = str(arguments.get("action", ""))
+        label = {"inspect": "Inspecting artifact", "inventory": "Listing artifact inventory",
+                 "strings": "Extracting static strings", "binary": "Inspecting binary headers",
+                 "source": "Parsing source structure"}.get(action, "Inspecting static evidence")
+        return f"🔬 {label}: <code>{path}</code>" if path else f"🔬 {label}…"
     if name == "code_intel":
         action = str(arguments.get("action", "")).strip().lower()
         where = f" <code>{path}</code>" if path else ""
