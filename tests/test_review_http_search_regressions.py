@@ -133,4 +133,3 @@ def test_openapi_response_metadata_does_not_expose_literal_config_secret(tmp_pat
         result = registry.call('api_fixture_getFixture', {})
     assert secret not in result, result
     assert '[REDACTED]' in result
-
