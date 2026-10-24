@@ -48,6 +48,43 @@ def test_search_continues_to_later_files_without_total_scan_cap(tmp_path, monkey
     assert 'b:1: needle' in result
 
 
+def test_search_path_filter_applies_to_rg_and_fallback(tmp_path, monkeypatch):
+    visible = tmp_path / 'visible'
+    private = tmp_path / 'private'
+    visible.write_text('needle visible\n')
+    private.write_text('needle private\n')
+
+    def allow(path):
+        return path.name != 'private'
+
+    native = file_io.search_files('needle', tmp_path, path_filter=allow)
+    assert 'visible:1: needle visible' in native
+    assert 'private' not in native
+
+    monkeypatch.setattr(file_io.shutil, 'which', lambda *a: None)
+    fallback = file_io.search_files('needle', tmp_path, path_filter=allow)
+    assert 'visible:1: needle visible' in fallback
+    assert 'private' not in fallback
+
+
+def test_native_search_filter_uses_exact_path_with_colons_and_newlines(tmp_path):
+    import os
+    import shutil
+    import pytest
+    if not shutil.which('rg') or os.name == 'nt':
+        pytest.skip('requires ripgrep and POSIX filenames')
+    for name in ('a:b.txt', 'a:12:b.txt', 'a\n:12:b.txt'):
+        target = tmp_path / name
+        target.write_text('needle private\n')
+        for mode in ('content', 'files'):
+            seen = []
+            result = file_io.search_files('needle' if mode == 'content' else '*', tmp_path,
+                                         target=mode,
+                                         path_filter=lambda path: seen.append(path) or False)
+            assert result == '(no matches)', (name, mode, result, seen)
+            assert target in seen, (name, mode, seen)
+        target.unlink()
+
 
 def test_search_skips_hidden_dependencies_binary_and_symlinks(tmp_path):
     for name in ('.hidden', 'binary', 'visible'):

@@ -679,6 +679,10 @@ class Zeline:
 
     def _record_usage(self, payload: Any) -> None:
         """Log provider token usage. Best-effort: never let stats break a turn."""
+        observer = getattr(self, "_on_usage", None)
+        if observer is not None:
+            with contextlib.suppress(Exception):
+                observer(usage_stats.reported_usage(payload, self.protocol))
         # A lost statistic must never cost the user their answer, so every
         # failure here is swallowed deliberately.
         with contextlib.suppress(Exception):
@@ -776,8 +780,7 @@ class Zeline:
         finally:
             self._close_response(response)
 
-        if usage_chunk is not None:
-            self._record_usage(usage_chunk)
+        self._record_usage(usage_chunk)
         message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
         if tool_map:
             message["tool_calls"] = [tool_map[index] for index in sorted(tool_map)]
@@ -806,8 +809,8 @@ class Zeline:
         blocks: dict[int, dict[str, Any]] = {}
         # Anthropic splits usage across two events: message_start carries
         # input_tokens, message_delta carries the running output_tokens.
-        stream_input_tokens = 0
-        stream_output_tokens = 0
+        stream_input_tokens = None
+        stream_output_tokens = None
         try:
             for raw_line in self._stream_lines(response):
                 # /stop harus memutus SEKETIKA, bahkan saat token masih mengalir.
@@ -857,14 +860,16 @@ class Zeline:
                     usage = started.get("usage") if isinstance(started, dict) else None
                     if isinstance(usage, dict):
                         try:
-                            stream_input_tokens = max(0, int(usage.get("input_tokens", 0) or 0))
+                            value = usage.get("input_tokens")
+                            stream_input_tokens = value if type(value) is int and value >= 0 else None
                         except (TypeError, ValueError):
-                            stream_input_tokens = 0
+                            stream_input_tokens = None
                 elif etype == "message_delta":
                     usage = event.get("usage")
                     if isinstance(usage, dict):
                         try:
-                            stream_output_tokens = max(0, int(usage.get("output_tokens", 0) or 0))
+                            value = usage.get("output_tokens")
+                            stream_output_tokens = value if type(value) is int and value >= 0 else None
                         except (TypeError, ValueError):
                             pass
                 elif etype == "message_stop":
@@ -876,13 +881,9 @@ class Zeline:
         finally:
             self._close_response(response)
 
-        if stream_input_tokens or stream_output_tokens:
-            self._record_usage({
-                "usage": {
-                    "input_tokens": stream_input_tokens,
-                    "output_tokens": stream_output_tokens,
-                }
-            })
+        self._record_usage({
+            "usage": {"input_tokens": stream_input_tokens, "output_tokens": stream_output_tokens}
+        })
         message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
         tool_calls: list[dict[str, Any]] = []
         for index in sorted(blocks):
@@ -958,6 +959,7 @@ class Zeline:
         on_narration: Callable[[str], None] | None = None,
         on_stream_delta: Callable[[str], None] | None = None,
         on_checkpoint: Callable[[list[dict[str, Any]]], None] | None = None,
+        on_usage: Callable[[dict[str, int | None]], None] | None = None,
     ) -> str:
         text = user_input.strip()
         if not text:
@@ -1020,6 +1022,7 @@ class Zeline:
         self.executor._skill_telemetry = telemetry
         turn_outcome = "unknown"
         self._on_checkpoint = on_checkpoint
+        self._on_usage = on_usage
         previous_budget = getattr(self.executor, "_run_budget", None)
         self._run_budget = getattr(self, "_shared_budget", None)
         try:
@@ -1063,6 +1066,7 @@ class Zeline:
             self.executor._run_budget = previous_budget
             self._run_budget = None
             self._on_checkpoint = None
+            self._on_usage = None
             self.executor._skill_telemetry = None
             if telemetry is not None:
                 with contextlib.suppress(Exception):

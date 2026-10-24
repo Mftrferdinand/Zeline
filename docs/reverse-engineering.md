@@ -210,6 +210,22 @@ ISA. Do **not** switch to `target_address`: that selects direct instruction
 immediates and is a different query. Instruction/byte budgets, undecodable stops,
 page-local coverage, and `whole_program_complete: false` remain unchanged.
 
+## Real-fixture regression corpus
+
+`tests/test_reverse_real_fixtures.py` builds temporary, non-executed ELF fixtures with
+`clang` and `ld.lld`, then compares `llvm-objdump` instruction words against the
+engine's raw file bytes, symbol starts, direct branch targets, incoming references,
+and artifact SHA256. The corpus currently covers linked x86-64 and AArch64 ELF,
+including an OBJECT symbol that must not be accepted as a code start. The worker
+invocation is also checked to receive captured bytes rather than a target path.
+
+AArch64 output intentionally distinguishes display order from file order: for
+example, `llvm-objdump` may display `d65f03c0` while a little-endian ELF stores
+`c0035fd6`. The known-answer assertions use both representations so an endian
+regression cannot pass by comparing only formatted disassembly text. These tests
+are skipped when the local clang/lld/LLVM toolchain is unavailable; the existing
+synthetic decoder and resource-boundary corpus remains independent of that skip.
+
 ## Evidence and limits
 
 Every successful operation returns `schema_version`, `engine`, `operation`,
