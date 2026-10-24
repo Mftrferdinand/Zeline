@@ -53,6 +53,12 @@ def root() -> Path:
 def _ensure_root() -> Path:
     target = root()
     target.mkdir(parents=True, exist_ok=True)
+    try:
+        # Offloaded payloads may contain private tool output; keep the store
+        # owner-only, matching the sessions.db / jobs.db conventions.
+        target.chmod(0o700)
+    except OSError:
+        pass
     return target
 
 
@@ -134,6 +140,11 @@ def store(text: str) -> Path | None:
     try:
         if not target.exists():
             target.write_text(text, encoding="utf-8")
+            try:
+                # Payload can hold private command output; restrict to owner.
+                target.chmod(0o600)
+            except OSError:
+                pass
     except OSError:
         return None
     return target

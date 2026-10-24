@@ -1140,7 +1140,8 @@ def cmd_chat(query: str | None = None) -> int:
             ui.reply(answer)
 
 
-def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "") -> int:
+def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", command: str = "", url: str = "",
+            config_path: str = "", dry_run: bool = False) -> int:
     """Manage MCP servers: add / list / remove / test."""
     from zeline import mcp as mcp_module
 
@@ -1213,7 +1214,47 @@ def cmd_mcp(action: str, name: str | None = None, *, transport: str = "", comman
         print(f"Total {total} MCP tools ready.")
         return 0
 
-    print(f"Unknown MCP action: {action}. Options: add, list, remove, test.")
+    if action == "import":
+        # zeline mcp import --config ~/.claude.json [--dry-run]
+        import json as json_mod
+        from pathlib import Path as _Path
+        if not config_path:
+            print("Config path required. Example: zeline mcp import --config ~/.claude.json [--dry-run]")
+            return 2
+        path = _Path(config_path).expanduser()
+        if not path.is_file():
+            print(f"Config file not found: {path}")
+            return 2
+        try:
+            claude_cfg = json_mod.loads(path.read_text(encoding="utf-8"))
+        except json_mod.JSONDecodeError as exc:
+            print(f"Not valid JSON: {exc}")
+            return 2
+        imported = mcp_module.import_claude_mcp_servers(claude_cfg)
+        if not imported:
+            print("No mcpServers found in that file (or none were stdio/http).")
+            return 1
+        for server_name, spec in imported.items():
+            target = spec.get("url") or spec.get("command") or "?"
+            print(f"  - {server_name:<16} [{spec.get('transport')}] {target}")
+        if dry_run:
+            print("(dry run — nothing saved)")
+            return 0
+        cfg = config.stored_config_copy()
+        servers = cfg.setdefault("mcp", {}).setdefault("servers", {})
+        added = skipped = 0
+        for server_name, spec in imported.items():
+            if server_name in servers:
+                skipped += 1
+                continue
+            servers[server_name] = {**spec, "enabled": True}
+            added += 1
+        config.save_config(cfg)
+        print(f"Imported {added} server(s)" + (f", skipped {skipped} already configured" if skipped else "") +
+              ". Test with: zeline mcp test")
+        return 0
+
+    print(f"Unknown MCP action: {action}. Options: add, list, remove, test, import.")
     return 2
 
 
@@ -2535,6 +2576,9 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_remove.add_argument("name")
     mcp_test = mcp_sub.add_parser("test", help="test connection & list tools")
     mcp_test.add_argument("name", nargs="?")
+    mcp_import = mcp_sub.add_parser("import", help="import mcpServers from a Claude Code / Cursor config")
+    mcp_import.add_argument("--config", dest="mcp_config", default="", help="path to claude.json / cursor config")
+    mcp_import.add_argument("--dry-run", dest="mcp_dry_run", action="store_true", help="show what would be imported without saving")
 
     subparsers.add_parser("doctor", aliases=["status"], help="check dependencies and configuration")
     subparsers.add_parser("update", aliases=["upgrade"], help="update Zeline in place (keeps ~/.zeline data)")
@@ -2810,6 +2854,8 @@ def main(argv: list[str] | None = None) -> int:
             getattr(namespace, "name", None),
             command=getattr(namespace, "mcp_cmd", ""),
             url=getattr(namespace, "url", ""),
+            config_path=getattr(namespace, "mcp_config", ""),
+            dry_run=getattr(namespace, "mcp_dry_run", False),
         )
     if command in {"skills", "skill"}:
         return cmd_skills()
