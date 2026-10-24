@@ -308,8 +308,30 @@ class ForgeStore:
     def propose_edit(self, *, action: str, name: str = "", content: str = "",
                      old_text: str = "", new_text: str = "", file_path: str = "",
                      **_unused) -> str:
+        return self.propose_edit_receipt(action=action, name=name, content=content,
+                                         old_text=old_text, new_text=new_text,
+                                         file_path=file_path)['message']
+
+    def propose_edit_receipt(self, *, action: str, name: str = "", content: str = "",
+                             old_text: str = "", new_text: str = "", file_path: str = "",
+                             origin_turn: str | None = None, **_unused) -> dict[str, Any]:
         """Translate an internal reflection edit into a reviewable entry draft."""
         from zeline import skills
+        def receipt(state, message, proposal=None):
+            row = proposal or {}
+            try:
+                provenance = json.loads(row.get('rationale', '{}'))
+                origin = provenance.get('origin_turn') if isinstance(provenance, dict) else None
+            except (ValueError, TypeError):
+                origin = None
+            body = row.get('content', '')
+            if body.startswith('---\n'):
+                body = body.split('---', 2)[-1]
+            excerpt = next((line.strip() for line in body.splitlines()
+                            if line.strip() and not line.lstrip().startswith('#')), name)
+            return dict(version=1, kind='skill', state=state, message=message,
+                        record_id=row.get('id'), revision=row.get('candidate'), summary=excerpt[:180],
+                        action=action, status=row.get('status'), base=row.get('base'), origin_turn=origin)
         try:
             _name(name)
             if file_path not in {"", "SKILL.md"}:
@@ -332,10 +354,20 @@ class ForgeStore:
                 if isinstance(meta, dict) and not meta.get("description"):
                     meta["description"] = "Procedure for " + name.replace("-", " ")
                     candidate = "---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n" + parts[2].lstrip("\n")
-            proposal = self.propose(name, candidate, "Internal reflection: proposed skill improvement")
-            return "Skill proposal " + proposal["id"] + " for " + name + ": pending tests and operator review; active skill unchanged."
+            entry, _scope = self._source(name)
+            if entry is not None and entry.read_text(encoding='utf-8') == candidate:
+                return receipt('unchanged', 'Active skill unchanged; no proposal created.')
+            if origin_turn is not None and (not isinstance(origin_turn, str)
+                    or not re.fullmatch(r'[\w:-]{1,120}', origin_turn, flags=re.ASCII)):
+                raise ValueError('Invalid host review origin')
+            rationale = json.dumps({'kind': 'reflection_review', 'origin_turn': origin_turn})
+            proposal = self.propose(name, candidate, rationale)
+            state = 'created' if proposal['inserted'] else 'duplicate'
+            message = ('Skill proposal ' + proposal['id'] + ' for ' + name
+                       + ': ' + proposal['status'] + '; active skill unchanged by this call.')
+            return receipt(state, message, proposal)
         except (OSError, ValueError) as exc:
-            return "ERROR skill proposal: " + str(exc)
+            return receipt('failed', 'ERROR skill proposal: ' + str(exc))
 
     def propose(self, name: str, content: str, rationale: str) -> dict[str, Any]:
         """Persist a candidate, never write the active library or run its code."""
@@ -363,7 +395,7 @@ class ForgeStore:
             if row["id"] == proposal_id:
                 db.execute("INSERT INTO audit(proposal,action,observed) VALUES (?,?,?)",
                            (proposal_id, "proposed", time.time()))
-        return self.get(row["id"])
+        return {**self.get(row['id']), 'inserted': row['id'] == proposal_id}
 
     def get(self, proposal_id: str) -> dict[str, Any]:
         with self.connect() as db:
@@ -402,7 +434,7 @@ class ForgeStore:
         entry = self._unchanged(proposal)
         checks = _inspect_candidate(proposal["name"], proposal["content"])
         checks.update({"candidate": proposal["candidate"], "behavioral_passed": False,
-                       "behavioral_cases": 0, "tested_at": time.time()})
+                       "behavioral_cases": 0, "tested_at": time.time(), "improvement_proven": False})
         with tempfile.TemporaryDirectory(prefix="skillforge-") as temporary:
             stage = Path(temporary) / proposal["name"]
             stage.mkdir()
@@ -438,6 +470,92 @@ class ForgeStore:
             db.execute("INSERT INTO audit(proposal,action,observed) VALUES (?,?,?)",
                        (proposal_id, "tested", time.time()))
         return checks
+
+    def test_comparison(self, proposal_id: str, *, evaluator) -> dict[str, Any]:
+        """Run the same trusted case contract on isolated baseline/candidate trees.
+
+        Evaluator code is operator-trusted, never read from a proposal. A paired
+        pass means improvement on these cases only, not general model quality.
+        """
+        proposal = self.get(proposal_id)
+        entry = self._unchanged(proposal)
+        comparison: dict[str, Any] = {'baseline': {}, 'candidate': {}, 'gains': [],
+                                      'regressions': [], 'errors': []}
+
+        def cases(report):
+            values = report.get('cases') if isinstance(report, dict) else None
+            if (not isinstance(values, dict) or not 1 <= len(values) <= 128
+                    or any(not isinstance(k, str) or not re.fullmatch(r'[\w.:-]{1,80}', k, flags=re.ASCII)
+                           or type(v) is not bool for k, v in values.items())):
+                raise ValueError('Stable case IDs and boolean task verdicts are required')
+            return dict(values)  # Snapshot before an evaluator can reuse its result object.
+
+        def paired(candidate_stage):
+            try:
+                with tempfile.TemporaryDirectory(prefix='skillforge-baseline-') as temporary:
+                    baseline_stage = Path(temporary) / proposal['name']
+                    baseline_stage.mkdir()
+                    if entry is not None and entry.name == 'SKILL.md':
+                        shutil.copytree(entry.parent, baseline_stage, dirs_exist_ok=True)
+                    if entry is not None:
+                        (baseline_stage / 'SKILL.md').write_text(entry.read_text(encoding='utf-8'), encoding='utf-8')
+                    else:
+                        (baseline_stage / 'SKILL.md').write_text('', encoding='utf-8')
+                    baseline_digest = _tree_digest(baseline_stage / 'SKILL.md')
+                    candidate_digest = _tree_digest(candidate_stage / 'SKILL.md')
+                    before = cases(evaluator(baseline_stage))
+                    if _tree_digest(baseline_stage / 'SKILL.md') != baseline_digest:
+                        raise ValueError('Evaluator modified baseline')
+                    after = cases(evaluator(candidate_stage))
+                    if (_tree_digest(candidate_stage / 'SKILL.md') != candidate_digest
+                            or _tree_digest(baseline_stage / 'SKILL.md') != baseline_digest):
+                        raise ValueError('Evaluator modified staged evidence')
+                    if set(before) != set(after):
+                        raise ValueError('Baseline and candidate case IDs differ')
+                    comparison.update(baseline=before, candidate=after,
+                                      gains=sorted(k for k in before if not before[k] and after[k]),
+                                      regressions=sorted(k for k in before if before[k] and not after[k]))
+            except Exception as exc:
+                comparison['errors'].append(type(exc).__name__)
+            # Never expose a passing half-published comparison to a concurrent
+            # operator review. Publish its complete evidence with a CAS below.
+            return {'passed': False, 'cases': len(comparison['candidate'])}
+
+        checks = self.test(proposal_id, evaluator=paired)
+        self._unchanged(proposal)
+        passed = (checks['structural_passed'] and not comparison['errors']
+                  and bool(comparison['gains']) and not comparison['regressions']
+                  and all(comparison['candidate'].values()))
+        completed = {**checks, 'comparison': comparison, 'improvement_proven': bool(passed),
+                     'behavioral_passed': bool(passed),
+                     'behavioral_cases': len(comparison['candidate'])}
+        with self.connect() as db:
+            changed = db.execute("UPDATE proposals SET checks=? WHERE id=? AND status='tested' AND checks=?",
+                                 (json.dumps(completed), proposal_id, json.dumps(checks))).rowcount
+            if not changed:
+                raise ValueError('Test evidence changed concurrently; repeat the comparison')
+            db.execute('INSERT INTO audit(proposal,action,observed) VALUES (?,?,?)',
+                       (proposal_id, 'compared', time.time()))
+        return completed
+
+    def proposal_outcomes(self, proposal_id: str, *, identity: str) -> dict[str, Any]:
+        """Summarize scoped operational observations after apply, never causality."""
+        proposal = self.get(proposal_id)
+        if not identity:
+            raise ValueError('An observation identity is required')
+        counts = {outcome: 0 for outcome in _OUTCOMES}
+        with self.connect() as db:
+            applied = db.execute("SELECT MIN(observed) FROM audit WHERE proposal=? AND action='applied'",
+                                 (proposal_id,)).fetchone()[0]
+            if applied is not None:
+                for outcome, count in db.execute(
+                        'SELECT outcome,COUNT(*) FROM usage WHERE identity=? AND skill=? '
+                        'AND scope=\'private\' AND revision=? AND observed>=? GROUP BY outcome',
+                        (hashlib.sha256(identity.encode()).hexdigest(), proposal['name'],
+                         proposal['candidate'], applied)):
+                    counts[outcome] = count
+        return dict(proposal_id=proposal_id, revision=proposal['candidate'], status=proposal['status'],
+                    observations=counts, causal_improvement_proven=False)
 
     def review(self, proposal_id: str, *, approve: bool, reviewer: str,
                acknowledged_risks=()) -> dict[str, Any]:

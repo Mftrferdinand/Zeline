@@ -15,6 +15,13 @@ if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 
+def learning_receipt(kind, record_id):
+    """Formatter fixtures include provenance, not unverified success prose."""
+    return json.dumps(dict(version=1, kind=kind, state='created' if kind != 'lesson' else 'updated',
+                           record_id=record_id, revision=1, summary='fixture correction',
+                           evidence_id='success_fixture' if kind == 'lesson' else None))
+
+
 class FakeResponse:
     def __init__(self, payload: dict, status_code: int = 200):
         self.text = json.dumps(payload)
@@ -808,17 +815,17 @@ class AgentLoopTests(unittest.TestCase):
 
     def test_reflection_summary_escapes_skill_name_for_html_delivery(self):
         summary = self.agent_module._format_reflection_actions([
-            ("manage_skill", {"action": "create", "name": "A&B<bad>"}, "Skill proposal forged"),
+            ("manage_skill", {"action": "create", "name": "A&B<bad>"}, learning_receipt('skill', 'forged')),
         ])
         self.assertIn("<code>A&amp;B&lt;bad&gt;</code>", summary)
         self.assertNotIn("<code>A&B<bad></code>", summary)
 
     def test_reflection_summary_is_structured_and_never_claims_unapplied_work(self):
         summary = self.agent_module._format_reflection_actions([
-            ("manage_skill", {"action": "create", "name": "demo-deploy-flow"}, "Skill proposal forge_a"),
-            ("manage_skill", {"action": "patch", "name": "demo-deploy-flow"}, "Skill proposal forge_b"),
-            ("resolve_lesson", {"tool": "web_search"}, "Resolved lesson: x"),
-            ("add_memory", {"fact": "x"}, "Memory saved"),
+            ("manage_skill", {"action": "create", "name": "demo-deploy-flow"}, learning_receipt('skill', 'forge_a')),
+            ("manage_skill", {"action": "patch", "name": "demo-deploy-flow"}, learning_receipt('skill', 'forge_b')),
+            ("resolve_lesson", {"tool": "web_search"}, learning_receipt('lesson', 'lesson_x')),
+            ("add_memory", {"fact": "x"}, learning_receipt('memory', 'memory_x')),
         ])
         self.assertIsNotNone(summary)
         self.assertIn("📙 <b>Self-Enhancement:</b>", summary)
@@ -827,7 +834,9 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("\n\n", summary)
         self.assertIn("active skill unchanged", summary)
         self.assertIn("review pending", summary)
-        self.assertIn("verified successful retry", summary)
+        self.assertIn("successful tool evidence", summary)
+        self.assertIn("task benefit not yet measured", summary)
+        self.assertNotIn("verified successful retry", summary)
         self.assertNotIn("Skill score:", summary)
         self.assertNotIn("GEPA", summary)
         self.assertIsNone(self.agent_module._format_reflection_actions([]))
@@ -841,7 +850,7 @@ class AgentLoopTests(unittest.TestCase):
         dan tidak ada fase 📙 paksaan yang cuma jadi noise.
         """
         refinement_only = self.agent_module._format_reflection_actions([
-            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, learning_receipt('skill', 'forge_r')),
         ])
         self.assertIsNotNone(refinement_only)
         self.assertIn("📘 <b>Self-Improvement:</b>", refinement_only)
@@ -850,7 +859,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("no separate reusable-skill proposal was needed", refinement_only)
 
         enhancement_only = self.agent_module._format_reflection_actions([
-            ("resolve_lesson", {"tool": "web_search"}, "Resolved lesson: x"),
+            ("resolve_lesson", {"tool": "web_search"}, learning_receipt('lesson', 'lesson_x')),
         ])
         self.assertIsNotNone(enhancement_only)
         self.assertIn("📗 <b>Self-Refinement:</b>", enhancement_only)
@@ -860,12 +869,12 @@ class AgentLoopTests(unittest.TestCase):
     def test_reflection_summary_deduplicates_repeated_actions(self):
         """Satu siklus refleksi menyentuh skill yang sama berkali-kali."""
         summary = self.agent_module._format_reflection_actions([
-            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
-            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_r"),
-            ("manage_skill", {"action": "patch", "name": "demo-flow"}, "Skill proposal forge_z"),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, learning_receipt('skill', 'forge_r')),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, learning_receipt('skill', 'forge_r')),
+            ("manage_skill", {"action": "patch", "name": "demo-flow"}, learning_receipt('skill', 'forge_z')),
         ])
         self.assertIsNotNone(summary)
-        self.assertEqual(summary.count("SkillForge revision proposal"), 1)
+        self.assertEqual(summary.count("SkillForge revision proposal"), 2)
         self.assertEqual(summary.count("📘 <b>Self-Improvement:</b>"), 1)
 
     def test_web_search_uses_bing_serp_and_includes_urls(self):

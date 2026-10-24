@@ -2398,7 +2398,9 @@ TOOL_DEFS: list[ToolDef] = [
             "worked. Use during self-reflection only after verifying a different "
             "approach succeeded. Pass the exact tool name and a distinctive literal "
             "substring from the failed args_sig shown in the reflection context; "
-            "never store secrets in the fix."
+            "Provide evidence_id from a later successful tool event for the same identity and tool. "
+            "This links an observed success, not proof of causality or task-quality improvement. "
+            "Never store secrets in the fix."
         ),
         {
             "type": "object",
@@ -2406,11 +2408,12 @@ TOOL_DEFS: list[ToolDef] = [
                 "tool": {"type": "string", "description": "The failed tool name."},
                 "args_sig_contains": {
                     "type": "string",
-                    "description": "Literal distinctive substring from the failed args signature, for example 'path=src/missing.py'.",
+                    "description": "Exact lesson:<id> shown in unresolved lessons, or a uniquely matching args_sig substring.",
                 },
                 "fix": {"type": "string", "description": "Short reusable correction: what failed and what worked instead."},
+                "evidence_id": {"type": "string", "description": "Host-issued successful tool event ID from the reflection context; do not invent IDs."},
             },
-            "required": ["tool", "args_sig_contains", "fix"],
+            "required": ["tool", "args_sig_contains", "fix", "evidence_id"],
         },
         frozenset({"full"}),
     ),
@@ -2683,8 +2686,8 @@ class ToolExecutor:
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
                 action, name, content, old_text, new_text, file_path, category, absorbed_into
             ),
-            "resolve_lesson": lambda tool, args_sig_contains, fix: self._resolve_lesson(
-                tool, args_sig_contains, fix
+            "resolve_lesson": lambda tool, args_sig_contains, fix, evidence_id='': self._resolve_lesson(
+                tool, args_sig_contains, fix, evidence_id
             ),
             "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, self._control("_should_stop"), self._control("_interrupt_reason")),
             "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, self._control("_should_stop"), self._control("_interrupt_reason")),
@@ -2696,8 +2699,8 @@ class ToolExecutor:
                 **({"should_stop": self._control("_should_stop")} if self._control("_should_stop") else {})),
         }
 
-    def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str) -> str:
-        """Resolve one unresolved lesson with an explicit verified correction."""
+    def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str, evidence_id: str = '') -> str:
+        """Link a proposed correction to real tool evidence, not a causal claim."""
         from zeline import lessons as lessons_module
 
         return lessons_module.resolve_lesson(
@@ -2705,6 +2708,7 @@ class ToolExecutor:
             str(tool or "").strip(),
             str(args_sig_contains or "").strip(),
             str(fix or "").strip(),
+            evidence_id=str(evidence_id or '').strip(),
         )
 
     def _browser(
@@ -3075,6 +3079,12 @@ class ToolExecutor:
         the rest. The index is rebuilt from all_schemas each time so a newly
         loaded MCP or custom tool appears, while revelations persist.
         """
+        if self._reflection_mode:
+            # Reflection cannot call discovery; expose its bounded native
+            # capabilities directly without widening normal-session schemas.
+            allowed = {'manage_skill', 'load_skill', 'list_memory', 'add_memory', 'resolve_lesson'}
+            return [definition.schema() for definition in self._enabled_native_defs()
+                    if definition.name in allowed]
         index = self._index()
         if not index.applicable:
             return index.all
@@ -3184,12 +3194,23 @@ class ToolExecutor:
         # Rewritten/denied calls keep their ordinary governance and redaction.
         if name not in {"manage_skill", "load_skill", "list_memory", "add_memory", "resolve_lesson"}:
             return "ERROR: tool is unavailable during internal reflection; propose a reviewed skill change instead."
+        if name == 'add_memory':
+            if name not in {definition.name for definition in self._enabled_native_defs()}:
+                return 'ERROR: reflection memory writes are disabled for this profile.'
+            if set(args) - {'fact'}:
+                return 'ERROR: reflection may save one fact only; authority, batches and expiry are host-managed.'
+            receipt = self.memory.add_receipt(args.get('fact', ''), source='reflection',
+                                              origin_turn=getattr(self, '_reflection_origin_turn', None))
+            return json.dumps({'success': receipt['state'] != 'failed', **receipt}, ensure_ascii=False)
         if name == "manage_skill" and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}:
             if name not in {definition.name for definition in self._enabled_native_defs()}:
                 return "ERROR: skill proposals are unavailable for this profile or disabled by the owner."
             try:
                 from zeline.skillforge import ForgeStore
-                return ForgeStore().propose_edit(**args)
+                proposal_args = {key: value for key, value in args.items() if key != 'origin_turn'}
+                receipt = ForgeStore().propose_edit_receipt(
+                    **proposal_args, origin_turn=getattr(self, '_reflection_origin_turn', None))
+                return json.dumps({'success': receipt['state'] != 'failed', **receipt}, ensure_ascii=False)
             except Exception as exc:
                 # Proposal persistence is best-effort like the reflection turn;
                 # database/disk faults must not abort the user's main session.
