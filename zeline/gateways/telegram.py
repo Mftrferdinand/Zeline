@@ -354,16 +354,23 @@ def _short_host(url: str) -> str:
 
 
 def _api_request_service(url: str) -> str:
-    """Return a short service label for an API progress row."""
+    """Return a provider label without exposing the API hostname."""
     host = _short_host(url)
     lowered = host.casefold()
-    if (
-        lowered == "github.com"
-        or lowered.endswith(".github.com")
-        or lowered.endswith(".githubusercontent.com")
+    for domain, label in (
+        ("github.com", "Github"),
+        ("githubusercontent.com", "Github"),
+        ("openai.com", "OpenAi"),
+        ("anthropic.com", "Anthropic"),
     ):
-        return "Github"
-    return host or "API"
+        if lowered == domain or lowered.endswith("." + domain):
+            return label
+
+    parts = [part for part in lowered.split(".") if part]
+    if parts and parts[0] in {"api", "raw", "www"}:
+        parts.pop(0)
+    provider = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+    return provider.replace("-", " ").title() or "API"
 
 
 def _api_request_href(url: str) -> str:
@@ -541,8 +548,11 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         href = _api_request_href(raw_url)
         if not href:
             return "⚡ Sending API request…"
-        service = html.escape(_api_request_service(raw_url)[:80], quote=False)
-        return f"⚡ <a href=\"{href}\">Sending API request</a>: {service}"
+        display = html.escape(
+            f"Sending API request-{_api_request_service(raw_url)[:80]}",
+            quote=False,
+        )
+        return f"⚡ <a href=\"{href}\">{display}</a>"
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
         return f"⚓ Delegating task: {goal}…" if goal else "⚓ Delegating task…"

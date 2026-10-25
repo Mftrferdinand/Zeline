@@ -107,22 +107,32 @@ class TelegramIconContractTests(unittest.TestCase):
         for url in urls:
             with self.subTest(url=url):
                 line = self.telegram._tool_progress_text("http_request", {"url": url})
-                expected = "⚡ <a href=" + chr(34) + url + chr(34) + ">Sending API request</a>: Github"
+                expected = "⚡ <a href=" + chr(34) + url + chr(34) + ">Sending API request-Github</a>"
                 self.assertEqual(line, expected)
                 self.assertNotIn("🖇️", line)
                 self.assertEqual(line.count(url), 1)
 
-    def test_http_request_progress_uses_actual_non_github_service_label(self):
-        url = "https://api.example.com/v1/models"
-        line = self.telegram._tool_progress_text("http_request", {"url": url})
-        expected = "⚡ <a href=" + chr(34) + url + chr(34) + ">Sending API request</a>: api.example.com"
-        self.assertEqual(line, expected)
-        self.assertNotIn(": Github", line)
+    def test_http_request_progress_uses_provider_labels_inside_link(self):
+        cases = (
+            ("https://api.openai.com/v1/models", "OpenAi"),
+            ("https://api.anthropic.com/v1/messages", "Anthropic"),
+            ("https://api.example.com/v1/models", "Example"),
+        )
+        for url, provider in cases:
+            with self.subTest(url=url):
+                line = self.telegram._tool_progress_text("http_request", {"url": url})
+                expected = (
+                    "⚡ <a href=" + chr(34) + url + chr(34)
+                    + ">Sending API request-" + provider + "</a>"
+                )
+                self.assertEqual(line, expected)
+                self.assertEqual(line.count(url), 1)
 
     def test_http_request_progress_escapes_href_and_rejects_credentials(self):
         url = "https://api.example.com/v1?a=1&b=2"
         line = self.telegram._tool_progress_text("http_request", {"url": url})
         self.assertIn("href=" + chr(34) + "https://api.example.com/v1?a=1&amp;b=2" + chr(34), line)
+        self.assertIn(">Sending API request-Example</a>", line)
         self.assertNotIn("&b=2</a>", line)
         unsafe = self.telegram._tool_progress_text(
             "http_request", {"url": "https://user:pass@example.com/private"}
