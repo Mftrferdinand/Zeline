@@ -279,12 +279,13 @@ tanpa mengubah paketnya. Lihat [docs/extending.md](extending.md).
 ## Pengembangan
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pip install -e ".[dev]"
+python3 -m pytest tests -q
 ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI menjalankan `unittest`, bukan `pytest`.
+CI menjalankan `pytest`, yang menemukan metode `unittest.TestCase` maupun tes bergaya pytest.
 
 **Kontribusi terbuka, dan kamu tidak perlu akses tulis ke repo ini.** Fork,
 buat branch, lalu buka pull request ke `main`; PR dari fork menjalankan matriks

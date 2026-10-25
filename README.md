@@ -278,12 +278,13 @@ package. See [docs/extending.md](docs/extending.md).
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pip install -e ".[dev]"
+python3 -m pytest tests -q
 ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI runs `unittest`, not `pytest`.
+CI runs `pytest`, which discovers both `unittest.TestCase` methods and pytest-style tests.
 
 **Contributions are welcome, and you do not need write access here.** Fork,
 branch, and open a pull request against `main`; it runs the same CI matrix the
