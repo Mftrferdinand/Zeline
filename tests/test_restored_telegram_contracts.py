@@ -82,7 +82,7 @@ class TelegramIconContractTests(unittest.TestCase):
             ("browser", {"action": "screenshot"}, "📸 Capturing webpage screenshot"),
             ("browser", {"action": "close"}, "📴 Closing browser session"),
             ("browser", {"action": "links"}, "🖇️ Extracting page links"),
-            ("http_request", {}, "🖇️ Sending API request"),
+            ("http_request", {}, "⚡ Sending API request"),
             ("code_intel", {"action": "references"}, "🖇️ Finding symbol references"),
             ("search_files", {}, "🔎 Searching workspace"),
             ("web_search", {}, "🔎 Searching the web"),

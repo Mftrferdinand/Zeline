@@ -18,7 +18,7 @@ class TelegramIconContractTests(unittest.TestCase):
             ("browser", {"action": "screenshot"}, "📸 Capturing webpage screenshot"),
             ("browser", {"action": "close"}, "📴 Closing browser session"),
             ("browser", {"action": "links"}, "🖇️ Extracting page links"),
-            ("http_request", {}, "🖇️ Sending API request"),
+            ("http_request", {}, "⚡ Sending API request"),
             ("code_intel", {"action": "references"}, "🖇️ Finding symbol references"),
             ("search_files", {}, "🔎 Searching workspace"),
             ("web_search", {}, "🔎 Searching the web"),
@@ -96,6 +96,31 @@ class TelegramIconContractTests(unittest.TestCase):
         for tool, arguments, expected in cases:
             with self.subTest(tool=tool, arguments=arguments):
                 self.assertTrue(self.telegram._tool_progress_text(tool, arguments).startswith(expected), expected)
+
+    def test_http_request_progress_links_url_inside_label(self):
+        urls = (
+            "https://api.github.com/repos/gustiana08/codomo",
+            "https://api.github.com/repos/gustiana08/codomo/contents/",
+            "https://raw.githubusercontent.com/gustiana08/codomo/main/README.md",
+            "https://raw.githubusercontent.com/gustiana08/codomo/main/package.json",
+        )
+        for url in urls:
+            with self.subTest(url=url):
+                line = self.telegram._tool_progress_text("http_request", {"url": url})
+                expected = "⚡ <a href=" + chr(34) + url + chr(34) + ">Sending API request</a>: Github"
+                self.assertEqual(line, expected)
+                self.assertNotIn("🖇️", line)
+                self.assertEqual(line.count(url), 1)
+
+    def test_http_request_progress_escapes_href_and_rejects_credentials(self):
+        url = "https://api.example.com/v1?a=1&b=2"
+        line = self.telegram._tool_progress_text("http_request", {"url": url})
+        self.assertIn("href=" + chr(34) + "https://api.example.com/v1?a=1&amp;b=2" + chr(34), line)
+        self.assertNotIn("&b=2</a>", line)
+        unsafe = self.telegram._tool_progress_text(
+            "http_request", {"url": "https://user:pass@example.com/private"}
+        )
+        self.assertEqual(unsafe, "⚡ Sending API request…")
 
     def test_changed_research_icon_keeps_collapse_and_finalization(self):
         line = self.telegram._tool_progress_text("deep_research", {"query": "demo"})

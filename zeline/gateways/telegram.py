@@ -353,6 +353,41 @@ def _short_host(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _api_request_service(url: str) -> str:
+    """Return a short service label for an API progress row."""
+    host = _short_host(url)
+    lowered = host.casefold()
+    if (
+        lowered == "github.com"
+        or lowered.endswith(".github.com")
+        or lowered.endswith(".githubusercontent.com")
+    ):
+        return "Github"
+    return host or "API"
+
+
+def _api_request_href(url: str) -> str:
+    """Return a safe HTML href, or empty when the URL is not linkable.
+
+    Progress rows are rendered with Telegram HTML. Keep the URL out of visible
+    text while escaping it as an attribute value; reject credentials and
+    non-HTTP schemes so a progress row cannot turn into a credential leak or a
+    non-web action link.
+    """
+    raw = str(url).strip()
+    if not raw or len(raw) > 2048:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return ""
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return html.escape(raw, quote=True)
+
+
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     """Render one distinct HTML-safe progress message per real tool call.
 
@@ -502,8 +537,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         label = labels.get(verb, "⏰ Managing scheduled jobs")
         return f"{label} {job}".strip() if job else f"{label}…"
     if name == "http_request":
-        url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
-        return f"🖇️ Sending API request: {url}" if url else "🖇️ Sending API request…"
+        raw_url = str(arguments.get("url", "")).strip()
+        href = _api_request_href(raw_url)
+        if not href:
+            return "⚡ Sending API request…"
+        service = html.escape(_api_request_service(raw_url)[:80], quote=False)
+        return f"⚡ <a href=\"{href}\">Sending API request</a>: {service}"
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
         return f"⚓ Delegating task: {goal}…" if goal else "⚓ Delegating task…"
