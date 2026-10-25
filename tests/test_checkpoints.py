@@ -64,6 +64,32 @@ class CheckpointBase(unittest.TestCase):
 
 
 class SnapshotTests(CheckpointBase):
+    def test_restore_oldest_at_capacity_remains_undoable(self):
+        target = self.file("a.py", "original\n")
+        with mock.patch.object(self.checkpoints, "MAX_SNAPSHOTS", 1):
+            cid = self.checkpoints.snapshot(target)
+            target.write_text("edited\n", encoding="utf-8")
+            ok, message = self.checkpoints.restore(cid)
+            self.assertTrue(ok, message)
+            self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+            entries = self.checkpoints.list_checkpoints()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["reason"], "pre-restore")
+            ok, message = self.checkpoints.restore(entries[0]["id"])
+            self.assertTrue(ok, message)
+            self.assertEqual(target.read_text(encoding="utf-8"), "edited\n")
+
+    def test_restore_staging_failure_preserves_target_and_checkpoint(self):
+        target = self.file("a.py", "original\n")
+        cid = self.checkpoints.snapshot(target)
+        target.write_text("edited\n", encoding="utf-8")
+        with mock.patch.object(self.checkpoints.shutil, "copy2", side_effect=OSError):
+            ok, message = self.checkpoints.restore(cid)
+        self.assertFalse(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "edited\n")
+        self.assertIsNotNone(self.checkpoints.find(cid))
+        self.assertEqual(list(self.checkpoints._root().glob("restore-*")), [])
+
     def test_snapshot_captures_previous_bytes(self):
         target = self.file("a.py", "original\n")
         cid = self.checkpoints.snapshot(target)

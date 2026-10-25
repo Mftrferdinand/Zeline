@@ -31,6 +31,7 @@ import json
 import os
 import shutil
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -241,11 +242,17 @@ def restore(checkpoint_id: str, workspace: str | Path | None = None) -> tuple[bo
         # Reported as "not found" on purpose: naming the outside path would let
         # a caller enumerate files in other workspaces one id at a time.
         return False, f"no checkpoint with id {checkpoint_id} in this workspace"
-    # Make the undo undoable before touching anything.
-    snapshot(target, reason="pre-restore")
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(blob, target)
+        # At capacity, the pre-restore snapshot can prune the very blob we
+        # are restoring. Keep a private copy outside the indexed entries
+        # until both snapshotting and restoration have finished.
+        with tempfile.TemporaryDirectory(prefix="restore-", dir=_root()) as staging:
+            source = Path(staging) / "content.blob"
+            shutil.copy2(blob, source)
+            # Make the undo undoable before touching the target.
+            snapshot(target, reason="pre-restore")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
     except (OSError, shutil.Error) as exc:
         return False, f"could not restore {target}: {exc.__class__.__name__}"
     return True, f"restored {target} from checkpoint {checkpoint_id}"
