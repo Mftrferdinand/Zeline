@@ -112,6 +112,13 @@ class TelegramIconContractTests(unittest.TestCase):
                 self.assertNotIn("🖇️", line)
                 self.assertEqual(line.count(url), 1)
 
+    def test_http_request_progress_uses_actual_non_github_service_label(self):
+        url = "https://api.example.com/v1/models"
+        line = self.telegram._tool_progress_text("http_request", {"url": url})
+        expected = "⚡ <a href=" + chr(34) + url + chr(34) + ">Sending API request</a>: api.example.com"
+        self.assertEqual(line, expected)
+        self.assertNotIn(": Github", line)
+
     def test_http_request_progress_escapes_href_and_rejects_credentials(self):
         url = "https://api.example.com/v1?a=1&b=2"
         line = self.telegram._tool_progress_text("http_request", {"url": url})
