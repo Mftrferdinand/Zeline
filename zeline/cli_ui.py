@@ -267,7 +267,7 @@ class ChatUI:
         self._panel_title("")
         total_rows = sum(len(mark) for mark in marks)
         row_offset = 0
-        for label, mark in zip(("ZELINE", "AGENTIC AI"), marks, strict=True):
+        for label, mark in zip(("ZELINE", "AGENTIC AI"), marks):
             mark_width = max(_vlen(row) for row in mark)
             if not self.unicode_ok or mark_width > inner - 2:
                 centred(self._paint(label, "light"), raw=True)

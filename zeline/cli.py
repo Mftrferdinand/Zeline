@@ -2139,6 +2139,7 @@ def cmd_cron(
     job_id: str | None = None,
     script: str = "", no_agent: bool = False, workdir: str = "", timeout: float = 900,
     model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
+    quiet_if_unchanged: bool = False,
 ) -> int:
     """Manage scheduled jobs."""
     from zeline import scheduler as cron_module
@@ -2171,7 +2172,8 @@ def cmd_cron(
         try:
             job = cron_module.add_job(schedule, prompt or "", deliver or "local",
                                       script=script, no_agent=no_agent, workdir=workdir, timeout=timeout,
-                                      model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone)
+                                      model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone,
+                                      quiet_if_unchanged=quiet_if_unchanged)
         except cron_module.CronError as exc:
             print(f"ERROR: {exc}")
             return 1
@@ -2628,6 +2630,7 @@ def build_parser() -> argparse.ArgumentParser:
     cron_add.add_argument("--context-from", action="append", help="latest successful result from an existing job; repeat up to three times")
     cron_add.add_argument("--script", default="", help="trusted Python or bash script")
     cron_add.add_argument("--no-agent", action="store_true", help="deliver script stdout without calling a model")
+    cron_add.add_argument("--quiet-if-unchanged", action="store_true", help="agent-only: suppress final delivery for the exact no-update marker; errors still report")
     cron_add.add_argument("--workdir", default="", help="existing absolute working directory")
     cron_add.add_argument("--timeout", type=float, default=900, help="script timeout in seconds (maximum 3600)")
     cron_add.add_argument("--deliver", help="where to send results, e.g. telegram:12345 (default: save locally)")
@@ -2832,6 +2835,7 @@ def main(argv: list[str] | None = None) -> int:
             model=getattr(namespace, "model", ""), profile=getattr(namespace, "profile", ""),
             skills=getattr(namespace, "skills", None), context_from=getattr(namespace, "context_from", None),
             timezone=getattr(namespace, "timezone", ""),
+            quiet_if_unchanged=getattr(namespace, "quiet_if_unchanged", False),
         )
     if command == "toolsearch":
         return cmd_toolsearch(getattr(namespace, "action", None) or "status")

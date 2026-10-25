@@ -190,9 +190,13 @@ def _zip_inventory(data, artifact, offset, limit, should_stop):
 
 def analyze(action: str, path: str, workspace: Path, *, offset=0, limit=50,
             min_length=4, language='', byte_offset=None, architecture='', base_address=None,
-            symbol='', target_address=None, import_iat_rva=None, should_stop=None) -> dict:
+            symbol='', target_address=None, import_iat_rva=None, expected_sha256=None, should_stop=None) -> dict:
     """Return reproducible evidence for an explicit static-only operation."""
     _check_stop(should_stop)
+    if expected_sha256 is not None:
+        if not isinstance(expected_sha256, str) or not re.fullmatch(r'[a-fA-F0-9]{64}', expected_sha256):
+            raise ValueError('expected_sha256 must contain exactly 64 hexadecimal characters')
+        expected_sha256 = expected_sha256.lower()
     if action not in {'inspect', 'strings', 'inventory', 'binary', 'source', 'disassemble', 'references'}:
         raise ValueError('unknown static analysis action')
     if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
@@ -219,12 +223,17 @@ def analyze(action: str, path: str, workspace: Path, *, offset=0, limit=50,
     root, relative = _relative_path(path, workspace)
     if action == 'inventory':
         try:
-            return _directory_inventory(root, relative, offset, limit, should_stop)
+            result = _directory_inventory(root, relative, offset, limit, should_stop)
+            if expected_sha256 is not None:
+                raise ValueError('expected_sha256 cannot bind directories; no full content digest is available')
+            return result
         except NotADirectoryError:
             pass
     data = _file_bytes(root, relative, should_stop)
     artifact = {'path': relative.as_posix(), 'sha256': hashlib.sha256(data).hexdigest(),
                 'size_bytes': len(data)}
+    if expected_sha256 is not None and artifact['sha256'] != expected_sha256:
+        raise ValueError('artifact digest mismatch; start a new scan for changed file bytes')
     if action == 'inventory':
         return _zip_inventory(data, artifact, offset, limit, should_stop)
     if action == 'references':

@@ -66,6 +66,9 @@ TICK_SECONDS = 20.0
 
 MAX_OUTPUT_FILES = 200
 
+# Reserved only for agent jobs that explicitly opt into quiet briefings.
+NO_UPDATE_MARKER = "__ZELINE_NO_UPDATE__"
+
 
 class CronError(RuntimeError):
     """Something the operator should be told plainly."""
@@ -261,6 +264,7 @@ class Job:
     last_output: str = ""
     last_output_sha256: str = ""
     timezone: str = ""
+    quiet_if_unchanged: bool = False
 
     def parsed(self) -> Schedule:
         return parse_schedule(self.schedule, self.timezone)
@@ -273,6 +277,7 @@ class Job:
             "script timeout": f"{self.timeout:g}s", "model": self.model or "(provider default)",
             "profile": self.profile or "(CLI default)", "skills": ", ".join(self.skills) or "(none)",
             "context_from": ", ".join(self.context_from) or "(none)",
+            "quiet if unchanged": "on" if self.quiet_if_unchanged is True else "off",
         }
         return "\n".join(f"  {key}: {value}" for key, value in values.items())
 
@@ -492,13 +497,18 @@ def _new_id(existing: list[Job]) -> str:
 def add_job(schedule: str, prompt: str = "", deliver: str = "local", *,
             script: str = "", no_agent: bool = False, workdir: str = "",
             timeout: float = DEFAULT_JOB_TIMEOUT, model: str = "", profile: str = "",
-            skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "") -> Job:
+            skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
+            quiet_if_unchanged: bool = False) -> Job:
     parsed = parse_schedule(schedule, timezone)   # validate before writing anything
     prompt = (prompt or "").strip()
     if not prompt and not no_agent:
         raise CronError("a job needs a prompt — what should the agent actually do?")
     if not isinstance(no_agent, bool):
         raise CronError("no_agent must be a boolean")
+    if not isinstance(quiet_if_unchanged, bool):
+        raise CronError("quiet_if_unchanged must be a boolean")
+    if no_agent and quiet_if_unchanged:
+        raise CronError("quiet_if_unchanged is agent-only; script-only jobs use empty stdout")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 3600:
         raise CronError("timeout must be a finite number greater than zero and at most 3600 seconds")
     if not isinstance(workdir, str) or not isinstance(script, str):
@@ -544,7 +554,7 @@ def add_job(schedule: str, prompt: str = "", deliver: str = "local", *,
         job = Job(
             id=_new_id(jobs),
             schedule=parsed.raw, timezone=timezone,
-            prompt=prompt,
+            prompt=prompt, quiet_if_unchanged=quiet_if_unchanged,
             deliver=(deliver or "local").strip() or "local",
             script=script, no_agent=no_agent, workdir=workdir, timeout=timeout, model=model, profile=profile, skills=list(skills or []),
             context_from=list(context_from or []), context_generations=generations, generation=uuid.uuid4().hex,
@@ -800,7 +810,7 @@ def _run_script(job: Job, should_stop=None) -> str:
             pipe.close()
 
     readers = [threading.Thread(target=read_pipe, args=(pipe, target), daemon=True)
-               for pipe, target in zip((process.stdout, process.stderr), output, strict=True)]
+               for pipe, target in zip((process.stdout, process.stderr), output)]
     try:
         for reader in readers:
             reader.start()
@@ -988,6 +998,12 @@ class Scheduler:
             if job.no_agent and not text:
                 status = "ok: silent"
                 return
+            if (job.quiet_if_unchanged is True and not job.no_agent and not agent_error
+                    and isinstance(text, str) and text.strip() == NO_UPDATE_MARKER):
+                status = "ok: no update (delivery suppressed)"
+                # Persist the audit output, but never pass a control marker as evidence.
+                result_path = ""
+                return
             if agent_error:
                 status = f"error: agent returned failure — {text[:200]}"
                 try:
@@ -1004,7 +1020,7 @@ class Scheduler:
                 status += f" — saved {path.name}"
         except Exception as exc:  # noqa: BLE001 — arbitrary agent failure
             status = f"error: {exc.__class__.__name__}: {exc}"
-            if job.no_agent or job.script or job.model or job.profile or job.skills or job.context_from:
+            if job.no_agent or job.script or job.model or job.profile or job.skills or job.context_from or job.quiet_if_unchanged is True:
                 try:
                     save_output(job, status)
                 except Exception:
@@ -1055,7 +1071,17 @@ class Scheduler:
             "question, so never ask one — decide and act. Produce the finished "
             "result the job asks for, not a plan or a status note."
         )
-        configured = bool(job.model or job.profile or job.skills or job.context_from or job.script or job.workdir)
+        if job.quiet_if_unchanged is True:
+            if not job.generation:
+                raise CronError("quiet jobs require a generation; recreate the job through cron add")
+            extra += (
+                "\nQuiet briefing mode: if there is no meaningful new information, "
+                f"return exactly {NO_UPDATE_MARKER} and nothing else. "
+                "Never use this marker for errors, unavailable sources, or incomplete work; "
+                "report those explicitly. This only suppresses final text delivery, not tool side effects."
+            )
+        configured = bool(job.model or job.profile or job.skills or job.context_from or job.script or job.workdir
+                          or job.quiet_if_unchanged is True)
         identity = f"cron:{job.id}" + (f":{job.generation}" if configured and job.generation else "")
         prompt = job.prompt
         inputs = {}
@@ -1099,10 +1125,9 @@ class Scheduler:
             extra += "\n\nExplicitly attached job procedures:\n" + loaded
         target = (job.deliver or "").strip()
         if target.startswith("telegram:"):
-            chat_id = target.split(":", 1)[1].strip()
             delivery.register_channel(
                 identity,
-                lambda path, caption, kind, chat=chat_id: _deliver_file_telegram(
+                lambda path, caption, kind, chat=target.split(":", 1)[1].strip(): _deliver_file_telegram(
                     chat, path, caption, kind
                 ),
             )

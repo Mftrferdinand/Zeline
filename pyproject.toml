@@ -45,6 +45,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "ruff>=0.16", "pytest>=8,<10", "pytest-subtests>=0.14,<1"]
+optimizer = ["gepa==0.1.4"]
 
 [project.scripts]
 zeline = "zeline.cli:main"

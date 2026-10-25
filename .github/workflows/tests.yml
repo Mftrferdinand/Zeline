@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main, "ci/maturity-*"]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -51,6 +51,20 @@ jobs:
         run: python -m pytest tests -q
       - name: Compile package
         run: python -m compileall -q zeline
+
+  gepa-opt-in:
+    # Keep the optional optimizer off the public runtime dependency path while
+    # still exercising its real bounded-worker and host-held-out contracts.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install optional optimizer test dependencies
+        run: python -m pip install ".[optimizer]" "pytest>=8,<10" "pytest-subtests>=0.14,<1"
+      - name: Run offline GEPA opt-in gate
+        run: python -m pytest tests/test_gepa_training.py tests/test_gepa_host_evaluation.py -q
 
   windows:
     # Zeline is developed on Termux/Linux, so Windows regressions (termios

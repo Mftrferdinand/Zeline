@@ -307,15 +307,22 @@ class MCPServer:
 class MCPRegistry:
     """Kumpulan MCP server aktif untuk satu proses agent.
 
-    Tool di-cache setelah discovery pertama supaya schema tidak berubah di
-    tengah percakapan (prompt caching aman). Kegagalan satu server tidak
-    menjatuhkan yang lain — server bermasalah cuma dilewati.
+    Discovered tools are cached without repeated network probes. Servers that
+    finish after the first deadline appear on subsequent schema access, without
+    mutating an already returned snapshot. Failed servers do not hide healthy ones.
     """
 
     def __init__(self, servers: list[MCPServer] | None = None):
         self.servers: dict[str, MCPServer] = {s.name: s for s in (servers or [])}
         self._tool_cache: list[dict[str, Any]] | None = None
         self._errors: dict[str, str] = {}
+        self._condition = threading.Condition()
+        self._discovery_started = False
+        self._closed = False
+        self._discovery_deadline = 0.0
+        self._discovery_threads: dict[str, threading.Thread] = {}
+        self._discovery_results: dict[str, list[dict[str, Any]]] = {}
+        self._discovery_completed: set[str] = set()
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "MCPRegistry":
@@ -335,44 +342,71 @@ class MCPRegistry:
             ))
         return cls(servers)
 
+    def _snapshot(self) -> list[dict[str, Any]]:
+        """Build an independent snapshot while holding the registry condition."""
+        return [schema for name in self._discovery_threads
+                for schema in self._discovery_results.get(name, [])]
+
+    def _probe_server(self, name: str, server: MCPServer) -> None:
+        with self._condition:
+            if self._closed:
+                return
+        error = None
+        schemas: list[dict[str, Any]] = []
+        try:
+            schemas = list(server.list_tools())
+        except Exception as exc:  # noqa: BLE001 - isolated and reported
+            error = f"{exc.__class__.__name__}: {exc}"
+        with self._condition:
+            # A registry owns exactly one discovery generation. Closing it
+            # invalidates all in-flight publications without joining slow work.
+            if self._closed:
+                return
+            self._discovery_completed.add(name)
+            if error is None:
+                self._discovery_results[name] = schemas
+                self._errors.pop(name, None)
+            else:
+                self._errors[name] = error
+            if self._tool_cache is not None:
+                self._tool_cache = self._snapshot()
+            self._condition.notify_all()
+
     def schemas(self) -> list[dict[str, Any]]:
-        """Tools from every server (cached). A slow or dead server is skipped.
+        """Discover once under a shared deadline; publish late tools on later reads.
 
-        Discovery used to run sequentially, so one unreachable server added its
-        whole timeout to every first turn. Now each server is probed in its own
-        thread under one shared deadline: total wait is bounded by the deadline,
-        not by the number of broken servers.
+        Concurrent initial callers share the same workers and absolute deadline.
+        Cached reads never re-probe or wait for late servers. Snapshots already
+        returned to callers are not changed by background publications.
         """
-        if self._tool_cache is not None:
+        with self._condition:
+            if self._closed:
+                return []
+            if self._tool_cache is not None:
+                return self._tool_cache
+            if not self._discovery_started:
+                self._discovery_started = True
+                self._discovery_deadline = time.monotonic() + _DISCOVERY_DEADLINE
+                for name, server in tuple(self.servers.items()):
+                    thread = threading.Thread(
+                        target=self._probe_server, args=(name, server), daemon=True,
+                        name=f"zeline-mcp-discovery-{name}",
+                    )
+                    self._discovery_threads[name] = thread
+                    thread.start()
+            while not self._closed and len(self._discovery_completed) < len(self._discovery_threads):
+                remaining = self._discovery_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            if self._closed:
+                return []
+            for name in self._discovery_threads:
+                if name not in self._discovery_completed:
+                    self._errors.setdefault(name, "TimeoutError: discovery deadline exceeded")
+            if self._tool_cache is None:
+                self._tool_cache = self._snapshot()
             return self._tool_cache
-        collected: list[dict[str, Any]] = []
-        if not self.servers:
-            self._tool_cache = collected
-            return collected
-
-        results: dict[str, list[dict[str, Any]]] = {}
-
-        def probe(name: str, server: Any) -> None:
-            try:
-                results[name] = list(server.list_tools())
-            except Exception as exc:  # noqa: BLE001 - reported, never raised
-                self._errors[name] = f"{exc.__class__.__name__}: {exc}"
-
-        threads = [
-            threading.Thread(target=probe, args=(name, server), daemon=True)
-            for name, server in self.servers.items()
-        ]
-        for thread in threads:
-            thread.start()
-        deadline = time.monotonic() + _DISCOVERY_DEADLINE
-        for name, thread in zip(self.servers, threads, strict=True):
-            thread.join(max(0.0, deadline - time.monotonic()))
-            if thread.is_alive():
-                self._errors[name] = "TimeoutError: discovery deadline exceeded"
-        for name in self.servers:
-            collected.extend(results.get(name, []))
-        self._tool_cache = collected
-        return collected
 
     def has_tool(self, name: str) -> bool:
         parsed = parse_tool_name(name)
@@ -392,9 +426,16 @@ class MCPRegistry:
             return f"ERROR MCP {server_name}.{tool}: {exc.__class__.__name__}: {exc}"
 
     def close(self) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._tool_cache = []
+            self._condition.notify_all()
         for server in self.servers.values():
             server.close()
 
     @property
     def errors(self) -> dict[str, str]:
-        return dict(self._errors)
+        with self._condition:
+            return dict(self._errors)

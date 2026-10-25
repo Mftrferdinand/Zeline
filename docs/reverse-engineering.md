@@ -37,8 +37,12 @@ pinned grammar, not a JavaScript runtime's semantic validity. CommonJS require
 and dynamic imports are not resolved; JS module strings preserve lexical escapes.
 
 Follow `findings.next_offset` for directory, ZIP, and string pages. `null` means
-that observation has no further page. Keep the directory unchanged between
-pages: directory enumeration is not a frozen filesystem snapshot.
+that observation has no further page. For file and ZIP pages, pass the previous
+`artifact.sha256` as `expected_sha256`; a byte change is rejected before parser or
+decoder work. Directories have no recursive content digest and reject this option,
+so keep the directory unchanged between pages: enumeration is not a frozen
+filesystem snapshot. The digest binds file bytes only—callers must also preserve
+architecture, symbol/target selectors, and other operation-specific inputs.
 
 ## Binary table pages
 
