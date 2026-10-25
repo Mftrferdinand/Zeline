@@ -157,7 +157,9 @@ zeline mcp remove filesystem
 
 `zeline mcp test` before relying on a server: it proves the transport works and
 shows exactly which tools arrive, rather than leaving you to find out mid-turn.
-A stdio server is a local process launched by Zeline, so the same
+Discovery has a shared deadline; a stdio probe that does not produce a complete
+JSON-RPC line is timed out and its server process is retired before discovery
+continues. A stdio server is a local process launched by Zeline, so the same
 `workspace`/`full` restriction applies.
 
 ### Reverse engineering with REA

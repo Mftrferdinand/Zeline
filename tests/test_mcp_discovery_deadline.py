@@ -97,6 +97,26 @@ class DiscoveryDeadlineTests(unittest.TestCase):
         pool.schemas()
         self.assertLess(time.monotonic() - started, 0.5)
 
+    def test_timed_out_stdio_probe_retires_server_process(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script = Path(temp_dir) / "silent_mcp.py"
+            script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+            server = mcp.MCPServer(
+                name="silent",
+                transport="stdio",
+                command=f'"{sys.executable}" "{script}"',
+            )
+            started = time.monotonic()
+            try:
+                with self.assertRaises(TimeoutError):
+                    server._rpc("initialize", {}, timeout=0.1)
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertIsNone(server._process)
+            finally:
+                server.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shlex
 import subprocess
 import threading
@@ -166,6 +167,42 @@ class MCPServer:
         )
         self._initialized = False
 
+    def _readline_with_timeout(self, timeout: float) -> str:
+        """Read one stdio frame without letting a blocked pipe defeat the deadline."""
+        assert self._process and self._process.stdout
+        stream = self._process.stdout
+        result: queue.Queue[tuple[str, str | Exception]] = queue.Queue(maxsize=1)
+
+        def read_line() -> None:
+            try:
+                result.put(("ok", stream.readline()))
+            except Exception as exc:  # noqa: BLE001 - surfaced to the RPC caller
+                result.put(("error", exc))
+
+        reader = threading.Thread(
+            target=read_line,
+            daemon=True,
+            name=f"zeline-mcp-read-{self.name}",
+        )
+        reader.start()
+        try:
+            state, value = result.get(timeout=max(0.0, timeout))
+        except queue.Empty as exc:
+            # A timed-out stdio probe must not leave a live server or a blocked
+            # reader thread behind. close() terminates the process and closes
+            # the pipe; the reader is daemonized as a final guard for a child
+            # that does not release an inherited descriptor promptly.
+            self.close()
+            reader.join(timeout=1)
+            raise TimeoutError(
+                f"MCP server '{self.name}' stdio read timed out"
+            ) from exc
+        if state == "error":
+            assert isinstance(value, Exception)
+            raise value
+        assert isinstance(value, str)
+        return value
+
     def _stdio_rpc(self, method: str, params: dict[str, Any] | None, *, notify: bool = False, timeout: int = _RPC_TIMEOUT) -> dict[str, Any] | None:
         self._ensure_process()
         assert self._process and self._process.stdin and self._process.stdout
@@ -181,10 +218,17 @@ class MCPServer:
             return None
         deadline = time.monotonic() + timeout
         target_id = message["id"]
-        while time.monotonic() < deadline:
-            raw = self._process.stdout.readline()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise TimeoutError(f"MCP server '{self.name}' tidak menjawab {method} dalam {timeout}s.")
+            try:
+                raw = self._readline_with_timeout(remaining)
+            except TimeoutError as exc:
+                raise TimeoutError(f"MCP server '{self.name}' tidak menjawab {method} dalam {timeout}s.") from exc
             if not raw:
-                if self._process.poll() is not None:
+                if self._process is None or self._process.poll() is not None:
                     raise RuntimeError(f"MCP server '{self.name}' berhenti tak terduga.")
                 continue
             raw = raw.strip()
@@ -201,7 +245,6 @@ class MCPServer:
                 if obj.get("error"):
                     raise RuntimeError(f"MCP error: {obj['error']}")
                 return obj.get("result", {})
-        raise TimeoutError(f"MCP server '{self.name}' tidak menjawab {method} dalam {timeout}s.")
 
     # ---- http transport ----
     def _http_rpc(self, method: str, params: dict[str, Any] | None, *, notify: bool = False, timeout: int = _RPC_TIMEOUT) -> dict[str, Any] | None:

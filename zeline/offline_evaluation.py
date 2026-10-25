@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any
 
@@ -80,6 +81,48 @@ def _terminate_worker(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+class _BoundedCapture:
+    """Drain a worker pipe while retaining at most limit+1 bytes."""
+
+    def __init__(self, stream, limit: int, name: str) -> None:
+        self.stream = stream
+        self.limit = limit
+        self.name = name
+        self.data = bytearray()
+        self.overflow = False
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self._read, daemon=True, name=name)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _read(self) -> None:
+        try:
+            while len(self.data) <= self.limit:
+                chunk = self.stream.read(min(8192, self.limit + 1 - len(self.data)))
+                if not chunk:
+                    break
+                self.data.extend(chunk)
+                if len(self.data) > self.limit:
+                    self.overflow = True
+                    break
+        except (OSError, ValueError):
+            # The parent may close the pipe while retiring a timed-out worker.
+            pass
+        finally:
+            self.done.set()
+
+    def join(self, timeout: float) -> None:
+        self.thread.join(timeout=timeout)
+
+    def close(self) -> None:
+        try:
+            self.stream.close()
+        except (OSError, ValueError):
+            pass
+
 
 
 def _validate_digest(value: str, label: str) -> str:
@@ -175,9 +218,7 @@ def _run_case(adapter: Path, candidate: str, task_input: Any, timeout: float) ->
     request = _canonical({"adapter": str(adapter), "candidate": candidate, "input": task_input})
     if len(request) > MAX_CANDIDATE_BYTES + MAX_MANIFEST_BYTES:
         raise ValueError("Offline worker request exceeds the byte limit")
-    with (tempfile.TemporaryFile() as request_file,
-          tempfile.TemporaryFile() as stdout_file,
-          tempfile.TemporaryFile() as stderr_file):
+    with tempfile.TemporaryFile() as request_file:
         request_file.write(request)
         request_file.seek(0)
         options = {}
@@ -187,14 +228,18 @@ def _run_case(adapter: Path, candidate: str, task_input: Any, timeout: float) ->
             options["start_new_session"] = True
         proc = subprocess.Popen(
             [sys.executable, "-I", "-B", "-c", _WORKER], stdin=request_file,
-            stdout=stdout_file, stderr=stderr_file, **options,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options,
         )
+        assert proc.stdout is not None and proc.stderr is not None
+        stdout_capture = _BoundedCapture(proc.stdout, MAX_RESULT_BYTES, "zeline-eval-stdout")
+        stderr_capture = _BoundedCapture(proc.stderr, MAX_RESULT_BYTES, "zeline-eval-stderr")
+        stdout_capture.start()
+        stderr_capture.start()
         deadline = time.monotonic() + timeout
         failure = None
         try:
             while proc.poll() is None:
-                if (os.fstat(stdout_file.fileno()).st_size > MAX_RESULT_BYTES
-                        or os.fstat(stderr_file.fileno()).st_size > MAX_RESULT_BYTES):
+                if stdout_capture.overflow or stderr_capture.overflow:
                     failure = ValueError("Offline adapter output exceeds the byte limit")
                     break
                 if time.monotonic() >= deadline:
@@ -205,15 +250,15 @@ def _run_case(adapter: Path, candidate: str, task_input: Any, timeout: float) ->
             # Always terminate the dedicated group: an adapter may have spawned
             # descendants even when its direct worker already exited normally.
             _terminate_worker(proc)
+            stdout_capture.join(timeout=1)
+            stderr_capture.join(timeout=1)
+            stdout_capture.close()
+            stderr_capture.close()
+        if stdout_capture.overflow or stderr_capture.overflow:
+            failure = ValueError("Offline adapter output exceeds the byte limit")
         if failure is not None:
             raise failure
-        if (os.fstat(stdout_file.fileno()).st_size > MAX_RESULT_BYTES
-                or os.fstat(stderr_file.fileno()).st_size > MAX_RESULT_BYTES):
-            raise ValueError("Offline adapter output exceeds the byte limit")
-        stdout_file.seek(0)
-        stderr_file.seek(0)
-        stdout = stdout_file.read(MAX_RESULT_BYTES + 1)
-        stderr = stderr_file.read(MAX_RESULT_BYTES + 1)
+        stdout = bytes(stdout_capture.data)
         if proc.returncode != 0:
             raise ValueError("Offline adapter task failed")
     try:
