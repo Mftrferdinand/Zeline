@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.4] — 2026-10-26
+
+This release integrates the reviewed v0.4.4 development work on top of the
+retained v0.4.3 baseline. It keeps self-improvement evidence-backed and
+operator-gated; it does not enable autonomous skill promotion, provider-backed
+GEPA search, or external REA service calls on the default agent path.
+
+### Added
+- Versioned learning receipts and provenance for real memory, lesson and skill
+  mutations, including revision-aware retrieval feedback and evidence-linked
+  lesson resolution ([#348](https://github.com/Mftrferdinand/Zeline/pull/348)).
+- Isolated paired and held-out SkillForge comparisons plus a bounded offline
+  evaluation handoff; GEPA remains an optional training-only, report-only bridge.
+- Bounded native reverse-engineering continuations with artifact digests,
+  paginated observations and read-only parser/worker safeguards.
+
+### Changed
+- Reflection reports only host-generated, reviewable learning receipts; duplicate
+  or no-op changes are suppressed, skill changes remain proposals until explicit
+  review/apply, and reflection memory writes stay bounded and low-confidence.
+- Telegram API progress labels identify the actual provider while linking the
+  complete request label to the actual HTTP(S) request URL.
+
+### Fixed
+- Stale lesson resolution, memory-admission and bounded worker paths now retain
+  revision, cleanup and failure evidence instead of claiming unverified success.
+
 ## [0.4.3] — 2026-10-23
 
 This release adds the reviewed bounded native static engine to v0.4.2. It does
