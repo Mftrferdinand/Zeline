@@ -328,6 +328,55 @@ This adds separate MCP tools; it does not replace the native `web_search` or
 fetched URLs to Parallel. To remove the server, run `zeline mcp remove parallel`
 and start a new session.
 
+### Publishing pages with deed.page
+
+[deed.page](https://deed.page/docs) is a hosted MCP server that publishes static
+HTML to a public `https://<slug>.deed.page/` URL, without an account or API key.
+It is useful when a task ends in a report, chart or small site that someone
+should open in a browser. This section comes from the deed.page team
+(Avatar 8 LLC); the same server is also packaged as an
+[MIT agent skill](https://github.com/f-o-x11/deed-page-skill).
+
+Merge this optional `deedpage` server into `mcp.servers` in your config
+(`zeline config path` prints its location), keeping your other settings:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "deedpage": {
+        "enabled": true,
+        "transport": "http",
+        "url": "https://deed.page/mcp",
+        "headers": {
+          "User-Agent": "Zeline (deed.page MCP)"
+        }
+      }
+    }
+  }
+}
+```
+
+Run `zeline mcp test deedpage` and confirm `mcp__deedpage__publish_site`,
+`mcp__deedpage__get_site` and `mcp__deedpage__delete_site` are listed without a
+connection error. With a `workspace` or `full` profile, start a new session
+and try:
+
+> Publish a one-page HTML summary of this conversation with deed.page, set
+> ttl_seconds to 3600, and give me the URL.
+
+The first anonymous publish returns an owner `token` in the tool result, and
+updating or deleting that page needs it. To keep later publishes under the same
+owner, add `"Authorization": "Bearer <token>"` to the server's `headers` and
+start a new session. The token then lives in your Zeline config, so treat that
+file like any other credential. Without the header, the token only exists in
+the conversation, which also sends it to your configured model.
+
+Published pages are public: do not publish secrets or private data. Anonymous
+pages are temporary unless you choose otherwise, and Free pages show a small
+deed.page badge. To disable the server, run `zeline mcp remove deedpage` and
+start a new session.
+
 ---
 
 ## Choosing between them
