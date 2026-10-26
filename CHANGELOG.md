@@ -1,5 +1,7 @@
 # Changelog
 
+[0.4.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.4
+
 ## [0.4.4] — 2026-10-26
 
 This release integrates the reviewed v0.4.4 development work on top of the
