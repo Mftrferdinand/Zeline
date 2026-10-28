@@ -23,6 +23,13 @@ def _documented_config() -> dict:
 
 
 class DeedPageMCPDocsTests(unittest.TestCase):
+    def test_retention_is_explicit_not_implicitly_temporary(self):
+        guide = (ROOT / "docs" / "extending.md").read_text(encoding="utf-8")
+        section = guide.split(SECTION, 1)[1].split("\n---", 1)[0]
+        self.assertIn("permanent by default", section)
+        self.assertIn("ttl_seconds", section)
+        self.assertNotIn("pages are temporary unless", section)
+
     def test_documented_config_is_a_single_http_server(self):
         servers = _documented_config()["mcp"]["servers"]
         self.assertEqual(set(servers), {"deedpage"})

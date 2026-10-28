@@ -370,10 +370,10 @@ start a new session. The token then lives in your Zeline config, so treat that
 file like any other credential. Without the header, the token only exists in
 the conversation, which also sends it to your configured model.
 
-Published pages are public: do not publish secrets or private data. Anonymous
-pages are temporary unless you choose otherwise, and Free pages show a small
-deed.page badge. To disable the server, run `zeline mcp remove deedpage` and
-start a new session.
+Published pages are public: do not publish secrets or private data. Sites are
+permanent by default; set `ttl_seconds` explicitly for expiry, as in the example
+above. Free pages show a small deed.page badge. To disable the server, run
+`zeline mcp remove deedpage` and start a new session.
 
 ---
 
