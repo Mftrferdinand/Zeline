@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .gepa_training import search_training_bounded
-from .offline_evaluation import _validate_manifest, evaluate, freeze_evaluation
+from .offline_evaluation import _canonical, _sha, _validate_manifest, evaluate, freeze_evaluation
 from .skillforge import _tree_digest, revision_of
 
 
@@ -70,6 +70,9 @@ def evaluate_training_search(
         'training': {
             'scope': 'training_only', 'selected_index': selected,
             'selected_sha256': revision_of(candidates[selected]),
+            'input_sha256': _sha(_canonical(training)),
+            'limits': {'max_metric_calls': max_metric_calls,
+                       'max_proposals': max_proposals, 'timeout_seconds': float(timeout)},
             'metric_calls': report['metric_calls'], 'proposals': report['proposals'],
         },
     }

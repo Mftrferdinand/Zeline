@@ -58,10 +58,9 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # yang terbaca sebagai "hang" — bukan komputasi lokal, tapi menunggu provider
 # berurutan sambil konteks menumpuk.
 #
-# Tiga putaran tetap memuat alur yang berharga (orientasi → tulis → rapikan)
-# sambil memangkas dua panggilan terakhir yang paling jarang menghasilkan
-# perubahan berarti.
-REFLECTION_TOOL_ROUNDS = 3
+# Lima putaran memberi ruang untuk list → load entry → load reference → patch
+# lalu konfirmasi/berhenti. Loop tetap keluar segera saat model tidak meminta tool.
+REFLECTION_TOOL_ROUNDS = 5  # list → load entry → load reference → patch → verify/finish
 
 # Berapa kali ``add_memory`` boleh dipanggil dalam SATU siklus refleksi.
 # Tanpa batas ini, model bebas menulis satu fakta per putaran, dan karena
@@ -93,10 +92,10 @@ def _reflection_receipt(result: str) -> dict[str, Any] | None:
 def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -> str | None:
     """Render reflection output as truthful, reviewable outcomes.
 
-    Reflection is deliberately proposal-only for skill changes.  The chat must
-    never imply that a candidate was applied, scored, or behaviorally verified
-    when it only reached SkillForge.  A lesson is reported separately because
-    its successful-tool evidence is linked; task benefit is measured separately.
+    Only a read-back-confirmed active patch is reported as a saved file.
+    Proposals must not be described as applied or behaviorally verified.
+    A lesson is reported separately because its successful-tool evidence is
+    linked; task benefit is measured separately.
     """
     self_improvement: list[str] = []
     refinements: list[str] = []
@@ -118,48 +117,33 @@ def _format_reflection_actions(actions: list[tuple[str, dict[str, Any], str]]) -
         receipt = _reflection_receipt(result)
         if receipt is None:
             continue
-        from zeline.lessons import _redact_text
-        summary = _redact_text(str(receipt.get('summary', '')))[:180]
-        configured_key = str(getattr(config, 'API_KEY', '') or '')
-        if len(configured_key) >= 5:
-            summary = summary.replace(configured_key, '[REDACTED]')
-        summary = html.escape(summary, quote=False)
-        reference = html.escape(f"{receipt['record_id']}@{receipt['revision']}", quote=False)
+        skill = html.escape(str(args.get("name", "")).strip() or "skill", quote=False)
         if name == "manage_skill" and receipt.get('kind') == 'skill':
             action = str(args.get("action", "")).strip().lower()
-            skill = html.escape(str(args.get("name", "")).strip() or "skill", quote=False)
-            if action == "create":
-                _add(
-                    self_improvement,
-                    f"SkillForge proposal <code>{reference}</code> for <code>{skill}</code>: {summary} — active skill unchanged by this call; structural and behavioral review pending.",
-                )
+            file_path = receipt.get('file_path')
+            if (receipt.get('state') == 'updated' and action == 'patch'
+                    and receipt.get('replacements') == 1
+                    and isinstance(file_path, str)
+                    and (file_path == 'SKILL.md' or re.fullmatch(
+                        r'references/(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}/)*[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.md', file_path))):
+                _add(refinements, f"Patched {file_path} in skill '{skill}' (1 replacement).")
+            elif action == "create":
+                _add(self_improvement, f"Proposal saved for {skill} (inactive).")
             elif action in {"patch", "delete"}:
-                _add(
-                    refinements,
-                    f"SkillForge revision proposal <code>{reference}</code> for <code>{skill}</code>: {summary} — active skill unchanged by this call; structural and behavioral review pending.",
-                )
+                _add(refinements, f"Revision proposal saved for {skill} (inactive).")
         elif name == "resolve_lesson" and receipt.get('kind') == 'lesson' and receipt.get('evidence_id'):
-            evidence = html.escape(str(receipt['evidence_id'])[:128], quote=False)
-            _add(enhancements, f"Correction <code>{reference}</code>: {summary} — successful tool evidence <code>{evidence}</code>; task benefit not yet measured.")
+            _add(enhancements, "Correction saved (tool success linked).")
         elif name == "add_memory" and receipt.get('kind') == 'memory':
-            _add(enhancements, f"Saved memory <code>{reference}</code>: {summary} — low-confidence guidance; future use not yet verified.")
+            _add(enhancements, "Memory saved.")
     lines = []
-    # Setiap fase punya gate buktinya sendiri. Dulu satu refleksi dengan
-    # beberapa mutasi skill memunculkan 📙, 📘, dan 📗 sekaligus, dan itu
-    # terbaca seolah tiga tahap berjalan bersamaan — padahal itu satu review.
-    # Sekarang fase hanya muncul bila aksinya benar-benar terjadi:
-    #   📙 hanya bila ADA proposal skill baru / perubahan tak-terklasifikasi
-    #   📘 hanya bila ADA revisi skill (patch/delete)
-    #   📗 hanya bila ADA lesson yang tuntas atau memori refleksi tersimpan
-    # Refleksi yang berjalan tapi tidak menghasilkan bukti apa pun tidak
-    # mengirim fase apa-apa (mengembalikan None) — bukan "no separate proposal
-    # was needed" yang cuma jadi noise tiap turn berat.
+    # Report only channels with verified mutations, in channel order. Each
+    # message describes the actual tool result, never a fixed phase template.
     if self_improvement:
-        lines.append("📙 <b>Self-Enhancement:</b> " + " ".join(self_improvement))
+        lines.append("📙 Self-enhancement review: " + " ".join(self_improvement))
     if refinements:
-        lines.append("📘 <b>Self-Improvement:</b> " + " ".join(refinements))
+        lines.append("📘 Self-improvement review: " + " · ".join(refinements))
     if enhancements:
-        lines.append("📗 <b>Self-Refinement:</b> " + " ".join(enhancements))
+        lines.append("📗 Self-refinement review: " + " ".join(enhancements))
     # A blank-line delimiter is intentional: Telegram emits each phase as a
     # separate message rather than merging unrelated review outcomes into one
     # noisy card.
@@ -1017,6 +1001,8 @@ class Zeline:
             recalled = self.executor.memory.recall(text)
             self._turn_memory_context = recalled.get("context", "")
             self.executor.memory.record_retrieval(self.last_learning_turn_id, recalled.get('records', []))
+            from zeline.reflection_markdown import refinement_context
+            self._turn_memory_context += refinement_context(self.identity, recalled.get('records', []))
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []
         if _DAILY_CHECKIN_INTENT_RE.search(text):
@@ -1131,6 +1117,7 @@ class Zeline:
             bool(turn_stop and turn_stop())
             or (not waiting_for_user and time.monotonic() >= turn_deadline))
         repeated_failures = 0  # tool call berturut yang balik ERROR
+        automatic_question_used = False
 
         for iteration in range(1, config.MAX_TOOL_ROUNDS + 1):
             if should_stop and should_stop():
@@ -1169,6 +1156,37 @@ class Zeline:
                         self._turn_skill_context = "\n\n".join(
                             part for part in (self._turn_skill_context, correction) if part
                         )
+                        continue
+                if (not automatic_question_used
+                        and self.identity.startswith("telegram:") and on_stream_delta is None):
+                    from zeline import interaction
+                    from zeline.question_picker import branching_question
+                    branch = branching_question(content) if interaction.has_channel(self.identity) else None
+                    if branch is not None:
+                        automatic_question_used = True
+                        question, options = branch
+                        call_id = f"ask-auto-{uuid.uuid4().hex[:12]}"
+                        args = {"question": question, "options": list(options)}
+                        self.messages.append({"role": "assistant", "content": "", "tool_calls": [{
+                            "id": call_id, "type": "function", "function": {
+                                "name": "ask_user", "arguments": json.dumps(args, ensure_ascii=False),
+                            },
+                        }]})
+                        self._checkpoint()
+                        human_wait_started = time.monotonic()
+                        waiting_for_user = True
+                        try:
+                            answer = self.executor.run("ask_user", args)
+                        finally:
+                            elapsed = time.monotonic() - human_wait_started
+                            turn_started += elapsed
+                            turn_deadline += elapsed
+                            waiting_for_user = False
+                        self.messages.append({"role": "tool", "tool_call_id": call_id,
+                                              "content": str(answer)})
+                        self._checkpoint()
+                        if should_stop and should_stop():
+                            raise _TurnCancelled()
                         continue
                 self.messages.append({"role": "assistant", "content": content})
                 self._trim_history()
@@ -1473,6 +1491,9 @@ class Zeline:
                 "terverifikasi. Jangan resolve hanya karena error pernah terlihat; "
                 "harus ada bukti pendekatan pengganti berhasil."
             )
+        with contextlib.suppress(Exception):
+            from zeline.reflection_markdown import review_context
+            pending_context += review_context(self.identity)
         self.messages.append(
             {
                 "role": "user",
@@ -1484,11 +1505,19 @@ class Zeline:
                     "Kalau YA, WAJIB mulai dengan manage_skill action='list' untuk "
                     "melihat skill yang sudah ada — jangan menyimpan nama baru untuk "
                     "pelajaran yang sudah punya skill. "
-                    "- Existing skill: load it, then propose manage_skill action='patch'. "
+                    "- Existing skill: load it, then call manage_skill action='patch' with "
+                    "one exact, small SKILL.md replacement. If the reusable correction "
+                    "belongs in an existing Markdown reference, read its exact text "
+                    "using load_skill(name, file_path='references/<file>.md'), then "
+                    "patch that same existing Markdown reference with file_path; "
+                    "do not guess anchors or patch unrelated files. A bounded patch "
+                    "may update the active file after structural/safety checks and "
+                    "read-back; unsafe patches remain review proposals or fail. "
                     "- New procedure: propose manage_skill action='create' with triggers, "
                     "numbered steps, verification and safety constraints. "
-                    "During internal reflection these writes become SkillForge proposals, "
-                    "NOT active edits. Tests and explicit operator review are required. "
+                    "Creates and risky edits remain SkillForge proposals, NOT active edits. "
+                    "Never claim a saved patch proves better task outcomes; report only "
+                    "the file change. New proposals require explicit operator review. "
                     "Do not delete skills, write scripts or use shell/network tools here. "
                     "Do not claim an untested proposal is a proven improvement. "
                     "(B) Save one concise, scoped, declarative memory when an explicit "
@@ -1575,7 +1604,17 @@ class Zeline:
                     if is_reflection_memory and not result.startswith("ERROR"):
                         memory_writes += 1
                     if (is_skill_change or is_lesson_change or is_reflection_memory) and not result.startswith("ERROR"):
-                        actions.append((name, args, result))
+                        # Project only verified host mutations into human-readable
+                        # Markdown. The original JSON/SQLite or active skill remains
+                        # the canonical store; never report a file on I/O failure.
+                        from zeline.reflection_markdown import record_markdown
+                        try:
+                            saved = record_markdown(self.identity, name, args, receipt)
+                        except (OSError, ValueError):
+                            saved = None
+                        if saved is not None:
+                            receipt = {**receipt, 'markdown_file': saved.relative_to(config.DATA_DIR).as_posix()}
+                        actions.append((name, args, json.dumps(receipt, ensure_ascii=False)))
                     self.messages.append(
                         {"role": "tool", "tool_call_id": str(tool_call.get("id", "")), "content": result}
                     )

@@ -89,10 +89,8 @@ class _BoundedCapture:
     def __init__(self, stream, limit: int, name: str) -> None:
         self.stream = stream
         self.limit = limit
-        self.name = name
         self.data = bytearray()
         self.overflow = False
-        self.done = threading.Event()
         self.thread = threading.Thread(target=self._read, daemon=True, name=name)
 
     def start(self) -> None:
@@ -111,8 +109,6 @@ class _BoundedCapture:
         except (OSError, ValueError):
             # The parent may close the pipe while retiring a timed-out worker.
             pass
-        finally:
-            self.done.set()
 
     def join(self, timeout: float) -> None:
         self.thread.join(timeout=timeout)
@@ -122,7 +118,6 @@ class _BoundedCapture:
             self.stream.close()
         except (OSError, ValueError):
             pass
-
 
 
 def _validate_digest(value: str, label: str) -> str:

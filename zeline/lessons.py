@@ -340,8 +340,10 @@ class LessonsStore:
                 row = rows[0]
                 evidence = conn.execute(
                     "SELECT id FROM lesson_successes WHERE id = ? AND key = ? "
-                    "AND tool = ? AND ts > ? AND ts <= ?",
-                    (evidence_id, _key(identity), str(tool), row[1], time.time()),
+                    "AND tool = ? AND ts > ? AND ts <= ? AND NOT EXISTS "
+                    "(SELECT 1 FROM lessons WHERE evidence_id = ? AND key = ? AND status = 'resolved')",
+                    (evidence_id, _key(identity), str(tool), row[1], time.time(),
+                     evidence_id, _key(identity)),
                 ).fetchone()
                 if not evidence:
                     return False

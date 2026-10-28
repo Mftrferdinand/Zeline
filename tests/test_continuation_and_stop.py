@@ -1,7 +1,7 @@
 """Kontinuasi & pembatalan: dua keluhan nyata yang keduanya soal "pesan mana".
 
 1. ``/stop`` membalas TIGA pesan untuk satu pembatalan (konfirmasi + sentinel
-   "Stopped." dari turn + "No active task to stop." dari echo). Yang benar satu.
+   "Stopped." dari turn + "⛔ No active task." dari echo). Yang benar satu.
 2. "lanjut" mengembalikan topik TERLAMA, bukan yang terakhir dikerjakan, karena
    peringkat archive bm25-first dan "lanjut" dicari sebagai kata kunci.
 
@@ -288,14 +288,14 @@ class StopRepliesOnceTests(unittest.TestCase):
     def test_stop_when_genuinely_idle_still_says_so(self):
         handled, api = self._stop(self._sessions(running=False))
         self.assertTrue(handled)
-        self.assertEqual(api.call_args.kwargs["text"], "No active task to stop.")
+        self.assertEqual(api.call_args.kwargs["text"], "⛔ No active task.")
 
     def test_the_echo_window_expires_so_a_later_stop_is_answered(self):
         self._stop(self._sessions(running=True))
         with mock.patch.object(self.telegram.time, "monotonic",
                                return_value=time.monotonic() + self.telegram._STOP_ECHO_SECONDS + 1):
             _, api = self._stop(self._sessions(running=False))
-        self.assertEqual(api.call_args.kwargs["text"], "No active task to stop.")
+        self.assertEqual(api.call_args.kwargs["text"], "⛔ No active task.")
 
     def test_cancelled_turn_sends_no_reply_and_skips_reflection(self):
         """Sentinel "Stopped." dari turn yang dibatalkan tidak boleh jadi pesan kedua."""

@@ -62,9 +62,9 @@ publishes, calls a provider, or searches for a candidate.
 - task timeout: 0.05–30 seconds; total deadline: at most 300 seconds;
 - maximum: 16 training plus 16 held-out cases, evaluated as exact pairs.
 
-The trusted worker runs in a dedicated process group. stdout/stderr are drained through
-bounded pipes and the group is killed/reaped on timeout or overflow; no portable
-CPU/RAM/filesystem sandbox is claimed. A trusted adapter can still consume resources or access its process
+The trusted worker runs in a dedicated process group. Output files are monitored and
+the group is killed/reaped on timeout or overflow, but no portable CPU/RAM/filesystem
+sandbox is claimed. A trusted adapter can still consume resources or access its process
 environment. Provider/token budgets do not exist in this offline layer. A future GEPA
 adapter must keep held-out labels outside its search loop, freeze optimizer/provider
 configuration, retain every failed run, and require independent review plus explicit

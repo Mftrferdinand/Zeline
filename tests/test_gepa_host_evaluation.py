@@ -66,6 +66,17 @@ class GepaHostEvaluationTests(unittest.TestCase):
         self.assertEqual(receipt['training']['scope'], 'training_only')
         self.assertEqual(receipt['training']['selected_index'], 1)
 
+    def test_training_receipt_pins_input_and_declared_search_budget(self):
+        from zeline.offline_evaluation import _canonical, _sha
+        receipt = self.run_search(max_metric_calls=16, max_proposals=1, timeout=5)
+        training_input = [{'id': 'train', 'input': {'operands': [2, 3]}}]
+        self.assertEqual(receipt['training']['input_sha256'], _sha(_canonical(training_input)))
+        self.assertEqual(receipt['training']['limits'], {
+            'max_metric_calls': 16, 'max_proposals': 1, 'timeout_seconds': 5.0,
+        })
+        self.assertLessEqual(receipt['training']['metric_calls'], 16)
+        self.assertLessEqual(receipt['training']['proposals'], 1)
+
     def test_training_checker_receives_no_heldout_or_expected_labels(self):
         marker = self.root / 'seen-ids'
         def score(text, case):

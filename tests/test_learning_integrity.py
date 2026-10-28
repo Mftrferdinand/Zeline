@@ -8,6 +8,16 @@ import subprocess
 import sys
 
 
+def test_one_tool_success_cannot_resolve_two_distinct_failures(tmp_path):
+    module = importlib.import_module('zeline.lessons')
+    store = module.LessonsStore(tmp_path / 'lessons.db')
+    store.record_failure('owner', 'add_memory', {'action': 'one'}, 'ERROR one')
+    store.record_failure('owner', 'add_memory', {'action': 'two'}, 'ERROR two')
+    event = store.record_success('owner', 'add_memory', {'action': 'fact'})
+    assert store.record_fix('owner', 'add_memory', 'action=one', 'Use a fact', evidence_id=event)
+    assert not store.record_fix('owner', 'add_memory', 'action=two', 'Use a fact', evidence_id=event)
+
+
 def test_success_retention_preserves_linked_evidence(tmp_path, monkeypatch):
     module = importlib.import_module('zeline.lessons')
     monkeypatch.setattr(module, 'MAX_SUCCESS_EVENTS_PER_IDENTITY', 2, raising=False)

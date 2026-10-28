@@ -303,6 +303,23 @@ def _update_task(task: str, status: str, identity: str) -> str:
         return f"ERROR task: could not save the board ({exc.__class__.__name__})."
     prefix = f"NOTE: {note}\n" if note else ""
     return f"{prefix}{tasks.render(board)}"
+
+
+def _watch_task(action: str, identity: str, task: str = "", kind: str = "",
+                source: str = "", field: str = "") -> str:
+    from zeline import followups
+    try:
+        if action == "list":
+            return followups.list_watches(identity)
+        if action == "stop":
+            return followups.stop(identity, task)
+        if action == "start":
+            return followups.register(identity, task, kind, source, field)
+        return "ERROR watch_task: action must be start, list, or stop."
+    except (ValueError, OSError) as exc:
+        return f"ERROR watch_task: {exc}"
+
+
 def _search_files(query: str, workspace: Path, pattern: str = "*", should_stop=None,
                   limit=50, offset=0, target="content", regex=False, *,
                   archive_identity: str | None = None) -> str:
@@ -2059,7 +2076,8 @@ TOOL_DEFS: list[ToolDef] = [
         "Read the full content of a skill/procedure by its skill file name.",
         {
             "type": "object",
-            "properties": {"name": {"type": "string", "description": "Skill name without .md"}},
+            "properties": {"name": {"type": "string", "description": "Skill name without .md"},
+                           "file_path": {"type": "string", "description": "Optional existing references/*.md within that skill; omit to read SKILL.md and list companion files."}},
             "required": ["name"],
         },
         frozenset(SAFE_PROFILES),
@@ -2219,7 +2237,7 @@ TOOL_DEFS: list[ToolDef] = [
             "architecture": {"type": "string", "enum": ["x86", "x86_64", "arm", "thumb", "aarch64"], "description": "Source decode ISA: inferred for ELF/PE, required for raw disassembly. Only ARM/Thumb family overrides. References has no raw support; target symbol mode does not determine calling code mode."},
             "base_address": {"type": "integer", "minimum": 0, "description": "Disassembly raw-only: virtual address corresponding to file byte zero, default 0. Not a binary relocation override."},
             "min_length": {"type": "integer", "minimum": 1, "maximum": 64, "description": "ASCII strings minimum length, default 4."},
-            "language": {"type": "string", "enum": ["python", "javascript"], "description": "Source parser; inferred from .py/.js/.mjs/.cjs/.jsx if omitted."},
+            "language": {"type": "string", "enum": ["python", "javascript", "typescript", "tsx"], "description": "Source parser; inferred from .py/.js/.mjs/.cjs/.jsx/.ts/.mts/.cts/.tsx if omitted. TypeScript/TSX needs optional reverse-ts grammar."},
         }, "required": ["action", "path"]},
         frozenset({"workspace", "full"}),
     ),
@@ -2373,6 +2391,30 @@ TOOL_DEFS: list[ToolDef] = [
             "reply to see what is still open."
         ),
         {"type": "object", "properties": {"task": {"type": "string", "description": "Short task description. Reuse the same wording to update an existing item."}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}}, "required": ["task", "status"]},
+        frozenset({"full"}),
+    ),
+    ToolDef(
+        "watch_task",
+        (
+            "Proactively monitor a task you are doing or have done for the owner. "
+            "First record the task with update_task and verify a concrete source. "
+            "start creates a 10-minute quiet watch after a real baseline check; "
+            "list shows active watches; stop removes a task's watches. "
+            "Use email/inbox only for a specific expected reply: field must be "
+            "'sender@example.com|Exact Subject' (requires working Himalaya auth). "
+            "The sender AND normalized reply subject must match; unrelated "
+            "inbox mail never triggers this task. Or use json_file for a numeric "
+            "snapshot in Zeline's private data directory (field is the top-level "
+            "JSON key). Alerts are sent only for matching new mail or a numeric "
+            "increase, with dedup; unavailable sources are rejected."
+        ),
+        {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["start", "list", "stop"]},
+            "task": {"type": "string", "description": "Exact description from this chat's task board."},
+            "kind": {"type": "string", "enum": ["email", "json_file"]},
+            "source": {"type": "string", "description": "'inbox' for email; absolute snapshot path for json_file."},
+            "field": {"type": "string", "description": "For email: 'sender@example.com|Exact Subject'; for json_file: top-level numeric JSON key."},
+        }, "required": ["action"]},
         frozenset({"full"}),
     ),
     ToolDef(
@@ -2640,10 +2682,10 @@ class ToolExecutor:
         self._lsp: Any | None = None
         self._handlers: dict[str, ToolFunction] = {
             "runtime_info": self._runtime_info,
-            "add_memory": self.memory.add,
+            "add_memory": self._add_memory_with_journal,
             "remove_memory": self.memory.remove,
             "list_memory": self.memory.formatted,
-            "load_skill": lambda name: skills.load_skill(name, include_private=self._can_read_private_skills),
+            "load_skill": lambda name, file_path="": skills.load_skill(name, include_private=self._can_read_private_skills, file_path=file_path),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
             "network_route": network_routes.tool,
@@ -2687,6 +2729,8 @@ class ToolExecutor:
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
             ),
             "update_task": lambda task, status: _update_task(task, status, self.identity),
+            "watch_task": lambda action, task="", kind="", source="", field="": _watch_task(
+                action, self.identity, task, kind, source, field),
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
                 action, name, content, old_text, new_text, file_path, category, absorbed_into
             ),
@@ -3147,6 +3191,50 @@ class ToolExecutor:
             else:
                 self._invocation_local.context = previous
 
+    def _add_memory_with_journal(self, fact: str = "", *, kind: str = "fact",
+                                 source: str | None = None, confidence: float | None = None,
+                                 expires_at: float | None = None,
+                                 operations: list[dict[str, Any]] | None = None) -> str:
+        receipt = self.memory.add_receipt(fact, kind=kind, source=source,
+                                          confidence=confidence, expires_at=expires_at,
+                                          operations=operations)
+        if receipt["state"] in {"created", "updated"}:
+            changed_receipts = []
+            journal_ok = True
+            try:
+                from zeline.reflection_markdown import record_markdown
+                if operations is not None:
+                    # Batch receipts carry changed IDs, not one record revision.
+                    # Project only live canonical revisions after the transaction.
+                    changed = set(json.loads(receipt["message"]).get("changed", []))
+                    for record in self.memory.records():
+                        if record["id"] not in changed or record.get("state") != "active":
+                            continue
+                        changed_receipt = {
+                            "version": 1, "kind": "memory", "state": "updated",
+                            "record_id": record["id"], "revision": record["revision"],
+                            "summary": record["text"], "source": record.get("source"),
+                            "expires_at": record.get("expires_at"),
+                        }
+                        changed_receipts.append(changed_receipt)
+                        record_markdown(self.identity, "add_memory", {}, changed_receipt)
+                elif receipt.get("record_id"):
+                    changed_receipts.append(receipt)
+                    record_markdown(self.identity, "add_memory", {"fact": fact}, receipt)
+            except (OSError, ValueError, UnicodeError, TypeError, ImportError):
+                journal_ok = False
+            # Queueing is host-only and best effort. Neither evaluation failure nor
+            # journal projection failure can invalidate the committed memory receipt.
+            for changed_receipt in changed_receipts:
+                try:
+                    from zeline.memory_gain_host import enqueue_for_receipt
+                    enqueue_for_receipt(self.identity, changed_receipt)
+                except (OSError, ValueError, UnicodeError, TypeError, ImportError):
+                    pass
+            if not journal_ok:
+                return receipt["message"] + " (journal unavailable; memory saved)"
+        return receipt["message"]
+
     def _run_observed(self, name: str, args: dict[str, Any]) -> str:
         """Execute a tool, wrapped in the operator's plugin hooks if any.
 
@@ -3212,7 +3300,7 @@ class ToolExecutor:
             try:
                 from zeline.skillforge import ForgeStore
                 proposal_args = {key: value for key, value in args.items() if key != 'origin_turn'}
-                receipt = ForgeStore().propose_edit_receipt(
+                receipt = ForgeStore().reflection_edit_receipt(
                     **proposal_args, origin_turn=getattr(self, '_reflection_origin_turn', None))
                 return json.dumps({'success': receipt['state'] != 'failed', **receipt}, ensure_ascii=False)
             except Exception as exc:
