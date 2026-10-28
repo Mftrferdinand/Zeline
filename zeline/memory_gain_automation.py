@@ -85,7 +85,10 @@ def _stop_process(proc, *, tree=False):
             import signal
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
+                # Darwin can deny the group signal during child teardown. Still
+                # reap/terminate our direct child below; don't replace its result
+                # (or an original timeout) with a best-effort cleanup exception.
                 pass
         if proc.is_alive():
             proc.terminate()
@@ -95,7 +98,7 @@ def _stop_process(proc, *, tree=False):
                 import signal
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     pass
             proc.kill()
             proc.join(timeout=0.5)

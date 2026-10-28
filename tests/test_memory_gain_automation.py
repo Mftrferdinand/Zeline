@@ -422,6 +422,31 @@ def test_failure_diagnostics_never_include_exception_message(service, monkeypatc
     assert 'private-prompt-or-credential-value' not in stderr
 
 
+@pytest.mark.parametrize('alive', [False, True])
+def test_posix_group_cleanup_permission_race_still_reaps_child(monkeypatch, alive):
+    from zeline import memory_gain_automation as automation
+    calls = []
+    class Process:
+        pid = 123
+        def __init__(self):
+            self.alive = alive
+        def is_alive(self):
+            return self.alive
+        def terminate(self):
+            calls.append('terminate')
+            self.alive = False
+        def join(self, timeout):
+            calls.append('join')
+        def close(self):
+            calls.append('close')
+    def denied(*args):
+        raise PermissionError('process group unavailable')
+    monkeypatch.setattr(automation, '_WINDOWS', False)
+    monkeypatch.setattr(automation.os, 'killpg', denied, raising=False)
+    automation._stop_process(Process(), tree=True)
+    assert calls == (['terminate'] if alive else []) + ['join', 'close']
+
+
 def network_worker(prompt, store, record_id, revision, mode):
     import socket
     socket.socket()
