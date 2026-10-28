@@ -484,6 +484,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if action == "restore":
             return f"✂️ Restoring previous version: <code>{cid}</code>" if cid else "✂️ Restoring previous version…"
         return "✂️ Undoing a file change…"
+    if name == "diff_files":
+        a = html.escape(_short_path(str(arguments.get("path_a", "")))[:80], quote=False)
+        b = html.escape(_short_path(str(arguments.get("path_b", "")))[:80], quote=False)
+        if a and b:
+            return f"🔍 Comparing <code>{a}</code> ↔ <code>{b}</code>"
+        return "🔍 Comparing two files…"
     if name == "web_search":
         # Searching (web): satu baris ringkas, di-collapse. Subjek utama saja.
         query = str(arguments.get("query", "")).strip()

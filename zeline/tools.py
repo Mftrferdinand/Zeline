@@ -227,6 +227,47 @@ def _patch_file(path: str, old_text: str, new_text: str, workspace: Path) -> str
 _UNDO_ACTIONS = ("list", "diff", "restore")
 
 
+def _diff_files(path_a: str, path_b: str, workspace: Path, context: int = 2) -> str:
+    """Unified diff of two workspace files, bounded like every other read.
+
+    An agent that just generated or edited a file previously had two ways to
+    check it against a reference: read both files and eyeball them in context
+    (expensive, error-prone) or shell out to `diff` (full profile only). A
+    native diff closes that gap for every workspace profile, and the bound
+    keeps a pathological pair of files from flooding a phone-sized output.
+    """
+    import difflib
+
+    try:
+        context = min(10, max(0, int(context)))
+    except (TypeError, ValueError):
+        context = 2
+    try:
+        target_a = _resolve_workspace_path(path_a, workspace)
+        target_b = _resolve_workspace_path(path_b, workspace)
+    except ValueError as exc:
+        return f"ERROR diff files: {exc}"
+    for label, target in (("path_a", target_a), ("path_b", target_b)):
+        if not target.is_file():
+            return f"ERROR diff files: not a file or not found: {label} ({target.name})"
+    try:
+        lines_a = target_a.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        lines_b = target_b.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    except OSError as exc:
+        return f"ERROR diff files: {exc}"
+    diff = list(difflib.unified_diff(
+        lines_a, lines_b,
+        fromfile=str(path_a), tofile=str(path_b), n=context,
+    ))
+    if not diff:
+        return "(no differences)"
+    text = "".join(diff).encode()
+    if len(text) > _DIFF_OUTPUT_BYTES:
+        marker = b"\n[truncated: diff output limit reached]"
+        text = text[:_DIFF_OUTPUT_BYTES - len(marker)] + marker
+    return text.decode("utf-8", errors="replace")
+
+
 def _undo_file(action: str, workspace: Path, path: str = "", checkpoint_id: str = "") -> str:
     """Revert a file to the bytes it had before a write in THIS workspace.
 
@@ -603,6 +644,9 @@ def _bg_prune_finished() -> None:
 
 
 _BACKGROUND_READ_BYTES = 50_000
+#: Shared cap for read-shaped tools. A diff of two pathological files must not
+#: flood a phone-sized chat window any more than a read_file page would.
+_DIFF_OUTPUT_BYTES = 50_000
 
 
 def _bg_new_output(job: _BackgroundJob) -> str:
@@ -2363,6 +2407,28 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "diff_files",
+        (
+            "Compare two files in the workspace and return a unified diff. Use "
+            "this to self-review an edit against a reference: generated file vs "
+            "template, new config vs the working one, exported data vs expected "
+            "fixture. Both paths must be inside the workspace — the diff is a "
+            "read of two files, not a shell escape. Returns '(no differences)' "
+            "when the contents match, so an empty diff is a verified match, not "
+            "a failure."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path_a": {"type": "string", "description": "Reference (old) file, shown as the '-' side."},
+                "path_b": {"type": "string", "description": "Changed (new) file, shown as the '+' side."},
+                "context": {"type": "integer", "description": "Unchanged context lines around each hunk. Default 2, max 10."},
+            },
+            "required": ["path_a", "path_b"],
+        },
+        frozenset({"workspace", "full"}),
+    ),
+    ToolDef(
         "update_task",
         (
             "Track a multi-step plan on a persistent board. Call when a task starts, "
@@ -2685,6 +2751,9 @@ class ToolExecutor:
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
+            ),
+            "diff_files": lambda path_a, path_b, context=2: _diff_files(
+                path_a, path_b, self.workspace, context
             ),
             "update_task": lambda task, status: _update_task(task, status, self.identity),
             "manage_skill": lambda action, name="", content="", old_text="", new_text="", file_path="", category="", absorbed_into="": skills.manage_skill(
