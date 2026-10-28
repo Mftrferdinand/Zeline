@@ -725,7 +725,8 @@ def deliver(job: Job, text: str) -> tuple[bool, str]:
     return False, f"unknown delivery target '{target}'"
 
 
-def _deliver_telegram(chat_id: str, text: str) -> tuple[bool, str]:
+def _deliver_telegram(chat_id: str, text: str, *, timeout: int | None = None,
+                      attempts: int | None = None) -> tuple[bool, str]:
     token = str((getattr(config, "GATEWAYS", {}) or {}).get("telegram", {}).get("token", "") or "").strip()
     if not token:
         return False, "telegram gateway has no token configured"
@@ -735,8 +736,13 @@ def _deliver_telegram(chat_id: str, text: str) -> tuple[bool, str]:
         api = telegram_module.API_TEMPLATE.format(token=token)
         # Reuse the gateway's own sender so retries and message splitting behave
         # exactly as they do for a normal reply.
+        options = {}
+        if timeout is not None:
+            options["timeout"] = timeout
+        if attempts is not None:
+            options["attempts"] = attempts
         result = telegram_module._api_call(
-            api, "sendMessage", chat_id=chat_id, text=text[:4000],
+            api, "sendMessage", chat_id=chat_id, text=text[:4000], **options,
         )
     except Exception as exc:  # noqa: BLE001 — delivery must never raise into the loop
         return False, f"{exc.__class__.__name__}: {exc}"

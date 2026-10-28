@@ -1,5 +1,23 @@
 # Changelog
 
+[0.4.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.5
+
+## [0.4.5] — 2026-10-28
+
+This scoped maintenance candidate preserves the installed agent and Telegram
+behavior while keeping the public persona separate from owner-instance data.
+
+### Changed
+- Task-scoped follow-up watches use bounded polling and delivery, with
+  cross-process registry serialization and shared inbox snapshots.
+- A validated, owner-only instance SOUL override can replace the public default
+  without bundling private persona content into the distribution.
+- Telegram follow-up work has a dedicated progress label.
+
+### Fixed
+- Registration, stop, poll, and scheduler transitions keep watch state
+  consistent across threads and processes.
+
 [0.4.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.4
 
 ## [0.4.4] — 2026-10-26

@@ -375,7 +375,10 @@ class MemoryStore:
 
     def assess_retrieval(self, turn_id: str, record_id: str, revision: int, *,
                          checker: str, case_id: str, baseline: bool, candidate: bool,
-                         used: bool) -> dict[str, Any]:
+                         used: bool, comparison: dict[str, int | bool] | None = None,
+                         _issuer: object | None = None,
+                         _case_evidence: list[dict[str, Any]] | None = None,
+                         _case_pack_digest: str | None = None) -> dict[str, Any]:
         """Trusted host checker API, deliberately absent from model tools.
 
         Paired task measurements are not inferred from answer text or a completed
@@ -390,6 +393,35 @@ class MemoryStore:
                    else 'no_change' if candidate else 'failure') if used else 'unattributed'
         report = dict(checker=checker, case_id=case_id, baseline=baseline, candidate=candidate,
                       used=used, outcome=outcome)
+        if comparison is None and (_case_evidence is not None or _case_pack_digest is not None):
+            raise ValueError('Case evidence requires a qualified paired comparison')
+        if comparison is not None:
+            # A lone host assessment cannot assert held-out counts. Only the
+            # paired evaluator issues the capability after running every case.
+            from .memory_gain_checker import _PAIRED_ISSUER
+            if _issuer is not _PAIRED_ISSUER:
+                raise ValueError('Paired comparison must be checker-issued')
+            if (not isinstance(comparison, dict) or set(comparison) !=
+                {'train_cases', 'heldout_cases', 'train_gains', 'heldout_gains', 'no_regressions'}
+                or any(type(comparison[k]) is not int or not 0 <= comparison[k] <= 64
+                       for k in ('train_cases', 'heldout_cases', 'train_gains', 'heldout_gains'))
+                or type(comparison['no_regressions']) is not bool
+                or comparison['train_cases'] < 1 or comparison['heldout_cases'] < 1
+                or comparison['train_gains'] > comparison['train_cases']
+                or comparison['heldout_gains'] > comparison['heldout_cases']
+                or not comparison['no_regressions'] or comparison['heldout_gains'] < 1
+                or not used or not candidate or baseline):
+                raise ValueError('Invalid qualified paired comparison')
+            from .memory_gain_checker import summarize_case_evidence
+            actual = summarize_case_evidence(_case_evidence, _case_pack_digest)
+            if comparison != actual or not any(
+                case['case_id'] == case_id and case['candidate_turn_id'] == turn_id
+                and case['split'] == 'heldout' and not case['baseline_pass']
+                for case in _case_evidence):
+                raise ValueError('Case evidence does not match paired comparison')
+            report['comparison'] = comparison.copy()
+            report['case_evidence'] = [case.copy() for case in _case_evidence]
+            report['case_pack_digest'] = _case_pack_digest
         fingerprint = json.dumps([self.key, turn_id, record_id, revision, report], sort_keys=True)
         report['evidence_id'] = 'assessment_' + hashlib.sha256(fingerprint.encode()).hexdigest()
         with self._transaction() as (conn, records):
@@ -398,6 +430,13 @@ class MemoryStore:
                                (self.key, turn_id, record_id, revision)).fetchone()
             if row is None:
                 raise ValueError('No matching retrieved revision for this identity and turn')
+            if comparison is not None:
+                for case in _case_evidence:
+                    matched = conn.execute('SELECT 1 FROM memory_retrievals WHERE owner=? '
+                        'AND turn_id=? AND record_id=? AND revision=? LIMIT 1',
+                        (self.key, case['candidate_turn_id'], record_id, revision)).fetchone()
+                    if not matched:
+                        raise ValueError('Case evidence lacks candidate revision retrieval')
             if row[0]:
                 existing = json.loads(row[0])
                 if existing['evidence_id'] != report['evidence_id']:

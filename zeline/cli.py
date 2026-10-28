@@ -1481,10 +1481,25 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     durable_worker = Worker()
     durable_worker.start()
 
+    # Host-reviewed packs are optional. With none installed there is no
+    # evaluation thread, network traffic, or additional gateway polling.
+    import threading
+    from zeline.memory_gain_host import scheduler_loop
+    review_stop = threading.Event()
+    review_file = config.DATA_DIR / "learning" / "case-packs.json"
+    review_thread = None
+    if review_file.is_file() and not review_file.is_symlink():
+        review_thread = threading.Thread(target=scheduler_loop, args=(review_stop,),
+                                         name="zeline-memory-evaluation", daemon=True)
+        review_thread.start()
+
     def shutdown(_signal=None, _frame=None):
         if screen is not None:
             screen.set_state("STOPPING", "graceful shutdown")
         print("\n==> Stopping gateway…", flush=True)
+        review_stop.set()
+        if review_thread is not None:
+            review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
         runtime.stop()
@@ -1503,6 +1518,9 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
         # Stop arming new jobs first, or a tick during the drain starts work we
         # are about to kill.
+        review_stop.set()
+        if review_thread is not None:
+            review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
         finished, busy = sessions.drain(timeout=timeout)
@@ -1544,6 +1562,9 @@ def _run_gateway_loop(only: list[str] | None) -> int:
             signal.signal(sigusr1, previous_usr1)
         if sigbreak is not None and previous_break is not None:
             signal.signal(sigbreak, previous_break)
+        review_stop.set()
+        if review_thread is not None:
+            review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
         runtime.stop(timeout=1)

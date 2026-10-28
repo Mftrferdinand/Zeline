@@ -61,6 +61,7 @@ class Session:
     active_turn: TurnTicket | None = None
     wake: threading.Event = field(default_factory=threading.Event)
     cancelling: bool = False
+    stop_cleanups: int = 0
     persistence_error: str = ""
 
 
@@ -317,12 +318,29 @@ class SessionStore:
             if own_ticket:
                 self.finish_turn(ticket)
 
-    def stop(self, identity: str) -> bool:
+    def request_stop(self, identity: str) -> bool:
+        """Cancel immediately for interactive gateways; reap owned processes off-loop.
+
+        A repeat /stop for an already-cancelled turn is not a new stop. Keep
+        `cancelling` set until process cleanup completes so a fresh turn cannot
+        run against the old command's files or agent state.
+        """
+        with self._lock:
+            session = self._sessions.get(identity)
+            if (session is not None
+                    and (session.cancelling or (session.active_turn is not None
+                                                and session.active_turn.cancel_event.is_set()))
+                    and not any(not ticket.cancel_event.is_set() for ticket in session.pending_turns)):
+                return False
+        return self.stop(identity, _defer_cleanup=True)
+
+    def stop(self, identity: str, *, _defer_cleanup: bool = False) -> bool:
         with self._lock:
             session = self._sessions.get(identity)
             had_work = bool(session is not None and session.running)
             if session is not None:
                 session.cancelling = True
+                session.stop_cleanups += 1
                 if session.active_turn is not None:
                     session.active_turn.cancel("stop")
                 for ticket in session.pending_turns:
@@ -336,19 +354,34 @@ class SessionStore:
                     except Exception:
                         pass
                 session.wake.set()
-        # Cancellation does not acquire the mutable-history lock. A fresh turn
-        # may be admitted now, but cannot start until owned resources are stopped.
+        # A pending question must be released before the next Telegram message;
+        # otherwise the first message after /stop can be swallowed as its answer.
         try:
             interaction.cancel(identity)
-            killed = tools.cancel_identity(identity)
         except Exception:
-            killed = 0
-        finally:
-            if session is not None:
-                with self._lock:
-                    session.cancelling = False
-                    session.running = session.active_turn is not None or bool(session.pending_turns)
-                    session.wake.set()
+            pass
+
+        # The cancellation flag is already visible. Reaping a subprocess can
+        # wait for SIGTERM escalation, so the Telegram polling thread must not
+        # wait here before acknowledging /stop. The gate below keeps new turns
+        # queued until cleanup has finished.
+        def cleanup() -> int:
+            try:
+                return tools.cancel_identity(identity)
+            except Exception:
+                return 0
+            finally:
+                if session is not None:
+                    with self._lock:
+                        session.stop_cleanups -= 1
+                        session.cancelling = session.stop_cleanups > 0
+                        session.running = session.active_turn is not None or bool(session.pending_turns)
+                        session.wake.set()
+
+        if _defer_cleanup and had_work:
+            threading.Thread(target=cleanup, name="zeline-stop-cleanup", daemon=True).start()
+            return True
+        killed = cleanup()
         return had_work or bool(killed)
 
     def reflect(self, identity: str, min_tool_calls: int = 5, *,

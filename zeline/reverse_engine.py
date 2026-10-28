@@ -288,7 +288,9 @@ def analyze(action: str, path: str, workspace: Path, *, offset=0, limit=50,
             from zeline.reverse_source import inspect_source
             if not language:
                 language = ('python' if relative.suffix.lower() == '.py' else
-                            'javascript' if relative.suffix.lower() in {'.js', '.mjs', '.cjs', '.jsx'} else '')
+                            'javascript' if relative.suffix.lower() in {'.js', '.mjs', '.cjs', '.jsx'} else
+                            'typescript' if relative.suffix.lower() in {'.ts', '.mts', '.cts'} else
+                            'tsx' if relative.suffix.lower() == '.tsx' else '')
             findings = inspect_source(data, language, should_stop=should_stop)
         _check_stop(should_stop)
         limitations = findings.pop('limitations')
@@ -316,6 +318,7 @@ def analyze(action: str, path: str, workspace: Path, *, offset=0, limit=50,
             else 'zip' if data.startswith(b'PK\x03\x04') else
             'python-source-candidate' if relative.suffix.lower() == '.py' else
             'javascript-source-candidate' if relative.suffix.lower() in {'.js', '.mjs', '.cjs', '.jsx'}
+            else 'typescript-source-candidate' if relative.suffix.lower() in {'.ts', '.mts', '.cts', '.tsx'}
             else 'unknown')
     return _evidence(action, artifact, {'format': kind, 'magic_hex': data[:16].hex()},
                      ['Static observations only; no target execution or behavioral equivalence claim.',

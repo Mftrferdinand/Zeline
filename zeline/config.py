@@ -88,7 +88,7 @@ PID_FILE = DATA_DIR / "gateway.pid"
 
 
 def _load_soul() -> str:
-    """Load the canonical packaged identity used by every Zeline agent."""
+    """Validate the packaged identity, then apply a per-instance private override."""
     path = Path(__file__).with_name("SOUL.md")
     try:
         soul = path.read_text(encoding="utf-8").strip()
@@ -96,6 +96,15 @@ def _load_soul() -> str:
         raise RuntimeError(f"Zeline runtime is missing its canonical SOUL.md: {path}") from exc
     if not soul:
         raise RuntimeError(f"Zeline runtime SOUL.md is empty: {path}")
+    private_path = DATA_DIR / "SOUL.md"
+    if private_path.exists() or private_path.is_symlink():
+        try:
+            override = private_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError(f"Zeline cannot read private SOUL.md: {private_path}") from exc
+        if not override:
+            raise RuntimeError(f"Zeline private SOUL.md is empty: {private_path}")
+        return override
     return soul
 
 
@@ -172,8 +181,13 @@ When to ASK vs act (important — don't just execute blindly):
   deploying, overwriting a big file) → ASK FIRST with one short question plus
   clear options; don't guess and run.
 - Use the `ask_user` TOOL for that question — it shows tappable options and
-  waits for the real answer. Writing the question as plain text ends your turn
-  and the user's reply arrives as a brand-new request, so you lose the thread.
+  waits for the real answer. ALL branching questions (yes/no, A/B, approve/defer,
+  or any two-to-six approaches) MUST call ask_user with a separate `options`
+  array; never write the option list into the question text or a plain final
+  reply. Keep the question itself short and add one option per array element.
+  Omit options only for a genuinely open-ended free-text question. Writing a
+  branching question as plain text ends your turn and the user's reply arrives
+  as a brand-new request, so you lose the thread.
   One question at a time; `ask_user` refuses a second while one is open.
 - For small choices (variable names, formatting, default values, step order)
   → make a reasonable call yourself, mention it briefly, don't ask endlessly.

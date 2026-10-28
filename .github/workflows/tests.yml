@@ -66,6 +66,25 @@ jobs:
       - name: Run offline GEPA opt-in gate
         run: python -m pytest tests/test_gepa_training.py tests/test_gepa_host_evaluation.py -q
 
+  reverse-ts-opt-in:
+    # Exercise the pinned optional native TS/TSX grammar on real OS runners.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install optional TypeScript grammar
+        run: python -m pip install ".[reverse-ts]" "pytest>=8,<10" "pytest-subtests>=0.14,<1"
+      - name: Verify optional grammar is importable
+        run: python -c "import tree_sitter_typescript"
+      - name: Run native TS/TSX worker regression
+        run: python -m pytest tests/test_reverse_typescript.py tests/test_reverse_source.py -q
+
   windows:
     # Zeline is developed on Termux/Linux, so Windows regressions (termios
     # imports, os.kill semantics, console code pages) are easy to reintroduce.
@@ -233,6 +252,8 @@ jobs:
           python-version: "3.12"
       - name: Build wheel
         run: python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Match packaged Python modules to candidate source
+        run: python .github/scripts/check_wheel_sources.py
       - name: Verify wheel contains no local state
         run: |
           python - <<'PY'
@@ -244,6 +265,32 @@ jobs:
           blocked = [name for name in names if ".zeline" in name or "memory.json" in name or name.endswith(".env") or "__pycache__" in name or name.endswith(".pyc")]
           assert not blocked, f"local state leaked into wheel: {blocked}"
           print(wheel, "OK")
+          PY
+      - name: Smoke-install wheel in a fresh environment
+        run: |
+          python -m venv "$RUNNER_TEMP/zeline-wheel-venv"
+          "$RUNNER_TEMP/zeline-wheel-venv/bin/python" -m pip install dist/*.whl
+          ZELINE_HOME="$RUNNER_TEMP/zeline-wheel-smoke-state" "$RUNNER_TEMP/zeline-wheel-venv/bin/python" -I - <<'PY'
+          import importlib.metadata
+          import os
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+          import zeline
+          from zeline import config
+          distribution = importlib.metadata.version("zeline")
+          canonical = Path(config.__file__).with_name("SOUL.md").read_text(encoding="utf-8").strip()
+          assert config.SOUL == canonical, "fresh wheel unexpectedly loaded private persona"
+          expected = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert distribution == expected, (distribution, expected)
+          assert zeline.__version__ == distribution, (zeline.__version__, distribution)
+          env = dict(os.environ)
+          env.pop("PYTHONPATH", None)
+          result = subprocess.run([str(Path(sys.executable).with_name("zeline")), "--version"],
+                                  check=True, capture_output=True, text=True, env=env)
+          assert distribution in result.stdout, result.stdout
+          print("fresh wheel runtime OK:", distribution)
           PY
 
   native-wheel:
@@ -291,5 +338,7 @@ jobs:
           PY
       - name: Build native candidate wheel
         run: python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Match packaged Python modules to candidate source
+        run: python .github/scripts/check_wheel_sources.py
       - name: Fresh installed native engine and CLI from neutral directory
         run: python .github/scripts/check_native_wheel.py

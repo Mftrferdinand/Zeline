@@ -1,10 +1,11 @@
 # Built-in static reverse engineering
 
-The development branch includes `reverse_engineer` as a native Zeline tool. It
+Zeline includes `reverse_engineer` as a native tool. It
 is available by default on `workspace` and `full`, with no MCP registration,
 REA installation, Node.js, daemon, API key, or external analysis service.
-This is a first static engine, not parity with REA's entire tool catalog.
-It is not included in previously published release artifacts.
+This is Zeline's own bounded static engine, not a wrapper around an external
+REA server or a decompiler. Verify the installed package separately from a
+development checkout before claiming a new action is active at runtime.
 
 ## Operations
 
@@ -15,7 +16,7 @@ It is not included in previously published release artifacts.
 | `strings` | Printable ASCII, exact byte offsets and original byte lengths | Not UTF-16/Unicode string decoding; displayed values capped at 256 characters |
 | `binary` | ELF32/64 headers/sections and section-based symbol tables; PE32/PE32+ headers/sections, normal imports and exports | Paged observations only; no decompilation, runtime provider resolution, delay-import or PDB/COFF symbol recovery |
 | `disassemble` | Bounded linear x86/x64/ARM/Thumb/AArch64 instructions, direct branch/call references and page-local control-flow observations | Not a decompiler or full function/program CFG; indirect targets and runtime behavior remain unresolved |
-| `source` | Python AST or JavaScript tree-sitter imports/definitions, lines and UTF-8 byte spans | Syntax inventory, not type checking, dependency resolution or a call graph |
+| `source` | Python AST, JavaScript tree-sitter, and optional TypeScript/TSX tree-sitter imports/definitions, lines and UTF-8 byte spans | Syntax inventory, not type checking, dependency resolution or a call graph |
 
 Example tool calls:
 
@@ -29,12 +30,30 @@ Example tool calls:
 {"action":"disassemble","path":"artifacts/code.raw","architecture":"x86_64","base_address":4096,"limit":25}
 ```
 
-`source` infers Python from `.py` and JavaScript from `.js`, `.mjs`, `.cjs`, or
-`.jsx`. Specify `language` for extensionless files. TypeScript is unsupported.
+`source` infers Python from `.py`, JavaScript from `.js`, `.mjs`, `.cjs`, or
+`.jsx`, TypeScript from `.ts`, `.mts`, `.cts`, and TSX from `.tsx`. Specify
+`language` for extensionless files. TypeScript/TSX needs the optional pinned
+grammar (`pip install 'zeline[reverse-ts]'` on supported wheel platforms);
+missing grammar fails explicitly, not as an empty analysis. Termux source builds
+of `tree-sitter-typescript==0.23.2` lack upstream `parser.h` and `scanner.h` in
+the PyPI sdist. To build a SHA256-verified wheel locally without changing the
+active Zeline installation, run:
+
+```bash
+python scripts/build_reverse_ts_termux.py --output-dir "$HOME/.cache/zeline-reverse-ts"
+```
+
+The script pins the upstream v0.23.2 sdist and matching missing headers,
+builds in a temporary directory, and **does not install or restart** Zeline.
+Installing the wheel into a chosen environment is a separate release step.
 Python syntax follows the running interpreter; a UTF-8 BOM is accepted and
 reported byte offsets still reference the original bytes, including the BOM. JavaScript syntax follows the
 pinned grammar, not a JavaScript runtime's semantic validity. CommonJS require
-and dynamic imports are not resolved; JS module strings preserve lexical escapes.
+and dynamic imports are not resolved; JS/TS module strings preserve lexical escapes.
+Type-only import/export declarations are marked `type_only` when the whole
+statement is type-only; mixed specifier-level type annotations are not resolved.
+TS/TSX declarations cover functions, classes, interfaces, aliases, enums and
+method definitions, not a complete type graph, bundler or runtime identity.
 
 Follow `findings.next_offset` for directory, ZIP, and string pages. `null` means
 that observation has no further page. For file and ZIP pages, pass the previous
@@ -226,9 +245,13 @@ invocation is also checked to receive captured bytes rather than a target path.
 AArch64 output intentionally distinguishes display order from file order: for
 example, `llvm-objdump` may display `d65f03c0` while a little-endian ELF stores
 `c0035fd6`. The known-answer assertions use both representations so an endian
-regression cannot pass by comparing only formatted disassembly text. These tests
-are skipped when the local clang/lld/LLVM toolchain is unavailable; the existing
-synthetic decoder and resource-boundary corpus remains independent of that skip.
+regression cannot pass by comparing only formatted disassembly text. A separate
+`tests/test_reverse_pe_real_fixture.py` uses `clang` and `lld-link` to check
+real PE exports, direct-call bytes, unresolved indirect calls, and a linked
+import library whose IAT slot has a static caller but no asserted runtime
+provider or target. Neither DLL nor EXE is executed. These tests are skipped
+when their local clang/lld/LLVM toolchain is unavailable; the existing synthetic
+decoder and resource-boundary corpus remains independent of that skip.
 
 ## Evidence and limits
 

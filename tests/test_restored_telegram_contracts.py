@@ -12,7 +12,7 @@ class RestoredLifecycleContracts(unittest.TestCase):
 
     def test_stop_exact_copy(self):
         sessions = mock.Mock()
-        sessions.stop.return_value = True
+        sessions.request_stop.return_value = True
         with mock.patch.object(self.telegram, "_api_call") as api:
             self.telegram._handle_command_update("fixture", "/stop", sessions,
                 "telegram:fixture-stop", 1, stop_event=threading.Event(), tool_profile="safe")

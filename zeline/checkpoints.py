@@ -243,13 +243,11 @@ def restore(checkpoint_id: str, workspace: str | Path | None = None) -> tuple[bo
         # a caller enumerate files in other workspaces one id at a time.
         return False, f"no checkpoint with id {checkpoint_id} in this workspace"
     try:
-        # At capacity, the pre-restore snapshot can prune the very blob we
-        # are restoring. Keep a private copy outside the indexed entries
-        # until both snapshotting and restoration have finished.
+        # A pre-restore snapshot can prune this blob when the store is full.
+        # Stage it privately outside the index before snapshotting the target.
         with tempfile.TemporaryDirectory(prefix="restore-", dir=_root()) as staging:
             source = Path(staging) / "content.blob"
             shutil.copy2(blob, source)
-            # Make the undo undoable before touching the target.
             snapshot(target, reason="pre-restore")
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
