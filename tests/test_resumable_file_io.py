@@ -27,7 +27,7 @@ def test_search_offset_pages_do_not_restart_or_repeat(tmp_path):
 
 def test_unicode_long_line_byte_cursor_reconstructs_without_loss(tmp_path):
     original = '😀' * 26000
-    (tmp_path / 'unicode').write_text(original + '\nlast\n')
+    (tmp_path / 'unicode').write_bytes((original + '\nlast\n').encode('utf-8'))
     offset, byte_offset = 1, None
     chunks = []
     for _ in range(8):

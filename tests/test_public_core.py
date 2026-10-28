@@ -88,6 +88,20 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(self.config.NAME, "Zeline")
         self.assertIn("execute", self.config.SYSTEM_PROMPT.lower())
 
+    def test_private_owner_soul_override_loads_only_from_instance_home(self):
+        private_soul = "# SOUL.md — Zeline private Zenith\nOwner-specific instructions."
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "SOUL.md").write_text(private_soul, encoding="utf-8")
+        config, _, _ = fresh_zeline(self.home)
+        self.assertEqual(config.SOUL, private_soul)
+        self.assertIn(private_soul, config.SYSTEM_PROMPT)
+
+    def test_empty_private_soul_override_fails_closed(self):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "SOUL.md").write_text(" \n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "private SOUL.md is empty"):
+            fresh_zeline(self.home)
+
     def test_runtime_soul_requires_authorization_and_never_promises_bypasses(self):
         soul = " ".join(self.config.SOUL.casefold().split())
         self.assertIn("authorized scope", soul)
@@ -721,7 +735,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def iter_content(self, n):
                 yield cf_page.encode()
 
-        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+        # Stub DNS as well as HTTP; this unit test must not use a live resolver.
+        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[
+            (tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,
+             "", ("93.184.216.34", 443)),
+        ]), mock.patch.object(tools.requests, "get", return_value=Resp()), \
              mock.patch.object(tools, "_fetch_via_wayback", return_value="[via arsip web] Isi FTMO asli.") as wb:
             out = tools._web_fetch("https://ftmo.com/en/how-it-works/")
         wb.assert_called_once()
@@ -738,7 +756,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def iter_content(self, n):
                 yield cf_page.encode()
 
-        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+        # Stub DNS as well as HTTP; this unit test must not use a live resolver.
+        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[
+            (tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,
+             "", ("93.184.216.34", 443)),
+        ]), mock.patch.object(tools.requests, "get", return_value=Resp()), \
              mock.patch.object(tools, "_fetch_via_wayback", return_value=None):
             out = tools._web_fetch("https://ftmo.com/en/how-it-works/")
         self.assertIn("ERROR", out)
@@ -777,7 +799,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def iter_content(self, n):
                 yield b"Page not found region country geo"
 
-        with mock.patch.object(tools.requests, "get", return_value=Resp()), \
+        # Stub DNS as well as HTTP; this unit test must not use a live resolver.
+        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[
+            (tools.socket.AF_INET, tools.socket.SOCK_STREAM, tools.socket.IPPROTO_TCP,
+             "", ("93.184.216.34", 443)),
+        ]), mock.patch.object(tools.requests, "get", return_value=Resp()), \
              mock.patch.object(tools, "_fetch_via_wayback", return_value=None), \
              mock.patch.object(tools, "_fetch_with_network_routes", return_value="[via network route uk] FTMO PRICING") as routed:
             out = tools._web_fetch("https://ftmo.com/en/pricing/", use_private_routes=True)
@@ -1738,11 +1764,23 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["start", "model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "skillforge", "stop", "new", "version", "update"],
+            ["model", "status", "version", "update", "undo", "stats", "events", "lessons", "self", "skillforge", "stop", "new"],
         )
-        self.assertEqual(commands[0]["description"], "Start Zeline")
         by_name = {item["command"]: item["description"] for item in commands}
-        self.assertIn("active turn", by_name["stop"].lower())
+        self.assertEqual(by_name, {
+            "model": "Switch model",
+            "status": "View runtime status",
+            "version": "Show version",
+            "update": "Update version",
+            "undo": "Checkpoints",
+            "stats": "View token usage",
+            "events": "Recent file/skill/memory",
+            "lessons": "View self-learning",
+            "self": "Three-self evidence status",
+            "skillforge": "Review skill",
+            "stop": "Stop the active turn",
+            "new": "Start a new session",
+        })
 
     def test_telegram_owner_undo_lists_and_restores_a_workspace_checkpoint(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -1761,7 +1799,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             )
         self.assertTrue(handled)
         self.assertIn(checkpoint_id, api.call_args.kwargs["text"])
-        self.assertIn("checkpoints", api.call_args.kwargs["text"])
+        self.assertIn("Checkpoints", api.call_args.kwargs["text"])
 
         with mock.patch.object(telegram.config, "WORKSPACE", str(workspace)), mock.patch.object(telegram, "_api_call") as api:
             handled = telegram._handle_command_update(
@@ -1801,7 +1839,6 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertIn("edit_file", text)
         # The read-only call must not appear — this is a side-effect log.
         self.assertNotIn("read_file", text)
-        self.assertEqual(api.call_args.kwargs["parse_mode"], "HTML")
 
     def test_telegram_stats_card_reports_real_usage_without_exposing_secrets(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -1814,10 +1851,9 @@ class ZelinePublicCoreTests(unittest.TestCase):
             )
         self.assertTrue(handled)
         text = api.call_args.kwargs["text"]
-        self.assertIn("Token usage", text)
+        self.assertIn("Token Usage", text)
         self.assertIn("test-model", text)
         self.assertIn("1.5k", text)
-        self.assertEqual(api.call_args.kwargs["parse_mode"], "HTML")
 
     def test_telegram_status_reports_zeline_style_runtime_and_coding_tools(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -1844,18 +1880,17 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(handled)
         text = api.call_args.kwargs["text"]
         self.assertEqual(sessions.identity, "telegram:42")
-        self.assertEqual(api.call_args.kwargs["parse_mode"], "HTML")
+        self.assertNotIn("parse_mode", api.call_args.kwargs)
         self.assertEqual(text, (
-            "╭───────────────🚥\n"
-            "├ <b>Zeline Gateway Status</b>\n"
-            "├ Session ID : <code>zel-abc123</code>\n"
-            "├ Provider : <code>provider.test</code>\n"
-            "├ Model : <code>deepseek-v4-flash</code>\n"
-            "├ Title : Bangun aplikasi\n"
-            "├ Context : 12 messages\n"
-            "├ Agent Running : Yes\n"
-            "╰ Platform : Telegram"
+            "🌐 Zeline Gateway Status\n"
+            "◉ Session ID : zel-abc123\n"
+            "◉ Provider : provider.test\n"
+            "◉ Model : deepseek-v4-flash\n"
+            "◉ Context : 12 messages\n"
+            "◉ Agent Running : Yes\n"
+            "◉ Platform : Telegram"
         ))
+        self.assertNotIn("Title", text)
 
     def test_telegram_repository_sends_canonical_markdown_as_document_only(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -2463,9 +2498,9 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertNotIn("Zeline Terminal", shell)
         self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file: <code>agent.py</code> L1-300")
-        # read_file tanpa offset/limit → tanpa rentang baris.
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file: <code>hotel-dashboard.html</code>")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file: agent.py L1-300")
+        # read_file tanpa offset/limit → tanpa rentang baris, font normal.
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file: hotel-dashboard.html")
         self.assertEqual(telegram._tool_progress_text("write_file", {"path": "app.py"}), "📝 Writing file: <code>app.py</code>")
         self.assertEqual(telegram._tool_progress_text("edit_file", {"path": "app.py"}), "📝 Editing file: <code>app.py</code>")
         self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "📝 Editing file: <code>app.py</code>")
@@ -3463,7 +3498,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def stop(self, _identity): return False
         with mock.patch.object(telegram, "_api_call") as api:
             telegram._handle_command_update("bot-api", "/stop", Sessions(), "telegram:42", 42, stop_event=threading.Event(), tool_profile="safe")
-        self.assertEqual(api.call_args.kwargs["text"], "No active task to stop.")
+        self.assertEqual(api.call_args.kwargs["text"], "⛔ No active task.")
 
     def test_telegram_new_stops_old_turn_and_resets_session(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -3482,13 +3517,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(sessions.stopped, "telegram:42")
         self.assertEqual(sessions.reset_id, "telegram:42")
         text = api.call_args.kwargs["text"]
-        self.assertIn("╭───────────────────🌟", text)
-        self.assertIn("Session reset! Starting fresh", text)
-        self.assertIn("├ Model :", text)
-        self.assertIn("├ Provider :", text)
+        self.assertEqual(text, (
+            "✨ New Session\n"
+            f"◉ Model : {telegram.config.MODEL}\n"
+            f"◉ Provider : {telegram._provider_label()}\n"
+            "◉ Context : 0 tokens\n"
+            "◉ Platform : Telegram"
+        ))
         self.assertIn("Context : 0 tokens", text)
-        self.assertIn("├ Endpoint :", text)
-        self.assertIn("╰ Tip :", text)
 
     def test_telegram_model_command_persists_model_and_keeps_context(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

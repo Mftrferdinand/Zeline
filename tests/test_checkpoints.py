@@ -122,6 +122,43 @@ class SnapshotTests(CheckpointBase):
 
 
 class RestoreTests(CheckpointBase):
+    def test_restore_oldest_checkpoint_at_capacity_remains_undoable(self):
+        target = self.file("target.txt", "original\n")
+        other = self.file("other.txt", "other\n")
+        with (
+            mock.patch.object(self.checkpoints, "MAX_SNAPSHOTS", 2),
+            mock.patch.object(self.checkpoints.time, "time", side_effect=[1.0, 2.0, 3.0]),
+        ):
+            original = self.checkpoints.snapshot(target)
+            self.checkpoints.snapshot(other)
+            target.write_text("modified\n", encoding="utf-8")
+            ok, message = self.checkpoints.restore(original)
+
+        self.assertTrue(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+        self.assertIsNone(self.checkpoints.find(original))
+        pre = [e for e in self.checkpoints.list_checkpoints() if e["reason"] == "pre-restore"]
+        self.assertEqual(len(pre), 1)
+        ok, message = self.checkpoints.restore(str(pre[0]["id"]))
+        self.assertTrue(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "modified\n")
+
+    def test_restore_preserves_original_when_wall_clock_does_not_advance(self):
+        target = self.file("same-tick.py", "v1\n")
+        # Windows wall-clock resolution may put both snapshots in one tick.
+        with mock.patch.object(self.checkpoints.time, "time", return_value=1700000000.0):
+            first = self.checkpoints.snapshot(target)
+            target.write_text("v2\n", encoding="utf-8")
+            ok, message = self.checkpoints.restore(first)
+        self.assertTrue(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "v1\n")
+        pre = [e for e in self.checkpoints.list_checkpoints() if e["reason"] == "pre-restore"]
+        self.assertEqual(len(pre), 1)
+        self.assertNotEqual(first, pre[0]["id"])
+        ok, message = self.checkpoints.restore(str(pre[0]["id"]))
+        self.assertTrue(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "v2\n")
+
     def test_restore_is_itself_undoable(self):
         target = self.file("a.py", "v1\n")
         first = self.checkpoints.snapshot(target)

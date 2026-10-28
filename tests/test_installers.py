@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "0.4.2"
+RELEASE_VERSION = "0.4.5"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 
 
@@ -113,6 +113,14 @@ class PosixInstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.script = ROOT / "install.sh"
         self.text = self.script.read_text(encoding="utf-8")
+
+    def test_native_parser_source_build_prerequisites_are_visible(self):
+        for platform, required in [('termux', 'clang'), ('termux', 'make'), ('ios-ish', 'build-base python3-dev')]:
+            with self.subTest(platform=platform):
+                result = subprocess.run(['bash', str(self.script), '--platform-info', '--platform', platform],
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0)
+                self.assertIn(required, result.stdout)
 
     def test_installer_has_explicit_termux_linux_macos_and_ios_ish_platforms(self):
         for platform in ("termux", "linux", "macos", "ios-ish"):

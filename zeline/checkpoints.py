@@ -26,11 +26,12 @@ Guarantees:
 """
 from __future__ import annotations
 
-import hashlib
+import secrets
 import json
 import os
 import shutil
 import time
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -175,8 +176,9 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
     try:
         _ensure_root()
         moment = time.time()
-        digest = hashlib.sha256(f"{target}:{moment}".encode()).hexdigest()[:16]
-        checkpoint_id = f"{int(moment)}-{digest[:8]}"
+        # Wall-clock ticks are not unique (notably on Windows). A restore
+        # snapshots the same path again and must never overwrite its source.
+        checkpoint_id = f"{int(moment)}-{secrets.token_hex(16)}"
         blob_name = f"{checkpoint_id}.blob"
         shutil.copy2(target, _root() / blob_name)
         try:
@@ -240,11 +242,15 @@ def restore(checkpoint_id: str, workspace: str | Path | None = None) -> tuple[bo
         # Reported as "not found" on purpose: naming the outside path would let
         # a caller enumerate files in other workspaces one id at a time.
         return False, f"no checkpoint with id {checkpoint_id} in this workspace"
-    # Make the undo undoable before touching anything.
-    snapshot(target, reason="pre-restore")
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(blob, target)
+        # A pre-restore snapshot can prune this blob when the store is full.
+        # Stage it privately outside the index before snapshotting the target.
+        with tempfile.TemporaryDirectory(prefix="restore-", dir=_root()) as staging:
+            source = Path(staging) / "content.blob"
+            shutil.copy2(blob, source)
+            snapshot(target, reason="pre-restore")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
     except (OSError, shutil.Error) as exc:
         return False, f"could not restore {target}: {exc.__class__.__name__}"
     return True, f"restored {target} from checkpoint {checkpoint_id}"

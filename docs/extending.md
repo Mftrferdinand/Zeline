@@ -160,6 +160,87 @@ shows exactly which tools arrive, rather than leaving you to find out mid-turn.
 A stdio server is a local process launched by Zeline, so the same
 `workspace`/`full` restriction applies.
 
+### Reverse engineering with REA
+
+[REA (Reverse Engineer Anything)](https://github.com/morluto/rea) adds optional
+local analysis tools through the existing MCP client. No Python dependency,
+new daemon, model change, or native-tool replacement is required. This recipe
+pins the published `rea-agents@6.7.0` package, not the moving `main` branch.
+
+Prerequisites: Node.js 22.x >=22.19, 24.x >=24.11, or 26+, with npm. Install or
+warm the pinned package **before** starting Zeline: a first-time package download
+can exceed the shared six-second MCP discovery deadline. Review installation
+scripts and optional native dependencies before installing on a shared host.
+For a minimal static-analysis installation, use a dedicated directory:
+
+```bash
+npm install --prefix "$HOME/.local/share/zeline-integrations/rea" \
+  --ignore-scripts --omit=optional --no-audit --no-fund --save-exact rea-agents@6.7.0
+```
+
+This deliberately skips lifecycle scripts and optional Frida support. It does
+not install Ghidra, IDA, Hopper, browsers, JADX, or other external engines.
+
+For the portable package-runner route, merge this entry into `mcp.servers`
+(`zeline config path` prints the file location), preserving all existing fields:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "rea": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": "npx -y rea-agents@6.7.0 mcp",
+        "env": {
+          "REA_MCP_INPUT_SCHEMA_PROFILE": "compact",
+          "REA_MCP_OUTPUT_SCHEMA_PROFILE": "off"
+        }
+      }
+    }
+  }
+}
+```
+
+The output-schema setting omits advertised output schemas that Zeline does not
+consume; REA still validates results against its canonical contracts.
+
+On Termux, measured cold discovery took about 15 seconds even with these profiles.
+The first lookup can return no REA tools at the six-second deadline. With the
+late-discovery recovery in this integration, a later lookup in the same session
+sees the completed catalog without restarting or downloading again. Older
+versions may cache the empty result permanently until a new session.
+
+For the dedicated installation above, avoid package downloads at agent startup:
+replace `command` with the absolute Node executable and the installed absolute
+`node_modules/rea-agents/scripts/rea.mjs` path, followed by `mcp`. Quote paths
+containing spaces. Do not put `$HOME` or `~` in that command: stdio commands use
+argument splitting, not shell expansion. On Windows the package-runner route
+needs `cmd.exe /d /c npx -y rea-agents@6.7.0 mcp`; absolute `node.exe` plus the
+entrypoint avoids that wrapper. Do not copy POSIX installation paths to Windows.
+
+Run `zeline mcp test rea` and inspect the reported tools and errors; exit zero
+alone is not a readiness verdict. Tools are named `mcp__rea__<upstream_name>`.
+Use `tool_search` for the relevant discovered tool instead of injecting the
+whole catalog into a prompt. Load the bundled `rea-reverse-engineering` skill
+for the investigation workflow. Start a new session with an existing
+`workspace` or `full` profile; do not change gateway permissions just to expose
+REA. No server is registered or activated merely by installing this Zeline package.
+
+Start with a trusted local JavaScript fixture and static analysis. An MCP
+handshake does **not** prove native decompilation, browser automation, APK
+analysis, Frida, or runtime capture works. Each requires its own compatible
+host and tools. Termux is not equivalent to desktop Linux: verify each desired
+operation; Linux process workflows may need a procps-compatible `ps`.
+
+REA exposes runtime and write-capable operations as well as static reads;
+registration is not a sandbox or an authorization to execute an unknown target.
+Use only owned or authorized targets. Tool output can contain private source,
+paths, and credentials: results sent to the agent reach its configured model.
+Keep evidence and limitations with every conclusion. Remove the entry with
+`zeline mcp remove rea` and start a new session to stop exposing it. The local
+installation and investigation artifacts remain until separately removed.
+
 ### Local code lookup with Sem
 
 Install [Sem](https://github.com/Ataraxy-Labs/sem) on the machine running Zeline
@@ -263,3 +344,10 @@ profile — is a change to this repository, and it is not a one-file change: the
 `ToolDef` in `zeline/tools.py`, its handler, a title in the Telegram and app
 gateway progress renderers, and an entry in the compaction artifact map all have
 to agree. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Native static artifact analysis
+
+The development branch includes the default `reverse_engineer` tool on
+workspace/full profiles. It does not require the optional REA MCP setup above.
+See [built-in reverse engineering](reverse-engineering.md) for operations,
+evidence format, parser dependencies, and safety/resource limits.

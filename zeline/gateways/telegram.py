@@ -210,23 +210,39 @@ def _nav_cancel_button() -> dict[str, Any]:
     return {"text": "✗ Cancel", "callback_data": "model:cancel"}
 
 
+def _command_setup_text() -> str:
+    return (
+        "Command to setup :\n"
+        "◉ /model — Switch model\n"
+        "◉ /status — View runtime status\n"
+        "◉ /version — Show version\n"
+        "◉ /update — Update version\n"
+        "◉ /undo — Checkpoints\n"
+        "◉ /stats — View token usage\n"
+        "◉ /events — Recent file/skill/memory\n"
+        "◉ /lessons — View self-learning\n"
+        "◉ /self — Three-self evidence status\n"
+        "◉ /skillforge — Review skill\n"
+        "◉ /stop — Stop the active turn\n"
+        "◉ /new — Start a new session\n\n"
+        "Send a message to start a task"
+    )
+
+
 def _telegram_commands() -> list[dict[str, str]]:
-    """Menu command ringkas seperti surface Telegram Zeline."""
     return [
-        {"command": "start", "description": "Start Zeline"},
         {"command": "model", "description": "Switch model"},
         {"command": "status", "description": "View runtime status"},
-        {"command": "repository", "description": "Download repository archive"},
-        {"command": "deleterepository", "description": "Delete a repository entry"},
-        {"command": "undo", "description": "List or restore file checkpoints"},
+        {"command": "version", "description": "Show version"},
+        {"command": "update", "description": "Update version"},
+        {"command": "undo", "description": "Checkpoints"},
         {"command": "stats", "description": "View token usage"},
-        {"command": "events", "description": "Recent file/skill/memory changes"},
-        {"command": "lessons", "description": "View self-learning lessons"},
-        {"command": "skillforge", "description": "Review skill effectiveness and proposals"},
+        {"command": "events", "description": "Recent file/skill/memory"},
+        {"command": "lessons", "description": "View self-learning"},
+        {"command": "self", "description": "Three-self evidence status"},
+        {"command": "skillforge", "description": "Review skill"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
-        {"command": "version", "description": "Show version and check for updates"},
-        {"command": "update", "description": "Update Zeline to the latest release"},
     ]
 
 
@@ -353,6 +369,48 @@ def _short_host(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _api_request_service(url: str) -> str:
+    """Return a provider label without exposing the API hostname."""
+    host = _short_host(url)
+    lowered = host.casefold()
+    for domain, label in (
+        ("github.com", "Github"),
+        ("githubusercontent.com", "Github"),
+        ("openai.com", "OpenAi"),
+        ("anthropic.com", "Anthropic"),
+    ):
+        if lowered == domain or lowered.endswith("." + domain):
+            return label
+
+    parts = [part for part in lowered.split(".") if part]
+    if parts and parts[0] in {"api", "raw", "www"}:
+        parts.pop(0)
+    provider = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+    return provider.replace("-", " ").title() or "API"
+
+
+def _api_request_href(url: str) -> str:
+    """Return a safe HTML href, or empty when the URL is not linkable.
+
+    Progress rows are rendered with Telegram HTML. Keep the URL out of visible
+    text while escaping it as an attribute value; reject credentials and
+    non-HTTP schemes so a progress row cannot turn into a credential leak or a
+    non-web action link.
+    """
+    raw = str(url).strip()
+    if not raw or len(raw) > 2048:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return ""
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return html.escape(raw, quote=True)
+
+
 def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     """Render one distinct HTML-safe progress message per real tool call.
 
@@ -411,7 +469,7 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return "🖥️ Inspecting system environment…"
     if name == "hash_check":
         path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
-        algo = str(arguments.get("algorithm", "sha256")).strip().lower() or "sha256"
+        algo = html.escape(str(arguments.get("algorithm", "sha256")).strip().lower()[:40] or "sha256", quote=False)
         if arguments.get("expected"):
             return f"🔐 Verifying {algo} checksum: <code>{path}</code>"
         return f"🔐 Hashing file ({algo}): <code>{path}</code>"
@@ -422,8 +480,8 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if "offset" in arguments or "limit" in arguments:
             offset = max(1, int(arguments.get("offset", 1) or 1))
             limit = max(1, int(arguments.get("limit", 500) or 500))
-            return f"📖 Reading file: <code>{path}</code> L{offset}-{offset + limit - 1}"
-        return f"📖 Reading file: <code>{path}</code>"
+            return f"📖 Reading file: {path} L{offset}-{offset + limit - 1}"
+        return f"📖 Reading file: {path}"
     if name == "write_file":
         return f"📝 Writing file: <code>{path}</code>"
     if name == "edit_file":
@@ -437,6 +495,16 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
         task = html.escape(str(arguments.get("task", ""))[:120], quote=False)
         return f"📋 Updating task progress: {task}" if task else "📋 Updating task progress…"
+    if name == "watch_task":
+        action = str(arguments.get("action", "")).strip().lower()
+        task = html.escape(str(arguments.get("task", ""))[:120], quote=False)
+        if action == "list":
+            return "👀 Reviewing task follow-ups…"
+        if action == "start":
+            return f"👀 Starting task follow-up: {task}" if task else "👀 Starting task follow-up…"
+        if action == "stop":
+            return f"🛑 Stopping task follow-up: {task}" if task else "🛑 Stopping task follow-up…"
+        return "👀 Managing task follow-ups…"
     if name == "undo_file":
         action = str(arguments.get("action", "")).strip().lower()
         if action == "list":
@@ -508,8 +576,15 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         label = labels.get(verb, "⏰ Managing scheduled jobs")
         return f"{label} {job}".strip() if job else f"{label}…"
     if name == "http_request":
-        url = html.escape(str(arguments.get("url", ""))[:120], quote=False)
-        return f"🖇️ Sending API request: {url}" if url else "🖇️ Sending API request…"
+        raw_url = str(arguments.get("url", "")).strip()
+        href = _api_request_href(raw_url)
+        if not href:
+            return "⚡ Sending API request…"
+        display = html.escape(
+            f"Sending API request-{_api_request_service(raw_url)[:80]}",
+            quote=False,
+        )
+        return f"⚡ <a href=\"{href}\">{display}</a>"
     if name == "delegate_task":
         goal = html.escape(str(arguments.get("goal", ""))[:100], quote=False)
         return f"⚓ Delegating task: {goal}…" if goal else "⚓ Delegating task…"
@@ -561,6 +636,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         if action == "close":
             return "📴 Closing browser session…"
         return "🌐 Driving the browser…"
+    if name == "reverse_engineer":
+        action = str(arguments.get("action", ""))
+        label = {"inspect": "Inspecting artifact", "inventory": "Listing artifact inventory",
+                 "strings": "Extracting static strings", "binary": "Inspecting binary headers",
+                 "source": "Parsing source structure"}.get(action, "Inspecting static evidence")
+        return f"🔬 {label}: <code>{path}</code>" if path else f"🔬 {label}…"
     if name == "code_intel":
         action = str(arguments.get("action", "")).strip().lower()
         where = f" <code>{path}</code>" if path else ""
@@ -625,14 +706,19 @@ def _progress_category(line: str) -> str | None:
 _CATEGORY_ORDER = {"search": 0, "research": 1}
 
 
-def _ordered_lines(lines: list[str]) -> list[str]:
-    """Urutkan baris feed berdasarkan kategori tetap, stabil untuk kategori lain."""
+def _ordered_progress_items(lines: list[str]) -> list[tuple[int, str]]:
+    """Keep source indices so presentation-only separators survive ordering."""
     def key(item: tuple[int, str]) -> tuple[int, int]:
         index, line = item
         category = _progress_category(line)
         rank = _CATEGORY_ORDER.get(category, 99) if category else 99
         return (rank, index)
-    return [line for _index, line in sorted(enumerate(lines), key=key)]
+    return sorted(enumerate(lines), key=key)
+
+
+def _ordered_lines(lines: list[str]) -> list[str]:
+    """Urutkan baris feed berdasarkan kategori tetap, stabil untuk kategori lain."""
+    return [line for _index, line in _ordered_progress_items(lines)]
 
 
 def _group_command_lines(lines: list[str]) -> list[str]:
@@ -830,6 +916,8 @@ class _LiveStatus:
         self.model = model
         self.message_id: int | None = None
         self.lines: list[str] = []
+        self._read_breaks: set[int] = set()
+        self._last_read_iteration: int | None = None
         self.phase = "waiting"
         self.phase_started = time.monotonic()
         # Awal turn (bukan awal fase) → dipakai untuk jam "Working — Nm Ns".
@@ -877,18 +965,30 @@ class _LiveStatus:
             self.iteration = current
             self.maximum = maximum
 
+    def _feed_text(self, *, finalize: bool = False) -> str:
+        visible = _ordered_progress_items(self.lines)[-self.max_lines:]
+        displayed: list[str] = []
+        previous = ""
+        for index, line in visible:
+            rendered = _finalize_line(line) if finalize else line
+            if (index in self._read_breaks and previous.startswith("📖 Reading file:")):
+                rendered = "\n\n" + rendered
+            displayed.append(rendered)
+            previous = line
+        return "\n".join(_group_command_lines(displayed))
+
     def _render(self) -> str:
         # Feed aktivitas tool DULU, baris status di PALING BAWAH, dipisah satu
         # baris kosong. Diminta user: status yang mengambang di atas feed bikin
         # baris terbaru (yang justru paling penting) terdorong ke bawah, dan
         # jam yang berubah tiap detik menarik mata ke tempat yang salah.
-        ordered = _group_command_lines(_ordered_lines(self.lines)[-self.max_lines:])
+        body = self._feed_text()
         header = self._header()
-        if header and ordered:
-            return "\n".join(ordered) + "\n\n" + header
+        if header and body:
+            return body + "\n\n" + header
         if header:
             return header
-        return "\n".join(ordered)
+        return body
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
         if self._closed:
@@ -913,8 +1013,7 @@ class _LiveStatus:
             # was lost. Never resend that creation on the next heartbeat. Send
             # static activity first: an untracked bubble must not carry a live
             # timer or /stop hint that we cannot remove when the turn finishes.
-            initial = "\n".join(_group_command_lines(
-                _ordered_lines(self.lines)[-self.max_lines:])) or "Agent activity"
+            initial = self._feed_text() or "Agent activity"
             self._creation_unknown = True
             payload = _api_call(
                 self.api, "sendMessage", chat_id=self.chat_id,
@@ -979,6 +1078,13 @@ class _LiveStatus:
                 else:
                     self.lines.append(line)
             elif not self.lines or self.lines[-1] != line:
+                if line.startswith("📖 Reading file:"):
+                    if (self.lines and self.lines[-1].startswith("📖 Reading file:")
+                            and self._last_read_iteration is not None
+                            and self.iteration is not None
+                            and self.iteration != self._last_read_iteration):
+                        self._read_breaks.add(len(self.lines))
+                    self._last_read_iteration = self.iteration
                 self.lines.append(line)
             # Ada aktivitas tool nyata → di sinilah bubble progres boleh dibuat.
             self._push_locked(allow_create=True)
@@ -1027,9 +1133,7 @@ class _LiveStatus:
                 )
                 self.message_id = None
                 return
-            body = "\n".join(_group_command_lines([
-                _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
-            ]))
+            body = self._feed_text(finalize=True)
             self._settle_terminal(
                 "editMessageText", chat_id=self.chat_id,
                 message_id=self.message_id, text=body, parse_mode="HTML",
@@ -1060,12 +1164,12 @@ class _LiveStatus:
                 return
             if self.message_id is None:
                 self.lines = []
+                self._read_breaks.clear()
+                self._last_read_iteration = None
                 self._last_text = None
                 return
             if self.lines:
-                body = "\n".join(_group_command_lines([
-                    _finalize_line(line) for line in _ordered_lines(self.lines)[-self.max_lines:]
-                ]))
+                body = self._feed_text(finalize=True)
                 settled = _api_call(
                     self.api, "editMessageText", chat_id=self.chat_id,
                     message_id=self.message_id, text=body, parse_mode="HTML",
@@ -1083,6 +1187,8 @@ class _LiveStatus:
                 return
             self.message_id = None
             self.lines = []
+            self._read_breaks.clear()
+            self._last_read_iteration = None
             self._last_text = None
             self.phase = "waiting"
             self.phase_started = time.monotonic()
@@ -1456,49 +1562,42 @@ def _format_token_count(value: Any) -> str | None:
     return str(number)
 
 
-def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
-    """Build the model-switch confirmation with capability details."""
-    provider_name = provider.get("name", provider.get("slug", "")) if provider else _provider_label()
+def _one_line(value: Any) -> str:
+    return " ".join(str(value).split())
 
-    # Cari label rute (mis. "GoRouter" untuk prefix "Gr") untuk tampilan yang
-    # sama dengan picker — supaya user tahu rute mana yang dipilih.
+
+def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
+    provider_name = provider.get("name", provider.get("slug", "")) if provider else _provider_label()
     route_label = ""
     if "/" in selected:
-        prefix = selected.split("/", 1)[0]
-        route_label = f" › {_vendor_label(prefix)}"
+        vendor = selected.split("/", 1)[0]
+        route_label = f" › {_vendor_label(vendor)}"
 
     lines = [
-        "╭───────────♻️",
-        "├ <b>Model Switched</b>",
-        f"├ Provider : <code>{html.escape(str(provider_name))}{html.escape(route_label)}</code>",
-        f"├ Model : <code>{html.escape(selected)}</code>",
+        "🔄 Model Switched",
+        f"◉ Provider : {_one_line(provider_name)}{route_label}",
+        f"◉ Model : {_one_line(selected)}",
     ]
-
     meta = _fetch_model_capabilities(provider, selected)
     caps = meta.get("capabilities") if isinstance(meta, dict) else None
     caps = caps if isinstance(caps, dict) else {}
-
     context_window = _format_token_count(caps.get("contextWindow"))
     max_output = _format_token_count(caps.get("maxOutput"))
     if context_window:
-        lines.append(f"├ Context : {context_window} tokens")
+        lines.append(f"◉ Context : {context_window} tokens")
     if max_output:
-        lines.append(f"├ Max out : {max_output} tokens")
-
-    lines.append("╰ Saved to config.yaml (--global)")
+        lines.append(f"◉ Max out : {max_output} tokens")
     return "\n".join(lines)
 
 
 def _new_session_text() -> str:
-    return (
-        "╭───────────────────🌟\n"
-        "├ Session reset! Starting fresh\n"
-        f"├ Model : {config.MODEL}\n"
-        f"├ Provider : {_provider_label()}\n"
-        "├ Context : 0 tokens\n"
-        f"├ Endpoint : {config.BASE_URL}\n"
-        "╰ Tip : Use /status to check this session."
-    )
+    return "\n".join([
+        "✨ New Session",
+        f"◉ Model : {_one_line(config.MODEL)}",
+        f"◉ Provider : {_one_line(_provider_label())}",
+        "◉ Context : 0 tokens",
+        "◉ Platform : Telegram",
+    ])
 
 
 def _ensure_repository() -> Path:
@@ -1560,117 +1659,164 @@ def _delete_task(query: str) -> str:
 
 
 def _version_reply() -> str:
-    """Version card for /version. Read-only, and honest when offline."""
     from zeline import self_update
 
     report = self_update.version_report()
-    lines = [
-        "╭───────────────📦",
-        "├ <b>Zeline Version</b>",
-        f"├ Installed : <code>{html.escape(str(report['current']))}</code>",
-    ]
-    if report["error"]:
-        # Say the check failed rather than implying the installed build is current.
-        lines.append("├ Latest : <i>unknown (release check failed)</i>")
+    current = _one_line(report.get("current") or "unknown")
+    if report.get("error"):
+        latest = "unknown"
+        status = "release check failed"
     else:
-        lines.append(f"├ Latest : <code>{html.escape(str(report['latest']))}</code>")
-        lines.append("├ Status : Up to date" if report["up_to_date"] else "├ Status : Update available — /update")
-    if report["checkout"]:
-        lines.append("├ Mode : source checkout")
-    if report["updating"]:
-        lines.append("├ Note : an update is running now")
-    lines.append("╰ Platform : Telegram")
-    return "\n".join(lines)
+        latest = _one_line(report.get("latest") or "unknown")
+        if report.get("updating"):
+            status = "update running"
+        elif report.get("up_to_date"):
+            status = "Up to date"
+        else:
+            status = "/update available"
+    return "\n".join([
+        "🗳 Zeline Version",
+        f"◉ Installed : {current}",
+        f"◉ Latest : {latest}",
+        f"◉ Status : {status}",
+        "◉ Platform : Telegram",
+    ])
 
 
 def _start_update_reply(chat_id: int, allowed: list[Any]) -> str:
-    """Kick off a detached self-update and describe what will happen.
-
-    Owner-gated deliberately. An update restarts the gateway and replaces the
-    installed package for *every* user of this bot, so it is not something a
-    guest in an open allowlist may trigger. When ``allowed`` is empty the bot is
-    public, and there is no owner to authorise it at all.
-    """
     from zeline import self_update
 
     if not allowed:
-        return (
-            "This bot has no owner allowlist, so /update is disabled. "
-            "Set one with <code>zeline setup</code>, or update from a shell: <code>zeline update</code>"
-        )
+        return "\n".join([
+            "⬆️ Zeline Update",
+            "◉ Status : disabled",
+            "◉ Reason : Owner allowlist required",
+        ])
     if str(chat_id) != str(allowed[0]):
-        return "Only the bot owner can run /update."
+        return "⬆️ Zeline Update\n◉ Status : Owner only"
 
     report = self_update.version_report()
-    if report["checkout"]:
-        # In a checkout, `zeline update` reinstalls from local source. Doing that
-        # silently from chat would install whatever is in the working tree,
-        # committed or not -- surprising, and not what "update" means here.
-        return (
-            f"Running from a source checkout (<code>{html.escape(report['checkout'])}</code>). "
-            "Update it there so you control exactly what gets installed:\n"
-            "<code>cd " + html.escape(report["checkout"]) + " &amp;&amp; git pull &amp;&amp; zeline update</code>"
-        )
+    current_version = _one_line(report["current"])
+    checkout = report.get("checkout")
+    if checkout:
+        return "\n".join([
+            "⬆️ Zeline Update",
+            "◉ Status : Source checkout",
+            f"◉ Path : {_one_line(checkout)}",
+            "◉ Action : git pull && zeline update",
+        ])
     if not report["error"] and report["up_to_date"]:
-        return f"Already on the latest release (<code>{html.escape(str(report['current']))}</code>). Nothing to do."
+        return "\n".join([
+            "⬆️ Zeline Update",
+            f"◉ Installed : {current_version}",
+            "◉ Status : Nothing to do",
+        ])
 
     started, message = self_update.start_background_update(f"telegram:{chat_id}")
     if not started:
-        return html.escape(message)
-    target = f" → <code>{html.escape(str(report['latest']))}</code>" if report["latest"] else ""
-    return (
-        f"Updating from <code>{html.escape(str(report['current']))}</code>{target}\n"
-        "The gateway will finish in-flight work, stop, install, and restart. "
-        "It will be unreachable for about a minute; progress lands here."
-    )
+        return "\n".join([
+            "⬆️ Zeline Update",
+            "◉ Status : Failed",
+            f"◉ Reason : {_one_line(message)}",
+        ])
+    latest = report.get("latest") or "unknown"
+    return "\n".join([
+        "⬆️ Zeline Update",
+        f"◉ Installed : {current_version}",
+        f"◉ Latest : {_one_line(latest)}",
+        "◉ Status : Updating",
+        "◉ Gateway : unreachable",
+        "◉ Platform : Telegram",
+    ])
+
+
+def _self_card(identity: str) -> str:
+    """Expose evidence levels without claiming that loading improved a task."""
+    import sqlite3
+    from zeline.reflection_markdown import learning_status
+
+    try:
+        status = learning_status(identity)
+    except (OSError, ValueError, sqlite3.Error, UnicodeError):
+        return "📚 Three-self status\n◉ Status : Unavailable; existing records preserved"
+    labels = {"enhancement": "📙 Self-Enhancement.md", "improvement": "📘 Self-Improvement.md",
+              "refinement": "📗 Self-Refinement.md"}
+    lines = ["📚 Three-self status"]
+    for channel, label in labels.items():
+        item = status[channel]
+        stage = item["stage"]
+        if channel == "enhancement" and stage in {"pending", "tested", "approved"}:
+            stage += " (proposal inactive)"
+        if item["review_suggested"]:
+            stage += " — review suggested, no automatic rollback"
+        line = f"{label} : {stage} | observed {item['observations']} | verified {item['verified']}"
+        if 'active_records' in item:
+            line += f" | active {item['active_records']}"
+            if 'history_records' in item:
+                line += f" | history {item['history_records']}"
+            line += (f" | active observed {item['active_observations']}"
+                     f" | active verified {item['active_verified']}")
+            if item['active_paired_gain_cases']:
+                line += (f" | active paired gains {item['active_paired_gain_cases']}"
+                         f" (held-out {item['active_heldout_gain_cases']}; bounded cases only)")
+        if item["paired_gain_cases"]:
+            if channel == "refinement":
+                line += (f" | paired measured gains {item['paired_gain_cases']} "
+                         f"(held-out {item['heldout_gain_cases']}; bounded cases only)")
+            else:
+                line += (f" | paired candidate gains {item['paired_gain_cases']} "
+                         f"(held-out {item['heldout_gain_cases']}; not live proof)")
+        lines.append(line)
+    lines.append("Stage/observed/verified describe the latest entry; active counts cover bounded canonical history.")
+    from zeline.memory_gain_host import status_for_identity
+    auto = status_for_identity(identity)
+    if auto['pending_jobs'] or auto['completed_jobs'] or auto['failed_jobs']:
+        lines.append(f"Auto eval sandbox: pending {auto['pending_jobs']} | "
+                     f"completed {auto['completed_jobs']} | failed {auto['failed_jobs']} | "
+                     f"qualified {auto['qualified_jobs']} "
+                     f"(bounded held-out {auto['heldout_gain_cases']}; not owner live gain)")
+    lines.append("Observed includes operational tool success or loaded/retrieved context, not evidence of improved answers.")
+    return "\n".join(lines)
 
 
 def _owner_only_reply(command: str, chat_id: int, allowed: list[Any] | None) -> str | None:
-    """None = caller may proceed; a string = the refusal to send back.
-
-    /undo restores files and /stats reads a usage ledger — both are operator
-    surfaces, not something a guest in an open allowlist may reach. An empty
-    allowlist means the bot is public and has no owner to authorise them at all,
-    which is exactly when these must stay shut.
-    """
     if not allowed:
-        return f"{command} is owner-only, and this bot has no owner allowlist. Set one with zeline setup."
+        return "⛔ Access denied\n◉ Command : %s\n◉ Status : Owner not configured" % command
     if str(chat_id) != str(allowed[0]):
-        return f"Only the bot owner can use {command}."
+        return "⛔ Access denied\n◉ Command : %s\n◉ Status : Owner only" % command
     return None
 
 
 def _undo_card(args: str) -> str:
-    """Render `zeline undo` for chat: list checkpoints, or restore one by id.
-
-    Reads the SAME workspace the agent writes in (config.WORKSPACE), so the ids
-    an operator sees here are the ids the agent's undo_file tool produced.
-    """
     from zeline import checkpoints
 
     if not checkpoints.enabled():
-        return "↩️ Checkpoints are disabled (tools.checkpoints = false), so there is nothing to undo."
+        return "↩️ Checkpoints\n◉ Status : Disabled"
     workspace = config.WORKSPACE
     target = args.strip()
     lowered = target.lower()
     if lowered.startswith("diff ") or lowered.startswith("--diff "):
         checkpoint_id = target.split(None, 1)[1].strip()
         preview = checkpoints.diff_preview(checkpoint_id, max_lines=18, workspace=workspace)
-        return "🔍 <b>Undo preview</b>\n<pre>" + html.escape(preview[:3200]) + "</pre>"
-    if not target or lowered == "list" or lowered == "--list":
+        return "🔎 Undo Preview\n" + preview[:3200].strip()
+    if not target or lowered in {"list", "--list"}:
         entries = checkpoints.list_checkpoints(workspace=workspace)
         if not entries:
-            return "↩️ No file checkpoints yet. One is recorded whenever the agent edits an existing file."
-        lines = ["╭───────────────↩️", "├ <b>File checkpoints</b> (newest first)"]
+            return "↩️ Checkpoints\n◉ Status : Empty"
+        lines = ["↩️ Checkpoints"]
         for entry in entries[:15]:
-            cid = html.escape(str(entry.get("id", "")))
-            age = html.escape(checkpoints.format_age(float(entry.get("ts", 0))))
-            name = html.escape(_short_path(str(entry.get("path", ""))))
-            lines.append(f"├ <code>{cid}</code> · {age} · {name}")
-        lines.append("╰ Restore one: <code>/undo &lt;id&gt;</code>")
+            cid = _one_line(entry.get("id", ""))
+            age = _one_line(checkpoints.format_age(float(entry.get("ts", 0))))
+            name = _one_line(_short_path(str(entry.get("path", ""))))
+            lines.append(f"◉ {cid} : {age} · {name}")
         return "\n".join(lines)
     ok, message = checkpoints.restore(target, workspace=workspace)
-    return ("↩️ " if ok else "⚠️ ") + html.escape(message)
+    restore_status = "Restored" if ok else "Failed"
+    return "\n".join([
+        "↩️ Checkpoints",
+        f"◉ Status : {restore_status}",
+        f"◉ Detail : {_one_line(message)}",
+    ])
 
 
 def _stats_days(args: str) -> int | None:
@@ -1685,35 +1831,35 @@ def _stats_days(args: str) -> int | None:
 
 
 def _stats_card(args: str) -> str:
-    """Token usage for chat: totals + a per-model table, cost only when priced.
-
-    Mirrors `zeline stats` exactly — tokens always, money only for models the
-    operator configured a price for — and never prints the base URL or key.
-    """
     from zeline import usage_stats
 
     if not usage_stats.enabled():
-        return "📊 Usage tracking is disabled (agent.usage_tracking = false)."
+        return "📊 Token Usage\n◉ Status : Disabled"
     days = _stats_days(args)
     since = usage_stats.since_day_for(days)
     window = f"last {days} day(s)" if since else "all time"
     store = usage_stats.UsageStore()
     totals = store.totals(since)
+    total_calls = totals["calls"]
+    total_models = totals["models"]
+    total_tokens = totals["total_tokens"]
+    prompt_tokens = totals["prompt_tokens"]
+    completion_tokens = totals["completion_tokens"]
     if not totals["calls"]:
-        return (
-            f"📊 <b>Token usage</b> — {html.escape(window)}\n"
-            "No usage recorded yet. It appears after the agent talks to a provider "
-            "(some OpenAI-compatible relays omit the usage block)."
-        )
+        return "\n".join([
+            "📊 Token Usage",
+            f"◉ Range : {window}",
+            "◉ Status : Empty",
+        ])
+
     lines = [
-        "╭───────────────📊",
-        f"├ <b>Token usage</b> — {html.escape(window)}",
-        (
-            f"├ {totals['calls']} call(s) · {totals['models']} model(s)\n"
-            f"├ {usage_stats.format_tokens(totals['total_tokens'])} tokens "
-            f"({usage_stats.format_tokens(totals['prompt_tokens'])} in / "
-            f"{usage_stats.format_tokens(totals['completion_tokens'])} out)"
-        ),
+        "📊 Token Usage",
+        f"◉ Range : {window}",
+        f"◉ Calls : {total_calls}",
+        f"◉ Models : {total_models}",
+        f"◉ Total : {usage_stats.format_tokens(total_tokens)} tokens",
+        f"◉ Input : {usage_stats.format_tokens(prompt_tokens)} tokens",
+        f"◉ Output : {usage_stats.format_tokens(completion_tokens)} tokens",
     ]
     any_priced = False
     priced_total = 0.0
@@ -1725,80 +1871,56 @@ def _stats_card(args: str) -> str:
             any_priced = True
             priced_total += cost
             cost_text = f"{cost:,.4f}"
-        name = html.escape(str(row["bucket"])[:34])
+        name = _one_line(str(row["bucket"])[:34])
+        row_calls = row["calls"]
+        row_total_tokens = row["total_tokens"]
         lines.append(
-            f"├ <code>{name}</code> · {row['calls']}× · "
-            f"{usage_stats.format_tokens(row['total_tokens'])} · {cost_text}"
+            f"◉ {name} : {row_calls}× · {usage_stats.format_tokens(row_total_tokens)} · {cost_text}"
         )
-    if any_priced:
-        lines.append(f"╰ Priced subtotal: {priced_total:,.4f} (configured unit; '—' = unpriced)")
-    else:
-        lines.append("╰ No prices configured, so no cost is shown (Zeline never guesses prices).")
+    lines.append(f"◉ Cost : {priced_total:,.4f}" if any_priced else "◉ Cost : Not configured")
     return "\n".join(lines)
 
 
 def _events_card(identity: str) -> str:
-    """Recent MUTATING tool calls for this chat: what changed, and did it work.
-
-    This is the operator-facing view of the append-only audit log. It answers
-    the question the transcript can't after a failed turn — "what did the agent
-    actually change?" — because the event is recorded at tool time, not at the
-    end of a successful turn. Read-only calls are never logged, so this stays a
-    side-effect history, not an activity trace.
-    """
     from zeline import events as events_module
 
     rows = events_module.EventLog().recent(identity, limit=15)
     if not rows:
-        return (
-            "🧾 No recorded changes yet. Every file write, skill edit, memory "
-            "write, or shell run in this chat is logged here — even if the turn "
-            "later fails."
-        )
-    lines = ["╭───────────────🧾", "├ <b>Recent changes</b> (newest first)"]
+        return "🧾 Recent Changes\n◉ Status : Empty"
+    lines = ["🧾 Recent Changes"]
     for row in rows:
         mark = "✓" if row["status"] == "ok" else "✗"
-        tool = html.escape(str(row["tool"]))
-        detail = html.escape(str(row["detail"]).strip())
-        when = html.escape(_events_age(float(row["ts"])))
+        tool = _one_line(row["tool"])
+        detail = _one_line(str(row["detail"]).strip())[:120]
+        when = _one_line(_events_age(float(row["ts"])))
         suffix = f" · {detail}" if detail else ""
-        lines.append(f"├ {mark} <code>{tool}</code> · {when}{suffix}")
-    lines.append("╰ These are side effects only; reads are not logged.")
+        lines.append(f"◉ {mark} {tool} : {when}{suffix}")
     return "\n".join(lines)
 
 
 def _skillforge_card() -> str:
-    """Owner-only measured overview; never draft, approve, or apply from a card."""
     from zeline.skillforge import ForgeStore
     try:
         store = ForgeStore()
         rows = store.scan(limit=5)
         pending = sum(row["status"] in {"pending", "tested", "approved"} for row in store.proposals())
-        lines = ["<b>SkillForge</b>",
-                 "Observed tool outcomes, not model claims. No automatic skill replacement.",
-                 f"Proposals awaiting action: {pending}", ""]
+        lines = ["🛠 SkillForge", f"◉ Pending : {pending}"]
         for row in rows:
             score = row.get("score", {})
             value = score.get("effectiveness")
-            label = "insufficient observations" if not score.get("sufficient_evidence") else f"{value:.0f}% observed effectiveness"
+            label = ("insufficient observations" if not score.get("sufficient_evidence")
+                     else f"{value:.0f}% observed effectiveness")
             reasons = ", ".join(row["reasons"]) or "current revision"
-            lines.append(html.escape(f"{row['name']} — {label} · {reasons}", quote=False))
+            row_name = row["name"]
+            lines.append(f"◉ {_one_line(row_name)} : {_one_line(label)} · {_one_line(reasons)}")
         if not rows:
-            lines.append("No skill observations yet. Scores appear after real skill-backed tool runs.")
-        lines.extend(["", "Local review: <code>zeline skillforge list</code>",
-                      "Tests and explicit operator review are required before apply."])
+            lines.append("◉ Status : No observations")
         return "\n".join(lines)
     except Exception:
-        return "<b>SkillForge</b>\nObservation store unavailable; no skill was changed."
+        return "🛠 SkillForge\n◉ Status : Unavailable"
 
 
 def _lessons_card(identity: str) -> str:
-    """Lessons learned from tool failures — the agent's self-improvement store.
-
-    This is the operator-facing view of the lessons DB. It shows what the
-    agent learned from its mistakes: unresolved failures (still open) and
-    resolved lessons (fix found, injected into the system prompt).
-    """
     from zeline import lessons as lessons_module
 
     counts = lessons_module.lessons_summary(identity)
@@ -1806,29 +1928,21 @@ def _lessons_card(identity: str) -> str:
     unresolved = lessons_module.unresolved_lessons(identity, limit=5)
     total_resolved = counts.get("resolved", 0)
     total_unresolved = counts.get("unresolved", 0)
-
-    if not total_resolved and not total_unresolved:
-        return (
-            "📒 No lessons yet. When a tool fails and the agent retries "
-            "successfully, the lesson is captured here and injected into "
-            "the next session's system prompt automatically."
-        )
-
-    lines = ["╭───────────────📒", f"├ <b>Lessons</b> ({total_resolved} resolved, {total_unresolved} unresolved)"]
-    if resolved:
-        lines.append("├─ <b>Resolved</b> (injected into system prompt):")
-        for r in resolved:
-            tool = html.escape(str(r.get("tool", "")))
-            err = html.escape(str(r.get("error", ""))[:60])
-            fix = html.escape(str(r.get("fix", ""))[:60])
-            lines.append(f"├ ✓ <code>{tool}</code>: DON'T \"{err}\" → DO: {fix}")
-    if unresolved:
-        lines.append("├─ <b>Unresolved</b> (failure recorded, no fix yet):")
-        for u in unresolved:
-            tool = html.escape(str(u.get("tool", "")))
-            err = html.escape(str(u.get("error", ""))[:60])
-            lines.append(f"├ ✗ <code>{tool}</code>: {err}")
-    lines.append("╰ Auto-captured from tool failures. Resolved lessons guide future sessions.")
+    lines = [
+        "📒 Self-Learning",
+        f"◉ Resolved : {total_resolved}",
+        f"◉ Unresolved : {total_unresolved}",
+    ]
+    for row in resolved:
+        tool = _one_line(row.get("tool", ""))
+        fix = _one_line(row.get("fix", ""))[:100]
+        lines.append(f"◉ ✓ {tool} : {fix}")
+    for row in unresolved:
+        tool = _one_line(row.get("tool", ""))
+        error = _one_line(row.get("error", ""))[:100]
+        lines.append(f"◉ ✗ {tool} : {error}")
+    if not resolved and not unresolved:
+        lines.append("◉ Status : Empty")
     return "\n".join(lines)
 
 
@@ -1898,49 +2012,33 @@ def _handle_command_update(
     command = command.split("@", 1)[0].lower()
     args = args.strip()
     if command == "/start":
-        _api_call(
-            api, "sendMessage", chat_id=chat_id,
-            text=(
-                "Command to setup :\n"
-                "/model — Switch model\n"
-                "/status — View runtime status\n"
-                "/version — Show version, check for updates\n"
-                "/update — Update to the latest release\n"
-                "/undo — List or restore file checkpoints\n"
-                "/stats — View token usage\n"
-                "/events — Recent file/skill/memory changes\n"
-                "/lessons — View self-learning lessons\n"
-                "/skillforge — Review skill effectiveness and proposals\n"
-                "/stop — Stop the active turn\n"
-                "/new — Start a new session\n\n"
-                "Send a message to start a task"
-            ),
-        )
+        _api_call(api, "sendMessage", chat_id=chat_id, text=_command_setup_text())
         return True
     if command == "/version":
-        _api_call(api, "sendMessage", chat_id=chat_id, text=_version_reply(), parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=_version_reply())
         return True
     if command == "/update":
-        _api_call(
-            api, "sendMessage", chat_id=chat_id,
-            text=_start_update_reply(chat_id, allowed or []), parse_mode="HTML",
-        )
+        _api_call(api, "sendMessage", chat_id=chat_id,
+                  text=_start_update_reply(chat_id, allowed or []))
         return True
     if command == "/status":
         status = sessions.status(identity)
+        session_id = _one_line(status.get("session_id", "unknown"))
+        provider_name = _one_line(_provider_label())
+        model_name = _one_line(status.get("model", "unknown"))
+        context_text = _one_line(status.get("context", "0 messages"))
+        agent_running = "Yes" if status.get("agent_running") else "No"
         _api_call(
             api, "sendMessage", chat_id=chat_id,
-            text=(
-                "╭───────────────🚥\n"
-                "├ <b>Zeline Gateway Status</b>\n"
-                f"├ Session ID : <code>{html.escape(str(status['session_id']))}</code>\n"
-                f"├ Provider : <code>{html.escape(_provider_label())}</code>\n"
-                f"├ Model : <code>{html.escape(str(status['model']))}</code>\n"
-                f"├ Title : {html.escape(str(status['title']))}\n"
-                f"├ Context : {html.escape(str(status['context']))}\n"
-                f"├ Agent Running : {'Yes' if status['agent_running'] else 'No'}\n"
-                "╰ Platform : Telegram"
-            ), parse_mode="HTML",
+            text="\n".join([
+                "🌐 Zeline Gateway Status",
+                f"◉ Session ID : {session_id}",
+                f"◉ Provider : {provider_name}",
+                f"◉ Model : {model_name}",
+                f"◉ Context : {context_text}",
+                f"◉ Agent Running : {agent_running}",
+                "◉ Platform : Telegram",
+            ]),
         )
         return True
     if command == "/repository":
@@ -1963,27 +2061,32 @@ def _handle_command_update(
     if command == "/undo":
         refusal = _owner_only_reply("/undo", chat_id, allowed)
         text = refusal if refusal is not None else _undo_card(args)
-        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text)
         return True
     if command == "/stats":
         refusal = _owner_only_reply("/stats", chat_id, allowed)
         text = refusal if refusal is not None else _stats_card(args)
-        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text)
         return True
     if command == "/events":
         refusal = _owner_only_reply("/events", chat_id, allowed)
         text = refusal if refusal is not None else _events_card(identity)
-        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text)
         return True
     if command == "/skillforge":
         refusal = _owner_only_reply("/skillforge", chat_id, allowed)
         text = refusal if refusal is not None else _skillforge_card()
-        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text)
+        return True
+    if command == "/self":
+        refusal = _owner_only_reply("/self", chat_id, allowed)
+        reply = refusal if refusal is not None else _self_card(identity)
+        _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
         return True
     if command == "/lessons":
         refusal = _owner_only_reply("/lessons", chat_id, allowed)
         text = refusal if refusal is not None else _lessons_card(identity)
-        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text)
         return True
     if command == "/model" and not args.strip():
         providers = _configured_providers()
@@ -1997,12 +2100,12 @@ def _handle_command_update(
         _api_call(api, "sendMessage", chat_id=chat_id, text=picker_text, reply_markup=markup)
         return True
     if command == "/stop":
-        stopped = sessions.stop(identity)
+        request_stop = getattr(sessions, "request_stop", None)
+        stopped = request_stop(identity) if callable(request_stop) else sessions.stop(identity)
         if stopped:
             _note_stop(identity)
-            # SATU pesan saja. Turn yang dibatalkan TIDAK ikut mengirim
-            # "Stopped." (lihat _send_agent_reply) dan refleksi dilewati, jadi
-            # inilah satu-satunya balasan untuk /stop.
+            # One acknowledgement only. The cancelled turn emits no sentinel
+            # and cleanup cannot block the Telegram polling thread.
             reply = "⛔ Stopped. You can continue this session."
         elif _stopped_recently(identity):
             # /stop kedua (dobel-tap, atau update yang sama dikirim ulang
@@ -2012,7 +2115,7 @@ def _handle_command_update(
             # Diam adalah jawaban yang benar: pembatalan sudah dikonfirmasi.
             return True
         else:
-            reply = "No active task to stop."
+            reply = "⛔ No active task."
         _api_call(api, "sendMessage", chat_id=chat_id, text=reply)
         return True
     if command == "/new":
@@ -2419,7 +2522,7 @@ def _handle_callback(api: str, callback: dict[str, Any], sessions) -> None:
         cfg["provider"]["model"] = selected
     config.save_config(cfg)
     sessions.switch_provider(f"telegram:{chat_id}")
-    _edit_interactive(api, chat_id, message_id, _model_switch_text(selected, provider), parse_mode="HTML")
+    _edit_interactive(api, chat_id, message_id, _model_switch_text(selected, provider))
 
 
 _FENCED_CODE_RE = re.compile(r"```([A-Za-z0-9_+.-]*)\n?(.*?)```", re.DOTALL)
@@ -3007,7 +3110,7 @@ def _handle_command(text: str, sessions, identity: str, *, stop_event) -> str | 
     command, _, args = text.partition(" ")
     command, args = command.split("@", 1)[0].lower(), args.strip()
     if command in {"/start", "/help"}:
-        return "/status · /models · /model <id> · /undo · /stats · /events · /lessons · /skillforge · /version · /update · /new · /restart · /stop · /logs"
+        return _command_setup_text()
     if command == "/status":
         return f"Zeline active\nModel: `{config.MODEL}`\nProvider: `{config.BASE_URL}`\nSession: `{identity}`\nCached: {sessions.count()}"
     if command == "/models":
@@ -3286,7 +3389,7 @@ def _learning_report_parts(updates: tuple[str, ...], summary: str | None):
         sections.extend(re.split(r"\n[ \t]*\n(?=📙|📘|📗)", summary.strip()))
     for section in sections:
         heading = section.replace("<b>", "").lstrip()
-        phase = next((p for p in _LEARNING_PHASES if heading.startswith(p)), "other")
+        phase = next((p for p in _LEARNING_PHASES if heading.casefold().startswith(p.casefold())), "other")
         groups.setdefault(phase, []).append(section)
     for phase in (*_LEARNING_PHASES, "other"):
         if phase not in groups:

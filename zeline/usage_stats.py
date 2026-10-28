@@ -177,6 +177,25 @@ class UsageStore:
 
 # ------------------------------------------------------------------ extraction
 
+def reported_usage(payload: Any, protocol: str = "openai") -> dict[str, int | None]:
+    """Exact reported fields for observers; absent/invalid is NOT zero.
+
+    Separate from legacy statistics extraction, which retains its old semantics.
+    A reported total alone must not be attributed to output tokens.
+    """
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    def count(key):
+        value = usage.get(key)
+        return value if type(value) is int and value >= 0 else None
+    incoming = count("input_tokens" if protocol == "anthropic" else "prompt_tokens")
+    outgoing = count("output_tokens" if protocol == "anthropic" else "completion_tokens")
+    total = count("total_tokens")
+    if total is None and incoming is not None and outgoing is not None:
+        total = incoming + outgoing
+    return {"input_tokens": incoming, "output_tokens": outgoing, "total_tokens": total}
+
+
 def extract_usage(payload: Any, protocol: str = "openai") -> tuple[int, int]:
     """Pull (prompt_tokens, completion_tokens) out of a provider response.
 

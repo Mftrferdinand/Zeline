@@ -68,7 +68,7 @@ uv tool install zeline
 只需一行，而且不需要任何现成的 Python 工具链——它会为你准备一个私有环境：
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.sh && bash install.sh
 ```
 
 然后运行 `zeline setup`。安装脚本会自行下载带版本号的 wheel，并在安装前对照
@@ -80,7 +80,7 @@ curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/r
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 然后运行 `zeline setup`。
@@ -271,12 +271,13 @@ OpenAPI 文档，以及 MCP 服务器，全部都无需修改本包即可使用�
 ## 开发
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pip install -e ".[dev]"
+python3 -m pytest tests -q
 ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI 运行的是 `unittest`，而不是 `pytest`。
+CI 使用 `pytest`，同时发现 `unittest.TestCase` 方法和 pytest 风格的测试。
 
 **欢迎贡献，你无需本仓库的写入权限。** 请 fork、建分支，然后向 `main` 提交 pull
 request；来自 fork 的 PR 会运行与维护者完全相同的 CI 矩阵 —— Linux、Windows、

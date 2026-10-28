@@ -1,86 +1,68 @@
-# Zeline v0.4.2
+# Zeline v0.4.5
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
-This release brings the reviewed runtime and Telegram improvements on `main`
-into a versioned distribution. It builds on the retained v0.3.4 baseline; it is
-not a wholesale restoration of the removed v0.3.5–v0.3.9 code line.
+This scoped maintenance release builds on v0.4.4 with targeted stability
+improvements: task follow-up scheduling with race-safe cross-process locking,
+MCP stdio deadline hardening, checkpoint restore at capacity, bounded offline
+evaluation worker I/O, and private persona separation. Agent responses, UI, and
+Telegram behavior are preserved from the installed v0.4.4 baseline.
 
 ## Highlights
 
-- **Terminal runtime dashboard and chat composer.** Responsive paired panels,
-  readable narrow-terminal fallback, local command handling, live tool activity,
-  gateway/QR presentation, and PTY coverage keep the operator view stable
-  without echoing sensitive tool arguments.
-- **Safer staged updater.** Update plans now show the target and verification
-  stages, verify SHA-256 before installation, bound release payloads, and always
-  restore a paused gateway when verification or installer startup fails.
-- **Bounded local discovery.** Loopback 9Router probing and parallel MCP discovery
-  use explicit deadlines and bounded reads so an unavailable optional service
-  cannot stall the runtime indefinitely.
-
-- **Bounded, resumable tool I/O.** Read files in bounded pages, resume with
-  validated cursors, and preserve complete process output in bounded spools.
-  Invalid UTF-8 and incomplete capture remain visible failures rather than
-  silently truncated success. Process ownership and cleanup respect cancellation.
-- **Evidence-preserving context.** Session compaction and stored context windows
-  retain tool-call/result integrity and continuation evidence rather than merely
-  trimming the newest messages.
-- **Safer self-improvement.** Internal reflection proposes skill changes instead
-  of silently overwriting or deleting active procedures. SkillForge supports
-  observed usage, revision proposals, test gates, explicit review and backups.
-  Routine operator-requested skill management remains available.
-- **Truthful learning phases.** 📙 Self-Enhancement, 📘 Self-Improvement and
-  📗 Self-Refinement are emitted only for supported actions and evidence. Empty,
-  cancelled or failed reviews do not fabricate completed phases; incomplete
-  reviews remain visible. Substantial research can qualify for review.
-- **Updated Telegram activity UI.** Restored activity icons, including
-  `📂 Executing browser script…`, compact letter-choice questions with durable
-  receipts, separate post-task learning messages, unquoted live narration,
-  preserved final-answer attribution and explicit stop confirmation. Progress
-  favors findings, blockers and decisions over repetitive routine narration.
-- **Runtime and cron hardening.** Reviewed execution-policy, cancellation,
-  continuation and scheduler fixes, including macOS cleanup race handling.
-  Subprocess cleanup never group-signals a shared or foreign group; owned
-  descendants and Windows tree termination retain their cleanup behavior.
-  This defensive fix does not establish the cause of any past host outage.
-- **Optional MCP integrations.** Documented Parallel Search and local Sem code
-  lookup. These are optional external servers, not new built-in runtime tools;
-  their access and side effects are documented in the integration guide.
+- **Task follow-up scheduling.** `followups.py` and `scheduler.py` gain
+  cross-process SQLite `BEGIN IMMEDIATE` locking (5 s wait), one Himalaya
+  snapshot per tick, at most two deliveries per tick, and Telegram follow-up
+  `timeout=8` with `attempts=1`. New jobs default to `timeout=60`.
+- **MCP stdio deadline.** `mcp.py` enforces a read deadline on stdio
+  transports, preventing indefinite hangs on unresponsive servers.
+- **Checkpoint restore at capacity.** `checkpoints.py` correctly restores when
+  the checkpoint store is at its configured maximum.
+- **Bounded offline evaluation.** `offline_evaluation.py` streams worker output
+  through a pipe reader capped at `MAX_RESULT_BYTES + 1`, replacing unbounded
+  `TemporaryFile` growth.
+- **Private persona separation.** `config.py` supports a validated per-instance
+  SOUL override outside the package directory, fail-closed when empty. The
+  public `SOUL.md` in the wheel is the neutral canonical persona.
+- **Evidence-backed self-learning.** Carried forward from v0.4.4 — memory,
+  lesson and skill mutations emit versioned receipts with record IDs and
+  revisions.
+- **Cross-platform verification.** CI matrix covers Python 3.10–3.13,
+  Windows and macOS.
 
 ## Verification
 
-The integrated core passed the complete configured CI matrix, including
-Python 3.10–3.13, Windows and macOS. Release metadata, installers, source
-archives and wheel contents are checked again for this version. The release
-workflow verifies checksums and bundled assets and generates build provenance.
-PyPI uses Trusted Publishing (OIDC), not a long-lived API token stored in this
-repository. GitHub Actions uploads the verified distributions without rebuilding.
+The release workflow verifies that the tag belongs to merged `main`, matches
+package metadata, builds the wheel and source archive, checks their metadata and
+checksums, compares bundled skills/tools/assets with the source tree, and
+generates build provenance. PyPI uses Trusted Publishing (OIDC), not a
+long-lived API token stored in this repository. GitHub Actions uploads the
+verified distributions without rebuilding.
 
 ## Install or upgrade
 
 PyPI, inside a virtual environment:
 
 ```sh
-python -m pip install --upgrade zeline==0.4.2
+python -m pip install --upgrade zeline==0.4.5
 ```
 
 Or install in an isolated tool environment:
 
 ```sh
-uv tool install zeline==0.4.2
+uv tool install zeline==0.4.5
 ```
 
 POSIX installer — Termux, Linux, macOS and iSH:
 
 ```sh
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.sh && bash install.sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 The installers download the matching versioned wheel and verify its SHA-256
@@ -89,29 +71,36 @@ checksum. Run `zeline setup` after a new install. Existing installations can use
 
 ## Upgrade notes
 
-- Back up your existing configuration before upgrading. No manual configuration
-  migration is required by this release; explicit operator settings are retained.
-- Live code changes require a gateway restart. The updater drains active work
-  and preserves the gateway selection. Updating a source checkout alone does
-  not update a separately installed launcher environment.
+- This is a scoped maintenance release. It does not introduce new features
+  beyond the stability fixes listed above.
+- Back up existing configuration before upgrading. No manual configuration
+  migration is required; explicit operator settings are retained.
+- Live code changes require a gateway restart. The updater drains active work and
+  preserves the gateway selection.
 - The mobile app remains a separate product and release cycle.
-- This release does not claim to eliminate all bugs or provider/network errors.
+- Task follow-up jobs created under v0.4.4 with the old 45 s timeout will
+  continue to run; new jobs default to 60 s. No state migration is required.
 
 ## Documentation
 
-- [Installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/docs/installation.md)
-- [Changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/CHANGELOG.md)
-- [Bounded runtime I/O](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/docs/bounded-tool-runtime.md)
-- [Optional MCP setup](https://github.com/Mftrferdinand/Zeline/blob/v0.4.2/docs/extending.md)
+- [Installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/installation.md)
+- [Task follow-ups](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/task-followups.md)
+- [Private persona override](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/private-persona.md)
+- [Evidence-backed self-learning](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/evidence-backed-self-learning.md)
+- [GEPA training bridge](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/gepa-training.md)
+- [Static reverse engineering](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/reverse-engineering.md)
+- [Bounded runtime I/O](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/bounded-tool-runtime.md)
+- [Changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/CHANGELOG.md)
+- [Optional MCP setup](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/extending.md)
 
 ## Release assets
 
-- `zeline-0.4.2-py3-none-any.whl`
-- `zeline-0.4.2.tar.gz`
+- `zeline-0.4.5-py3-none-any.whl`
+- `zeline-0.4.5.tar.gz`
 - `install.sh` and `install.ps1`
 - `SHA256SUMS`
 
 Artifacts are built from the immutable release tag in merged `main` history.
 GitHub Release and PyPI receive the same wheel and source archive.
 
-*Agent-generated release notes.*
+*Agent-generated release notes. Publication is gated by repository CI and artifact verification.*

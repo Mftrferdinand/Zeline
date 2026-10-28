@@ -47,6 +47,38 @@ class TelegramQuestionTests(AskUserBase):
         card = next(p for m, p in reversed(self.calls) if m == "sendMessage" and "reply_markup" in p)
         return worker, box, live, entry, card
 
+    def test_plain_model_branching_question_renders_picker_and_resumes_after_tap(self):
+        agent_module = importlib.import_module("zeline.agent")
+        agent = agent_module.Zeline(identity="telegram:1", tool_profile="safe")
+        ready = threading.Event()
+        result = {}
+        def render(entry):
+            self.telegram._render_ask_question("fixture", 1, entry)
+            ready.set()
+        self.interaction.register_channel(agent.identity, render)
+        self.addCleanup(lambda: self.interaction.unregister_channel(agent.identity))
+        with mock.patch.object(agent, "_call_llm", side_effect=[
+            {"role": "assistant", "content": "Mau deploy?\n1. Sekarang\n2. Tunda"},
+            {"role": "assistant", "content": "Ditunda sesuai pilihan lo."},
+        ]):
+            worker = threading.Thread(target=lambda: result.update(reply=agent.send("Pilih deploy")), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(ready.wait(3), "question was not rendered")
+                entry = self.interaction.pending(agent.identity)
+                card = next(payload for method, payload in reversed(self.calls)
+                            if method == "sendMessage" and "reply_markup" in payload)
+                buttons = [row[0] for row in card["reply_markup"]["inline_keyboard"]]
+                self.assertEqual([button["text"] for button in buttons], ["A", "B", "Fill in yourself"])
+                self.telegram._handle_ask_callback("fixture", 1, entry.message_id, buttons[1]["callback_data"])
+                worker.join(3)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(result["reply"], "Ditunda sesuai pilihan lo.")
+                self.assertEqual(agent.messages[-2]["content"], "Tunda")
+            finally:
+                self.interaction.cancel(agent.identity)
+                worker.join(3)
+
     def test_failed_terminal_edit_retires_same_keyboard_without_replacement(self):
         from types import SimpleNamespace
         for status in ("answered", "cancelled", "expired"):
