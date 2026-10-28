@@ -33,6 +33,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "analyze_media": {"path_or_url": "clip.mp4"},
             "generate_image": {"prompt": "a test image"},
             "http_request": {"url": "https://example.com/api"},
+            "json_query": {"data": "{\"a\": 1}", "query": "a"},
             "browser": {"action": "open", "url": "https://example.com"},
             "code_intel": {"action": "diagnostics", "path": "app.py"},
             "reverse_engineer": {"action": "references", "path": "artifacts/program", "target_address": 4096},
