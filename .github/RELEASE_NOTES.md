@@ -27,8 +27,15 @@ Telegram behavior are preserved from the installed v0.4.4 baseline.
 - **Evidence-backed self-learning.** Carried forward from v0.4.4 — memory,
   lesson and skill mutations emit versioned receipts with record IDs and
   revisions.
+- **Checksums and pricing.** Adds the workspace-bound `hash_check` tool,
+  corrects longest-prefix usage pricing for dated model names, and escapes
+  checksum progress arguments for Telegram HTML.
+- **Optional publishing MCP documentation.** Adds deed.page setup guidance with
+  explicit retention semantics: pages are permanent unless expiry is requested.
 - **Cross-platform verification.** CI matrix covers Python 3.10–3.13,
-  Windows and macOS.
+  Windows and macOS. Windows locking, process spawning, SQLite handle closure,
+  and private-file writes are portable; macOS teardown no longer masks useful
+  evaluation results when process-group signaling is denied.
 
 ## Verification
 
@@ -71,8 +78,8 @@ checksum. Run `zeline setup` after a new install. Existing installations can use
 
 ## Upgrade notes
 
-- This is a scoped maintenance release. It does not introduce new features
-  beyond the stability fixes listed above.
+- This maintenance release also includes the checksum tool and optional MCP
+  documentation listed above; other audited feature PRs remain deferred.
 - Back up existing configuration before upgrading. No manual configuration
   migration is required; explicit operator settings are retained.
 - Live code changes require a gateway restart. The updater drains active work and

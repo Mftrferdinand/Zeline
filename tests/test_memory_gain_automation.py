@@ -46,9 +46,10 @@ def service(tmp_path, monkeypatch):
     store = memory.MemoryStore('telegram:owner')
     receipt = store.add_receipt('Owner prefers hyphenated journal names.')
     path = tmp_path / 'jobs.sqlite3'
-    # Spawn imports a fresh interpreter; give successful workers startup budget.
+    # Successful workers need import/startup headroom on loaded POSIX hosts too.
+    # Timeout behavior is tested separately with an explicit 0.2-second budget.
     runner = MemoryGainAutomation(path, store_factory=memory.MemoryStore,
-                                  timeout=5.0 if os.name == 'nt' else 1.0,
+                                  timeout=5.0,
                                   max_pending=4)
     cases = [Case('train', 'Name hyphenated journal', 'Self-Refinement.md', 'train'),
              Case('heldout', 'Which hyphenated journal file?', 'Self-Refinement.md', 'heldout')]
