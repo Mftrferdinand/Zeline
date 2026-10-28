@@ -1,5 +1,6 @@
 """Task-scoped proactive watches: baseline, dedup and bounded delivery."""
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -162,7 +163,8 @@ class FollowupTests(unittest.TestCase):
         with patch.object(followups, "_read_email", return_value={"a", "b"}), patch.object(followups.scheduler, "add_job") as add:
             add.return_value.id = "job8"
             followups.register(self.owner, "Track reward for campaign", "email", "inbox", "sender@example.com|Campaign update")
-            self.assertEqual(followups.registry_path().stat().st_mode & 0o777, 0o600)
+            if os.name == "posix":
+                self.assertEqual(followups.registry_path().stat().st_mode & 0o777, 0o600)
             with patch.object(followups, "_read_email", return_value={"a", "b", "c"}):
                 self.assertIn("1 new email", followups.poll())
                 self.assertEqual(followups.poll(), "")

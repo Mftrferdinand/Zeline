@@ -6,7 +6,7 @@ unvalidated tool or a claim that an untested proposal became active.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
 import html
 import json
@@ -64,6 +64,10 @@ def _file_lock(path: Path):
         with os.fdopen(fd, "r+b") as handle:
             if os.name == "nt":
                 import msvcrt
+                handle.seek(0, 2)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
                 try:
@@ -206,7 +210,7 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
                 continue
             store = object.__new__(ForgeStore)  # _source is stateless; never create a DB on status read.
             if journal_state == "proposal, not active" and record_id.startswith("forge_"):
-                with sqlite3.connect(forge_db.as_uri() + "?mode=ro", uri=True, timeout=0.2) as db:
+                with closing(sqlite3.connect(forge_db.as_uri() + "?mode=ro", uri=True, timeout=0.2)) as db:
                     proposal = db.execute("SELECT name,candidate,status,checks FROM proposals WHERE id=?",
                                           (record_id,)).fetchone()
                 if proposal is None or proposal[0] != name or proposal[1] != revision:
@@ -225,7 +229,7 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
                     except (OSError, ValueError, UnicodeError):
                         status.update(stage="stale", active=False)
                         continue
-                    with sqlite3.connect(forge_db.as_uri() + "?mode=ro", uri=True, timeout=0.2) as db:
+                    with closing(sqlite3.connect(forge_db.as_uri() + "?mode=ro", uri=True, timeout=0.2)) as db:
                         rows = db.execute(
                             "SELECT outcome,COUNT(*) FROM usage WHERE identity=? AND skill=? "
                             "AND scope='private' AND revision=? GROUP BY outcome",
@@ -254,7 +258,7 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
                     status["stage"] = "stale"
                     continue
                 status.update(stage="stored", active=True)
-                with sqlite3.connect(forge_db.as_uri() + "?mode=ro", uri=True, timeout=0.2) as db:
+                with closing(sqlite3.connect(forge_db.as_uri() + "?mode=ro", uri=True, timeout=0.2)) as db:
                     rows = db.execute(
                         "SELECT outcome, COUNT(*) FROM usage WHERE identity=? AND skill=? "
                         "AND scope='private' AND revision=? GROUP BY outcome",
@@ -268,7 +272,7 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
             saved = None
             rows: list[tuple[str | None]] = []
             if memory_db.is_file() and not memory_db.is_symlink():
-                with sqlite3.connect(memory_db.as_uri() + "?mode=ro", uri=True, timeout=0.2) as db:
+                with closing(sqlite3.connect(memory_db.as_uri() + "?mode=ro", uri=True, timeout=0.2)) as db:
                     saved = db.execute("SELECT 1 FROM memory_revisions WHERE owner=? AND id=? AND revision=?",
                                        (owner, record_id, int(revision))).fetchone()
                     if saved:
@@ -285,7 +289,7 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
                 lesson_db = config.DATA_DIR / "lessons.db"
                 evidence_marker = re.search(r"(?m)^  > Successful tool evidence: ([A-Za-z0-9:_-]{1,128})$", body)
                 if lesson_db.is_file() and not lesson_db.is_symlink() and evidence_marker and record_id.isdecimal():
-                    with sqlite3.connect(lesson_db.as_uri() + "?mode=ro", uri=True, timeout=0.2) as lessons_db:
+                    with closing(sqlite3.connect(lesson_db.as_uri() + "?mode=ro", uri=True, timeout=0.2)) as lessons_db:
                         linked = lessons_db.execute(
                             "SELECT 1 FROM lessons l JOIN lesson_successes s ON s.id=l.evidence_id "
                             "AND s.key=l.key AND s.tool=l.tool WHERE l.key=? AND l.id=? "
@@ -325,7 +329,7 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
                         for row in item['case_evidence']
                     ):
                         return None
-                    with sqlite3.connect(memory_db.as_uri() + '?mode=ro', uri=True, timeout=0.2) as case_db:
+                    with closing(sqlite3.connect(memory_db.as_uri() + '?mode=ro', uri=True, timeout=0.2)) as case_db:
                         for case in item['case_evidence']:
                             matched = case_db.execute(
                                 'SELECT 1 FROM memory_retrievals WHERE owner=? AND record_id=? '
@@ -487,7 +491,10 @@ def record_markdown(identity: str, name: str, args: dict[str, Any],
         fd, temporary = tempfile.mkstemp(prefix=".learning-", dir=directory)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                os.fchmod(stream.fileno(), 0o600)
+                if hasattr(os, "fchmod"):
+                    os.fchmod(stream.fileno(), 0o600)
+                else:
+                    os.chmod(temporary, 0o600)
                 stream.write(updated)
                 stream.flush()
                 os.fsync(stream.fileno())

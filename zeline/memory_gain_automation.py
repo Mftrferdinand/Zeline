@@ -7,7 +7,8 @@ untrusted worker code use an external OS sandbox with network namespace isolatio
 """
 from __future__ import annotations
 
-import fcntl
+from contextlib import closing, contextmanager
+import errno
 import hashlib
 import importlib
 import json
@@ -23,6 +24,91 @@ from dataclasses import dataclass
 from typing import Any
 
 from .memory_gain_checker import evaluate_memory_gain
+
+
+_WINDOWS = os.name == 'nt'
+
+
+@contextmanager
+def _drain_lock(path):
+    """Lock byte zero on Windows, or the file on POSIX; never wait."""
+    fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    try:
+        if _WINDOWS:
+            import msvcrt
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b'\0')
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                acquired = True
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+        else:
+            import fcntl
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except BlockingIOError:
+                pass
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                if _WINDOWS:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _stop_process(proc, *, tree=False):
+    """Reap a started process, including coordinator descendants on cancellation."""
+    if proc.pid is None:
+        proc.close()
+        return
+    try:
+        if tree and _WINDOWS:
+            # taskkill /T also terminates spawned model workers, not just the parent.
+            import subprocess
+            try:
+                subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=2, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        elif tree and hasattr(os, 'killpg'):
+            import signal
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if proc.is_alive():
+            proc.terminate()
+        proc.join(timeout=0.5)
+        if proc.is_alive():
+            if tree and not _WINDOWS and hasattr(os, 'killpg'):
+                import signal
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            proc.kill()
+            proc.join(timeout=0.5)
+    finally:
+        if not proc.is_alive():
+            proc.close()
+
+
+def _process_context(*, coordinator=False):
+    import threading
+    method = ('spawn' if _WINDOWS else
+              'forkserver' if coordinator and threading.active_count() > 1 else 'fork')
+    return mp.get_context(method)
 
 
 @dataclass(frozen=True)
@@ -125,7 +211,14 @@ def _child(conn, storage, snapshot, owner, record_id, revision, mode, prompt, wo
 def _coordinator(conn, automation, owner, record_id, revision, pack, deadline,
                  data_dir, memory_dir):
     try:
-        os.setsid()  # Own process group so cancellation also stops model children.
+        if not _WINDOWS and hasattr(os, 'setsid'):
+            try:
+                os.setsid()  # Own process group so cancellation also stops model children.
+            except PermissionError:
+                # Some launchers already establish a session. Only accept EPERM
+                # when both session and group are demonstrably owned by this child.
+                if os.getsid(0) != os.getpid() or os.getpgrp() != os.getpid():
+                    raise
         from . import config, memory
         config.DATA_DIR = Path(data_dir)
         memory.MEMORY_DIR = Path(memory_dir)
@@ -163,14 +256,16 @@ class MemoryGainAutomation:
                        'revision INTEGER NOT NULL, pack TEXT NOT NULL, digest TEXT NOT NULL, '
                        'status TEXT NOT NULL, created REAL NOT NULL, result TEXT, PRIMARY KEY(owner,record_id,revision,pack))')
 
+    @contextmanager
     def _db(self):
-        db = sqlite3.connect(self.path, timeout=0.2)
-        try:
-            self.path.chmod(0o600)
-        except OSError:
-            pass
-        db.execute('PRAGMA busy_timeout=200')
-        return db
+        with closing(sqlite3.connect(self.path, timeout=0.2)) as db:
+            try:
+                self.path.chmod(0o600)
+            except OSError:
+                pass
+            db.execute('PRAGMA busy_timeout=200')
+            with db:
+                yield db
 
     def register_pack(self, name, cases, *, worker):
         if not isinstance(name, str) or not re.fullmatch(r'[\w.:-]{1,80}', name, re.ASCII):
@@ -216,19 +311,12 @@ class MemoryGainAutomation:
         Never call concurrently with a drain: a running child could otherwise
         duplicate a job. This is explicitly host-controlled crash recovery.
         """
-        lock = os.open(str(self.path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(lock)
-            raise RuntimeError('Evaluation drain still active')
-        try:
+        with _drain_lock(self.path) as acquired:
+            if not acquired:
+                raise RuntimeError('Evaluation drain still active')
             with self._db() as db:
                 cursor = db.execute("UPDATE jobs SET status='pending' WHERE status='running'")
                 return cursor.rowcount
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-            os.close(lock)
 
     def pending(self):
         with self._db() as db:
@@ -236,19 +324,18 @@ class MemoryGainAutomation:
 
     def _run(self, owner, record_id, revision, pack, deadline, stop_event=None):
         """Hard deadline for the entire job, including checker/storage operations."""
-        import signal
-        import threading
         from . import config, memory
         # Gateway scheduler runs in a thread: forkserver prevents inheriting
         # arbitrary thread locks into a model subprocess.
-        ctx = mp.get_context('forkserver' if threading.active_count() > 1 else 'fork')
+        ctx = _process_context(coordinator=True)
         recv, send = ctx.Pipe(duplex=False)
-        proc = ctx.Process(target=_coordinator, args=(send, self, owner, record_id,
+        proc = None
+        try:
+            proc = ctx.Process(target=_coordinator, args=(send, self, owner, record_id,
                                                       revision, pack, deadline,
                                                       config.DATA_DIR, memory.MEMORY_DIR))
-        proc.start()
-        send.close()
-        try:
+            proc.start()
+            send.close()
             while True:
                 if stop_event is not None and stop_event.is_set():
                     raise TimeoutError('Evaluation cancelled')
@@ -258,21 +345,12 @@ class MemoryGainAutomation:
                 if recv.poll(min(0.2, remaining)):
                     return recv.recv()
         finally:
-            # The coordinator owns a group that includes any active model child.
-            # Killing the coordinator alone can leave a paid provider call alive.
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                if proc.is_alive():
-                    proc.terminate()
-            proc.join(timeout=0.5)
-            if proc.is_alive():
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    proc.kill()
-                proc.join(timeout=0.5)
-            recv.close()
+                if proc is not None:
+                    _stop_process(proc, tree=True)
+            finally:
+                send.close()
+                recv.close()
 
     def _evaluate(self, owner, record_id, revision, pack, deadline):
         cases, worker, digest = self.packs[pack]
@@ -283,13 +361,13 @@ class MemoryGainAutomation:
         with tempfile.TemporaryDirectory(prefix='memory-gain-') as root:
             root = Path(root)
             snapshot = root / 'snapshot.sqlite3'
-            with sqlite3.connect(f'file:{store.db_path}?mode=ro', uri=True) as source, sqlite3.connect(snapshot) as target:
+            with closing(sqlite3.connect(store.db_path.resolve().as_uri() + '?mode=ro', uri=True)) as source, closing(sqlite3.connect(snapshot)) as target:
                 source.backup(target)
             baseline_snapshot = root / 'baseline.sqlite3'
             shutil.copyfile(snapshot, baseline_snapshot)
             # The baseline retains the owner's other memory but cannot see the
             # exact correction under test, including historical revisions.
-            with sqlite3.connect(baseline_snapshot) as baseline_db:
+            with closing(sqlite3.connect(baseline_snapshot)) as baseline_db, baseline_db:
                 for table, column in (('memory_items', 'id'),
                                       ('memory_revisions', 'id'),
                                       ('memory_retrievals', 'record_id')):
@@ -303,18 +381,19 @@ class MemoryGainAutomation:
                 memory.MEMORY_DIR = eval_dir
                 shutil.copyfile(snapshot, eval_dir / 'memory.sqlite3')
                 evaluation = self.store_factory(owner)
-                ctx = mp.get_context('fork')
+                ctx = _process_context()
                 def invoke(mode, prompt):
                     storage = root / f'worker-{len(workers)}'
                     storage.mkdir(mode=0o700)
                     recv, send = ctx.Pipe(duplex=False)
-                    proc = ctx.Process(target=_child, args=(send, storage,
+                    proc = None
+                    try:
+                        proc = ctx.Process(target=_child, args=(send, storage,
                                                               baseline_snapshot if mode == 'baseline' else snapshot,
                                                               owner, record_id, revision, mode, prompt,
                                                               worker, self.allow_network))
-                    proc.start()
-                    send.close()
-                    try:
+                        proc.start()
+                        send.close()
                         remaining = min(self.timeout, deadline - time.monotonic())
                         if remaining <= 0 or not recv.poll(remaining):
                             raise TimeoutError('Worker timeout')
@@ -329,13 +408,12 @@ class MemoryGainAutomation:
                             return result['answer'], result['turn']
                         return result['answer']
                     finally:
-                        if proc.is_alive():
-                            proc.terminate()
-                        proc.join(timeout=0.5)
-                        if proc.is_alive():
-                            proc.kill()
-                            proc.join(timeout=0.5)
-                        recv.close()
+                        try:
+                            if proc is not None:
+                                _stop_process(proc)
+                        finally:
+                            send.close()
+                            recv.close()
                 report = evaluate_memory_gain(evaluation, record_id, revision,
                     cases=cases, checker=pack, baseline_runner=lambda p: invoke('baseline', p),
                     candidate_runner=lambda p: invoke('candidate', p))
@@ -349,17 +427,10 @@ class MemoryGainAutomation:
         deadline = time.monotonic() + max_seconds
         results = []
         # Host-local nonblocking lock: at most one active drain across processes.
-        lock = os.open(str(self.path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(lock)
-            return []
-        try:
+        with _drain_lock(self.path) as acquired:
+            if not acquired:
+                return []
             return self._drain_locked(max_jobs, deadline, results, stop_event)
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-            os.close(lock)
 
     def _drain_locked(self, max_jobs, deadline, results, stop_event):
         for _ in range(max_jobs):

@@ -4,9 +4,9 @@ from pathlib import Path
 
 def test_documentation_describes_task_scoped_proactive_followup():
     root = Path(__file__).resolve().parents[1]
-    soul = (root / "zeline" / "SOUL.md").read_text()
+    soul = (root / "zeline" / "SOUL.md").read_text(encoding="utf-8")
     assert "## Task-scoped proactive follow-up" not in soul
-    section = (root / "docs" / "task-followups.md").read_text().lower()
+    section = (root / "docs" / "task-followups.md").read_text(encoding="utf-8").lower()
     for required in (
         "existing scheduler", "task-specific", "owner dm", "baseline",
         "deduplicated", "no change", "stop the monitor", "not active",

@@ -1,6 +1,7 @@
 """Host-owned automatic memory evaluation, exercised with real fresh worker processes."""
 from __future__ import annotations
 
+from contextlib import closing
 import os
 import sqlite3
 import time
@@ -45,7 +46,9 @@ def service(tmp_path, monkeypatch):
     store = memory.MemoryStore('telegram:owner')
     receipt = store.add_receipt('Owner prefers hyphenated journal names.')
     path = tmp_path / 'jobs.sqlite3'
-    runner = MemoryGainAutomation(path, store_factory=memory.MemoryStore, timeout=1.0,
+    # Spawn imports a fresh interpreter; give successful workers startup budget.
+    runner = MemoryGainAutomation(path, store_factory=memory.MemoryStore,
+                                  timeout=5.0 if os.name == 'nt' else 1.0,
                                   max_pending=4)
     cases = [Case('train', 'Name hyphenated journal', 'Self-Refinement.md', 'train'),
              Case('heldout', 'Which hyphenated journal file?', 'Self-Refinement.md', 'heldout')]
@@ -71,7 +74,7 @@ def test_scheduler_thread_uses_safe_process_start_and_completes(service, monkeyp
     thread.join(timeout=15)
     assert not thread.is_alive()
     assert output[0]['status'] == 'completed'
-    assert 'forkserver' in methods
+    assert ('spawn' if os.name == 'nt' else 'forkserver') in methods
 
 
 def test_cancel_running_job_kills_worker_before_timeout(service):
@@ -142,7 +145,7 @@ def test_queue_capacity_and_pack_mutation_rejected(service):
 def test_lost_coordinator_recovery(service):
     runner, store, receipt, path = service
     runner.enqueue('telegram:owner', receipt['record_id'], 1, 'journal-v1')
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("UPDATE jobs SET status='running'")
     assert runner.pending() == 0
     assert runner.recover_pending() == 1
@@ -214,6 +217,196 @@ def test_no_network_default_fixture(service):
     result = runner.drain(max_jobs=1, max_seconds=8)
     assert result[0]['status'] == 'failed'
     assert 'network disabled' in result[0]['error'].lower()
+
+
+def test_nonblocking_drain_lock_contention_and_recovery(service):
+    from zeline import memory_gain_automation as automation
+    runner, _, _, _ = service
+    with automation._drain_lock(runner.path) as acquired:
+        assert acquired
+        assert runner.drain(max_jobs=0) == []
+        with pytest.raises(RuntimeError, match='still active'):
+            runner.recover_pending()
+    assert runner.recover_pending() == 0
+
+
+def lock_probe(path, conn):
+    from zeline.memory_gain_automation import _drain_lock
+    try:
+        with _drain_lock(path) as acquired:
+            conn.send(acquired)
+    finally:
+        conn.close()
+
+
+def test_lock_contention_across_spawned_processes(tmp_path):
+    import multiprocessing
+    from zeline.memory_gain_automation import _drain_lock
+    path = tmp_path / 'queue'
+    ctx = multiprocessing.get_context('spawn')
+    with _drain_lock(path) as acquired:
+        assert acquired
+        recv, send = ctx.Pipe(duplex=False)
+        proc = ctx.Process(target=lock_probe, args=(path, send))
+        try:
+            proc.start()
+            send.close()
+            assert recv.poll(10)
+            assert recv.recv() is False
+            proc.join(5)
+            assert proc.exitcode == 0
+        finally:
+            if proc.is_alive():
+                proc.kill()
+                proc.join(5)
+            proc.close()
+            recv.close()
+            send.close()
+
+
+def test_queue_connections_close_on_success_and_failure(service):
+    runner, _, _, path = service
+    with runner._db() as db:
+        db.execute('SELECT 1')
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        db.execute('SELECT 1')
+    with pytest.raises(RuntimeError):
+        with runner._db() as failed:
+            failed.execute("UPDATE jobs SET status='pending'")
+            raise RuntimeError('rollback')
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        failed.execute('SELECT 1')
+    path.rename(path.with_suffix('.moved'))
+
+
+def test_process_context_selection(monkeypatch):
+    from zeline import memory_gain_automation as automation
+    import threading
+    monkeypatch.setattr(automation.mp, 'get_context', lambda method: method)
+    monkeypatch.setattr(automation, '_WINDOWS', True)
+    assert automation._process_context(coordinator=True) == 'spawn'
+    assert automation._process_context() == 'spawn'
+    monkeypatch.setattr(automation, '_WINDOWS', False)
+    monkeypatch.setattr(threading, 'active_count', lambda: 2)
+    assert automation._process_context(coordinator=True) == 'forkserver'
+    assert automation._process_context() == 'fork'
+    monkeypatch.setattr(threading, 'active_count', lambda: 1)
+    assert automation._process_context(coordinator=True) == 'fork'
+
+
+def test_snapshot_connections_closed_before_worker_start(service, monkeypatch):
+    from zeline import memory_gain_automation as automation
+    runner, _, receipt, _ = service
+    connect = sqlite3.connect
+    opened = []
+    def tracked_connect(*args, **kwargs):
+        db = connect(*args, **kwargs)
+        opened.append(db)
+        return db
+    monkeypatch.setattr(automation.sqlite3, 'connect', tracked_connect)
+    def check_snapshots(*args, **kwargs):
+        # Store connections may also be tracked; every connection must be closed.
+        assert opened
+        for db in opened:
+            with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+                db.execute('SELECT 1')
+        raise RuntimeError('checked snapshots')
+    monkeypatch.setattr(automation, 'evaluate_memory_gain', check_snapshots)
+    with pytest.raises(RuntimeError, match='checked snapshots'):
+        runner._evaluate('telegram:owner', receipt['record_id'], 1, 'journal-v1',
+                         time.monotonic() + 10)
+
+
+@pytest.mark.parametrize('coordinator', [False, True])
+def test_start_failure_closes_pipes_and_process(service, monkeypatch, coordinator):
+    from zeline import memory_gain_automation as automation
+    runner, _, receipt, _ = service
+    class Pipe:
+        closed = False
+        def close(self):
+            self.closed = True
+    recv, send = Pipe(), Pipe()
+    class Process:
+        pid = None
+        closed = False
+        def start(self):
+            raise RuntimeError('start failed')
+        def close(self):
+            self.closed = True
+    proc = Process()
+    class Context:
+        def Pipe(self, **kwargs):
+            return recv, send
+        def Process(self, **kwargs):
+            return proc
+    monkeypatch.setattr(automation, '_process_context', lambda **kwargs: Context())
+    fn = runner._run if coordinator else runner._evaluate
+    with pytest.raises(RuntimeError, match='start failed'):
+        fn('telegram:owner', receipt['record_id'], 1, 'journal-v1', time.monotonic() + 10)
+    assert recv.closed and send.closed and proc.closed
+
+
+@pytest.mark.parametrize('coordinator', [False, True])
+def test_real_spawn_evaluation(service, monkeypatch, coordinator):
+    from zeline import memory_gain_automation as automation
+    runner, _, receipt, _ = service
+    runner.timeout = 5
+    monkeypatch.setattr(automation, '_process_context',
+                        lambda **kwargs: automation.mp.get_context('spawn'))
+    fn = runner._run if coordinator else runner._evaluate
+    result = fn('telegram:owner', receipt['record_id'], 1, 'journal-v1',
+                time.monotonic() + 20)
+    assert result['status'] == 'completed'
+    assert result['report']['qualified']
+
+
+def test_windows_lock_uses_same_byte_and_nonblocking_mode(tmp_path, monkeypatch):
+    import errno
+    import sys
+    from types import SimpleNamespace
+    from zeline import memory_gain_automation as automation
+    calls = []
+    held = set()
+    def locking(fd, mode, count):
+        calls.append((mode, count, os.lseek(fd, 0, os.SEEK_CUR)))
+        assert os.fstat(fd).st_size >= 1
+        if mode == 1:
+            if held:
+                raise OSError(errno.EACCES, 'locked')
+            held.add(fd)
+        else:
+            held.remove(fd)
+    monkeypatch.setitem(sys.modules, 'msvcrt', SimpleNamespace(
+        locking=locking, LK_NBLCK=1, LK_UNLCK=2))
+    monkeypatch.setattr(automation, '_WINDOWS', True)
+    with automation._drain_lock(tmp_path / 'queue') as acquired:
+        assert acquired
+        with automation._drain_lock(tmp_path / 'queue') as contended:
+            assert not contended
+    assert calls == [(1, 1, 0), (1, 1, 0), (2, 1, 0)]
+    assert not held
+
+
+def test_windows_cleanup_terminates_process_tree(monkeypatch):
+    import subprocess
+    from zeline import memory_gain_automation as automation
+    calls = []
+    class Process:
+        pid = 123
+        alive = True
+        def is_alive(self):
+            return self.alive
+        def terminate(self):
+            calls.append('terminate')
+            self.alive = False
+        def join(self, timeout):
+            calls.append('join')
+        def close(self):
+            calls.append('close')
+    monkeypatch.setattr(automation, '_WINDOWS', True)
+    monkeypatch.setattr(subprocess, 'run', lambda args, **kwargs: calls.append(args))
+    automation._stop_process(Process(), tree=True)
+    assert calls == [['taskkill', '/PID', '123', '/T', '/F'], 'terminate', 'join', 'close']
 
 
 def network_worker(prompt, store, record_id, revision, mode):

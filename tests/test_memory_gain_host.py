@@ -1,21 +1,59 @@
 """Host-only registration and scheduling of fixed fact-specific evaluation packs."""
+from contextlib import closing
 import hashlib
 import json
-from types import SimpleNamespace
+import multiprocessing
+import os
+from pathlib import Path
+import stat
+import sys
+from types import ModuleType
+
+import pytest
 
 
-def test_builtin_worker_end_to_end_fresh_process_paired_receipt(tmp_path, monkeypatch):
-    from zeline import agent, config, memory, memory_gain_host
+def inert_llm_worker(prompt, store, record_id, revision, mode):
+    """Importable under spawn; replace the model only inside this isolated worker."""
+    from zeline.memory_gain_automation import llm_answer
+
+    class InertAgent:
+        def __init__(self, *, identity, tool_profile):
+            assert identity == store.identity and tool_profile == 'safe'
+            self.messages = []
+
+        def _call_llm(self, *, use_tools, force_stream):
+            assert use_tools is False and force_stream is False
+            return {'role': 'assistant', 'content':
+                'Self-Refinement.md' if 'Self-Refinement.md' in self.messages[-1]['content'] else 'unknown'}
+
+    # Do not import the real provider stack after the worker socket guard is
+    # installed (ssl subclasses socket.socket at import time). This inert module
+    # has no provider path at all; the production recall/evidence worker is real.
+    original = sys.modules.get('zeline.agent')
+    try:
+        inert_agent_module = ModuleType('zeline.agent')
+        setattr(inert_agent_module, 'Zeline', InertAgent)
+        sys.modules['zeline.agent'] = inert_agent_module
+        return llm_answer(prompt, store, record_id, revision, mode)
+    finally:
+        if original is None:
+            sys.modules.pop('zeline.agent', None)
+        else:
+            sys.modules['zeline.agent'] = original
+
+
+@pytest.mark.parametrize('start_method', sorted({'spawn', multiprocessing.get_start_method()}))
+def test_builtin_worker_end_to_end_fresh_process_paired_receipt(tmp_path, monkeypatch, start_method):
+    from zeline import config, memory, memory_gain_automation, memory_gain_host
+    monkeypatch.syspath_prepend(str(Path(__file__).parent))
+    # Exercise spawn even on POSIX: no parent-local model patch may be inherited.
+    monkeypatch.setattr(memory_gain_automation, '_process_context',
+                        lambda **kwargs: multiprocessing.get_context(start_method))
     from zeline.memory_gain_automation import Case, MemoryGainAutomation
     monkeypatch.setattr(config, 'DATA_DIR', tmp_path)
     monkeypatch.setattr(memory, 'MEMORY_DIR', tmp_path / 'memory')
     store = memory.MemoryStore('telegram:owner')
     receipt = store.add_receipt('The hyphenated journal is Self-Refinement.md.')
-    def fake_model(self, *, use_tools, force_stream):
-        assert use_tools is False and force_stream is False
-        return {'role': 'assistant', 'content':
-            'Self-Refinement.md' if 'Self-Refinement.md' in self.messages[-1]['content'] else 'unknown'}
-    monkeypatch.setattr(agent.Zeline, '_call_llm', fake_model)
     # Four fresh worker processes can exceed 4 seconds on a loaded CI host.
     # Keep the job bounded while allowing scheduler/process startup variance.
     service = MemoryGainAutomation(tmp_path / 'learning' / 'evaluations.sqlite3',
@@ -23,14 +61,19 @@ def test_builtin_worker_end_to_end_fresh_process_paired_receipt(tmp_path, monkey
     service.register_pack('journal', [
         Case('train', 'Name the hyphenated journal', 'Self-Refinement.md', 'train'),
         Case('heldout', 'Which hyphenated journal file?', 'Self-Refinement.md', 'heldout')],
-        worker='zeline.memory_gain_automation:llm_answer')
+        worker='test_memory_gain_host:inert_llm_worker')
     service.enqueue('telegram:owner', receipt['record_id'], 1, 'journal')
-    # The full suite may leave unrelated daemon threads alive. This test relies
-    # on the parent monkeypatch, so force the ordinary fork path; the separate
-    # scheduler-thread test covers the forkserver path.
-    monkeypatch.setattr('threading.active_count', lambda: 1)
-    result = service.drain(max_jobs=1, max_seconds=20)[0]
+    result = service.drain(max_jobs=1, max_seconds=30)[0]
     assert result['status'] == 'completed' and result['report']['qualified'], result
+    assert result['report']['train_gains'] == 1
+    assert result['report']['heldout_gains'] == 1
+    assert len(result['report']['case_evidence']) == 2
+    assert len(result['workers']) == 4
+    assert all(worker['pid'] != os.getpid() for worker in result['workers'])
+    assert len({worker['storage'] for worker in result['workers']}) == 4
+    persisted = service.result('telegram:owner', receipt['record_id'], 1, 'journal')
+    assert persisted is not None and persisted['report'] == result['report']
+    assert not service.allow_network
     assert memory_gain_host.status_for_identity('telegram:owner')['qualified_jobs'] == 1
     assert store.retrievals('eval-does-not-exist') == []
 
@@ -71,7 +114,7 @@ def test_auto_status_fails_closed_without_queue_or_for_forged_report(tmp_path, m
     from zeline.memory_gain_automation import MemoryGainAutomation
     queue = MemoryGainAutomation(tmp_path / 'learning' / 'evaluations.sqlite3',
                                  store_factory=memory.MemoryStore)
-    with sqlite3.connect(queue.path) as db:
+    with closing(sqlite3.connect(queue.path)) as db, db:
         db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)',
             ('telegram:owner', receipt['record_id'], 1, 'forged', '0' * 64,
              'completed', 1.0, json.dumps({'status': 'completed',
@@ -93,7 +136,7 @@ def test_status_remains_visible_when_queue_file_grows_past_two_megabytes(tmp_pat
                                      Case('b', 'Which file?', 'Self-Refinement.md', 'heldout')],
                         worker='zeline.memory_gain_automation:llm_answer')
     queue.enqueue('telegram:owner', receipt['record_id'], receipt['revision'], 'journal')
-    with sqlite3.connect(queue.path) as db:
+    with closing(sqlite3.connect(queue.path)) as db, db:
         db.execute('CREATE TABLE old_results_padding (payload BLOB)')
         db.execute('INSERT INTO old_results_padding VALUES (zeroblob(2100000))')
     assert queue.path.stat().st_size > 2_000_000
@@ -181,7 +224,18 @@ def test_matching_reviewed_pack_enqueues_only_exact_changed_fact(tmp_path, monke
     directory = tmp_path / 'learning'; directory.mkdir()
     pack_path = directory / 'case-packs.json'
     pack_path.write_text(json.dumps(pack))
-    pack_path.chmod(0o600)
+    # Test parsing/matching independently of native ACLs. Windows chmod(0600)
+    # is not a privacy guarantee; the unsupported-platform gate is tested below.
+    real_stat = Path.stat
+    def private_pack_stat(path, *args, **kwargs):
+        metadata = real_stat(path, *args, **kwargs)
+        if path == pack_path:
+            fields = list(metadata)
+            fields[0] = stat.S_IFREG | 0o600
+            return os.stat_result(fields)
+        return metadata
+    monkeypatch.setattr(memory_gain_host, '_POSIX_PERMISSIONS', True)
+    monkeypatch.setattr(Path, 'stat', private_pack_stat)
     seen = []
     class FakeAutomation:
         def __init__(self, path, **kwargs):
@@ -196,3 +250,21 @@ def test_matching_reviewed_pack_enqueues_only_exact_changed_fact(tmp_path, monke
     assert memory_gain_host.enqueue_for_receipt(owner,
         {**receipt, 'state': 'duplicate'}) == 0
     assert memory_gain_host.enqueue_for_receipt('telegram:other', receipt) == 0
+
+
+def test_pack_file_rejected_without_posix_permission_support(tmp_path, monkeypatch):
+    from zeline import config, memory_gain_host
+    monkeypatch.setattr(config, 'DATA_DIR', tmp_path)
+    # Exercise the unsupported Windows ACL policy on every platform without
+    # changing os.name (which would affect pathlib and other unrelated code).
+    assert memory_gain_host._POSIX_PERMISSIONS is (os.name == 'posix')
+    monkeypatch.setattr(memory_gain_host, '_POSIX_PERMISSIONS', False)
+    directory = tmp_path / 'learning'
+    directory.mkdir()
+    pack_path = directory / 'case-packs.json'
+    pack_path.write_text('not JSON', encoding='utf-8')
+    pack_path.chmod(0o600)
+    assert memory_gain_host._case_packs() == []
+    assert memory_gain_host.enqueue_for_receipt('telegram:owner',
+        {'state': 'created', 'record_id': 'memory-1', 'revision': 1}) == 0
+    assert not (directory / 'evaluations.sqlite3').exists()
