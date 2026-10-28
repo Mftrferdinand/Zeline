@@ -409,6 +409,19 @@ def test_windows_cleanup_terminates_process_tree(monkeypatch):
     assert calls == [['taskkill', '/PID', '123', '/T', '/F'], 'terminate', 'join', 'close']
 
 
+def test_failure_diagnostics_never_include_exception_message(service, monkeypatch, capsys):
+    runner, _, receipt, _ = service
+    monkeypatch.setenv('ZELINE_CI_WORKER_DIAGNOSTICS', '1')
+    def fail(*args, **kwargs):
+        raise PermissionError('private-prompt-or-credential-value')
+    monkeypatch.setattr(runner, '_run', fail)
+    runner.enqueue('telegram:owner', receipt['record_id'], 1, 'journal-v1')
+    assert runner.drain()[0]['error'] == 'PermissionError'
+    stderr = capsys.readouterr().err
+    assert 'PermissionError' in stderr and ':fail' in stderr
+    assert 'private-prompt-or-credential-value' not in stderr
+
+
 def network_worker(prompt, store, record_id, revision, mode):
     import socket
     socket.socket()

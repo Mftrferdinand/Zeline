@@ -224,6 +224,13 @@ def _coordinator(conn, automation, owner, record_id, revision, pack, deadline,
         memory.MEMORY_DIR = Path(memory_dir)
         conn.send(automation._evaluate(owner, record_id, revision, pack, deadline))
     except BaseException as exc:
+        if getattr(os, 'environ', {}).get('ZELINE_CI_WORKER_DIAGNOSTICS') == '1':
+            import sys
+            import traceback
+            frames = traceback.extract_tb(exc.__traceback__)[-8:]
+            print('evaluation coordinator failure ' + type(exc).__name__ + ': ' +
+                  ' -> '.join(f'{Path(frame.filename).name}:{frame.lineno}:{frame.name}'
+                              for frame in frames), file=sys.stderr)
         conn.send({'status': 'failed', 'error': 'network disabled' if str(exc) == 'network disabled'
                    else type(exc).__name__})
     finally:
@@ -449,6 +456,15 @@ class MemoryGainAutomation:
                     raise ValueError('Registered case pack missing or changed')
                 result = self._run(owner, record_id, revision, pack, deadline, stop_event)
             except Exception as exc:
+                if getattr(os, 'environ', {}).get('ZELINE_CI_WORKER_DIAGNOSTICS') == '1':
+                    # Frame names/line numbers only: never emit prompts, owner data,
+                    # exception messages, locals, or credentials into public CI logs.
+                    import sys
+                    import traceback
+                    frames = traceback.extract_tb(exc.__traceback__)[-8:]
+                    print('evaluation failure ' + type(exc).__name__ + ': ' +
+                          ' -> '.join(f'{Path(frame.filename).name}:{frame.lineno}:{frame.name}'
+                                      for frame in frames), file=sys.stderr)
                 result = {'status': 'failed', 'error': type(exc).__name__}
             with self._db() as db:
                 db.execute('UPDATE jobs SET status=?, result=? WHERE owner=? AND record_id=? AND revision=? AND pack=?',
