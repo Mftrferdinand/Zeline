@@ -1,6 +1,7 @@
 """Bounded, inert syntax inventory; never imports or executes inspected source.
 
 JavaScript requires tree-sitter==0.26.0 and tree-sitter-javascript==0.25.0.
+TypeScript/TSX additionally requires tree-sitter-typescript==0.23.2.
 Offsets are UTF-8 byte offsets (end exclusive); lines are one-based. Node and
 finding caps limit inventory traversal. Parsing runs only in a serialized,
 resource-limited temporary worker; byte/node caps are not memory limits.
@@ -31,8 +32,8 @@ def inspect_source(data: bytes, language: str, *, should_stop=None) -> dict:
     POSIX uses RLIMIT_AS; Windows uses a per-process memory job. Limit setup
     failure is an error, never an in-process fallback. Targets remain inert data.
     """
-    if language not in ('python', 'javascript'):
-        raise ValueError('Unsupported source language; use python or javascript')
+    if language not in ('python', 'javascript', 'typescript', 'tsx'):
+        raise ValueError('Unsupported source language; use python, javascript, typescript or tsx')
     if not isinstance(data, bytes):
         raise ValueError('Source must be bytes')
     if len(data) > MAX_SOURCE_BYTES:
@@ -104,8 +105,8 @@ def _inspect_source_local(data: bytes, language: str) -> dict:
     Oversize input is rejected, never parsed as a silently truncated prefix.
     Missing JS parser dependencies raise an actionable RuntimeError.
     """
-    if language not in ('python', 'javascript'):
-        raise ValueError('Unsupported source language; use python or javascript')
+    if language not in ('python', 'javascript', 'typescript', 'tsx'):
+        raise ValueError('Unsupported source language; use python, javascript, typescript or tsx')
     if not isinstance(data, bytes):
         raise ValueError('Source must be bytes')
     if len(data) > MAX_SOURCE_BYTES:
@@ -114,14 +115,16 @@ def _inspect_source_local(data: bytes, language: str) -> dict:
         text = data.decode('utf-8-sig' if language == 'python' else 'utf-8', errors='strict')
     except UnicodeDecodeError as exc:
         raise ValueError('Source must be valid UTF-8') from exc
-    result = dict(language=language, parser='ast' if language == 'python' else 'tree-sitter-javascript',
+    parser = ('ast' if language == 'python' else
+              'tree-sitter-javascript' if language == 'javascript' else 'tree-sitter-typescript')
+    result = dict(language=language, parser=parser,
                   imports=[], definitions=[], limitations=[
                       'Syntax inventory only; no semantic resolution, execution, or call graph.',
                       'Byte cap bounds parser input; node cap applies after parsing.'])
-    if language == 'javascript':
+    if language in ('javascript', 'typescript', 'tsx'):
         result['limitations'].append('CommonJS require and dynamic imports are not resolved; '
                                      'module strings are lexical, not escape-decoded.')
-        _javascript(data, result)
+        _javascript(data, result, language)
     else:
         try:
             tree = ast.parse(text)
@@ -189,16 +192,23 @@ def _python(data, tree, result):
         stack.append(ast.iter_child_nodes(node))
 
 
-def _javascript(data, result):
+def _javascript(data, result, language='javascript'):
     try:
         from tree_sitter import Language, Parser
-        import tree_sitter_javascript
+        if language == 'javascript':
+            import tree_sitter_javascript
+            grammar = tree_sitter_javascript.language()
+        else:
+            import tree_sitter_typescript
+            grammar = (tree_sitter_typescript.language_tsx() if language == 'tsx' else
+                       tree_sitter_typescript.language_typescript())
     except ImportError as exc:
-        raise RuntimeError('JavaScript analysis requires tree-sitter==0.26.0 and '
-                           'tree-sitter-javascript==0.25.0') from exc
-    root = Parser(Language(tree_sitter_javascript.language())).parse(data).root_node
+        raise RuntimeError('Source analysis requires tree-sitter==0.26.0 and the pinned '
+                           'tree-sitter-javascript or tree-sitter-typescript grammar') from exc
+    root = Parser(Language(grammar)).parse(data).root_node
     if root.has_error:
-        raise ValueError('Malformed JavaScript syntax (tree-sitter error or missing token)')
+        raise ValueError('Malformed ' + ('JavaScript' if language == 'javascript' else 'TypeScript') +
+                         ' syntax (tree-sitter error or missing token)')
 
     def text(node):
         if node is None:
@@ -238,14 +248,21 @@ def _javascript(data, result):
                 if source.end_byte - source.start_byte - 2 > MAX_LABEL_BYTES:
                     _note(result, f'Labels truncated at {MAX_LABEL_BYTES} UTF-8 bytes.')
                 module = data[source.start_byte + 1:end].decode('utf-8', errors='ignore')
-                if not _add(result, 'imports', name=module, module=module, kind=node.type, **location):
+                qualifier = ({'type_only': any(child.type == 'type' for child in node.children[:3])}
+                             if language in ('typescript', 'tsx') else {})
+                if not _add(result, 'imports', name=module, module=module, kind=node.type,
+                            **qualifier, **location):
                     break
             if node.type == 'export_statement':
                 if not _add(result, 'definitions', name='export', kind='export', **location):
                     break
         name = node.child_by_field_name('name')
-        if node.type in ('function_declaration', 'generator_function_declaration',
-                         'class_declaration', 'method_definition'):
+        declaration_types = ('function_declaration', 'generator_function_declaration',
+                             'class_declaration', 'method_definition')
+        if language in ('typescript', 'tsx'):
+            declaration_types += ('type_alias_declaration', 'interface_declaration',
+                                  'enum_declaration')
+        if node.type in declaration_types:
             if not _add(result, 'definitions', name=text(name), kind=node.type, **location):
                 break
         elif node.type == 'variable_declarator':

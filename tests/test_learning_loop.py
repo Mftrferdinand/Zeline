@@ -65,8 +65,8 @@ def test_formatter_renders_specific_receipts_without_claiming_duplicates():
                    revision=1, summary='Inspect source before patching.', expires_at=123456)
     summary = _format_reflection_actions([('add_memory', {}, json.dumps(receipt))])
     assert summary is not None
-    assert 'mem_fixture' in summary and 'Inspect source before patching.' in summary
-    assert 'Self-Refinement' in summary
+    assert summary == '📗 Self-refinement review: Memory saved.'
+    assert 'mem_fixture' not in summary and 'Inspect source before patching.' not in summary
     assert _format_reflection_actions([('add_memory', {}, json.dumps({**receipt, 'state': 'duplicate'}))]) is None
     assert _format_reflection_actions([('resolve_lesson', {}, 'OK, lesson resolved.')]) is None
 

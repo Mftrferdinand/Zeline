@@ -62,6 +62,101 @@ class AgentLoopTests(unittest.TestCase):
                 os.environ[key] = value
         self.temp.cleanup()
 
+    def test_plain_final_branching_question_becomes_tappable_tool_and_resumes_same_turn(self):
+        interaction = importlib.import_module("zeline.interaction")
+        agent = self.agent_module.Zeline(identity="telegram:123", tool_profile="safe")
+        cards = []
+        interaction.register_channel(agent.identity, lambda entry: cards.append(entry) or entry.options[1])
+        self.addCleanup(lambda: interaction.unregister_channel(agent.identity))
+        first = {"role": "assistant", "content": "Mau deploy sekarang atau tunda?\n1. Deploy sekarang\n2. Tunda dulu"}
+        second = {"role": "assistant", "content": "Oke, tidak gue deploy sekarang."}
+        with mock.patch.object(agent, "_call_llm", side_effect=[first, second]):
+            reply = agent.send("Bantu pilih deployment")
+        self.assertEqual(reply, second["content"])
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].question, "Mau deploy sekarang atau tunda?")
+        self.assertEqual(cards[0].options, ("Deploy sekarang", "Tunda dulu"))
+        self.assertEqual(agent.messages[-2]["role"], "tool")
+        self.assertEqual(agent.messages[-2]["content"], "Tunda dulu")
+
+    def test_wrapped_branching_question_keeps_full_question_on_picker(self):
+        from zeline.question_picker import branching_question
+        self.assertEqual(branching_question(
+            "❓ Kapan gue pasang perubahan\nself-improvement Zeline ke paket runtime\n"
+            "dan restart gateway?\n\n1. Deploy dan restart sekarang\n2. Tunda dulu"
+        ), ("Kapan gue pasang perubahan self-improvement Zeline ke paket runtime dan restart gateway?",
+            ("Deploy dan restart sekarang", "Tunda dulu")))
+
+    def test_markdown_lettered_choices_still_create_real_picker(self):
+        interaction = importlib.import_module("zeline.interaction")
+        from zeline.question_picker import branching_question
+        agent = self.agent_module.Zeline(identity="telegram:123", tool_profile="safe")
+        cards = []
+        interaction.register_channel(agent.identity, lambda entry: cards.append(entry) or entry.options[2])
+        self.addCleanup(lambda: interaction.unregister_channel(agent.identity))
+        question = "Mau pilih yang mana?\n\n- **A.** Lihat ringkasan\n- **B.** Lihat detail\n- **C.** Tunda"
+        self.assertEqual(branching_question(question), ("Mau pilih yang mana?", ("Lihat ringkasan", "Lihat detail", "Tunda")))
+        with mock.patch.object(agent, "_call_llm", side_effect=[
+            {"role": "assistant", "content": question},
+            {"role": "assistant", "content": "Oke, ditunda."},
+        ]):
+            self.assertEqual(agent.send("Tunjukkan pilihan"), "Oke, ditunda.")
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(agent.messages[-2]["content"], "Tunda")
+
+    def test_branching_choices_before_question_and_unlabeled_bullets(self):
+        from zeline.question_picker import branching_question
+        self.assertEqual(branching_question(
+            "Pilihan:\n**A.** Ringkas\n**B.** Detail\n**C.** Tunda\n\nMau pilih yang mana?"
+        ), ("Mau pilih yang mana?", ("Ringkas", "Detail", "Tunda")))
+        self.assertEqual(branching_question(
+            "Mau lanjut yang mana?\n- **Cek status** via API\n- **Lihat log** lokal\n- **Tunda** dulu"
+        ), ("Mau lanjut yang mana?", ("Cek status via API", "Lihat log lokal", "Tunda dulu")))
+        self.assertEqual(branching_question(
+            "**Mau lanjut yang mana?**\n\n- **Cek trial** lewat browser\n- **Coba versi lain**\n- **Cek server**\n\nAtau ketik ulang maksudnya."
+        ), ("Mau lanjut yang mana?", ("Cek trial lewat browser", "Coba versi lain", "Cek server")))
+        self.assertIsNone(branching_question("Daftar fakta:\n- **Satu** benar\n- **Dua** benar\nKenapa bisa begitu?"))
+
+    def test_last_tool_round_can_still_open_branching_picker(self):
+        interaction = importlib.import_module("zeline.interaction")
+        agent = self.agent_module.Zeline(identity="telegram:123", tool_profile="safe")
+        cards = []
+        interaction.register_channel(agent.identity, lambda entry: cards.append(entry) or entry.options[0])
+        self.addCleanup(lambda: interaction.unregister_channel(agent.identity))
+        with mock.patch.object(self.agent_module.config, "MAX_TOOL_ROUNDS", 1), mock.patch.object(
+            agent, "_call_llm", side_effect=[
+                {"role": "assistant", "content": "Mau pilih yang mana?\nA. Ringkas\nB. Detail"},
+                {"role": "assistant", "content": "Ini contoh ringkas."},
+            ]
+        ):
+            reply = agent.send("Beri pilihan")
+        self.assertEqual(reply, "Ini contoh ringkas.")
+        self.assertEqual(len(cards), 1)
+
+    def test_short_inline_binary_question_uses_picker(self):
+        interaction = importlib.import_module("zeline.interaction")
+        agent = self.agent_module.Zeline(identity="telegram:123", tool_profile="safe")
+        cards = []
+        interaction.register_channel(agent.identity, lambda entry: cards.append(entry) or entry.options[0])
+        self.addCleanup(lambda: interaction.unregister_channel(agent.identity))
+        with mock.patch.object(agent, "_call_llm", side_effect=[
+            {"role": "assistant", "content": "Pilih deploy sekarang atau tunda dulu?"},
+            {"role": "assistant", "content": "Gue tunggu approval terpisah sebelum restart."},
+        ]):
+            reply = agent.send("Bantu pilih deployment")
+        self.assertIn("approval", reply)
+        self.assertEqual(cards[0].options, ("deploy sekarang", "tunda dulu"))
+
+    def test_plain_statement_and_rhetorical_question_do_not_create_picker(self):
+        interaction = importlib.import_module("zeline.interaction")
+        agent = self.agent_module.Zeline(identity="telegram:123", tool_profile="safe")
+        interaction.register_channel(agent.identity, lambda entry: self.fail("unexpected question"))
+        self.addCleanup(lambda: interaction.unregister_channel(agent.identity))
+        for text in ("Ini opsinya:\n1. A\n2. B", "Kenapa A atau B? Hasilnya sudah jelas: A.",
+                     "Berikut langkah:\n1. Baca file\n2. Jalankan test"):
+            with self.subTest(text=text), mock.patch.object(agent, "_call_llm", return_value={"role": "assistant", "content": text}):
+                self.assertEqual(agent.send("Hi"), text)
+
     def test_tool_result_is_appended_after_assistant_tool_call_and_memory_persists(self):
         first = {
             "choices": [{"message": {
@@ -714,11 +809,9 @@ class AgentLoopTests(unittest.TestCase):
         Internal reflection must not mutate live skills, even if an older model
         follows its former merge/delete instruction.
 
-        The round budget is capped low on purpose (3, down from 5): each round
-        is a full sequential model call issued after the final answer, and on a
-        RAM-tight Android/Termux host five rounds read as a hang. Three still
-        covers the valuable flow — orient, write, tidy — so this test drives the
-        rounds it needs within that budget.
+        Five rounds allow list → load skill → load reference → patch, but each
+        extra call costs a full sequential model request on Android/Termux.
+        A no-action response ends the review early.
         """
         self.assertGreaterEqual(self.agent_module.REFLECTION_TOOL_ROUNDS, 3)
         agent = self.agent_module.Zeline(identity="cli:local", tool_profile="full")
@@ -735,6 +828,7 @@ class AgentLoopTests(unittest.TestCase):
             round_with("c1", '{"action":"list"}'),
             round_with("c2", '{"action":"create","name":"umbrella-flow","content":"# Umbrella\\n> gabungan\\nlangkah"}'),
             round_with("c3", '{"action":"delete","name":"dupe-flow","absorbed_into":"umbrella-flow"}'),
+            {"choices": [{"message": {"role": "assistant", "content": "NO_ACTION"}}]},
         ]
         responses = [FakeResponse(payload) for payload in rounds]
         with mock.patch.object(self.agent_module.requests, "post", side_effect=responses):
@@ -744,13 +838,48 @@ class AgentLoopTests(unittest.TestCase):
         # The listing must not be surfaced as an improvement…
         self.assertNotIn("skills:", summary)
         self.assertIn("umbrella-flow", summary)
-        self.assertIn("structural and behavioral review pending", summary)
+        self.assertIn("(inactive)", summary)
+        journal = self.agent_module.config.DATA_DIR / 'learning' / agent.executor.memory.key / 'Self-Enhancement.md'
+        self.assertTrue(journal.is_file())
+        self.assertIn('Umbrella', journal.read_text(encoding='utf-8'))
+        self.assertNotIn('Self-Enhancement.md', summary)
         from zeline.skillforge import ForgeStore
         self.assertGreaterEqual(len(ForgeStore().proposals()), 1)
         skills_module = importlib.import_module("zeline.skills")
         self.assertIsNone(skills_module._find_skill("umbrella-flow", include_private=True))
         self.assertIsNone(skills_module._find_skill("dupe-flow", include_private=True))
         self.assertFalse(agent.executor._reflection_mode)
+
+    def test_next_turn_reads_refinement_markdown_only_for_live_memory(self):
+        agent = self.agent_module.Zeline(identity="cli:live-md", tool_profile="full")
+        from zeline.reflection_markdown import record_markdown
+        receipt = agent.executor.memory.add_receipt("Prefer compact UI", source="reflection")
+        record_markdown(agent.identity, "add_memory", {}, receipt)
+        final = {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+        with mock.patch.object(self.agent_module.requests, "post", return_value=FakeResponse(final)) as post:
+            agent.send("UI compact")
+        sent = post.call_args.kwargs["json"]["messages"][-1]["content"]
+        self.assertIn("Self-Refinement.md", sent)
+        self.assertIn("memory_recall", sent)
+        self.assertIn(str(receipt["record_id"]), sent)
+
+    def test_reflection_reads_prior_markdown_proposals_as_inactive_review_data(self):
+        agent = self.agent_module.Zeline(identity="cli:review-md", tool_profile="full")
+        from zeline.reflection_markdown import record_markdown
+        record_markdown(agent.identity, "manage_skill",
+                        {"action": "create", "name": "triage", "content": "Verify failing tool"},
+                        {"version": 1, "kind": "skill", "state": "created", "record_id": "candidate-1",
+                         "revision": 1, "summary": "Triage proposed"})
+        agent.last_turn_tool_calls = 7
+        captured = []
+        def review_call():
+            captured.append(agent.messages[-1]["content"])
+            return {"role": "assistant", "content": "NO_ACTION"}
+        with mock.patch.object(agent, "_call_llm", side_effect=review_call):
+            agent.reflect(min_tool_calls=5)
+        self.assertIn("Self-Enhancement.md", captured[0])
+        self.assertIn("triage", captured[0])
+        self.assertIn("proposal, not active", captured[0])
 
     def test_reflection_memory_writes_are_tagged_as_autonomous_inference(self):
         """A fact the model saves DURING reflection is not user-stated.
@@ -771,11 +900,16 @@ class AgentLoopTests(unittest.TestCase):
         }}]}
         done = {"choices": [{"message": {"role": "assistant", "content": "NO_ACTION"}}]}
         with mock.patch.object(self.agent_module.requests, "post", side_effect=[FakeResponse(save), FakeResponse(done)]):
-            agent.reflect(min_tool_calls=5)
+            summary = agent.reflect(min_tool_calls=5)
         records = agent.executor.memory.records()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["source"], "reflection")
         self.assertLess(records[0]["confidence"], 1.0)
+        # The chat stays compact; the Markdown projection retains the full fact.
+        path = self.agent_module.config.DATA_DIR / 'learning' / agent.executor.memory.key / 'Self-Refinement.md'
+        self.assertTrue(path.is_file())
+        self.assertEqual(summary, '📗 Self-refinement review: Memory saved.')
+        self.assertIn(records[0]['text'], path.read_text(encoding='utf-8'))
         # And the store is restored to user-sourced writes afterwards, so a
         # normal turn on the same session does not keep tagging as reflection.
         self.assertEqual(agent.executor.memory.default_source, "user")
@@ -803,6 +937,8 @@ class AgentLoopTests(unittest.TestCase):
             write_fact("c1", "First lesson kept"),
             write_fact("c2", "Second lesson dropped"),
             write_fact("c3", "Third lesson dropped"),
+            write_fact("c4", "Fourth lesson dropped"),
+            write_fact("c5", "Fifth lesson dropped"),
         ]
         with mock.patch.object(self.agent_module.requests, "post",
                                side_effect=[FakeResponse(r) for r in rounds]):
@@ -817,8 +953,8 @@ class AgentLoopTests(unittest.TestCase):
         summary = self.agent_module._format_reflection_actions([
             ("manage_skill", {"action": "create", "name": "A&B<bad>"}, learning_receipt('skill', 'forged')),
         ])
-        self.assertIn("<code>A&amp;B&lt;bad&gt;</code>", summary)
-        self.assertNotIn("<code>A&B<bad></code>", summary)
+        self.assertIn("A&amp;B&lt;bad&gt;", summary)
+        self.assertNotIn("A&B<bad>", summary)
 
     def test_reflection_summary_is_structured_and_never_claims_unapplied_work(self):
         summary = self.agent_module._format_reflection_actions([
@@ -828,14 +964,14 @@ class AgentLoopTests(unittest.TestCase):
             ("add_memory", {"fact": "x"}, learning_receipt('memory', 'memory_x')),
         ])
         self.assertIsNotNone(summary)
-        self.assertIn("📙 <b>Self-Enhancement:</b>", summary)
-        self.assertIn("📘 <b>Self-Improvement:</b>", summary)
-        self.assertIn("📗 <b>Self-Refinement:</b>", summary)
+        self.assertIn("📙 Self-enhancement review:", summary)
+        self.assertIn("📘 Self-improvement review:", summary)
+        self.assertIn("📗 Self-refinement review:", summary)
         self.assertIn("\n\n", summary)
-        self.assertIn("active skill unchanged", summary)
-        self.assertIn("review pending", summary)
-        self.assertIn("successful tool evidence", summary)
-        self.assertIn("task benefit not yet measured", summary)
+        self.assertIn("(inactive)", summary)
+        self.assertIn("Correction saved (tool success linked)", summary)
+        self.assertIn("Memory saved.", summary)
+        self.assertNotIn("task benefit verified", summary)
         self.assertNotIn("verified successful retry", summary)
         self.assertNotIn("Skill score:", summary)
         self.assertNotIn("GEPA", summary)
@@ -853,18 +989,18 @@ class AgentLoopTests(unittest.TestCase):
             ("manage_skill", {"action": "patch", "name": "demo-flow"}, learning_receipt('skill', 'forge_r')),
         ])
         self.assertIsNotNone(refinement_only)
-        self.assertIn("📘 <b>Self-Improvement:</b>", refinement_only)
-        self.assertNotIn("📙 <b>Self-Enhancement:</b>", refinement_only)
-        self.assertNotIn("📗 <b>Self-Refinement:</b>", refinement_only)
+        self.assertIn("📘 Self-improvement review:", refinement_only)
+        self.assertNotIn("📙 Self-enhancement review:", refinement_only)
+        self.assertNotIn("📗 Self-refinement review:", refinement_only)
         self.assertNotIn("no separate reusable-skill proposal was needed", refinement_only)
 
         enhancement_only = self.agent_module._format_reflection_actions([
             ("resolve_lesson", {"tool": "web_search"}, learning_receipt('lesson', 'lesson_x')),
         ])
         self.assertIsNotNone(enhancement_only)
-        self.assertIn("📗 <b>Self-Refinement:</b>", enhancement_only)
-        self.assertNotIn("📙 <b>Self-Enhancement:</b>", enhancement_only)
-        self.assertNotIn("📘 <b>Self-Improvement:</b>", enhancement_only)
+        self.assertIn("📗 Self-refinement review:", enhancement_only)
+        self.assertNotIn("📙 Self-enhancement review:", enhancement_only)
+        self.assertNotIn("📘 Self-improvement review:", enhancement_only)
 
     def test_reflection_summary_deduplicates_repeated_actions(self):
         """Satu siklus refleksi menyentuh skill yang sama berkali-kali."""
@@ -874,8 +1010,8 @@ class AgentLoopTests(unittest.TestCase):
             ("manage_skill", {"action": "patch", "name": "demo-flow"}, learning_receipt('skill', 'forge_z')),
         ])
         self.assertIsNotNone(summary)
-        self.assertEqual(summary.count("SkillForge revision proposal"), 2)
-        self.assertEqual(summary.count("📘 <b>Self-Improvement:</b>"), 1)
+        self.assertEqual(summary.count("Revision proposal saved for demo-flow (inactive)."), 1)
+        self.assertEqual(summary.count("📘 Self-improvement review:"), 1)
 
     def test_web_search_uses_bing_serp_and_includes_urls(self):
         # web_search must try the Bing SERP engine first and return title+URL

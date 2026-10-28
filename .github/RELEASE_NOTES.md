@@ -1,37 +1,34 @@
-# Zeline v0.4.4
+# Zeline v0.4.5
 
 Zeline is the open-source agentic AI framework by Zerolinear.
 
-This release integrates the reviewed v0.4.4 work on top of the retained v0.4.3
-baseline. It adds evidence-backed self-learning receipts and provenance,
-bounded native analysis continuations, an optional GEPA training bridge, and
-provider-correct API progress labels. It does not restore the removed v0.3.5–v0.3.9
-code line.
+This scoped maintenance release builds on v0.4.4 with targeted stability
+improvements: task follow-up scheduling with race-safe cross-process locking,
+MCP stdio deadline hardening, checkpoint restore at capacity, bounded offline
+evaluation worker I/O, and private persona separation. Agent responses, UI, and
+Telegram behavior are preserved from the installed v0.4.4 baseline.
 
 ## Highlights
 
-- **Evidence-backed self-learning.** Memory, lesson and skill mutations emit
-  versioned receipts with record IDs and revisions. Duplicate/no-op changes are
-  suppressed, retrieval feedback is revision-aware, and successful tool evidence
-  is kept separate from task correctness or acceptance.
-- **Review-gated skill changes.** Reflection can propose a skill change, but the
-  active skill remains unchanged until testing and explicit operator review/apply.
-  Reflection memory writes are bounded, low-confidence and subject to the
-  existing expiry policy.
-- **Bounded native static analysis.** `reverse_engineer` continues to inspect
-  ELF/PE metadata, source structure, symbols, imports, disassembly and paginated
-  references without executing the analyzed artifact. Continuation pages can be
-  bound to an expected SHA-256 digest.
-- **Optional GEPA bridge.** GEPA receives training-only cases and returns a
-  report/host handoff; it does not receive held-out labels, modify model weights,
-  auto-promote a skill, change production prompts, or invoke a provider on the
-  default agent path.
-- **Provider-correct progress UI.** Telegram API progress labels identify the
-  actual provider and make the complete request label link to the actual
-  HTTP(S) request URL.
-- **Cross-platform verification.** The configured CI matrix covers Python
-  3.10–3.13, Windows and macOS. Package metadata, installers, source archives
-  and wheel contents are checked again for this release.
+- **Task follow-up scheduling.** `followups.py` and `scheduler.py` gain
+  cross-process SQLite `BEGIN IMMEDIATE` locking (5 s wait), one Himalaya
+  snapshot per tick, at most two deliveries per tick, and Telegram follow-up
+  `timeout=8` with `attempts=1`. New jobs default to `timeout=60`.
+- **MCP stdio deadline.** `mcp.py` enforces a read deadline on stdio
+  transports, preventing indefinite hangs on unresponsive servers.
+- **Checkpoint restore at capacity.** `checkpoints.py` correctly restores when
+  the checkpoint store is at its configured maximum.
+- **Bounded offline evaluation.** `offline_evaluation.py` streams worker output
+  through a pipe reader capped at `MAX_RESULT_BYTES + 1`, replacing unbounded
+  `TemporaryFile` growth.
+- **Private persona separation.** `config.py` supports a validated per-instance
+  SOUL override outside the package directory, fail-closed when empty. The
+  public `SOUL.md` in the wheel is the neutral canonical persona.
+- **Evidence-backed self-learning.** Carried forward from v0.4.4 — memory,
+  lesson and skill mutations emit versioned receipts with record IDs and
+  revisions.
+- **Cross-platform verification.** CI matrix covers Python 3.10–3.13,
+  Windows and macOS.
 
 ## Verification
 
@@ -47,25 +44,25 @@ verified distributions without rebuilding.
 PyPI, inside a virtual environment:
 
 ```sh
-python -m pip install --upgrade zeline==0.4.4
+python -m pip install --upgrade zeline==0.4.5
 ```
 
 Or install in an isolated tool environment:
 
 ```sh
-uv tool install zeline==0.4.4
+uv tool install zeline==0.4.5
 ```
 
 POSIX installer — Termux, Linux, macOS and iSH:
 
 ```sh
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.4/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.sh && bash install.sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.4/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 The installers download the matching versioned wheel and verify its SHA-256
@@ -74,37 +71,32 @@ checksum. Run `zeline setup` after a new install. Existing installations can use
 
 ## Upgrade notes
 
-- A receipt proves that a bounded state mutation or review operation occurred;
-  it does not prove better answers, causality or user acceptance.
-- The native analysis engine is static and read-only. It does not run targets,
-  load imports, resolve live loader state or provide a network/OS sandbox.
-  This is not full REA catalog parity; external REA MCP remains optional.
-- GEPA is experimental and training-only. Provider/token accounting and stronger
-  isolation are still required before any provider-backed optimizer promotion.
-- Existing network tooling is not a multi-tenant isolation boundary. PRs held by
-  the maintainer audit are not included in this release.
+- This is a scoped maintenance release. It does not introduce new features
+  beyond the stability fixes listed above.
 - Back up existing configuration before upgrading. No manual configuration
-  migration is required by this release; explicit operator settings are retained.
+  migration is required; explicit operator settings are retained.
 - Live code changes require a gateway restart. The updater drains active work and
-  preserves the gateway selection. Updating a source checkout alone does not
-  update a separately installed launcher environment.
+  preserves the gateway selection.
 - The mobile app remains a separate product and release cycle.
-- This release does not claim to eliminate all bugs or provider/network errors.
+- Task follow-up jobs created under v0.4.4 with the old 45 s timeout will
+  continue to run; new jobs default to 60 s. No state migration is required.
 
 ## Documentation
 
-- [Installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.4.4/docs/installation.md)
-- [Evidence-backed self-learning](https://github.com/Mftrferdinand/Zeline/blob/v0.4.4/docs/evidence-backed-self-learning.md)
-- [GEPA training bridge](https://github.com/Mftrferdinand/Zeline/blob/v0.4.4/docs/gepa-training.md)
-- [Static reverse engineering](https://github.com/Mftrferdinand/Zeline/blob/v0.4.4/docs/reverse-engineering.md)
-- [Bounded runtime I/O](https://github.com/Mftrferdinand/Zeline/blob/v0.4.4/docs/bounded-tool-runtime.md)
-- [Changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.4.4/CHANGELOG.md)
-- [Optional MCP setup](https://github.com/Mftrferdinand/Zeline/blob/v0.4.4/docs/extending.md)
+- [Installation guide](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/installation.md)
+- [Task follow-ups](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/task-followups.md)
+- [Private persona override](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/private-persona.md)
+- [Evidence-backed self-learning](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/evidence-backed-self-learning.md)
+- [GEPA training bridge](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/gepa-training.md)
+- [Static reverse engineering](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/reverse-engineering.md)
+- [Bounded runtime I/O](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/bounded-tool-runtime.md)
+- [Changelog](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/CHANGELOG.md)
+- [Optional MCP setup](https://github.com/Mftrferdinand/Zeline/blob/v0.4.5/docs/extending.md)
 
 ## Release assets
 
-- `zeline-0.4.4-py3-none-any.whl`
-- `zeline-0.4.4.tar.gz`
+- `zeline-0.4.5-py3-none-any.whl`
+- `zeline-0.4.5.tar.gz`
 - `install.sh` and `install.ps1`
 - `SHA256SUMS`
 

@@ -305,6 +305,71 @@ class ForgeStore:
                 result.update(state="failed", error=type(exc).__name__)
         return results
 
+    def reflection_edit_receipt(self, *, action: str, name: str = "", content: str = "",
+                                old_text: str = "", new_text: str = "", file_path: str = "",
+                                origin_turn: str | None = None, **_unused) -> dict[str, Any]:
+        """Apply a bounded, structurally safe patch; propose everything else.
+
+        The active edit is checkpointed by the ordinary skill writer. A proposal
+        is not reported as an edit, and a successful write is read back first.
+        """
+        from zeline import skills
+        arguments = dict(action=action, name=name, content=content, old_text=old_text,
+                         new_text=new_text, file_path=file_path, origin_turn=origin_turn)
+        reference = bool(re.fullmatch(r'references/(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}/)*[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.md', file_path))
+        target_name = file_path if reference else 'SKILL.md'
+        if (action != 'patch' or (file_path not in {'', 'SKILL.md'} and not reference)
+                or not old_text or len(old_text) > 1000 or not new_text
+                or len(new_text) > 1000 or old_text == new_text):
+            return self.propose_edit_receipt(**arguments)
+        try:
+            _name(name)
+            with self._pins_lock():
+                entry, _scope = self._source(name)
+                if entry is None:
+                    return self.propose_edit_receipt(**arguments)
+                entry_content = entry.read_text(encoding='utf-8')
+                if reference:
+                    if entry.name != 'SKILL.md':
+                        raise ValueError('Companion patch requires a folder skill')
+                    target = skills._safe_skill_relative(entry.parent, file_path)
+                    if target.is_symlink() or not target.is_file():
+                        raise ValueError('Companion patch requires an existing regular reference')
+                else:
+                    target = entry
+                current = target.read_text(encoding='utf-8')
+                if current.count(old_text) != 1:
+                    return self.propose_edit_receipt(**arguments)
+                candidate = current.replace(old_text, new_text, 1)
+                if not reference and (not current.startswith('---\n') or
+                        candidate.split('---', 2)[:2] != current.split('---', 2)[:2]):
+                    return self.propose_edit_receipt(**arguments)
+                # A reference is reviewed together with its skill entry: the
+                # entry supplies structure, while the changed body is scanned.
+                before = _inspect_candidate(name, entry_content + ('\n' + current if reference else ''))
+                after = _inspect_candidate(name, entry_content + ('\n' + candidate if reference else '')) if reference else _inspect_candidate(name, candidate)
+                if (after['errors'] or set(after['risks']) - set(before['risks'])
+                        or len(candidate) > 100_000):
+                    return self.propose_edit_receipt(**arguments)
+                # _patch_skill_locked rechecks the unique anchor under this lock.
+                outcome = skills._patch_skill_locked(name, old_text, new_text, target_name)
+                if outcome.startswith('ERROR'):
+                    raise ValueError('Active skill patch was rejected')
+                written, _scope = self._source(name)
+                written_target = (skills._safe_skill_relative(written.parent, target_name)
+                                  if written is not None and reference else written)
+                if written_target is None or written_target.read_text(encoding='utf-8') != candidate:
+                    raise ValueError('Active skill read-back did not match candidate')
+                return {'version': 1, 'kind': 'skill', 'state': 'updated', 'success': True,
+                        'action': 'patch', 'name': name, 'file_path': target_name,
+                        'replacements': 1,
+                        'record_id': revision_of(target_name + '\0' + candidate) if reference else revision_of(candidate),
+                        'revision': revision_of(candidate), 'summary': 'Verified file write',
+                        'message': outcome, 'origin_turn': origin_turn}
+        except (OSError, ValueError) as exc:
+            return {'version': 1, 'kind': 'skill', 'state': 'failed', 'success': False,
+                    'message': 'ERROR skill edit: ' + str(exc)}
+
     def propose_edit(self, *, action: str, name: str = "", content: str = "",
                      old_text: str = "", new_text: str = "", file_path: str = "",
                      **_unused) -> str:

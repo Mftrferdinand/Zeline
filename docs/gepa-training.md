@@ -40,8 +40,12 @@ training winner through `ForgeStore.propose`. It verifies the proposal's base,
 scope, and source-tree digest against the pre-search snapshot. The separate
 `offline_evaluation.freeze_evaluation` / `evaluate` path checks baseline and
 candidate on the pinned manifest and records paired held-out evidence. A held-out
-failure remains a failed comparison; no review or apply happens. This handoff
-writes a pending/tested **proposal record only**, never the active skill. The
+failure remains a failed comparison; no review or apply happens. The handoff
+receipt pins the training-only input digest and declared metric/proposal/time
+limits alongside observed calls; the held-out manifest, trusted adapter and host
+checker already carry independent digests. These are audit fields, not proof that
+an arbitrary trusted `score_case` made no provider calls. This handoff writes a
+pending/tested **proposal record only**, never the active skill. The
 optimizer's fork shares trusted host memory, so the API separation is not a
 security isolation boundary against a malicious callback; never claim labels
 are inaccessible to arbitrary operator Python code.

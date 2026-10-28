@@ -144,6 +144,59 @@ class OfflineEvaluationTests(unittest.TestCase):
         self.assertTrue(report['checks']['comparison']['errors'])
         self.assertEqual(report['calls'], 0)
 
+    def test_worker_output_sink_never_grows_past_byte_limit(self):
+        """Observe the live sink at worker teardown, not only the verdict."""
+        api = self.api()
+        self.write_adapter(
+            'import os, time\ndef run(candidate, task_input):\n'
+            '    os.write(1, b"x" * 32768)\n'
+            '    time.sleep(1)\n')
+        real_popen = api.subprocess.Popen
+        real_terminate = api._terminate_worker
+        real_capture = api._BoundedCapture if hasattr(api, '_BoundedCapture') else None
+        output_sinks = []
+        observed_sizes = []
+        captures = []
+
+        def record_popen(*args, **kwargs):
+            output_sinks.extend((kwargs['stdout'], kwargs['stderr']))
+            return real_popen(*args, **kwargs)
+
+        def record_capture(*args, **kwargs):
+            capture = real_capture(*args, **kwargs)
+            captures.append(capture)
+            return capture
+
+        def record_before_termination(proc):
+            try:
+                for sink in output_sinks:
+                    if sink != api.subprocess.PIPE:
+                        observed_sizes.append(os.fstat(sink.fileno()).st_size)
+            finally:
+                real_terminate(proc)
+
+        patches = [mock.patch.object(api, 'MAX_RESULT_BYTES', 1024),
+                   mock.patch.object(api.subprocess, 'Popen', side_effect=record_popen),
+                   mock.patch.object(api, '_terminate_worker', side_effect=record_before_termination)]
+        if real_capture is not None:
+            patches.append(mock.patch.object(api, '_BoundedCapture', side_effect=record_capture))
+        with patches[0], patches[1], patches[2]:
+            if real_capture is not None:
+                with patches[3]:
+                    with self.assertRaisesRegex(ValueError, 'output exceeds the byte limit'):
+                        api._run_case(self.adapter, self.candidate, {'operands': [2, 3]}, 2)
+            else:
+                with self.assertRaisesRegex(ValueError, 'output exceeds the byte limit'):
+                    api._run_case(self.adapter, self.candidate, {'operands': [2, 3]}, 2)
+        self.assertEqual(len(output_sinks), 2)
+        self.assertTrue(captures or observed_sizes)
+        self.assertLessEqual(max(observed_sizes, default=0), 1025,
+                             'worker output reached an unbounded disk-backed sink')
+        for capture in captures:
+            self.assertLessEqual(len(capture.data), 1025)
+        if captures:
+            self.assertTrue(captures[0].overflow)
+
     def test_json_verdict_is_type_exact(self):
         api = self.api()
         self.assertFalse(api._json_equal(True, 1))
@@ -221,12 +274,12 @@ class OfflineEvaluationTests(unittest.TestCase):
             'import json,os,py_compile\nfrom pathlib import Path\n'
             'def run(candidate, task_input):\n'
             '    path=Path(__file__)\n'
-            '    original=path.read_bytes()\n'
-            '    poisoned=b"def run(candidate, task_input):\\n    return 999\\n"\n'
-            '    path.write_bytes(poisoned.ljust(len(original), b"#"))\n'
+            '    original=path.read_text()\n'
+            '    poisoned="def run(candidate, task_input):\\n    return 999\\n"\n'
+            '    path.write_text(poisoned.ljust(len(original), "#"))\n'
             '    os.utime(path, (946684800, 946684800))\n'
             '    py_compile.compile(str(path), doraise=True)\n'
-            '    path.write_bytes(original)\n'
+            '    path.write_text(original)\n'
             '    os.utime(path, (946684800, 946684800))\n'
             '    policy=json.loads(candidate.split("```json\\n")[1].split("```")[0])\n'
             '    a,b=task_input["operands"]\n'
@@ -236,9 +289,9 @@ class OfflineEvaluationTests(unittest.TestCase):
         # even under -B: that flag prevents ordinary writes, not loading .pyc.
         probe = self.root / 'probe' / 'trusted_adapter.py'
         probe.parent.mkdir()
-        probe.write_bytes(source.encode('utf-8'))
+        probe.write_text(source)
         self.assertEqual(api._run_case(probe, self.candidate, {'operands': [2, 3]}, 3), 5)
-        probe.write_bytes(source.encode('utf-8'))
+        probe.write_text(source)
         os.utime(probe, (946684800, 946684800))
         self.assertEqual(api._run_case(probe, self.candidate, {'operands': [2, 3]}, 3), 999)
         shutil.rmtree(probe.parent / '__pycache__')

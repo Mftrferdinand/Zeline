@@ -245,7 +245,6 @@ class MCPServer:
                 if obj.get("error"):
                     raise RuntimeError(f"MCP error: {obj['error']}")
                 return obj.get("result", {})
-
     # ---- http transport ----
     def _http_rpc(self, method: str, params: dict[str, Any] | None, *, notify: bool = False, timeout: int = _RPC_TIMEOUT) -> dict[str, Any] | None:
         message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}

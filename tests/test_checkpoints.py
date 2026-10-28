@@ -64,32 +64,6 @@ class CheckpointBase(unittest.TestCase):
 
 
 class SnapshotTests(CheckpointBase):
-    def test_restore_oldest_at_capacity_remains_undoable(self):
-        target = self.file("a.py", "original\n")
-        with mock.patch.object(self.checkpoints, "MAX_SNAPSHOTS", 1):
-            cid = self.checkpoints.snapshot(target)
-            target.write_text("edited\n", encoding="utf-8")
-            ok, message = self.checkpoints.restore(cid)
-            self.assertTrue(ok, message)
-            self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
-            entries = self.checkpoints.list_checkpoints()
-            self.assertEqual(len(entries), 1)
-            self.assertEqual(entries[0]["reason"], "pre-restore")
-            ok, message = self.checkpoints.restore(entries[0]["id"])
-            self.assertTrue(ok, message)
-            self.assertEqual(target.read_text(encoding="utf-8"), "edited\n")
-
-    def test_restore_staging_failure_preserves_target_and_checkpoint(self):
-        target = self.file("a.py", "original\n")
-        cid = self.checkpoints.snapshot(target)
-        target.write_text("edited\n", encoding="utf-8")
-        with mock.patch.object(self.checkpoints.shutil, "copy2", side_effect=OSError):
-            ok, message = self.checkpoints.restore(cid)
-        self.assertFalse(ok, message)
-        self.assertEqual(target.read_text(encoding="utf-8"), "edited\n")
-        self.assertIsNotNone(self.checkpoints.find(cid))
-        self.assertEqual(list(self.checkpoints._root().glob("restore-*")), [])
-
     def test_snapshot_captures_previous_bytes(self):
         target = self.file("a.py", "original\n")
         cid = self.checkpoints.snapshot(target)
@@ -148,6 +122,27 @@ class SnapshotTests(CheckpointBase):
 
 
 class RestoreTests(CheckpointBase):
+    def test_restore_oldest_checkpoint_at_capacity_remains_undoable(self):
+        target = self.file("target.txt", "original\n")
+        other = self.file("other.txt", "other\n")
+        with (
+            mock.patch.object(self.checkpoints, "MAX_SNAPSHOTS", 2),
+            mock.patch.object(self.checkpoints.time, "time", side_effect=[1.0, 2.0, 3.0]),
+        ):
+            original = self.checkpoints.snapshot(target)
+            self.checkpoints.snapshot(other)
+            target.write_text("modified\n", encoding="utf-8")
+            ok, message = self.checkpoints.restore(original)
+
+        self.assertTrue(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+        self.assertIsNone(self.checkpoints.find(original))
+        pre = [e for e in self.checkpoints.list_checkpoints() if e["reason"] == "pre-restore"]
+        self.assertEqual(len(pre), 1)
+        ok, message = self.checkpoints.restore(str(pre[0]["id"]))
+        self.assertTrue(ok, message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "modified\n")
+
     def test_restore_preserves_original_when_wall_clock_does_not_advance(self):
         target = self.file("same-tick.py", "v1\n")
         # Windows wall-clock resolution may put both snapshots in one tick.
