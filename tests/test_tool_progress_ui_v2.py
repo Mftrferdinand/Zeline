@@ -43,6 +43,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "patch_file": {"path": "app.py"},
             "search_files": {"query": "handler"},
             "download_file": {"url": "https://example.com/app.zip", "path": "app.zip"},
+            "hash_check": {"path": "app.zip"},
             "undo_file": {"action": "list"},
             "update_task": {"task": "Test UI", "status": "in_progress"},
             "watch_task": {"action": "list"},

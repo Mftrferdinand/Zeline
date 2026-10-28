@@ -251,3 +251,27 @@ class AgentIntegrationTests(UsageBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LongestPrefixPriceTests(unittest.TestCase):
+    """The most specific priced model name must win, whatever the dict order."""
+
+    def test_longest_prefix_wins_without_an_exact_entry(self):
+        from zeline import config, usage_stats
+        broad = {"input": 1.0, "output": 1.0}
+        specific = {"input": 5.0, "output": 5.0}
+        for prices in ({"test-model": broad, "test-model-v2": specific},
+                       {"test-model-v2": specific, "test-model": broad}):
+            with mock.patch.object(config, "MODEL_PRICES", prices):
+                self.assertEqual(usage_stats.cost_for("test-model-v2-dated", 1_000_000, 0), 5.0)
+
+    def test_exact_beats_prefix_in_any_order(self):
+        from zeline import config, usage_stats
+
+        for prices in (
+            {"gpt-4o": {"input": 1.0, "output": 1.0}, "gpt-4o-2024-08-06": {"input": 5.0, "output": 5.0}},
+            {"gpt-4o-2024-08-06": {"input": 5.0, "output": 5.0}, "gpt-4o": {"input": 1.0, "output": 1.0}},
+        ):
+            with mock.patch.object(config, "MODEL_PRICES", prices):
+                cost = usage_stats.cost_for("gpt-4o-2024-08-06", 1_000_000, 0)
+                self.assertEqual(cost, 5.0)

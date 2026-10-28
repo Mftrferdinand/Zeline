@@ -467,6 +467,12 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
         return "🌀 Removing memory…"
     if name == "system_env":
         return "🖥️ Inspecting system environment…"
+    if name == "hash_check":
+        path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
+        algo = html.escape(str(arguments.get("algorithm", "sha256")).strip().lower()[:40] or "sha256", quote=False)
+        if arguments.get("expected"):
+            return f"🔐 Verifying {algo} checksum: <code>{path}</code>"
+        return f"🔐 Hashing file ({algo}): <code>{path}</code>"
     path = html.escape(_short_path(str(arguments.get("path", "")))[:120], quote=False)
     if name == "read_file":
         # Zeline read_file membaca seluruh file (tanpa offset/limit); rentang

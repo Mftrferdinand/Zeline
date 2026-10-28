@@ -36,6 +36,7 @@ import requests
 
 from zeline import config
 from zeline import compaction
+from zeline import hash_tools
 from zeline import memory
 from zeline import offload
 from zeline import skills
@@ -1437,6 +1438,7 @@ def _is_internal_ip(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True  # DNS gagal = tidak boleh dicoba
+    # Block mixed public/private answers and empty resolver results.
     return not infos or any(_addr_is_internal(ipaddress.ip_address(info[4][0])) for info in infos)
 
 
@@ -2347,6 +2349,20 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "hash_check",
+        "Compute a file's SHA-256/SHA-1/MD5 digest in the workspace, optionally comparing against an expected checksum to verify a download or a written artifact.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to the workspace"},
+                "algorithm": {"type": "string", "enum": ["sha256", "sha1", "md5"], "description": "Default sha256"},
+                "expected": {"type": "string", "description": "Optional digest to compare against; result says MATCH or MISMATCH"},
+            },
+            "required": ["path"],
+        },
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "undo_file",
         (
             "Put a workspace file back to the content it had before you wrote to "
@@ -2725,6 +2741,8 @@ class ToolExecutor:
                 limit=limit, offset=offset, target=target, regex=regex,
                 archive_identity=str(self.identity) if self.profile == "workspace" else None),
             "download_file": lambda url, path: _download_file(url, path, self.workspace),
+            "hash_check": lambda path, algorithm="sha256", expected="": hash_tools._hash_check(
+                path, self.workspace, algorithm=algorithm, expected=expected),
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
             ),
