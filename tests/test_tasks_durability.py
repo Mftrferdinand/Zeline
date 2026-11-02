@@ -64,13 +64,18 @@ class TaskDurabilityTests(unittest.TestCase):
         import threading
         from concurrent.futures import ThreadPoolExecutor
         barrier = threading.Barrier(2)
+        replacement_lock = threading.Lock()
         paths = []
         original = Path.replace
 
         def replace(source, target):
             paths.append(source)
             barrier.wait(timeout=5)
-            return original(source, target)
+            # Probe concurrent temporary allocation, not unsupported simultaneous
+            # Windows renames. Public update/clear serialize the whole commit;
+            # their independent thread/process tests still exercise that lock.
+            with replacement_lock:
+                return original(source, target)
 
         with patch.object(Path, "replace", replace):
             with ThreadPoolExecutor(2) as executor:
