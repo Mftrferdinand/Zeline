@@ -10,6 +10,9 @@ import re
 _OPTION = re.compile(r"^([1-6A-Fa-f])[.):]\s+(.+?)\s*$")
 _BULLET = re.compile(r"^[-*•]\s+(.+?)\s*$")
 _DECISION = re.compile(r"\b(?:pilih|pilihan|opsi|mana|mau|choose|which|prefer)\b", re.IGNORECASE)
+_TIMING_DECISION = re.compile(
+    r'^(?:kapan\s+(?:gue|aku|saya|kami|kita)\s+(?:pasang|deploy|restart|jalankan|terapkan|mulai)\b|'
+    r'when\s+(?:should|shall|may|can)\s+(?:i|we)\b)', re.IGNORECASE)
 _FREEFORM = re.compile(r"^(?:atau|or)\s+(?:ketik|tulis|type|write)\b", re.IGNORECASE)
 _BINARY = re.compile(
     r"^(?:Pilih|Mau|Choose|Would you prefer)\s+(.{1,150}?)\s+(?:atau|or)\s+(.{1,150}?)\?$",
@@ -32,7 +35,8 @@ def _choice(line: str) -> tuple[str | None, str] | None:
 
 
 def _choices(lines: list[str], question: str) -> tuple[str, ...] | None:
-    if not 2 <= len(lines) <= 6 or not _DECISION.search(question):
+    decision = bool(_DECISION.search(question) or _TIMING_DECISION.search(question))
+    if not 2 <= len(lines) <= 6 or not decision:
         # Enumerating information is not an explicit request for a decision.
         # Numbered/lettered options need the same intent cue as bullet options.
         return None
@@ -41,7 +45,7 @@ def _choices(lines: list[str], question: str) -> tuple[str, ...] | None:
         return None
     labels = [item[0] for item in found if item is not None]
     if any(label is None for label in labels):
-        if any(label is not None for label in labels) or not _DECISION.search(question):
+        if any(label is not None for label in labels) or not decision:
             return None
     elif labels != [str(i) for i in range(1, len(lines) + 1)] and labels != [chr(65 + i) for i in range(len(lines))]:
         return None

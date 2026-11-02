@@ -9,6 +9,8 @@ class PickerIntentTests(unittest.TestCase):
             'What does the report contain?\n1. Summary\n2. Detailed findings',
             'What does the report contain?\nA. Summary\nB. Detailed findings',
             'Apa isi laporan?\n1. Ringkasan\n2. Temuan lengkap',
+            'When was the report updated?\n1. Yesterday\n2. Today',
+            'Kapan laporan diubah?\n1. Kemarin\n2. Hari ini',
         ):
             with self.subTest(text=text):
                 self.assertIsNone(branching_question(text))
