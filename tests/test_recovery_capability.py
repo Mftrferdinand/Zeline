@@ -16,7 +16,17 @@ class UnsupportedRecoveryTests(unittest.TestCase):
         self.sessions = importlib.import_module('zeline.sessions')
         self.persistence = self.sessions.SessionPersistence(self.root / 'sessions.db')
 
-    def test_unsupported_save_refuses_before_creating_plaintext_or_directory(self):
+    def test_sqlite_primary_codes_work_without_python311_module_constants(self):
+        import sqlite3
+        from types import SimpleNamespace
+        recovery = importlib.import_module('zeline.session_recovery')
+        error = sqlite3.OperationalError('fixture error')
+        error.sqlite_errorcode = 5
+        import sys
+        with patch.dict(sys.modules, {'sqlite3': SimpleNamespace(Error=sqlite3.Error)}):
+            self.assertEqual(recovery.failure_category(error), 'sqlite_busy')
+
+    def test_unsupported_save_refuses_before_creating_root(self):
         with patch.object(self.recovery, '_supports_private_snapshots', return_value=False):
             with self.assertRaisesRegex(OSError, 'unsupported platform'):
                 self.persistence.save_recovery('fixture', [], 'private title')

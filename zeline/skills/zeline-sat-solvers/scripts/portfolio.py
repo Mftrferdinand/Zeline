@@ -120,8 +120,11 @@ def child_limits():
                                ('DATA', resource.RLIMIT_DATA, 2 * 1024 ** 3),
                                ('CORE', resource.RLIMIT_CORE, 0)):
         try:
-            _, hard = resource.getrlimit(kind)
-            value = bound if hard == resource.RLIM_INFINITY else min(bound, hard)
+            soft, hard = resource.getrlimit(kind)
+            # Never attempt to increase an inherited tighter soft ceiling. On
+            # Darwin the finite kernel DATA maximum may differ from hard=inf.
+            value = min([bound] + [limit for limit in (soft, hard)
+                                   if limit != resource.RLIM_INFINITY])
             resource.setrlimit(kind, (value, value))
         except (OSError, ValueError) as exc:
             # Expose only a safe limit identifier/type/errno, never process data.

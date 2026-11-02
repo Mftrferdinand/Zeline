@@ -27,10 +27,11 @@ def failure_category(exc: Exception) -> str:
     import sqlite3
     if isinstance(exc, sqlite3.Error):
         code = getattr(exc, 'sqlite_errorcode', 0) or 0
-        return {sqlite3.SQLITE_BUSY: 'sqlite_busy', sqlite3.SQLITE_LOCKED: 'sqlite_locked',
-                sqlite3.SQLITE_FULL: 'storage_full', sqlite3.SQLITE_READONLY: 'read_only',
-                sqlite3.SQLITE_CORRUPT: 'sqlite_corrupt', sqlite3.SQLITE_NOTADB: 'sqlite_invalid',
-                sqlite3.SQLITE_CONSTRAINT: 'sqlite_constraint'}.get(code & 255, 'sqlite_error')
+        # SQLite primary result codes are stable; Python exposed these module
+        # constants only in newer releases. Older runtimes still classify safely.
+        return {5: 'sqlite_busy', 6: 'sqlite_locked', 13: 'storage_full',
+                8: 'read_only', 11: 'sqlite_corrupt', 26: 'sqlite_invalid',
+                19: 'sqlite_constraint'}.get(code & 255, 'sqlite_error')
     if isinstance(exc, OSError):
         import errno
         return {errno.ENOSPC: 'storage_full', errno.EACCES: 'permission_denied',

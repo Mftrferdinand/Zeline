@@ -68,6 +68,17 @@ class PortfolioTests(unittest.TestCase):
             self.assertEqual(answer['status'], 'ERROR')
             self.assertFalse(answer['verified'])
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX resource contract')
+    def test_child_limits_never_raise_existing_stricter_soft_limits(self):
+        import resource
+        portfolio = importlib.import_module('portfolio')
+        with patch.object(resource, 'getrlimit', return_value=(32, 256)), patch.object(
+                resource, 'setrlimit') as setter:
+            portfolio.child_limits()
+        for call in setter.call_args_list:
+            self.assertLessEqual(call.args[1][0], 32)
+            self.assertEqual(call.args[1][0], call.args[1][1])
+
     def test_spawn_setup_failure_is_structured(self):
         portfolio = importlib.import_module('portfolio')
         common = self.common()
