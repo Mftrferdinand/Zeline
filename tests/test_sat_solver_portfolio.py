@@ -336,13 +336,42 @@ class PortfolioTests(unittest.TestCase):
     @unittest.skipUnless(os.name == 'posix', 'POSIX shebang executable fixture')
     def test_child_resource_limits_and_cleanup(self):
         p = importlib.import_module('portfolio')
+        # Measure the actual kernel cap against the SAME pre-exec process VM.
+        # ASLR/allocator reservations differ after exec; comparing two process
+        # baselines is not a valid upper-bound assertion (and was flaky on macOS).
+        probe = """
+import sys, json, resource
+sys.path.insert(0, sys.argv[1])
+import solver_worker as worker
+inherited = resource.getrlimit(resource.RLIMIT_DATA)
+observed = []
+original = worker._darwin_virtual_size
+def measure():
+    size = original()
+    observed.append(size)
+    return size
+worker._darwin_virtual_size = measure
+worker.child_limits()
+requested = 2 * 1024**3 + (observed[0] if sys.platform == 'darwin' else 0)
+ceilings = [value for value in inherited if value != resource.RLIM_INFINITY]
+expected = min([requested, *ceilings])
+assert resource.getrlimit(resource.RLIMIT_DATA) == (expected, expected)
+assert resource.getrlimit(resource.RLIMIT_FSIZE) == (16*1024**2, 16*1024**2)
+assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
+print(json.dumps({'enforced_data': expected, 'startup_vm': observed}))
+"""
+        import subprocess
+        enforced = subprocess.run([sys.executable, '-c', probe, str(SCRIPTS)],
+                                  capture_output=True, text=True, timeout=10)
+        self.assertEqual(enforced.returncode, 0, enforced.stderr)
+        self.assertGreater(json.loads(enforced.stdout)['enforced_data'], 0)
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             source = root / 'x.json'
             source.write_text('[[1]]')
             fixture = root / 'check'
             marker = root / 'limited'
-            body = "import resource,sys\nfrom pathlib import Path\na=resource.getrlimit(resource.RLIMIT_DATA)[0]\nf=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\nbaseline=0\nif sys.platform=='darwin':\n sys.path.insert(0," + repr(str(SCRIPTS)) + ')\n from portfolio import _darwin_virtual_size\n baseline=_darwin_virtual_size()\nassert 0<a<=baseline+2*1024**3\nassert 0<f<=16*1024**2\n'
+            body = 'import resource\nfrom pathlib import Path\na=resource.getrlimit(resource.RLIMIT_DATA)[0]\nf=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\nassert a>0 and a!=resource.RLIM_INFINITY\nassert 0<f<=16*1024**2\nassert resource.getrlimit(resource.RLIMIT_CORE)==(0,0)\n'
             fixture.write_text('#!' + sys.executable + '\n' + body + 'Path(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
             fixture.chmod(0o700)
             with patch.object(p, 'binary', return_value=str(fixture)):
