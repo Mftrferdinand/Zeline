@@ -937,45 +937,73 @@ class Zeline:
         return message
 
     def _trim_history(self) -> None:
-        """Batasi history tanpa memulai context dari assistant/tool orphan.
+        """Archive before eviction, keeping the current request and tool groups.
 
-        Tool-call protocol mengharuskan ``assistant(tool_calls)`` diikuti semua
-        ``tool`` result terkait. Maka kita hanya memotong pada awal user turn,
-        bukan sekadar `messages[-N:]`.
-
-        Turn yang dibuang tidak hilang: teksnya diarsipkan ke disk dan diganti
-        satu digest ekstraktif di depan history, supaya agent tidak lupa file
-        yang baru ia tulis atau keputusan yang sudah diambil user.
+        Prefer whole user turns. Inside a single oversized turn, evict only
+        complete assistant/tool envelopes. Never mutate the current user object:
+        task isolation uses its identity to locate the active request.
         """
+        if not self.messages:
+            return
         system = self.messages[0]
         tail = self.messages[1:]
         maximum_messages = 60
         maximum_chars = 30_000
         dropped: list[dict[str, Any]] = []
-        while tail and (
-            len(tail) > maximum_messages
-            or sum(len(str(message.get("content", ""))) for message in tail) > maximum_chars
-        ):
-            # Drop one complete oldest user turn, never begin with an orphaned
-            # assistant/tool message. Keep at least the latest user turn.
+
+        def over_budget() -> bool:
+            # Reserve space for the digest only after an eviction is planned.
+            reserve = 4_500 if dropped else 0
+            return (len(tail) + bool(dropped) > maximum_messages
+                    or sum(len(json.dumps(message)) for message in tail)
+                    + reserve > maximum_chars)
+
+        while tail and over_budget():
             next_user = next(
-                (index for index, message in enumerate(tail[1:], 1) if message.get("role") == "user"),
+                (index for index, message in enumerate(tail[1:], 1)
+                 if message.get("role") == "user" and not compaction.is_digest(message)),
                 None,
             )
-            if next_user is None:
+            if next_user is not None:
+                dropped.extend(tail[:next_user])
+                tail = tail[next_user:]
+                continue
+            # The last real user stays intact, even if its own payload exceeds
+            # the budget. Remove any old digest before processing this turn.
+            if compaction.is_digest(tail[0]):
+                dropped.append(tail.pop(0))
+                continue
+            start = 1 if tail[0].get("role") == "user" else 0
+            if start >= len(tail):
                 break
-            dropped.extend(tail[:next_user])
-            tail = tail[next_user:]
-        if dropped:
-            try:
-                summary = compaction.compact(dropped, self.identity)
-            except Exception:
-                summary = None
-            if summary is not None:
-                # An existing digest at the front is superseded by the new one,
-                # which already covers it (the old digest is inside `dropped`).
-                tail = [summary, *tail]
-        self.messages = [system, *tail]
+            message = tail[start]
+            if message.get("role") != "assistant":
+                break  # Malformed/orphaned input: do not guess a safe boundary.
+            end = start + 1
+            calls = message.get("tool_calls") or []
+            pending = {call.get("id") for call in calls}
+            if calls and (None in pending or len(pending) != len(calls)):
+                break
+            while pending and end < len(tail):
+                result = tail[end]
+                call_id = result.get("tool_call_id")
+                if result.get("role") != "tool" or call_id not in pending:
+                    break
+                pending.remove(call_id)
+                end += 1
+            if pending:
+                break  # Incomplete tool group must remain verbatim.
+            dropped.extend(tail[start:end])
+            tail = tail[:start] + tail[end:]
+        if not dropped:
+            return
+        try:
+            summary = compaction.compact(dropped, self.identity)
+        except Exception:
+            return  # Fail closed: retain the original list and every envelope.
+        if summary is None:
+            return
+        self.messages = [system, summary, *tail]
 
     def _observe_loaded_skill(self, name: str, result: str) -> None:
         """Auto-injected procedures obey the same measurement contract as tools."""

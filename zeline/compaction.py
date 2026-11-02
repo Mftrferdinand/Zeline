@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from collections import Counter
@@ -70,7 +71,7 @@ def archive_root() -> Path:
     return config.DATA_DIR / "conversation_history"
 
 
-def prune() -> int:
+def prune(*, keep: Path | None = None) -> int:
     """Delete stale or excess transcripts. Returns how many files were removed.
 
     Mirrors ``offload.prune``: newest first, drop anything past the age limit,
@@ -97,7 +98,7 @@ def prune() -> int:
             continue
         too_old = now - stat.st_mtime > MAX_AGE_SECONDS
         total += stat.st_size
-        if too_old or total > MAX_TOTAL_BYTES:
+        if path != keep and (too_old or total > MAX_TOTAL_BYTES):
             try:
                 path.unlink()
             except OSError:
@@ -180,11 +181,12 @@ def render(messages: list[dict[str, Any]]) -> str:
         calls = _tool_calls(message)
         if calls:
             rendered = ", ".join(
-                f"{name}({json.dumps(args, ensure_ascii=False)[:300]})"
+                f"{name}({json.dumps(args, ensure_ascii=False)})"
                 for name, args in (_call_name_and_args(call) for call in calls)
             )
             content = f"{content}\n[tool_calls] {rendered}".strip()
-        lines.append(f"### {role}\n{content}".strip())
+        envelope = json.dumps(message, ensure_ascii=False)
+        lines.append(f"### {role}\n{content}\n\n```json message-envelope\n{envelope}\n```".strip())
     return "\n\n".join(lines)
 
 
@@ -203,8 +205,11 @@ def archive(messages: list[dict[str, Any]], identity: str) -> Path | None:
     stamp = time.strftime("%Y-%m-%d", time.gmtime())
     target = archive_root() / f"{safe_identity}-{owner_key}-{stamp}.md"
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as handle:
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Restrict permissions even for archives created by older versions.
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            os.chmod(target, 0o600)
             handle.write(f"\n\n## Evicted at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n\n")
             for message in messages:
                 role = str(message.get("role", "?"))
@@ -217,11 +222,19 @@ def archive(messages: list[dict[str, Any]], identity: str) -> Path | None:
                         name, args = _call_name_and_args(call)
                         if index:
                             handle.write(", ")
-                        handle.write(f"{name}({json.dumps(args, ensure_ascii=False)[:300]})")
+                        handle.write(f"{name}({json.dumps(args, ensure_ascii=False)})")
+                # Preserve the complete wire envelope, including raw argument
+                # strings, null/multimodal content, tool IDs and extra fields.
+                # Keep the readable legacy transcript above for text search.
+                handle.write("\n\n```json message-envelope\n")
+                json.dump(message, handle, ensure_ascii=False)
+                handle.write("\n```")
                 handle.write("\n\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     except OSError:
         return None
-    prune()
+    prune(keep=target)
     return target
 
 
@@ -328,8 +341,8 @@ def compact(
 ) -> dict[str, Any] | None:
     """Archive ``dropped`` and return the digest message to inject, if any.
 
-    Returns ``None`` when there is nothing worth recording, so the caller keeps
-    its previous plain-drop behavior.
+    Returns ``None`` when there is nothing worth recording. Archive failures
+    raise so callers retain the original history instead of losing evidence.
     """
     meaningful = [
         message
@@ -341,7 +354,9 @@ def compact(
         if any(is_digest(message) for message in dropped):
             return {"role": "user", "content": digest(dropped, None)}
         return None
-    path = archive(meaningful, identity)
+    path = archive([message for message in dropped if not is_digest(message)], identity)
+    if path is None:
+        raise OSError("Conversation archive could not be persisted")
     text = digest(dropped, path)
     # The plan is the thing most worth keeping across a trim: compaction fires
     # during long multi-step work, which is exactly when the agent needs to know
