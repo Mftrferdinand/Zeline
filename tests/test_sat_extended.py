@@ -96,6 +96,7 @@ class ExtendedSolverTests(unittest.TestCase):
             self.assertEqual(child.returncode, 0, child.stderr)
             self.assertTrue(json.loads(child.stdout)['verified'])
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shebang executable fixture')
     def test_official_probat_and_crypto_cli_are_not_custom_probasab(self):
         formula = c.Instance(3, [[1]], [[1]])
         with tempfile.TemporaryDirectory() as d:
@@ -133,6 +134,7 @@ class ExtendedSolverTests(unittest.TestCase):
         self.assertEqual(p.parse_output('unknown\n', formula, 'bitwuzla', 0)['status'], 'UNKNOWN')
         self.assertEqual(p.parse_output(text, formula, 'bitwuzla', 1)['status'], 'ERROR')
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shebang executable fixture')
     def test_bitwuzla_receives_boolean_smt_not_dimacs(self):
         formula = c.Instance(3, [[1], [-1, 2]], [[1], [-1, 2]])
         with tempfile.TemporaryDirectory() as d:
@@ -164,7 +166,7 @@ class ExtendedSolverTests(unittest.TestCase):
             with patch.dict(os.environ, {'ZELINE_SAT_BIN_DIR': str(root)}):
                 for key, expected in [('cryptominisat', 'cryptominisat5'),
                                       ('probsat_official', 'probSAT'), ('bitwuzla', 'bitwuzla')]:
-                    self.assertEqual(p.binary(key), str(root / expected))
+                    self.assertEqual(p.binary(key), str((root / expected).resolve()))
                 self.assertFalse(p.inspect()['probsat_official']['complete'])
 
 

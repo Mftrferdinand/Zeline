@@ -129,6 +129,24 @@ class TaskContextTests(unittest.TestCase):
         if os.name == 'posix':
             self.assertEqual(self.store.path.stat().st_mode & 0o777, 0o600)
 
+    @unittest.skipUnless(os.name == 'posix', 'requires symbolic-link fixtures')
+    def test_verified_system_alias_is_canonical_but_nested_user_symlinks_are_rejected(self):
+        aliases = self.root / 'os-alias'
+        canonical = (self.root / 'canonical').resolve()
+        canonical.mkdir()
+        aliases.symlink_to(canonical, target_is_directory=True)
+        with patch.object(self.module.sys, 'platform', 'darwin'), patch.object(
+                self.module, '_DARWIN_SYSTEM_ALIASES', ((aliases, canonical),)):
+            store = self.module.TaskContextStore(aliases / 'safe' / 'tasks.sqlite3')
+            self.assertEqual(store.path, canonical / 'safe' / 'tasks.sqlite3')
+            nested = canonical / 'nested'
+            outside = self.root / 'other'
+            outside.mkdir()
+            nested.symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                self.module.TaskContextStore(aliases / 'nested' / 'tasks.sqlite3')
+            self.assertFalse((outside / 'tasks.sqlite3').exists())
+
     def test_symlink_parent_rejected_before_creating_outside_directory(self):
         outside = Path(self.tmp.name) / 'outside'
         outside.mkdir()

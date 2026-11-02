@@ -116,12 +116,18 @@ def parse_output(text, instance, solver, returncode):
 def child_limits():
     """POSIX child-only limits; never change the agent process's resources."""
     import resource
-    for kind, bound in ((resource.RLIMIT_FSIZE, MAX_OUTPUT_BYTES),
-                        (resource.RLIMIT_DATA, 2 * 1024 ** 3),
-                        (resource.RLIMIT_CORE, 0)):
-        _, hard = resource.getrlimit(kind)
-        value = bound if hard == resource.RLIM_INFINITY else min(bound, hard)
-        resource.setrlimit(kind, (value, value))
+    for label, kind, bound in (('FSIZE', resource.RLIMIT_FSIZE, MAX_OUTPUT_BYTES),
+                               ('DATA', resource.RLIMIT_DATA, 2 * 1024 ** 3),
+                               ('CORE', resource.RLIMIT_CORE, 0)):
+        try:
+            _, hard = resource.getrlimit(kind)
+            value = bound if hard == resource.RLIM_INFINITY else min(bound, hard)
+            resource.setrlimit(kind, (value, value))
+        except (OSError, ValueError) as exc:
+            # Expose only a safe limit identifier/type/errno, never process data.
+            os.write(2, ('ZELINE_LIMIT_SETUP ' + label + ' ' + type(exc).__name__
+                         + ' errno=' + str(getattr(exc, 'errno', None)) + '\n').encode())
+            raise
 
 
 def run_backend(instance, solver, executable, timeout):
@@ -163,9 +169,18 @@ def run_backend(instance, solver, executable, timeout):
             argv.extend(['1', '2.3', str(timeout)])
         output = root / 'stdout'
         with output.open('wb') as stream:
-            process = subprocess.Popen(argv, stdout=stream, stderr=stream, shell=False,
-                                       start_new_session=(os.name == 'posix'),
-                                       preexec_fn=child_limits if os.name == 'posix' else None)
+            try:
+                process = subprocess.Popen(argv, stdout=stream, stderr=stream, shell=False,
+                                           start_new_session=(os.name == 'posix'),
+                                           preexec_fn=child_limits if os.name == 'posix' else None)
+            except (OSError, subprocess.SubprocessError) as exc:
+                # Popen has already reaped failed pre-exec children. Retain only
+                # our fixed diagnostic marker, not arbitrary stderr or paths.
+                stream.flush()
+                marker = re.search(r'ZELINE_LIMIT_SETUP [A-Z]+ [A-Za-z]+ errno=(?:None|[0-9]+)',
+                                   output.read_text(errors='replace')[:1024])
+                detail = '; ' + marker.group(0) if marker else ''
+                return result('ERROR', solver, error='solver setup failed: ' + type(exc).__name__ + detail)
             deadline = time.monotonic() + timeout
             try:
                 while process.poll() is None:

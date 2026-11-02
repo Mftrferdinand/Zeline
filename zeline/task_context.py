@@ -6,10 +6,27 @@ import html
 import json
 import os
 import sqlite3
+import sys
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+
+
+_DARWIN_SYSTEM_ALIASES = ((Path('/var'), Path('/private/var')),
+                          (Path('/tmp'), Path('/private/tmp')))
+
+
+def _canonical_system_path(path):
+    path = path.expanduser().absolute()
+    if sys.platform == 'darwin':
+        for alias, canonical in _DARWIN_SYSTEM_ALIASES:
+            if (path.is_relative_to(alias) and alias.is_symlink()
+                    and alias.resolve(strict=True) == canonical):
+                # Normalize only a verified OS-owned alias. Descendant links are
+                # deliberately left untouched for the ordinary rejection checks.
+                return canonical / path.relative_to(alias)
+    return path
 
 
 class TaskContextStore:
@@ -21,7 +38,8 @@ class TaskContextStore:
 
     def __init__(self, path=None):
         from zeline import config
-        self.path = Path(path) if path is not None else config.DATA_DIR / 'task_context.sqlite3'
+        self.path = _canonical_system_path(
+            Path(path) if path is not None else config.DATA_DIR / 'task_context.sqlite3')
         if any(part.is_symlink() for part in (self.path, *self.path.parents)):
             raise ValueError('Task checkpoint path may not contain symlinks')
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

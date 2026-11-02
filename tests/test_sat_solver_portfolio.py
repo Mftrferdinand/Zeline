@@ -68,6 +68,15 @@ class PortfolioTests(unittest.TestCase):
             self.assertEqual(answer['status'], 'ERROR')
             self.assertFalse(answer['verified'])
 
+    def test_spawn_setup_failure_is_structured(self):
+        portfolio = importlib.import_module('portfolio')
+        common = self.common()
+        with patch.object(portfolio.subprocess, 'Popen', side_effect=subprocess.SubprocessError('fixture setup')):
+            answer = portfolio.run_backend(common.Instance(1, [[1]], [[1]]), 'kissat', sys.executable, 1)
+        self.assertEqual(answer['status'], 'ERROR')
+        self.assertFalse(answer['verified'])
+        self.assertIn('setup', answer['error'])
+
     @unittest.skipUnless(HAS_Z3, 'optional real Z3 executable is not installed')
     def test_real_z3_and_json_cli(self):
         self.assertTrue((SCRIPTS / 'portfolio.py').exists(), 'portfolio is not implemented')
@@ -195,6 +204,7 @@ class PortfolioTests(unittest.TestCase):
             self.assertEqual(answer['status'], 'TIMEOUT', answer)
             run.assert_not_called()
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shebang executable fixture')
     def test_auto_reserves_time_for_a_real_fallback_solver(self):
         p = importlib.import_module('portfolio')
         kissat = p.binary('kissat')
@@ -215,6 +225,7 @@ class PortfolioTests(unittest.TestCase):
             self.assertTrue(answer['verified'])
             self.assertEqual(answer['attempts'][0]['status'], 'TIMEOUT')
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shebang executable fixture')
     def test_failure_fixtures_and_total_timeout(self):
         p = importlib.import_module('portfolio')
         with tempfile.TemporaryDirectory() as d:
@@ -249,6 +260,7 @@ class PortfolioTests(unittest.TestCase):
             with patch.object(p, 'binary', return_value=huge), patch.object(p, 'MAX_OUTPUT_BYTES', 100):
                 self.assertEqual(p.solve(source, solver='z3')['status'], 'ERROR')
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shebang executable fixture')
     def test_backend_protocols_and_local_search_guards(self):
         p = importlib.import_module('portfolio')
         c = self.common()
@@ -281,6 +293,7 @@ class PortfolioTests(unittest.TestCase):
                 self.assertEqual(r['status'], 'ERROR')
                 self.assertEqual(r['error'], 'solver exit code 1')
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shebang executable fixture')
     def test_child_resource_limits_and_cleanup(self):
         p = importlib.import_module('portfolio')
         with tempfile.TemporaryDirectory() as d:
