@@ -1,0 +1,36 @@
+{
+  "wallets": [
+    {
+      "name": "mywallet.ai",
+      "address": "0xYourAgentWallet"
+    }
+  ],
+  "telegram": {
+    "botToken": "",
+    "chatId": "",
+    "groupChatId": ""
+  },
+  "timeZone": "Asia/Taipei",
+  "paid": {
+    "maxUsd": 20,
+    "keepBnb": 0.006
+  },
+  "rules": {
+    "backX": 2,
+    "steps": [
+      [
+        10,
+        30
+      ],
+      [
+        20,
+        50
+      ]
+    ],
+    "crash": 0.4
+  },
+  "tokens": [],
+  "watchVault": "",
+  "forceMint": [],
+  "rpcs": []
+}

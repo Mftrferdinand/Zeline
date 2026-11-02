@@ -1,0 +1,32 @@
+// Setup wizard for the one-click install: asks for the wallet and TG step by step and writes config.json (called by "install.bat", can also be run alone: node setup.mjs)
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline/promises';
+const DIR = dirname(fileURLToPath(import.meta.url));
+const rl = createInterface({ input: process.stdin, output: process.stdout });
+const ask = async (q, ok = () => true, def = '') => { for (;;) { const a = (await rl.question(q)).trim() || def; if (ok(a)) return a; console.log('  wrong format, please try again'); } };
+const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a);
+const f = join(DIR, 'config.json');
+const cfg = JSON.parse(readFileSync(existsSync(f) ? f : join(DIR, 'config.example.json'), 'utf8'));
+if (existsSync(f)) { const again = await ask('config.json already exists, set it up again? (y/N) ', () => true, 'n'); if (!/^y/i.test(again)) { console.log('keeping the existing settings'); writeFileSync(join(DIR, 'data_wallets.txt'), String((cfg.wallets || []).length)); rl.close(); process.exit(0); } }
+console.log('\n=== Step 1: Agent ID wallet ===');
+console.log('Your .ai name and wallet address (starting with 0x) are in the Binance App → Wallet → Agentic Wallet');
+const w1 = { name: await ask('The .ai name of wallet 1 (e.g. abc.ai): ', (a) => a.length > 0), address: (await ask('The address of wallet 1 (0x…): ', isAddr)).toLowerCase() };
+cfg.wallets = [w1];
+const more = await ask('Do you have a 2nd Agent ID wallet to use as well? (y/N) ', () => true, 'n');
+if (/^y/i.test(more)) cfg.wallets.push({ name: await ask('The .ai name of wallet 2: ', (a) => a.length > 0), address: (await ask('The address of wallet 2 (0x…): ', isAddr)).toLowerCase(), bawDir: 'baw2', bawPkg: 'baw2pkg', instanceId: 'wallet-2' });
+console.log('\n=== Step 2: Telegram notifications (press Enter to skip) ===');
+console.log('1) Search @BotFather in TG → send /newbot → follow the prompts → it gives you a bot token');
+console.log('2) Search @userinfobot in TG → press Start → the Id it replies with is your chat id');
+console.log('3) Remember to message your bot once first (press Start), otherwise it cannot message you');
+cfg.telegram = cfg.telegram || {};
+cfg.telegram.botToken = await ask('Bot token: ', (a) => !a || /^\d+:[\w-]{20,}$/.test(a), cfg.telegram.botToken || '');
+if (cfg.telegram.botToken) cfg.telegram.chatId = await ask('Your chat id: ', (a) => /^-?\d+$/.test(a), cfg.telegram.chatId || '');
+console.log('\n=== Step 3: Budget ===');
+cfg.paid = cfg.paid || {};
+cfg.paid.maxUsd = Number(await ask(`How many U may each wallet spend per paid project at most? (Enter = ${cfg.paid.maxUsd || 20}) `, (a) => Number(a) > 0, String(cfg.paid.maxUsd || 20)));
+writeFileSync(f, JSON.stringify(cfg, null, 2));
+writeFileSync(join(DIR, 'data_wallets.txt'), String(cfg.wallets.length));
+console.log('\n✅ Settings saved to config.json (run node setup.mjs again to change them later)\n');
+rl.close();

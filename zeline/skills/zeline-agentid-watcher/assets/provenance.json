@@ -1,0 +1,22 @@
+{
+  "upstream_version": "2.6.6",
+  "archive_filename": "fork-agentid-sniper-english.zip",
+  "archive_sha256": "fb01048a5ee2b461eaf2c0706a609d6df9556853c5897a573fd0a379daee59c3",
+  "original_project": "https://github.com/nancyc0813-maker/agentid-sniper",
+  "english_fork": "https://github.com/setyamickala/fork-agentid-sniper",
+  "license": "MIT",
+  "files": {
+    ".gitignore": "9b0b7120ee8e73312cb176a94c84191d0b87dc5697343e0cc056944c695303c6",
+    "LICENSE": "01669480eb47722aeef8e5310487b93fb2d920d2b699d0ae49856077ddeb765a",
+    "README.md": "23ce3554612458a47c8cc6f821beb000875f41e25186364ffc10a0a1f5f528f8",
+    "config.example.json": "2e5209a435152785b2c135b654013dd497672eac62a3b84d29ddb96cd20c10a8",
+    "install.bat": "fc1f29f9d64a128d6a0f18b8645cb6dc7bb2cb622ec7aaa7fec7a094e7fe8cfa",
+    "login.mjs": "110d58646ddf0a90fcd449e728fe843a3deaf83ecf16e69e66e0c24392cc2843",
+    "setup.mjs": "dd90a2fda7c59cdc8e3abfebf95c5bef58da12052793b596ccc69913bbb86c35",
+    "setup_wallet2.bat": "7be63528cf2f12bb7cdbb095b78b0d158e7546c418445dbab392946e759bf610",
+    "start_hidden.vbs": "116f459e8fa5b31bddfd2d91766fe7d680810eac65188e8b76460ae09c52acd6",
+    "start_loop.bat": "f7379be6aa4d1f9eee821e5ebbd62294f68330f9d12f5ae46d0d435abcfbd3d6",
+    "version.json": "96fadc32bd1091a51aa33375d0f67a9efc05d1d9870c89a62d2868fdfd7c5615",
+    "watch.mjs": "43cca3c566b27c003fec25681311d647bbe1c1807b26ae124e179d50f1c6587d"
+  }
+}

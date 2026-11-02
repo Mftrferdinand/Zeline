@@ -1,0 +1,3 @@
+# Preserve exact upstream payload/provenance bytes across platforms; do not
+# normalize vendored Windows launchers or rewrite third-party whitespace.
+zeline/skills/zeline-agentid-watcher/assets/upstream/** -text -whitespace

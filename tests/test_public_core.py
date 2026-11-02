@@ -343,6 +343,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # fails this test until it is added to the scanned set.
         source_suffixes = {
             ".md", ".txt", ".py", ".sh", ".ts", ".js", ".json", ".yml", ".yaml", ".html", ".css",
+            ".mjs", ".bat", ".vbs", "",  # Scan bundled module/launcher files, LICENSE and .gitignore too.
+            ".c", ".cnf",  # Native solver source and DIMACS examples are scanned text, not exclusions.
         }
         sources = sorted(
             path for path in skill_root.rglob("*")
@@ -3550,7 +3552,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         payload = b"z" * (729 * 1024)
         document = {"file_name": "ZELINE-ZENITH-FORSALE-FINAL.zip", "file_size": len(payload), "file_id": "zip-file"}
-        response = mock.Mock(ok=True, content=payload)
+        response = mock.Mock(ok=True, headers={"Content-Length": str(len(payload))})
+        response.iter_content.return_value = iter([payload])
         with mock.patch.object(telegram, "_api_call", return_value={"result": {"file_path": "documents/zip-file"}}), \
              mock.patch.object(telegram.requests, "get", return_value=response):
             content, error = telegram._download_document("https://api.telegram.org/bottoken", "token", document)

@@ -3,6 +3,9 @@ include .github/RELEASE_NOTES.md
 recursive-include docs *.md
 include zeline/SOUL.md
 recursive-include zeline/skills *
+# Preserve operator source locally without including it in public source distributions.
+prune zeline/skills/zeline-sat-solvers/assets/supplied
+prune zeline/skills/zeline-sat-solvers/assets/adapted
 recursive-include zeline/zenith_tools *
 global-exclude *.py[cod]
 global-exclude __pycache__

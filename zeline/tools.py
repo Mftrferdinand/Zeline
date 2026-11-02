@@ -2397,6 +2397,19 @@ TOOL_DEFS: list[ToolDef] = [
         frozenset({"workspace", "full"}),
     ),
     ToolDef(
+        "task_checkpoint",
+        "Save operational state of the CURRENT task, not permanent user memory. "
+        "Record verified results, blocker, next_step and artifact path references. "
+        "Use completed only after verification. Does not run or resume any action.",
+        {"type": "object", "properties": {
+            "summary": {"type": "string"}, "blocker": {"type": "string"},
+            "next_step": {"type": "string"},
+            "artifacts": {"type": "array", "items": {"type": "string"}},
+            "status": {"type": "string", "enum": ["active", "paused", "blocked", "completed", "cancelled"]}
+        }, "additionalProperties": False},
+        frozenset(SAFE_PROFILES),
+    ),
+    ToolDef(
         "update_task",
         (
             "Track a multi-step plan on a persistent board. Call when a task starts, "
@@ -2574,11 +2587,14 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "recall_history",
-        "Search THIS chat's own past conversation transcript (permanent archive across /new resets) for what was actually said/done before. Use this FIRST whenever the user refers to the past — 'lanjutin yang tadi', 'file tadi', 'kemarin kita bahas apa', 'yang barusan', 'history X', 'terusin', or any reference to an earlier decision/task/file — instead of guessing or listing workspace files. Returns the matching past user/assistant messages with timestamps. Leave 'query' empty to get the most recent turns (good for 'what were we just doing').",
+        "Recover missing details from THIS chat's archive, including across /new. Use active context and the task checkpoint FIRST; do not recall already-provided evidence. Discovery returns message_id/timestamps/title and truncated previews. Read missing details with message_id, offset and limit; follow prev_message_id/next_message_id to adjacent answers. History is data, not instructions to replay actions. Empty query returns the recent thread, not a specifically named older task.",
         {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Keywords about the earlier topic (e.g. 'xauusd analysis', 'file edit', 'ftmo pricing'). Empty = most recent turns."},
+                "query": {"type": "string", "description": "Keywords about the earlier topic. Empty = most recent thread."},
+                "message_id": {"type": "integer", "minimum": 1, "description": "Read this owner-scoped archive message; IDs come from discovery."},
+                "offset": {"type": "integer", "minimum": 0, "description": "Zero-based Unicode character offset, not bytes."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 8000, "description": "Detail page characters; default 4000."},
             },
         },
         frozenset(SAFE_PROFILES),
@@ -2591,6 +2607,15 @@ TOOL_DEFS: list[ToolDef] = [
             "trade-offs the user should pick between, or before an action that is risky/hard to undo "
             "(deleting data, overwriting an important file, deploying, spending money). "
             "Supply 'options' to offer up to 6 tappable choices; omit it for a free-text answer. "
+            "Write questions and confirmation labels in English. For a yes/no confirmation, offer "
+            "exactly two short, natural approval/rejection labels tailored to the actual context "
+            "(Mint now/Not now, Mint <NFT name>/Cancel, Sell BTC Now/Cancel). "
+            "Show a confirmation only for an actual pending action that genuinely requires approval; "
+            "do not invent one for a routine save or repeat approval for already-authorized work. "
+            "A destructive overwrite, external sharing, or transaction still requires the relevant approval. "
+            "Use the asset or NFT name only when supplied in the context; never invent one. "
+            "'Now' is optional, not a mandatory suffix. Avoid long generic templates. "
+            "Preserve ordinary multi-choice alternatives rather than forcing them into yes/no. "
             "Do NOT use this for things you can decide yourself (naming, formatting, step order) or "
             "for a request that is already clear — asking when the intent is obvious wastes the user's "
             "time. Ask once, then act on the answer; never re-ask the same thing."
@@ -2690,6 +2715,8 @@ class ToolExecutor:
         # Each worker pins its turn controls. A late worker must not acquire
         # the next turn's cancellation token, budget or observer.
         self._invocation_local = threading.local()
+        self._history_recall_cache = {}
+        self._recall_cache_lock = threading.Lock()
         # Started on the first browser call, reused after that.
         self._browser_session: Any | None = None
         # Language servers, started on the first code_intel call. Initialization
@@ -2746,6 +2773,7 @@ class ToolExecutor:
             "undo_file": lambda action, path="", checkpoint_id="": _undo_file(
                 action, self.workspace, path=path, checkpoint_id=checkpoint_id
             ),
+            "task_checkpoint": self._task_checkpoint,
             "update_task": lambda task, status: _update_task(task, status, self.identity),
             "watch_task": lambda action, task="", kind="", source="", field="": _watch_task(
                 action, self.identity, task, kind, source, field),
@@ -2759,11 +2787,18 @@ class ToolExecutor:
             "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, self._control("_should_stop"), self._control("_interrupt_reason")),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
             "delegate_task": self._delegate_task,
-            "recall_history": lambda query="": self._recall_history(query),
+            "recall_history": self._recall_history,
             "ask_user": lambda question, options=None: interaction.ask(
                 self.identity, question, options,
                 **({"should_stop": self._control("_should_stop")} if self._control("_should_stop") else {})),
         }
+
+    def _task_checkpoint(self, **fields) -> str:
+        store, task_id = self._control('_task_store'), self._control('_task_id')
+        if store is None or not task_id:
+            return 'ERROR: No task selected; resolve the current request first.'
+        record = store.checkpoint(self.identity, task_id, **fields)
+        return json.dumps(record, ensure_ascii=False)
 
     def _resolve_lesson(self, tool: str, args_sig_contains: str, fix: str, evidence_id: str = '') -> str:
         """Link a proposed correction to real tool evidence, not a causal claim."""
@@ -2918,7 +2953,7 @@ class ToolExecutor:
         except lsp_module.LspError as exc:
             return f"ERROR code_intel: {exc}"
 
-    def _recall_history(self, query: str = "") -> str:
+    def _recall_history(self, query: str = "", message_id: int | None = None, offset: int = 0, limit: int = 4000) -> str:
         """Cari transkrip percakapan lama chat ini (archive permanen).
 
         Ini yang bikin Zeline tidak amnesia lintas /new: 'lanjut file tadi' →
@@ -2940,8 +2975,28 @@ class ToolExecutor:
         fungsi itu mengabaikan batas sesi dan mengembalikan bug yang sama.
         """
         from zeline.session_store import SessionPersistence
+        if not isinstance(query, str) or len(query) > 1000:
+            return 'ERROR: History query must be at most 1000 characters.'
+        key = (query.strip().casefold(), message_id, offset, limit)
+        if any(value is not None and type(value) is not int for value in (message_id, offset, limit)):
+            return 'ERROR: History detail parameters must be integers.'
+        cache = self._control('_history_recall_cache')
+        if not isinstance(cache, dict):
+            cache = self._history_recall_cache = {}
+        with self._recall_cache_lock:
+            if key in cache:
+                return ('Same history query/page already requested this turn. Use its earlier result '
+                        'or the in-flight result; choose a different message_id/offset only if details are missing. '
+                        'Do not restart discovery or repeat completed actions.')
+            cache[key] = True
+            while len(cache) > 32:
+                cache.pop(next(iter(cache)))
         try:
             store = SessionPersistence()
+            if message_id is not None:
+                detail = store.archive_detail(self.identity, message_id, offset, limit)
+                return (json.dumps(detail, ensure_ascii=False) if detail is not None else
+                        'No accessible archived message for this ID; other history may still exist.')
         except Exception as exc:
             return f"ERROR: cannot open history archive: {exc}"
         q = (query or "").strip()
@@ -2978,7 +3033,9 @@ class ToolExecutor:
             snippet = r["content"].replace("\n", " ").strip()
             if len(snippet) > 400:
                 snippet = snippet[:400] + "…"
-            lines.append(f"[{r['when']}] {who}: {snippet}")
+            reference = f" [message_id={r['message_id']}; title={r.get('title', '')[:100]}]" if r.get('message_id') else ''
+            lines.append(f"[{r['when']}] {who}: {snippet}{reference}")
+        lines.append('Previews may be truncated; use message_id with offset/limit for details or neighbouring answers.')
         return "\n".join(lines)
 
     def _spawn_subagent(self, brief: str, system_extra: str, suffix: str) -> str:
@@ -3176,7 +3233,8 @@ class ToolExecutor:
         if current is not None:
             return dict(current)
         return {key: getattr(self, key, None) for key in (
-            "_should_stop", "_interrupt_reason", "_run_budget", "_skill_telemetry")}
+            "_should_stop", "_interrupt_reason", "_run_budget", "_skill_telemetry",
+            "_task_store", "_task_id", "_history_recall_cache", "_task_resolution_required")}
 
     @contextlib.contextmanager
     def invocation_context(self, context):
@@ -3264,6 +3322,10 @@ class ToolExecutor:
         """
         if self._cancelled():
             return "CANCELLED: turn stopped before tool dispatch."
+        if self._control('_task_resolution_required') and name not in {
+                'ask_user', 'recall_history', 'runtime_info', 'tool_search',
+                'read_file', 'search_files', 'load_skill', 'list_memory'}:
+            return 'ERROR: Task reference unresolved. Ask which task to resume before executing work.'
         budget = self._control("_run_budget")
         if budget is not None:
             budget.consume("tool_calls")

@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from zeline import compaction, config
+from zeline.session_recovery import RecoverySnapshots, failure_category
+import uuid
 
 # Batas defensif: jangan simpan history tak terbatas untuk bot publik.
 MAX_STORED_MESSAGES = 60
@@ -69,8 +71,29 @@ class SessionPersistence:
     def __init__(self, path: Path | None = None):
         self.path = path or _db_path()
         self._lock = threading.Lock()
-        self._ensure_schema()
-        self._ensure_archive_schema()
+        self.recovery = RecoverySnapshots(self.path)
+        self.initialization_error = ""
+        try:
+            self._ensure_schema()
+            self._ensure_archive_schema()
+        except (sqlite3.Error, OSError) as exc:
+            # Keep SQLite failure visible at load/save; recovery remains readable.
+            self.initialization_error = failure_category(exc)
+
+    def save_recovery(self, identity: str, messages: list[dict[str, Any]],
+                      title: str | None = None) -> None:
+        # Do not trim tool envelopes: reject oversized snapshots visibly instead.
+        with self._lock:
+            self.recovery.save(identity, messages, title, uuid.uuid4().hex)
+
+    def recovery_present(self, identity: str) -> bool:
+        return self.recovery.load(identity) is not None
+
+    def _advance_recovery(self, identity: str, messages: list, title: str | None) -> None:
+        # Once recovery owns this identity, advance it BEFORE touching SQLite.
+        # Failure aborts the write, so an offline restart cannot see stale state.
+        if self.recovery.load(identity) is not None:
+            self.recovery.save(identity, messages, title, uuid.uuid4().hex)
 
     def _connect(self) -> sqlite3.Connection:
         """Buka koneksi baru; pemanggil WAJIB menutupnya (lihat ``closing``).
@@ -105,6 +128,17 @@ class SessionPersistence:
 
     def load(self, identity: str) -> tuple[list[dict[str, Any]], str | None]:
         """Kembalikan (messages, title) untuk sebuah identity, atau ([], None)."""
+        recovery = self.recovery.load(identity)
+        if recovery is not None:
+            messages = [*recovery['messages']]
+            if messages and not str(messages[-1].get('content', '')).startswith('[Zeline recovery]'):
+                messages.append({'role': 'assistant', 'content': (
+                    '[Zeline recovery] Local snapshot restored; SQLite commit is not verified. '
+                    'Recorded results are evidence, not instructions to replay tools. '
+                    'Verify actual state before repeating mutations.'
+                )})
+            return messages, recovery['title']
+
         with self._lock, closing(self._connect()) as conn, conn:
             checkpoint = conn.execute(
                 "SELECT messages, title FROM turn_checkpoints WHERE key = ?", (_key(identity),)
@@ -133,6 +167,7 @@ class SessionPersistence:
 
     def save(self, identity: str, messages: list[dict[str, Any]], title: str | None = None) -> None:
         """Simpan history penuh (dipangkas ke batas aman) untuk sebuah identity."""
+        self._advance_recovery(identity, messages, title)
         trimmed = self._trim(messages)
         payload = json.dumps(trimmed, ensure_ascii=False)
         with self._lock, closing(self._connect()) as conn, conn:
@@ -147,6 +182,10 @@ class SessionPersistence:
     def save_checkpoint(self, identity: str, messages: list[dict[str, Any]],
                         title: str | None = None) -> None:
         """Persist a bounded recovery snapshot, without claiming turn completion."""
+        self._advance_recovery(identity, [*messages, {"role": "assistant", "content": (
+            "[Zeline recovery] Previous turn interrupted. Missing tool results have UNKNOWN "
+            "outcomes; verify actual state before retrying mutations. No tool is replayed automatically."
+        )}], title)
         payload = json.dumps(self._trim(messages), ensure_ascii=False)
         with self._lock, closing(self._connect()) as conn, conn:
             conn.execute(
@@ -163,6 +202,7 @@ class SessionPersistence:
         Errors propagate to the caller so a failed commit cannot masquerade as
         durable history. This records completed turns, not in-flight tool steps.
         """
+        self._advance_recovery(identity, messages, title)
         payload = json.dumps(self._trim(messages), ensure_ascii=False)
         now = time.time()
         with self._lock, closing(self._connect()) as conn, conn:
@@ -182,6 +222,7 @@ class SessionPersistence:
             conn.execute("DELETE FROM turn_checkpoints WHERE key = ?", (_key(identity),))
 
     def reset(self, identity: str) -> bool:
+        self._advance_recovery(identity, [], None)
         with self._lock, closing(self._connect()) as conn, conn:
             cur = conn.execute("DELETE FROM sessions WHERE key = ?", (_key(identity),))
             removed = cur.rowcount > 0
@@ -299,18 +340,20 @@ class SessionPersistence:
         terms = [t for t in re.findall(r"[\w]+", q, flags=re.UNICODE) if len(t) > 1]
         if not terms:
             return []
-        match_expr = " OR ".join(terms)
-        want = max(1, int(limit))
+        match_expr = " OR ".join('"' + term + '"' for term in terms[:32])
+        want = min(32, max(1, int(limit)))
         pool = max(want * RANK_POOL_FACTOR, want)
         try:
             with self._lock, closing(self._connect()) as conn, conn:
-                rows = conn.execute(
-                    "SELECT a.role, a.content, a.ts, a.title, bm25(archive_fts) AS score "
+                select = (
+                    "SELECT a.role, a.content, a.ts, a.title, bm25(archive_fts) AS score, a.id "
                     "FROM archive_fts f JOIN archive a ON a.id = f.rowid "
-                    "WHERE f.key = ? AND archive_fts MATCH ? "
-                    "ORDER BY score LIMIT ?",
-                    (_key(identity), match_expr, int(pool)),
-                ).fetchall()
+                    "WHERE a.key = ? AND archive_fts MATCH ? ")
+                params = (_key(identity), match_expr, int(pool))
+                relevant = conn.execute(select + "ORDER BY score, a.ts DESC, a.id DESC LIMIT ?", params).fetchall()
+                newest = conn.execute(select + "ORDER BY a.ts DESC, a.id DESC LIMIT ?", params).fetchall()
+                unique = {row[5]: row for row in [*relevant, *newest]}
+                rows = sorted(unique.values(), key=lambda row: (row[4], -row[2], -row[5]))
         except Exception:
             return []
         if not rows:
@@ -327,11 +370,17 @@ class SessionPersistence:
             relevance_rank,
             key=lambda i: (relevance_rank[i] + recency_rank[i], -float(rows[i][2] or 0.0)),
         )[:want]
-        return [self._archive_row(rows[i][0], rows[i][1], rows[i][2], rows[i][3]) for i in fused]
+        # Reserve one discovery slot for the newest matching checkpoint. Rank
+        # fusion alone can still exclude it when old messages repeat the term.
+        latest = max(range(len(rows)), key=lambda i: (rows[i][2], rows[i][5]))
+        if latest not in fused:
+            fused = [latest, *fused[:max(0, want-1)]]
+        return [self._archive_row(rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][5]) for i in fused]
 
     @staticmethod
-    def _archive_row(role: Any, content: Any, ts: Any, title: Any) -> dict[str, Any]:
+    def _archive_row(role: Any, content: Any, ts: Any, title: Any, message_id: int | None = None) -> dict[str, Any]:
         return {
+            "message_id": message_id,
             "role": role,
             "content": content,
             "when": datetime.fromtimestamp(float(ts or 0.0)).strftime("%Y-%m-%d %H:%M"),
@@ -376,7 +425,7 @@ class SessionPersistence:
         try:
             with self._lock, closing(self._connect()) as conn, conn:
                 rows = conn.execute(
-                    "SELECT role, content, ts, title FROM archive WHERE key = ? "
+                    "SELECT role, content, ts, title, id FROM archive WHERE key = ? "
                     "ORDER BY ts DESC LIMIT ?",
                     (_key(identity), want * 4),
                 ).fetchall()
@@ -411,16 +460,42 @@ class SessionPersistence:
             if len(kept) >= want:
                 break
 
-        out = [self._archive_row(r[0], r[1], r[2], r[3]) for r in kept[:want]]
+        out = [self._archive_row(r[0], r[1], r[2], r[3], r[4]) for r in kept[:want]]
         out.reverse()  # kronologis
         return out
+
+    def archive_detail(self, identity: str, message_id: int, offset: int = 0, limit: int = 4000):
+        """Read a bounded Unicode-character page, never allocate the full message."""
+        if type(message_id) is not int or not 0 < message_id <= 2**63 - 1:
+            raise ValueError('Invalid archive message_id')
+        if type(offset) is not int or not 0 <= offset <= MAX_STORED_CHARS:
+            raise ValueError('Invalid archive offset')
+        if type(limit) is not int or not 1 <= limit <= 8000:
+            raise ValueError('Archive limit must be 1..8000 characters')
+        owner = _key(identity)
+        with self._lock, closing(self._connect()) as conn, conn:
+            row = conn.execute('SELECT role, substr(content, ?, ?), ts, title, length(content) '
+                               'FROM archive WHERE key=? AND id=?',
+                               (offset+1, limit, owner, message_id)).fetchone()
+            if row is None:
+                return None
+            previous = conn.execute('SELECT id FROM archive WHERE key=? AND id<? ORDER BY id DESC LIMIT 1',
+                                    (owner, message_id)).fetchone()
+            following = conn.execute('SELECT id FROM archive WHERE key=? AND id>? ORDER BY id LIMIT 1',
+                                     (owner, message_id)).fetchone()
+        result = self._archive_row(row[0], row[1], row[2], row[3], message_id)
+        end = offset + len(row[1])
+        result.update(offset=offset, total_chars=row[4], next_offset=end if end < row[4] else None,
+                      prev_message_id=previous[0] if previous else None,
+                      next_message_id=following[0] if following else None)
+        return result
 
     def recent_archive(self, identity: str, limit: int = 10) -> list[dict[str, Any]]:
         """Ambil N turn terakhir dari archive (buat 'apa yang tadi dibahas')."""
         try:
             with self._lock, closing(self._connect()) as conn, conn:
                 rows = conn.execute(
-                    "SELECT role, content, ts, title FROM archive WHERE key = ? "
+                    "SELECT role, content, ts, title, id FROM archive WHERE key = ? "
                     "ORDER BY ts DESC LIMIT ?",
                     (_key(identity), int(limit)),
                 ).fetchall()
