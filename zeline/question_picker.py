@@ -32,7 +32,9 @@ def _choice(line: str) -> tuple[str | None, str] | None:
 
 
 def _choices(lines: list[str], question: str) -> tuple[str, ...] | None:
-    if not 2 <= len(lines) <= 6:
+    if not 2 <= len(lines) <= 6 or not _DECISION.search(question):
+        # Enumerating information is not an explicit request for a decision.
+        # Numbered/lettered options need the same intent cue as bullet options.
         return None
     found = [_choice(item) for item in lines]
     if any(item is None or not item[1] for item in found):

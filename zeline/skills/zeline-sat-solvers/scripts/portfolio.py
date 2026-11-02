@@ -8,18 +8,21 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
 
 from solver_common import load_instance, verify
+from solver_worker import MAX_OUTPUT_BYTES
+from solver_worker import child_limits as child_limits
+from solver_worker import _darwin_virtual_size as _darwin_virtual_size
 
 SOLVERS = ('z3', 'kissat', 'cadical', 'glucose', 'minisat', 'yalsat', 'probsat',
            'probsat_official', 'cryptominisat', 'bitwuzla')
 LOCAL = {'yalsat', 'probsat', 'probsat_official'}
 BINARY_NAMES = {'probsat': ('probsab',), 'probsat_official': ('probSAT', 'probsat'),
                 'cryptominisat': ('cryptominisat5', 'cryptominisat')}
-MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 
 def binary(name):
@@ -113,26 +116,6 @@ def parse_output(text, instance, solver, returncode):
     return result('UNKNOWN', solver)
 
 
-def child_limits():
-    """POSIX child-only limits; never change the agent process's resources."""
-    import resource
-    for label, kind, bound in (('FSIZE', resource.RLIMIT_FSIZE, MAX_OUTPUT_BYTES),
-                               ('DATA', resource.RLIMIT_DATA, 2 * 1024 ** 3),
-                               ('CORE', resource.RLIMIT_CORE, 0)):
-        try:
-            soft, hard = resource.getrlimit(kind)
-            # Never attempt to increase an inherited tighter soft ceiling. On
-            # Darwin the finite kernel DATA maximum may differ from hard=inf.
-            value = min([bound] + [limit for limit in (soft, hard)
-                                   if limit != resource.RLIM_INFINITY])
-            resource.setrlimit(kind, (value, value))
-        except (OSError, ValueError) as exc:
-            # Expose only a safe limit identifier/type/errno, never process data.
-            os.write(2, ('ZELINE_LIMIT_SETUP ' + label + ' ' + type(exc).__name__
-                         + ' errno=' + str(getattr(exc, 'errno', None)) + '\n').encode())
-            raise
-
-
 def run_backend(instance, solver, executable, timeout):
     with tempfile.TemporaryDirectory(prefix='zeline-sat-') as directory:
         root = Path(directory)
@@ -172,10 +155,16 @@ def run_backend(instance, solver, executable, timeout):
             argv.extend(['1', '2.3', str(timeout)])
         output = root / 'stdout'
         with output.open('wb') as stream:
+            # Apply resource guards AFTER a fresh exec, not in the threaded
+            # parent's preexec_fn; the worker then execs the native solver.
+            command = ([sys.executable, str(Path(__file__).with_name('solver_worker.py')), str(MAX_OUTPUT_BYTES), *argv]
+                       if os.name == 'posix' else argv)
+            environment = os.environ.copy()
+            if sys.platform == 'darwin':
+                environment['MallocSpaceEfficient'] = '1'
             try:
-                process = subprocess.Popen(argv, stdout=stream, stderr=stream, shell=False,
-                                           start_new_session=(os.name == 'posix'),
-                                           preexec_fn=child_limits if os.name == 'posix' else None)
+                process = subprocess.Popen(command, stdout=stream, stderr=stream, shell=False,
+                                           env=environment, start_new_session=(os.name == 'posix'))
             except (OSError, subprocess.SubprocessError) as exc:
                 # Popen has already reaped failed pre-exec children. Retain only
                 # our fixed diagnostic marker, not arbitrary stderr or paths.
@@ -204,6 +193,9 @@ def run_backend(instance, solver, executable, timeout):
         if output.stat().st_size > MAX_OUTPUT_BYTES:
             return result('ERROR', solver, error='output limit exceeded')
         text = output.read_text(errors='replace')
+        if process.returncode == 125 and 'ZELINE_LIMIT_SETUP' in text:
+            marker = next(line[:180] for line in text.splitlines() if 'ZELINE_LIMIT_SETUP' in line)
+            return result('ERROR', solver, error='solver setup failed: ' + marker)
         if model_file.exists():
             if model_file.stat().st_size > MAX_OUTPUT_BYTES:
                 return result('ERROR', solver, error='model output limit exceeded')

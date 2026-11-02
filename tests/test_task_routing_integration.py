@@ -12,7 +12,7 @@ class TaskRoutingIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        env = patch.dict(os.environ, {'HOME': self.tmp.name, 'ZELINE_HOME': self.tmp.name,
+        env = patch.dict(os.environ, {'HOME': self.tmp.name, 'USERPROFILE': self.tmp.name, 'ZELINE_HOME': self.tmp.name,
             'ZELINE_API_KEY': 'fixture', 'ZELINE_MODEL': 'fixture',
             'ZELINE_BASE_URL': 'http://127.0.0.1:1/v1'})
         env.start()

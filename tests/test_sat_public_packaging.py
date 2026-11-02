@@ -15,15 +15,18 @@ class PublicSolverPackagingTests(unittest.TestCase):
                    'zeline/skills/zeline-sat-solvers/assets/adapted/probsab.c']
         public = 'zeline/skills/zeline-sat-solvers/scripts/portfolio.py'
         files = FileList()
-        files.set_allfiles(private + [public, 'install.sh', 'install.ps1', 'CHANGELOG.md',
+        fixtures = private + [public, 'install.sh', 'install.ps1', 'CHANGELOG.md',
             '.github/RELEASE_NOTES.md', 'docs/index.md', 'zeline/SOUL.md',
             'zeline/zenith_tools/example.py', 'zeline/skills/cache.pyc',
-            'zeline/skills/__pycache__/cached.pyc'])
+            'zeline/skills/__pycache__/cached.pyc']
+        # distutils discovers native paths on Windows, then converts template globs.
+        files.set_allfiles([str(Path(path)) for path in fixtures])
         for line in (ROOT / 'MANIFEST.in').read_text().splitlines():
             if line.strip() and not line.lstrip().startswith('#'):
                 files.process_template_line(line)
-        self.assertFalse(set(private) & set(files.files), 'Explicit MANIFEST includes leaked private sources')
-        self.assertIn(public, files.files, 'Public solver adapters must remain in the sdist')
+        selected = {Path(path).as_posix() for path in files.files}
+        self.assertFalse(set(private) & selected, 'Explicit MANIFEST includes leaked private sources')
+        self.assertIn(public, selected, 'Public solver adapters must remain in the sdist')
 
     def test_private_uploads_are_excluded_from_git_and_package_discovery(self):
         paths = ['zeline/skills/zeline-sat-solvers/assets/supplied/nonce_solver_v3/probsab.c',

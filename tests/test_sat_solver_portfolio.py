@@ -79,6 +79,35 @@ class PortfolioTests(unittest.TestCase):
             self.assertLessEqual(call.args[1][0], 32)
             self.assertEqual(call.args[1][0], call.args[1][1])
 
+    @unittest.skipUnless(os.name == 'posix', 'POSIX resource contract')
+    def test_darwin_bounds_growth_after_verified_startup_vm_reservation(self):
+        import resource
+        portfolio = importlib.import_module('portfolio')
+        with patch.object(portfolio.sys, 'platform', 'darwin'), patch.object(
+                importlib.import_module('solver_worker'), '_darwin_virtual_size', return_value=4096), patch.object(
+                resource, 'getrlimit', return_value=(resource.RLIM_INFINITY, resource.RLIM_INFINITY)), patch.object(
+                resource, 'setrlimit') as setter:
+            portfolio.child_limits()
+        applied = {call.args[0]: call.args[1] for call in setter.call_args_list}
+        self.assertEqual(applied[resource.RLIMIT_DATA], (4096 + 2 * 1024 ** 3,) * 2)
+        self.assertEqual(applied[resource.RLIMIT_FSIZE], (portfolio.MAX_OUTPUT_BYTES,) * 2)
+        self.assertEqual(applied[resource.RLIMIT_CORE], (0, 0))
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX executable fixture')
+    def test_invalid_executable_is_structured_error(self):
+        portfolio = importlib.import_module('portfolio')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'x.json'
+            source.write_text('[[1]]')
+            bad = root / 'bad-executable'
+            bad.write_text('not an executable image')
+            bad.chmod(0o700)
+            with patch.object(portfolio, 'binary', return_value=str(bad)):
+                answer = portfolio.solve(source, solver='kissat')
+            self.assertEqual(answer['status'], 'ERROR', answer)
+            self.assertNotIn('Traceback', str(answer))
+
     def test_spawn_setup_failure_is_structured(self):
         portfolio = importlib.import_module('portfolio')
         common = self.common()
@@ -313,7 +342,8 @@ class PortfolioTests(unittest.TestCase):
             source.write_text('[[1]]')
             fixture = root / 'check'
             marker = root / 'limited'
-            fixture.write_text('#!' + sys.executable + '\nimport resource\nfrom pathlib import Path\na=resource.getrlimit(resource.RLIMIT_DATA)[0]\nf=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\nassert 0<a<=2*1024**3\nassert 0<f<=16*1024**2\nPath(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
+            body = "import resource,sys\nfrom pathlib import Path\na=resource.getrlimit(resource.RLIMIT_DATA)[0]\nf=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\nbaseline=0\nif sys.platform=='darwin':\n sys.path.insert(0," + repr(str(SCRIPTS)) + ')\n from portfolio import _darwin_virtual_size\n baseline=_darwin_virtual_size()\nassert 0<a<=baseline+2*1024**3\nassert 0<f<=16*1024**2\n'
+            fixture.write_text('#!' + sys.executable + '\n' + body + 'Path(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
             fixture.chmod(0o700)
             with patch.object(p, 'binary', return_value=str(fixture)):
                 p.solve(source, solver='z3')
