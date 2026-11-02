@@ -7,11 +7,17 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+
+# Serialize preparation and the whole transaction within this process. SQLite's
+# five-second busy timeout remains the cross-process admission bound; making
+# competing Python threads wait inside sqlite3 can starve a slow Windows writer.
+_TRANSACTION_LOCK = threading.RLock()
 
 _DARWIN_SYSTEM_ALIASES = ((Path('/var'), Path('/private/var')),
                           (Path('/tmp'), Path('/private/tmp')))
@@ -56,22 +62,23 @@ class TaskContextStore:
 
     @contextmanager
     def _connection(self):
-        for path in (self.path, *self.path.parents):
-            if path.is_symlink():
-                raise ValueError('Task store must not use symlinks')
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-        os.close(fd)
-        self.path.chmod(0o600)
-        db = sqlite3.connect(str(self.path), timeout=5)
-        try:
-            db.execute('BEGIN IMMEDIATE')
-            yield db
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        with _TRANSACTION_LOCK:
+            for path in (self.path, *self.path.parents):
+                if path.is_symlink():
+                    raise ValueError('Task store must not use symlinks')
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            os.close(fd)
+            self.path.chmod(0o600)
+            db = sqlite3.connect(str(self.path), timeout=5)
+            try:
+                db.execute('BEGIN IMMEDIATE')
+                yield db
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     @staticmethod
     def _get(db, owner, task_id):

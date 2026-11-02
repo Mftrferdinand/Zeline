@@ -109,6 +109,49 @@ class TaskContextTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.bind_message('other', a['id'], 30)
 
+    def test_connection_admission_is_serial_across_store_instances(self):
+        import threading
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+        task = self.store.begin('owner', 'Admission fixture')['task']
+        stores = [self.store, self.module.TaskContextStore(self.store.path)]
+        real_connect = self.module.sqlite3.connect
+        counter = threading.Lock()
+        start = threading.Barrier(8)
+        active = 0
+        peak = 0
+        class Connection:
+            def __init__(self, inner): self.inner = inner
+            def __getattr__(self, name): return getattr(self.inner, name)
+            def close(self):
+                nonlocal active
+                try: self.inner.close()
+                finally:
+                    with counter: active -= 1
+        def connect(*args, **kwargs):
+            nonlocal active, peak
+            if str(args[0] if args else kwargs.get('database')) != str(self.store.path):
+                return real_connect(*args, **kwargs)
+            with counter:
+                active += 1
+                peak = max(peak, active)
+            # Widen the actual connection-preparation overlap, not SQLite's
+            # timeout; no assertion depends on elapsed wall-clock duration.
+            time.sleep(0.03)
+            try: return Connection(real_connect(*args, **kwargs))
+            except BaseException:
+                with counter: active -= 1
+                raise
+        def read(index):
+            start.wait(timeout=5)
+            return stores[index % 2].focus('owner')['id']
+        with patch.object(self.module.sqlite3, 'connect', connect):
+            with ThreadPoolExecutor(8) as pool:
+                ids = list(pool.map(read, range(8)))
+        self.assertEqual(ids, [task['id']] * 8)
+        self.assertEqual(peak, 1, 'same-process connections contended before transaction admission')
+        self.assertEqual(active, 0)
+
     def test_event_bounds_privacy_and_concurrent_updates(self):
         from concurrent.futures import ThreadPoolExecutor
         import stat
