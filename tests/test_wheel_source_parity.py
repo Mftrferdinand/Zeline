@@ -38,6 +38,20 @@ class WheelSourceParityTests(unittest.TestCase):
                          "zeline/tools.py": b"SCHEMA = ('tsx',)\n"})
         self.assertEqual(checker().verify_python_sources(self.root, self.wheel), 2)
 
+    def test_private_uploads_are_not_required_and_never_allowed_in_wheel(self):
+        private = self.package / 'skills/zeline-sat-solvers/assets/supplied/fixture.py'
+        private.parent.mkdir(parents=True)
+        private.write_bytes(b'PRIVATE_FIXTURE = True\n')
+        public = {'zeline/__init__.py': b'version = 1\n',
+                  'zeline/tools.py': b"SCHEMA = ('tsx',)\n"}
+        self.wheel_with(public)
+        self.assertEqual(checker().verify_python_sources(self.root, self.wheel), 2)
+        for path in ('zeline/skills/zeline-sat-solvers/assets/supplied/fixture.py',
+                     'zeline/skills/zeline-sat-solvers/assets/adapted/fixture.c'):
+            self.wheel_with({**public, path: b'PRIVATE_FIXTURE'})
+            with self.assertRaisesRegex(ValueError, 'private source'):
+                checker().verify_python_sources(self.root, self.wheel)
+
     def test_stale_tool_schema_fails(self):
         self.wheel_with({"zeline/__init__.py": b"version = 1\n",
                          "zeline/tools.py": b"SCHEMA = ('js',)\n"})

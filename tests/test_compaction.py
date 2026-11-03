@@ -130,15 +130,13 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertTrue(compaction.is_archive_path(files[0]))
 
-    def test_unwritable_archive_still_yields_a_usable_digest(self):
+    def test_unwritable_archive_cannot_authorize_eviction(self):
         with mock.patch.object(compaction, "archive", return_value=None):
-            summary = compaction.compact(
-                [_user("keputusan penting"), *_tool_turn("write_file", {"path": "y.py"})],
-                "cli:local",
-            )
-        assert summary is not None
-        self.assertIn("keputusan penting", summary["content"])
-        self.assertNotIn("read_file(", summary["content"])
+            with self.assertRaises(OSError):
+                compaction.compact(
+                    [_user("keputusan penting"), *_tool_turn("write_file", {"path": "y.py"})],
+                    "cli:local",
+                )
 
     def test_malformed_tool_arguments_do_not_break_the_digest(self):
         broken = {

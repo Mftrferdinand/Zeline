@@ -64,13 +64,13 @@ Changelog = "https://github.com/Mftrferdinand/Zeline/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["zeline", "zeline.*"]
-exclude = ["tests*"]
+exclude = ["tests*", "zeline.skills*", "zeline.skills.zeline-sat-solvers.assets.supplied*", "zeline.skills.zeline-sat-solvers.assets.adapted*"]
 
 [tool.setuptools.package-data]
-zeline = ["SOUL.md", "skills/*.md", "skills/**/*", "zenith_tools/**/*.py"]
+zeline = ["SOUL.md", "skills/*.md", "skills/**/*", "skills/zeline-agentid-watcher/assets/upstream/.gitignore", "zenith_tools/**/*.py"]
 
 [tool.setuptools.exclude-package-data]
-"*" = ["*.pyc", "*.pyo", "__pycache__/*", "**/*.pyc", "**/*.pyo", "**/__pycache__/*"]
+"*" = ["*.pyc", "*.pyo", "__pycache__/*", "**/*.pyc", "**/*.pyo", "**/__pycache__/*", "skills/zeline-sat-solvers/assets/supplied/*", "skills/zeline-sat-solvers/assets/adapted/*"]
 
 [tool.setuptools]
 include-package-data = true

@@ -54,6 +54,7 @@ CORE_TOOLS = frozenset({
     "run_shell",
     "execute_code",
     "update_task",
+    "task_checkpoint",
     "resolve_lesson",
     "ask_user",
 })

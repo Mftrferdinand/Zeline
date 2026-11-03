@@ -55,6 +55,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "delegate_task": {"goal": "review UI"},
             "recall_history": {},
             "ask_user": {"question": "Continue?"},
+            "task_checkpoint": {"status": "paused", "next_action": "Run focused checks"},
         }
         registry = {definition.name for definition in self.tools.TOOL_DEFS}
         self.assertEqual(registry, set(examples), "update UI examples with any new registry tool")

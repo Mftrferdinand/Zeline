@@ -14,7 +14,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
 from zeline import config
 from zeline import tasks
@@ -22,6 +22,7 @@ from zeline import tools
 from zeline.agent import Zeline, ZelineError
 from zeline import interaction
 from zeline.session_store import SessionPersistence
+from zeline.session_recovery import failure_category
 
 
 @dataclass(eq=False)
@@ -38,6 +39,7 @@ class TurnTicket:
     maximum: int = 0
     finished: threading.Event = field(default_factory=threading.Event)
     previous_progress: dict[str, object] | None = None
+    task_id: str | None = None
 
     def cancel(self, reason: str = "stop") -> None:
         # A hard stop always overrides a prior soft redirect.
@@ -130,7 +132,7 @@ class SessionStore:
                             title = stored_title
                     except Exception as exc:
                         logging.getLogger(__name__).warning(
-                            "Session restore failed (%s)", type(exc).__name__)
+                            "Session restore failed (%s)", failure_category(exc))
                         raise ZelineError("Saved conversation could not be restored; "
                                           "existing state has been preserved.") from None
                 session = Session(
@@ -139,6 +141,9 @@ class SessionStore:
                     last_used=time.monotonic(),
                     title=title,
                 )
+                if (self._persistence is not None
+                        and self._persistence.recovery_present(identity)):
+                    session.persistence_error = "recovery_snapshot_loaded; SQLite commit not verified"
                 self._sessions[identity] = session
             else:
                 self._sessions.move_to_end(identity)
@@ -236,6 +241,7 @@ class SessionStore:
         on_tool: Callable | None = None, on_tool_result: Callable | None = None,
         on_iteration: Callable | None = None, on_narration: Callable | None = None,
         on_stream_delta: Callable | None = None, *, ticket: TurnTicket | None = None,
+        task_reference: dict[str, Any] | None = None,
     ) -> str:
         own_ticket = ticket is None
         if ticket is None:
@@ -264,7 +270,7 @@ class SessionStore:
                         pending = [*session.agent.export_history(), {"role": "user", "content": text}]
                         self._persistence.save_checkpoint(identity, pending, session.title)
                     except Exception as exc:
-                        session.persistence_error = f"checkpoint failed ({type(exc).__name__})"
+                        session.persistence_error = f"checkpoint failed ({failure_category(exc)})"
                         logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
                         raise ZelineError("Progress could not be saved; no work was started.") from None
 
@@ -279,12 +285,13 @@ class SessionStore:
                         on_iteration(current, maximum)
 
                 def checkpoint(messages):
+                    ticket.task_id = getattr(session.agent, "last_task_id", None)
                     if self._persistence is None:
                         return
                     try:
                         self._persistence.save_checkpoint(identity, messages, session.title)
                     except Exception as exc:
-                        session.persistence_error = f"checkpoint failed ({type(exc).__name__})"
+                        session.persistence_error = f"checkpoint failed ({failure_category(exc)})"
                         logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
                         raise ZelineError("Progress could not be saved; no further tools were started. "
                                           "Verify the last action before retrying.") from None
@@ -295,6 +302,7 @@ class SessionStore:
                     interrupt_reason=lambda: ticket.reason,
                     take_steer=take_steer, on_narration=on_narration,
                     on_stream_delta=on_stream_delta, on_checkpoint=checkpoint,
+                    **({"task_reference": task_reference} if task_reference else {}),
                 )
                 if ticket.cancel_event.is_set():
                     reply = "Stopped."
@@ -306,17 +314,35 @@ class SessionStore:
                         session.persistence_error = ""
                     except Exception as exc:
                         # Do not expose exception text, paths, identities or message content.
-                        session.persistence_error = f"save_turn failed ({type(exc).__name__})"
+                        session.persistence_error = f"save_turn failed ({failure_category(exc)})"
+                        try:
+                            self._persistence.save_recovery(
+                                identity, session.agent.export_history(), session.title)
+                            recovery_note = "Snapshot pemulihan lokal tersimpan; commit SQLite tetap gagal."
+                        except Exception as recovery_exc:
+                            session.persistence_error += f"; recovery failed ({failure_category(recovery_exc)})"
+                            recovery_note = "Pemulihan lokal juga gagal; simpan jawaban penting sebelum restart."
                         logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
                         if not ticket.cancel_event.is_set():
                             reply += ("\n\n⚠️ Riwayat percakapan ini gagal disimpan. "
-                                      "Hasil tugas tidak dibatalkan; simpan jawaban penting sebelum restart.")
+                                      "Hasil tugas tidak dibatalkan. " + recovery_note)
                 return reply
         finally:
             # Gateway reservations span result delivery too, so the next turn
             # cannot steal channels or deliver before the prior final is sent.
             if own_ticket:
                 self.finish_turn(ticket)
+
+    def bind_task_message(self, identity: str, message_id: int, task_id: str | None = None) -> bool:
+        with self._lock:
+            session = self._sessions.get(identity)
+            if task_id is None and session is not None:
+                task_id = getattr(session.agent, 'last_task_id', None)
+        if not isinstance(task_id, str) or not task_id:
+            return False
+        from zeline.task_context import TaskContextStore
+        TaskContextStore().bind_message(identity, task_id, message_id)
+        return True
 
     def request_stop(self, identity: str) -> bool:
         """Cancel immediately for interactive gateways; reap owned processes off-loop.
@@ -483,6 +509,8 @@ class SessionStore:
             tasks.clear(identity)
         except Exception:
             pass
+        from zeline.task_context import TaskContextStore
+        TaskContextStore().clear(identity)
         return session is not None or cleared_disk
 
     def switch_provider(self, identity: str) -> None:

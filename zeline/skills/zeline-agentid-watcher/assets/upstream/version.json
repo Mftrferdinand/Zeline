@@ -1,0 +1,9 @@
+{
+ "version": "2.6.6",
+ "sha256": "43cca3c566b27c003fec25681311d647bbe1c1807b26ae124e179d50f1c6587d",
+ "notes": [
+  "English edition: every message, log line, comment and document translated to English (substance unchanged)",
+  "Update check now points at this fork; the original project and TG group stay credited",
+  "Wording fix: free projects no longer say \"queued for mint\" (free is notify only, never auto-minted)"
+ ]
+}

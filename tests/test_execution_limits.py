@@ -41,6 +41,41 @@ class ExecutionLimitTests(unittest.TestCase):
             for i in range(count)
         ]}
 
+    def test_budget_exception_carries_atomic_local_counts(self):
+        budget = self.budget.RunBudget(provider_requests=1, tool_calls=2)
+        budget.consume("provider_requests")
+        budget.consume("tool_calls")
+        with self.assertRaises(self.budget.BudgetExceeded) as caught:
+            budget.consume("provider_requests")
+        error = caught.exception
+        self.assertEqual(getattr(error, "kind", None), "provider_requests")
+        self.assertEqual(error.used, {"provider_requests": 1, "tool_calls": 1})
+        self.assertEqual(error.limits, {"provider_requests": 1, "tool_calls": 2})
+        budget.consume("tool_calls")
+        self.assertEqual(error.used["tool_calls"], 1)  # immutable-in-time snapshot
+
+    def test_provider_limit_receipt_is_final_history_checkpoint_and_failure(self):
+        import copy
+        self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 1
+        checkpoints = []
+        telemetry = Mock()
+        with patch.object(self.module.requests, "post", return_value=self.response(self.calls("runtime_info"))) as post, \
+             patch.object(self.agent.executor, "_execute", return_value="completed tool evidence"), \
+             patch("zeline.skillforge.TurnTelemetry", return_value=telemetry):
+            result = self.agent.send("fixture", on_checkpoint=lambda messages: checkpoints.append(copy.deepcopy(messages)))
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(self.agent.messages[-1], {"role": "assistant", "content": result})
+        self.assertEqual(checkpoints[-1], self.agent.messages)
+        self.assertEqual(self.agent.export_history()[-1]["content"], result)
+        self.assertIn("LOCAL", result)
+        self.assertIn("provider_requests=1/1", result)
+        self.assertIn("tool_calls=1/disabled", result)
+        self.assertIn("not a provider quota", result)
+        self.assertIn("not complete", result)
+        self.assertLess(len(result), 900)
+        self.assertIn("completed tool evidence", str(checkpoints[-1]))
+        telemetry.finish.assert_called_once_with("failure")
+
     def test_request_limit_stops_before_second_provider_request(self):
         self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 1
         response = self.response(self.calls("runtime_info"))
@@ -49,6 +84,68 @@ class ExecutionLimitTests(unittest.TestCase):
         self.assertEqual(post.call_count, 1)
         self.assertIn("provider_requests limit reached (1)", result)
         self.assertIsNone(self.agent.executor._run_budget)
+
+    def test_tool_limit_final_receipt_roundtrips_with_completed_evidence(self):
+        import copy
+        for name in ("run_shell", "runtime_info"):
+            with self.subTest(name=name):
+                self.agent.messages = self.agent.messages[:1]
+                self.module.config.MAX_TOOL_CALLS_PER_TURN = 1
+                snapshots = []
+                with patch.object(self.module.requests, "post", return_value=self.response(self.calls(name, count=2))) as post, \
+                     patch.object(self.agent.executor, "_execute", return_value="completed action evidence") as execute:
+                    result = self.agent.send("fixture", on_checkpoint=lambda messages: snapshots.append(copy.deepcopy(messages)))
+                self.assertEqual(post.call_count, 1)
+                self.assertEqual(execute.call_count, 1)
+                self.assertEqual(snapshots[-1][-1], {"role": "assistant", "content": result})
+                self.assertIn("tool_calls=1/1", result)
+                self.assertIn("provider_requests=1/disabled", result)
+                protocol = importlib.import_module("zeline.tool_protocol")
+                self.assertFalse(protocol.unanswered_call_ids(snapshots[-1]))
+                persistence = importlib.import_module("zeline.session_store").SessionPersistence(
+                    Path(self.tmp.name) / f"receipt-{name}.db")
+                persistence.save("fixture", self.agent.export_history(), title="fixture")
+                restored, _title = persistence.load("fixture")
+                self.assertEqual(restored[-1]["content"], result)
+                self.assertIn("completed action evidence", str(restored))
+
+    def test_final_budget_checkpoint_failure_is_not_reported_as_saved(self):
+        self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 1
+        def checkpoint(messages):
+            if messages[-1].get("content", "").startswith("ERROR: LOCAL"):
+                raise OSError("final checkpoint unavailable")
+        with patch.object(self.module.requests, "post", return_value=self.response(self.calls("runtime_info"))) as post, \
+             patch.object(self.agent.executor, "_execute", return_value="completed action evidence"):
+            with self.assertRaisesRegex(OSError, "final checkpoint unavailable"):
+                self.agent.send("fixture", on_checkpoint=checkpoint)
+        self.assertEqual(post.call_count, 1)
+        self.assertTrue(self.agent.messages[-1]["content"].startswith("ERROR: LOCAL"))
+        self.assertIn("completed action evidence", str(self.agent.export_history()))
+        self.assertIsNone(self.agent.executor._run_budget)
+
+    def test_permanent_provider_failures_are_not_local_budget_stops(self):
+        self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 1
+        self.module.config.FALLBACK_MODELS = ("other-fixture",)
+        for status in (401, 403, 429):
+            with self.subTest(status=status):
+                response = self.response(status=status)
+                response.text = json.dumps({"error": {"code": "insufficient_quota", "message": "fixture"}})
+                with patch.object(self.module.requests, "post", return_value=response) as post:
+                    with self.assertRaises(self.module.ZelineError) as caught:
+                        self.agent.send("fixture")
+                self.assertEqual(post.call_count, 1)
+                self.assertNotIn("LOCAL", str(caught.exception))
+
+    def test_stop_preempts_budget_without_receipt_or_dispatch(self):
+        self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 1
+        telemetry = Mock()
+        with patch.object(self.module.requests, "post") as post, \
+             patch("zeline.skillforge.TurnTelemetry", return_value=telemetry):
+            result = self.agent.send("fixture", should_stop=lambda: True)
+        self.assertEqual(result, self.module.CANCELLED_REPLY)
+        post.assert_not_called()
+        self.assertFalse(any("ERROR: LOCAL" in str(message) for message in self.agent.messages))
+        telemetry.finish.assert_called_once_with("cancelled")
 
     def test_retry_attempts_share_same_allowance(self):
         self.module.config.MAX_PROVIDER_REQUESTS_PER_TURN = 1
