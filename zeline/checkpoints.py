@@ -32,10 +32,63 @@ import os
 import shutil
 import time
 import tempfile
+import sqlite3
+import threading
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from zeline import config
+
+
+def _mutating(fallback):
+    def decorate(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            try:
+                with _transaction():
+                    return function(*args, **kwargs)
+            except (OSError, shutil.Error):
+                return fallback
+        return wrapped
+    return decorate
+
+
+_MUTEX = threading.RLock()
+_LOCAL = threading.local()
+_LOCK_TIMEOUT = 0.5
+
+
+@contextmanager
+def _transaction():
+    """Bounded, reentrant thread/process exclusion for the entire mutation."""
+    if not _MUTEX.acquire(timeout=_LOCK_TIMEOUT):
+        raise OSError("checkpoint mutex busy")
+    connection = None
+    try:
+        if not getattr(_LOCAL, "depth", 0):
+            lock_path = _ensure_root() / "mutex.sqlite3"
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            os.close(fd)
+            connection = sqlite3.connect(lock_path, timeout=_LOCK_TIMEOUT)
+            connection.execute("BEGIN IMMEDIATE")
+        _LOCAL.depth = getattr(_LOCAL, "depth", 0) + 1
+        try:
+            yield
+        finally:
+            _LOCAL.depth -= 1
+    except sqlite3.Error as exc:
+        raise OSError("checkpoint mutex unavailable") from exc
+    finally:
+        try:
+            if connection is not None:
+                connection.close()
+        except sqlite3.Error as exc:
+            raise OSError("checkpoint mutex cleanup failed") from exc
+        finally:
+            _MUTEX.release()
+
 
 # Files above this are not snapshotted: the copy cost stops being worth it and
 # a huge binary is rarely what an operator wants to undo.
@@ -121,38 +174,45 @@ def _ensure_root() -> Path:
 def _load_index() -> list[dict[str, Any]]:
     try:
         raw = json.loads(_index_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError):
         return []
     return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
 def _save_index(entries: list[dict[str, Any]]) -> None:
-    _ensure_root()
-    temp = _index_path().with_suffix(".json.tmp")
-    temp.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(_index_path())
+    root = _ensure_root()
+    fd, name = tempfile.mkstemp(prefix="index-", suffix=".tmp", dir=root)
+    temp = Path(name)
     try:
-        os.chmod(_index_path(), 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(entries, ensure_ascii=False, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, _index_path())
+        # Windows does not support opening/fsyncing directories. On POSIX,
+        # report durability failures, but never roll back a published index.
+        if os.name != "nt":
+            directory = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _prune(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop the oldest entries past the cap, deleting their blobs."""
+    """Select the retained entries; publication must precede blob deletion."""
     if len(entries) <= MAX_SNAPSHOTS:
         return entries
-    entries.sort(key=lambda item: float(item.get("ts", 0)))
+    newest = entries[-1]
+    # The appended checkpoint must remain undoable even after wall-clock rollback.
+    entries.sort(key=lambda item: (item is newest, float(item.get("ts", 0))))
     excess = len(entries) - MAX_SNAPSHOTS
-    for stale in entries[:excess]:
-        blob = _root() / str(stale.get("blob", ""))
-        try:
-            if blob.is_file():
-                blob.unlink()
-        except OSError:
-            pass
     return entries[excess:]
 
 
+@_mutating(None)
 def snapshot(path: str | Path, reason: str = "write") -> str | None:
     """Copy a file's current bytes aside. Returns the checkpoint id, or None.
 
@@ -173,6 +233,7 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
     if size > MAX_SNAPSHOT_BYTES:
         return None
 
+    blob_name = None
     try:
         _ensure_root()
         moment = time.time()
@@ -185,6 +246,8 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
             os.chmod(_root() / blob_name, 0o600)
         except OSError:
             pass
+        with (_root() / blob_name).open("r+b") as stream:
+            os.fsync(stream.fileno())
         entries = _load_index()
         entries.append({
             "id": checkpoint_id,
@@ -194,9 +257,28 @@ def snapshot(path: str | Path, reason: str = "write") -> str | None:
             "reason": str(reason)[:40],
             "ts": moment,
         })
-        _save_index(_prune(entries))
+        retained = _prune(entries)
+        _save_index(retained)
+        live_blobs = {item.get('blob') for item in retained}
+        for stale in entries:
+            if stale.get('blob') not in live_blobs:
+                try:
+                    (_root() / str(stale.get('blob', ''))).unlink(missing_ok=True)
+                except OSError:
+                    pass  # Orphan cleanup can retry; never invalidate the live index.
         return checkpoint_id
     except (OSError, shutil.Error):
+        # A directory fsync can fail AFTER replace. Only remove a blob when
+        # a fresh, readable index proves it is not published. Uncertainty leaks
+        # an orphan rather than destroying an operator's recovery bytes.
+        if blob_name is not None:
+            try:
+                raw = json.loads(_index_path().read_text(encoding="utf-8"))
+                if isinstance(raw, list) and all(isinstance(x, dict) for x in raw):
+                    if not any(x.get("blob") == blob_name for x in raw):
+                        (_root() / blob_name).unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
         # Never let a failed snapshot block the write it was protecting.
         return None
 
@@ -206,7 +288,10 @@ def list_checkpoints(
     limit: int = 50,
     workspace: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    entries = _load_index()
+    try:
+        entries = _load_index()
+    except OSError:
+        return []
     if path is not None:
         wanted = str(_normalize(path))
         entries = [item for item in entries if str(item.get("path")) == wanted]
@@ -221,12 +306,17 @@ def list_checkpoints(
 
 
 def find(checkpoint_id: str) -> dict[str, Any] | None:
-    for item in _load_index():
+    try:
+        entries = _load_index()
+    except OSError:
+        return None
+    for item in entries:
         if str(item.get("id")) == checkpoint_id:
             return item
     return None
 
 
+@_mutating((False, "checkpoint store unavailable"))
 def restore(checkpoint_id: str, workspace: str | Path | None = None) -> tuple[bool, str]:
     """Put a snapshot's bytes back. Snapshots the current file first."""
     entry = find(checkpoint_id)
@@ -248,7 +338,8 @@ def restore(checkpoint_id: str, workspace: str | Path | None = None) -> tuple[bo
         with tempfile.TemporaryDirectory(prefix="restore-", dir=_root()) as staging:
             source = Path(staging) / "content.blob"
             shutil.copy2(blob, source)
-            snapshot(target, reason="pre-restore")
+            if target.exists() and snapshot(target, reason="pre-restore") is None:
+                return False, "could not preserve current bytes before restore"
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
     except (OSError, shutil.Error) as exc:
@@ -256,9 +347,14 @@ def restore(checkpoint_id: str, workspace: str | Path | None = None) -> tuple[bo
     return True, f"restored {target} from checkpoint {checkpoint_id}"
 
 
+@_mutating(0)
 def clear() -> int:
     """Delete every checkpoint. Returns how many were removed."""
     entries = _load_index()
+    try:
+        _save_index([])
+    except OSError:
+        return 0
     removed = 0
     for item in entries:
         blob = _root() / str(item.get("blob", ""))
@@ -268,12 +364,8 @@ def clear() -> int:
                 removed += 1
         except OSError:
             pass
-    try:
-        if _index_path().is_file():
-            _index_path().unlink()
-    except OSError:
-        pass
     return removed
+
 
 
 def diff_preview(
