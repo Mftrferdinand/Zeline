@@ -103,3 +103,26 @@ assert time.monotonic()-started < 0.5
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class ProviderQuotaContracts(unittest.TestCase):
+    def test_quota_retry_guard_needs_no_local_health_observer(self):
+        CompletionTests.run_case(self, r"""
+for streamed in (False, True):
+    calls = []
+    a._streaming_enabled = lambda: streamed
+    response = Response({'error': {'code': 'insufficient_quota'}})
+    response.status_code = 429; response.ok = False
+    response._content = response.text.encode()
+    def request(*args, **kwargs):
+        calls.append(True)
+        return response
+    agent.requests.post = request
+    try:
+        a._call_llm()
+    except agent.ZelineError as error:
+        assert str(error) == agent.provider_status_message(402, a.model)
+    else:
+        raise AssertionError('Quota exhaustion was not reported')
+    assert len(calls) == 1, calls
+""")

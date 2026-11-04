@@ -618,13 +618,24 @@ class Zeline:
                         raise _TurnCancelled()
                     self._active_response = response
                     if response.status_code in {401, 402, 403, 429}:
+                        # Do not depend on optional health instrumentation.
+                        # Never read an uncached streaming error body here: that
+                        # would escape the cancellation/deadline I/O guard.
+                        body = getattr(response, "_content", None) if stream else response.text
                         try:
-                            error_data = json.loads(response.text) if not stream else provider_health._error_payload(response)
+                            error_data = json.loads(body) if isinstance(body, (str, bytes)) and len(body) <= 4096 else None
                         except (ValueError, TypeError):
                             error_data = None
                         error = error_data.get("error", {}) if isinstance(error_data, dict) else {}
-                        code = (error.get("code") or error.get("type")) if isinstance(error, dict) else None
-                        if provider_health._CODES.get(str(code)) == "credit_exhausted":
+                        quota_codes = (
+                            "insufficient_quota", "insufficient_credits", "credit_exhausted",
+                            "credits_exhausted", "insufficient_balance",
+                            "billing_hard_limit_reached", "insufficient_user_quota",
+                        )
+                        exhausted = isinstance(error, dict) and any(
+                            error.get(field) in quota_codes for field in ("code", "type")
+                        )
+                        if exhausted:
                             self._close_response(response)
                             raise ZelineError(provider_status_message(402, self.model))
                     if response.status_code not in retryable:

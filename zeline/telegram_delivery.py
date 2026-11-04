@@ -7,6 +7,9 @@ import tempfile
 import uuid
 import time
 
+_SUPPORTS_FCHMOD = hasattr(os, "fchmod")
+_SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
+
 
 class FinalReceipt:
     """Atomic per-part journal. IN_FLIGHT on disk means UNKNOWN after a crash.
@@ -27,17 +30,23 @@ class FinalReceipt:
     def save(self):
         fd, name = tempfile.mkstemp(prefix='.receipt-', dir=self.directory)
         try:
-            with os.fdopen(fd, 'w') as stream:
-                os.fchmod(stream.fileno(), 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                if _SUPPORTS_FCHMOD:
+                    os.fchmod(stream.fileno(), 0o600)
+                else:
+                    os.chmod(name, 0o600)
                 json.dump(self.record, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, self.path)
-            directory = os.open(self.directory, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            # Windows does not expose POSIX directory descriptors/fsync.
+            # File fsync + atomic replacement still apply on every platform.
+            if _SUPPORTS_DIRECTORY_FSYNC:
+                directory = os.open(self.directory, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         finally:
             if os.path.exists(name):
                 os.unlink(name)

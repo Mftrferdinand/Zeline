@@ -299,3 +299,18 @@ class TelegramFixTests(unittest.TestCase):
 
 if __name__ == '__main__': # offline entrypoint example safe
     unittest.main()
+
+
+class ReceiptPortabilityContracts(unittest.TestCase):
+    def test_receipt_uses_portable_fallback_without_directory_fsync(self):
+        from unittest.mock import patch
+        from zeline import telegram_delivery as delivery
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(delivery, '_SUPPORTS_FCHMOD', False, create=True), \
+                    patch.object(delivery, '_SUPPORTS_DIRECTORY_FSYNC', False, create=True), \
+                    patch.object(delivery.os, 'fchmod', side_effect=AssertionError('unsupported fchmod'), create=True), \
+                    patch.object(delivery.os, 'open', wraps=delivery.os.open) as opened:
+                receipt = delivery.FinalReceipt(Path(tmp), 1, ['Final'])
+                self.assertTrue(receipt.path.is_file())
+                self.assertFalse(any(Path(call.args[0]) == receipt.directory for call in opened.call_args_list))
+                self.assertTrue(receipt.deliver(lambda *args: {'ok': True, 'result': {'message_id': 1}}, lambda: False))
