@@ -180,6 +180,28 @@ class MemoryStore:
         self.db_path = MEMORY_DIR / "memory.sqlite3"
         self.default_source = "user"
 
+    def retrieval_version(self):
+        """A cheap read-only facts version; observation writes do not invalidate it."""
+        try:
+            try:
+                stat = self.path.stat()
+                legacy = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+            except FileNotFoundError:
+                legacy = None
+            if not self.db_path.exists():
+                return (legacy, 0, 0, 0)
+            with closing(sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro',
+                                         uri=True, timeout=0.05)) as conn:
+                count, revisions, active_count = conn.execute(
+                    'SELECT COUNT(*), COALESCE(SUM(revision), 0), '
+                    '(SELECT COUNT(*) FROM memory_items WHERE owner=?) '
+                    'FROM memory_revisions WHERE owner=?',
+                    (self.key, self.key)).fetchone()
+            # Deletions retain revision history; track active membership too.
+            return (legacy, count, revisions, active_count)
+        except (OSError, sqlite3.DatabaseError):
+            return None
+
     @contextmanager
     def _transaction(self, timeout: float = 15):
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -228,13 +250,44 @@ class MemoryStore:
             conn.execute("INSERT OR IGNORE INTO memory_revisions VALUES (?,?,?,?)",
                          (self.key, record["id"], record["revision"], payload))
 
+    def _read_records(self) -> list[dict[str, Any]]:
+        """Read committed facts without reserving the single SQLite writer.
+
+        Only a pending legacy import needs a write transaction. Missing storage
+        stays empty until a real write; schema creation remains on that path.
+        """
+        records = []
+        imported = False
+        if self.db_path.exists():
+            with closing(sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro',
+                                         uri=True, timeout=0.2)) as conn:
+                conn.execute('BEGIN')
+                tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                if {'memory_imports', 'memory_items'} <= tables:
+                    imported = conn.execute('SELECT 1 FROM memory_imports WHERE owner=?',
+                                            (self.key,)).fetchone() is not None
+                    records = [json.loads(row[0]) for row in conn.execute(
+                        'SELECT payload FROM memory_items WHERE owner=? ORDER BY position',
+                        (self.key,))]
+        if not imported:
+            source = self.path
+            if not source.exists() and self.identity == 'cli:local':
+                source = LEGACY_FILE
+            if source.exists():
+                # Recheck the import marker under the write reservation so
+                # simultaneous first reads cannot overwrite a committed write.
+                with self._transaction() as (_, records):
+                    pass
+        return records
+
     def records(self, *, include_expired: bool = False, include_inactive: bool = False) -> list[dict[str, Any]]:
-        with self._transaction() as (_, records):
-            if not include_inactive:
-                records = [r for r in records if r.get("state", "active") == "active"]
-            if not include_expired:
-                records = [r for r in records if r.get("expires_at") is None or r["expires_at"] > time.time()]
-            return records
+        records = self._read_records()
+        if not include_inactive:
+            records = [r for r in records if r.get("state", "active") == "active"]
+        if not include_expired:
+            records = [r for r in records if r.get("expires_at") is None or r["expires_at"] > time.time()]
+        return records
 
     def list(self) -> list[str]:
         return [r["text"] for r in self.records()]
@@ -336,6 +389,13 @@ class MemoryStore:
             return {"records": [], "context": "", "retrieval": "unavailable", "truncated": False}
 
     def record_retrieval(self, turn_id: str, records: list[dict[str, Any]]) -> None:
+        """Best-effort observation; contention must not prevent foreground work."""
+        try:
+            self._record_retrieval(turn_id, records)
+        except sqlite3.OperationalError:
+            return
+
+    def _record_retrieval(self, turn_id: str, records: list[dict[str, Any]]) -> None:
         """Persist selected revisions, never infer that the model used them."""
         if not isinstance(turn_id, str) or not 1 <= len(turn_id) <= 120:
             return
