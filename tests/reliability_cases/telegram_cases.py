@@ -297,8 +297,41 @@ class TelegramFixTests(unittest.TestCase):
                 release.set();worker.join(3)
         self.assertEqual(status_methods,['sendMessage'],'Stale progress redraws delayed final delivery instead of one completed feed')
 
-if __name__ == '__main__': # offline entrypoint example safe
-    unittest.main()
+    def test_ambiguous_server_errors_are_unknown_and_never_replayed(self):
+        from zeline.telegram_delivery import FinalReceipt
+        for code in (500,502,503,504):
+            with self.subTest(code=code):
+                receipt=FinalReceipt(Path(self.tmp.name),1,['Final'])
+                sent=[]
+                def send(*args):
+                    sent.append(args)
+                    return {'ok':False,'error_code':code,'parameters':{'retry_after':0}} if len(sent)==1 else {'ok':True,'result':{'message_id':1}}
+                self.assertFalse(receipt.deliver(send,lambda:False))
+                self.assertEqual(len(sent),1)
+                self.assertEqual(receipt.record['parts'][0]['state'],'UNKNOWN')
+                self.assertFalse(receipt.deliver(send,lambda:False))
+                self.assertEqual(len(sent),1)
+
+    def test_receipt_construction_failure_closes_transport(self):
+        from unittest.mock import patch
+        from zeline import telegram_delivery as delivery
+        original=delivery.TurnTransport
+        transports=[]
+        def create(*args,**kwargs):
+            instance=original(*args,**kwargs)
+            transports.append(instance)
+            return instance
+        tg._api_call=lambda *args,**kwargs:{'ok':True,'result':{'message_id':1}}
+        with patch.object(delivery,'TurnTransport',side_effect=create), patch.object(delivery,'FinalReceipt',side_effect=OSError('fixture persistence failure')):
+            with self.assertRaises(OSError):self.send(Session())
+        try:
+            self.assertTrue(transports)
+            self.assertTrue(all(item.closed for item in transports))
+        finally:
+            for item in transports:item.close();item.worker.join(1)
+        self.assertTrue(all(not item.worker.is_alive() for item in transports))
+
+
 
 
 class ReceiptPortabilityContracts(unittest.TestCase):

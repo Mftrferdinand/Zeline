@@ -3411,31 +3411,34 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # balasan ini untuk pertanyaan yang mana — penting saat user mengirim
     # beberapa pertanyaan dalam bubble terpisah. Part berikutnya tanpa reply
     # (biar rantai jawaban tidak menumpuk quote berulang).
-    from zeline.telegram_delivery import FinalReceipt
-    receipt = FinalReceipt(config.DATA_DIR, chat_id, list(_telegram_html_parts(reply)) if str(reply or '').strip() else [])
-    def send_part(index, rendered_part):
-        extra: dict[str, Any] = {}
-        if index == 0 and reply_to_message_id:
-            extra.update(reply_to_message_id=reply_to_message_id, allow_sending_without_reply=True)
-        return _api_call(api, "sendMessage", chat_id=chat_id, text=rendered_part,
-                         parse_mode="HTML", attempts=1, delivery=True, cancelled=cancelled,
-                         timeout=min(20, max(.1, receipt.deadline-time.monotonic())), **extra)
-    def deliver_final():
-        return receipt.deliver(send_part, cancelled) # no model/tool replay
-    event, result = transport.submit(deliver_final, final=True)
-    while not event.wait(.05):
-        if cancelled():
-            return False
-    if not result or result[0] is not True:
-        return False # delivery not acknowledged
+    try:
+        from zeline.telegram_delivery import FinalReceipt
+        receipt = FinalReceipt(config.DATA_DIR, chat_id, list(_telegram_html_parts(reply)) if str(reply or '').strip() else [])
+        def send_part(index, rendered_part):
+            extra: dict[str, Any] = {}
+            if index == 0 and reply_to_message_id:
+                extra.update(reply_to_message_id=reply_to_message_id, allow_sending_without_reply=True)
+            return _api_call(api, "sendMessage", chat_id=chat_id, text=rendered_part,
+                             parse_mode="HTML", attempts=1, delivery=True, cancelled=cancelled,
+                             timeout=min(20, max(.1, receipt.deadline-time.monotonic())), **extra)
+        def deliver_final():
+            return receipt.deliver(send_part, cancelled) # no model/tool replay
+        event, result = transport.submit(deliver_final, final=True)
+        while not event.wait(.05):
+            if cancelled():
+                return False
+        if not result or result[0] is not True:
+            return False # delivery not acknowledged
 
-    # Admitted turns must release their ticket BEFORE reflection tries the
-    # session's idle gate. The caller schedules it after finish_turn(). Legacy
-    # direct callers have no reserved ticket, so they may schedule immediately.
-    if _ticket is None:
-        _start_reflection(api, sessions, chat_id, identity, reply_to_message_id,
-                          learning_updates=tuple(learning_updates), cancelled=cancelled)
-    return True
+        # Admitted turns must release their ticket BEFORE reflection tries the
+        # session's idle gate. The caller schedules it after finish_turn(). Legacy
+        # direct callers have no reserved ticket, so they may schedule immediately.
+        if _ticket is None:
+            _start_reflection(api, sessions, chat_id, identity, reply_to_message_id,
+                              learning_updates=tuple(learning_updates), cancelled=cancelled)
+        return True
+    finally:
+        transport.close()
 
 
 _LEARNING_PHASES = ("📙 Self-Enhancement", "📘 Self-Improvement", "📗 Self-Refinement")

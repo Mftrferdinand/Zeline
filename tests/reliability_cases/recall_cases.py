@@ -73,4 +73,48 @@ class SelectiveRecallTests(unittest.TestCase):
             agent.send('Jelaskan hasilnya')
         self.assertEqual(recall.call_count,2)
 
-if __name__=='__main__':unittest.main()
+    def test_concurrent_revision_during_recall_does_not_get_new_cache_signature(self):
+        agent=self.agent()
+        store=agent.executor.memory
+        calls=[]
+        contexts=[]
+        def recall(text):
+            calls.append(text)
+            if len(calls)==1:
+                with store._transaction() as (conn, records):
+                    conn.execute('INSERT INTO memory_revisions(owner,id,revision,payload) VALUES (?,?,?,?)',(store.key,'concurrent-fixture',1,'{}'))
+                return {'context':'OLD revision','records':[]}
+            return {'context':'NEW revision','records':[]}
+        def answer(**kwargs):
+            contexts.append(agent._turn_memory_context)
+            return 'Verified.'
+        with patch.object(agent,'_run_turn',side_effect=answer), patch.object(store,'recall',side_effect=recall):
+            agent.send('Analisa pipeline ProjectQuartz')
+            agent.send('Jelaskan hasilnya')
+        self.assertEqual(len(calls),2)
+        self.assertIn('NEW revision',contexts[-1])
+
+    def test_revision_during_reuse_never_relabels_old_context(self):
+        agent=self.agent()
+        store=agent.executor.memory
+        saved={'context':'Fixture context','records':[]}
+        def revise(*args):
+            with store._transaction() as (conn, records):
+                conn.execute('INSERT INTO memory_revisions(owner,id,revision,payload) VALUES (?,?,?,?)',(store.key,'reuse-fixture',1,'{}'))
+        with patch.object(agent,'_run_turn',return_value='Verified.'), patch.object(store,'recall',return_value=saved) as recall:
+            agent.send('Analisa pipeline ProjectQuartz')
+            with patch.object(store,'record_retrieval',side_effect=revise):
+                agent.send('Jelaskan hasilnya')
+            agent.send('Jelaskan lagi')
+        self.assertEqual(recall.call_count,2,'Concurrent update was attached to stale cached context')
+
+    def test_deleted_fact_invalidates_cache_even_with_retained_revision_history(self):
+        agent=self.agent()
+        store=agent.executor.memory
+        self.assertTrue(store.apply([{'action':'add','text':'Fixture deletion fact'}])['success'])
+        with patch.object(agent,'_run_turn',return_value='Verified.'), patch.object(store,'recall',return_value={'context':'fixture','records':[]}) as recall:
+            agent.send('Analisa pipeline ProjectQuartz')
+            with store._transaction() as (conn, records):
+                conn.execute('DELETE FROM memory_items WHERE owner=?',(store.key,))
+            agent.send('Jelaskan hasilnya')
+        self.assertEqual(recall.call_count,2,'Retained revision history hid deletion of an active fact')

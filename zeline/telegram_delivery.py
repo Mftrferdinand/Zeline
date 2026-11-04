@@ -83,7 +83,12 @@ class FinalReceipt:
                     self.save()
                     return False  # UNKNOWN: no automatic replay
                 code = payload.get('error_code')
-                retryable = code == 429 or payload.get('_known_unsent') is True or code in {500,502,503,504}
+                if isinstance(code, int) and 500 <= code < 600:
+                    # Server/upstream failure does not prove non-acceptance.
+                    part.update(state='UNKNOWN', error_code=code)
+                    self.save()
+                    return False
+                retryable = code == 429 or payload.get('_known_unsent') is True
                 part.update(state='RETRYABLE' if retryable else 'FAILED', error_code=code)
                 try:
                     delay = float((payload.get('parameters') or {}).get('retry_after', 0.5*(attempt+1)))

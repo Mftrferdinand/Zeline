@@ -189,13 +189,16 @@ class MemoryStore:
             except FileNotFoundError:
                 legacy = None
             if not self.db_path.exists():
-                return (legacy, 0, 0)
+                return (legacy, 0, 0, 0)
             with closing(sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro',
                                          uri=True, timeout=0.05)) as conn:
-                count, revisions = conn.execute(
-                    'SELECT COUNT(*), COALESCE(SUM(revision), 0) FROM memory_revisions WHERE owner=?',
-                    (self.key,)).fetchone()
-            return (legacy, count, revisions)
+                count, revisions, active_count = conn.execute(
+                    'SELECT COUNT(*), COALESCE(SUM(revision), 0), '
+                    '(SELECT COUNT(*) FROM memory_items WHERE owner=?) '
+                    'FROM memory_revisions WHERE owner=?',
+                    (self.key, self.key)).fetchone()
+            # Deletions retain revision history; track active membership too.
+            return (legacy, count, revisions, active_count)
         except (OSError, sqlite3.DatabaseError):
             return None
 

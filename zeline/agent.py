@@ -1062,6 +1062,7 @@ class Zeline:
         with contextlib.suppress(Exception):
             cached = getattr(self, '_automatic_recall_cache', None)
             recalled = None
+            reused_recall = False
             signature = self._memory_read_signature()
             if (cached and followup and signature is not None
                     and signature == cached['signature']
@@ -1070,15 +1071,23 @@ class Zeline:
                             or float(record['expires_at']) > time.time()
                             for record in cached['data'].get('records', []))):
                 recalled = cached['data']
+                reused_recall = True
             elif not light_chat or (cached and followup):
+                self._automatic_recall_cache = None
                 recalled = self.executor.memory.recall(text)
-                self._automatic_recall_cache = {'data': recalled, 'at': time.monotonic()}
             if recalled is not None:
                 self._turn_memory_context = recalled.get("context", "")
                 self.executor.memory.record_retrieval(self.last_learning_turn_id, recalled.get('records', []))
                 from zeline.reflection_markdown import refinement_context
                 self._turn_memory_context += refinement_context(self.identity, recalled.get('records', []))
-                self._automatic_recall_cache['signature'] = self._memory_read_signature()
+                if not reused_recall:
+                    after_signature = self._memory_read_signature()
+                    if signature is not None and after_signature == signature:
+                        self._automatic_recall_cache = {
+                            'data': recalled, 'at': time.monotonic(), 'signature': signature,
+                        }
+                    # Concurrent writes must not relabel older data as current.
+                    # Reused data keeps its original signature and expiry.
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []
         if _DAILY_CHECKIN_INTENT_RE.search(text):
