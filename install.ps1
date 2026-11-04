@@ -133,6 +133,21 @@ function Invoke-Python {
     }
 }
 
+function Test-InVirtualEnv {
+    <#
+    Detect if the Python interpreter is running inside a virtual environment.
+    Returns $true if in venv/conda/embedded, $false if system Python.
+    #>
+    param([Parameter(Mandatory)] [pscustomobject]$Python)
+    $probe = 'import sys; print(1 if (hasattr(sys, "real_prefix") or sys.prefix != sys.base_prefix) else 0)'
+    try {
+        $result = Invoke-Python -Python $Python -Arguments @('-c', $probe) 2>$null
+        return [int]($result.Trim()) -eq 1
+    } catch {
+        return $false
+    }
+}
+
 function Get-VerifiedReleaseWheel {
     param([Parameter(Mandatory)] [string]$Directory)
 
@@ -220,9 +235,13 @@ try {
 
     Write-Step 'Installing/updating package...'
     # --user keeps the install per-account, so no admin prompt is needed.
-    $installLog = Invoke-Python -Python $python -Arguments @(
-        '-m', 'pip', 'install', '--user', '--upgrade', $installArg
-    ) 2>&1
+    # But --user is NOT allowed inside a virtual environment (venv/conda/embedded).
+    $inVenv = Test-InVirtualEnv -Python $python
+    $pipArgs = @('-m', 'pip', 'install', '--upgrade')
+    if (-not $inVenv) { $pipArgs += '--user' }
+    $pipArgs += $installArg
+
+    $installLog = Invoke-Python -Python $python -Arguments $pipArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
         $installLog | ForEach-Object { Write-Host $_ }
         Write-Fail 'Failed to install the Zeline package. See pip output above.'
@@ -233,12 +252,16 @@ try {
 
     # pip --user puts console scripts in the per-user Scripts directory, which
     # is frequently missing from PATH on Windows. Detect and offer to fix it.
-    #
-    # NOTE: it is NOT site.getuserbase() + "\Scripts". On Windows the nt_user
-    # scheme is <userbase>\PythonXY\Scripts (version-stamped), so joining
-    # "Scripts" directly points at a folder that does not exist and the
-    # zeline.exe check always failed. Ask sysconfig for the real path.
-    $scriptsProbe = 'import sysconfig,site;print(sysconfig.get_path("scripts","nt_user",vars={"userbase":site.getuserbase()}))'
+    # In a virtualenv, scripts go to the venv's Scripts folder (default scheme).
+    if ($inVenv) {
+        $scriptsProbe = 'import sysconfig; print(sysconfig.get_path("scripts"))'
+    } else {
+        # NOTE: it is NOT site.getuserbase() + "\Scripts". On Windows the nt_user
+        # scheme is <userbase>\PythonXY\Scripts (version-stamped), so joining
+        # "Scripts" directly points at a folder that does not exist and the
+        # zeline.exe check always failed. Ask sysconfig for the real path.
+        $scriptsProbe = 'import sysconfig,site;print(sysconfig.get_path("scripts","nt_user",vars={"userbase":site.getuserbase()}))'
+    }
     $scriptsDir = Invoke-Python -Python $python -Arguments @('-c', $scriptsProbe)
     $scriptsDir = ($scriptsDir | Select-Object -Last 1).Trim()
     $zelineExe  = Join-Path $scriptsDir 'zeline.exe'
