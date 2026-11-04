@@ -16,6 +16,11 @@ This module hides that difference behind one API:
 On Windows ``raw_mode()`` is a no-op because ``msvcrt.getwch()`` already reads
 unbuffered, and arrow keys arrive as a two-part sequence with a 0x00/0xE0
 prefix instead of the ANSI ``ESC [ A`` form.
+
+PowerShell 7 on Windows Terminal sends ANSI escape sequences for arrow keys
+(ESC [ A / ESC [ B) similar to POSIX, but ``msvcrt.getwch()`` reads them
+as individual characters. We detect this by checking if we're in a modern
+terminal that supports ANSI input.
 """
 
 from __future__ import annotations
@@ -26,6 +31,27 @@ import sys
 from collections.abc import Iterator
 
 IS_WINDOWS = os.name == "nt"
+
+# Detect if we're in PowerShell 7+ with Windows Terminal (ANSI input mode)
+# This is a best-effort detection; can be overridden by ZELINE_FORCE_ANSI_INPUT
+def _is_ansi_input_mode() -> bool:
+    if not IS_WINDOWS:
+        return False
+    # Check for modern terminal indicators
+    if os.environ.get("ZELINE_FORCE_ANSI_INPUT") == "1":
+        return True
+    # Windows Terminal sets WT_SESSION
+    if "WT_SESSION" in os.environ:
+        return True
+    # PowerShell 7+ in modern terminal
+    if "TERM_PROGRAM" in os.environ and os.environ["TERM_PROGRAM"] in ("vscode", "WezTerm", "mintty"):
+        return True
+    # ConEmu/cmder
+    if "ConEmuPID" in os.environ or "CMDER_ROOT" in os.environ:
+        return True
+    return False
+
+ANSI_INPUT_MODE = _is_ansi_input_mode()
 
 
 @contextlib.contextmanager
@@ -57,10 +83,12 @@ def read_key() -> str:
     Returns ``""`` at end of input. Arrow keys yield their raw prefix here;
     use :func:`read_menu_key` to decode them into actions.
     """
-    if IS_WINDOWS:  # pragma: no cover - platform specific
+    if IS_WINDOWS and not ANSI_INPUT_MODE:  # pragma: no cover - platform specific
         import msvcrt
 
         return msvcrt.getwch()  # type: ignore[attr-defined]
+
+    # POSIX or Windows with ANSI input mode
     return os.read(sys.stdin.fileno(), 1).decode("utf-8", errors="ignore")
 
 
@@ -80,7 +108,7 @@ def read_menu_key() -> str:
     if char in {"q", "Q"}:
         return "cancel"
 
-    if IS_WINDOWS:  # pragma: no cover - platform specific
+    if IS_WINDOWS and not ANSI_INPUT_MODE:  # pragma: no cover - platform specific
         # Windows sends arrows as two reads: a 0x00/0xE0 prefix, then a code.
         if char in {"\x00", "\xe0"}:
             code = read_key()
@@ -94,6 +122,7 @@ def read_menu_key() -> str:
         return ""
 
     # POSIX: arrows arrive as the ANSI sequence ESC [ A / ESC [ B.
+    # Windows with ANSI input mode also uses this path.
     if char == "\x1b":
         second = read_key()
         third = read_key()

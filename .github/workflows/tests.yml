@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package
-        run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1"
+        run: python -m pip install --upgrade pip && python -m pip install . "pytest>=8,<10" "pytest-subtests>=0.14,<1" "pytest-cov>=5.0"
       - name: Install native search test prerequisite
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Darwin allocator A/B diagnostic (worker caps unchanged)
@@ -45,10 +45,15 @@ jobs:
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'
         run: python -m pytest tests/test_reverse_source.py tests/test_reverse_disassembly.py tests/test_source_worker_limits.py -q
-      - name: Run test suite
+      - name: Run test suite with coverage
         env:
           ZELINE_CI_WORKER_DIAGNOSTICS: '1'
-        run: python -m pytest tests -q
+        run: python -m pytest tests -q --cov=zeline --cov-report=xml --cov-fail-under=60
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
       - name: Compile package
         run: python -m compileall -q zeline
 

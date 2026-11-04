@@ -159,6 +159,13 @@ platform_package_command() {
   esac
 }
 
+# Repository structure for Termux (deprecated split repos - use main only)
+# Note: termux-root and termux-x11 were merged into termux-main in 2023
+# This is kept for historical reference only.
+# TERMUX_REPOS=(
+#   "https://packages.termux.dev/apt/termux-main stable main"
+# )
+
 platform_note() {
   case "$PLATFORM" in
     termux) printf 'Keep long-running gateways alive with termux-wake-lock.' ;;
