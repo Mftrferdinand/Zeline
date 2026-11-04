@@ -214,6 +214,7 @@ class TurnAdmissionTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         session = self.store.get_or_create(self.identity, "safe")
         first_started, release = threading.Event(), threading.Event()
+        ack_arrived = threading.Event()
         calls, sent = [], []
         def agent_send(text, **callbacks):
             calls.append(text)
@@ -226,6 +227,8 @@ class TurnAdmissionTests(unittest.TestCase):
         def api(_api, method, **kwargs):
             if method == "sendMessage":
                 sent.append(kwargs.get("text", ""))
+                if "Interrupting current task" in sent[-1]:
+                    ack_arrived.set()
             return {"ok": True, "result": {"message_id": 11}}
         with mock.patch.object(session.agent, "send", side_effect=agent_send), \
              mock.patch.object(telegram, "_api_call", side_effect=api), \
@@ -239,6 +242,7 @@ class TurnAdmissionTests(unittest.TestCase):
             third = telegram._start_agent_reply("fixture", self.store, chat_id=1, identity=self.identity,
                                                text="third", tool_profile="safe")
             try:
+                self.assertTrue(ack_arrived.wait(1), "Async busy acknowledgment was not dispatched")
                 acknowledgements = [text for text in sent if "Interrupting current task" in text]
                 self.assertTrue(acknowledgements, "Busy message received no acknowledgment")
                 self.assertIn("iteration 18/150", acknowledgements[0])

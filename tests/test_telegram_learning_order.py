@@ -39,7 +39,7 @@ class LearningOrderTests(unittest.TestCase):
         summary = "\n\n".join(phase + " review: observed task evidence." for phase in PHASES)
         with mock.patch.object(session.agent, "send", side_effect=send), \
                 mock.patch.object(session.agent, "reflect", return_value=summary), \
-                mock.patch.object(telegram, "_api_call", side_effect=lambda api, method, **p: calls.append((method, p)) or {"ok": True}), \
+                mock.patch.object(telegram, "_api_call", side_effect=lambda api, method, **p: calls.append((method, p)) or {"ok": True, "result": {"message_id": 1}}), \
                 mock.patch.object(telegram, "_LiveStatus", return_value=live), \
                 mock.patch.object(telegram, "_start_working_heartbeat", return_value=mock.Mock()), \
                 mock.patch.object(telegram.threading, "Thread", side_effect=thread):
@@ -86,8 +86,8 @@ class LearningOrderTests(unittest.TestCase):
         def api(_api, method, **payload):
             if method == "sendMessage":
                 sent.append(payload["text"])
-                return None if payload["text"] == "Final part two" else {"ok": True}
-            return {"ok": True}
+                return None if payload["text"] == "Final part two" else {"ok": True, "result": {"message_id": 1}}
+            return {"ok": True, "result": {"message_id": 1}}
 
         with mock.patch.object(session.agent, "send", return_value="Final task answer"), \
                 mock.patch.object(session.agent, "reflect") as reflect, \
@@ -116,7 +116,7 @@ class LearningOrderTests(unittest.TestCase):
 
         with mock.patch.object(session.agent, "send", side_effect=send), \
                 mock.patch.object(session.agent, "reflect") as reflect, \
-                mock.patch.object(telegram, "_api_call", return_value={"ok": True}) as api, \
+                mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 1}}) as api, \
                 mock.patch.object(telegram, "_LiveStatus"), \
                 mock.patch.object(telegram, "_start_working_heartbeat", return_value=mock.Mock()):
             worker = telegram._start_agent_reply("fixture", self.store, chat_id=1,
@@ -153,7 +153,7 @@ class LearningOrderTests(unittest.TestCase):
 
         with mock.patch.object(session.agent, "send", side_effect=send), \
                 mock.patch.object(session.agent, "reflect", return_value=None), \
-                mock.patch.object(telegram, "_api_call", return_value={"ok": True}) as api, \
+                mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 1}}) as api, \
                 mock.patch.object(telegram, "_LiveStatus"), \
                 mock.patch.object(telegram, "_start_working_heartbeat", return_value=mock.Mock()), \
                 mock.patch.object(telegram.threading, "Thread", side_effect=thread):
@@ -238,7 +238,7 @@ class LearningOrderTests(unittest.TestCase):
         sessions = mock.Mock()
         sessions.reflect.side_effect = RuntimeError("fixture provider failure")
         with mock.patch.object(telegram.threading, "Thread", side_effect=lambda **kw: mock.Mock(start=kw["target"])), \
-                mock.patch.object(telegram, "_api_call", return_value={"ok": True}) as api:
+                mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 1}}) as api:
             telegram._start_reflection("fixture", sessions, 1, self.identity,
                 learning_updates=(PHASES[0] + ": real fixture mutation",))
         payloads = [c.kwargs["text"] for c in api.call_args_list]

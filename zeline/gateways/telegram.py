@@ -991,6 +991,8 @@ class _LiveStatus:
         return body
 
     def _push_locked(self, force: bool = False, allow_create: bool = True) -> None:
+        if not getattr(self, "_render_allowed", lambda: True)():
+            return
         if self._closed:
             return
         # Bubble progres dibuat saat ada aktivitas tool nyata, ATAU saat turn
@@ -1102,6 +1104,8 @@ class _LiveStatus:
         kwargs = {**payload, "timeout": _PROGRESS_TIMEOUT, "attempts": _PROGRESS_ATTEMPTS}
         if call_api(api, method, **kwargs):
             return
+        if not getattr(self, "_terminal_retries", True):
+            return
 
         def retry():
             for delay in (0.25, 1.0, 2.0):
@@ -1113,7 +1117,7 @@ class _LiveStatus:
         # A closed status cannot gain a timer or be reopened by this worker.
         threading.Thread(target=retry, daemon=True, name="zeline-status-cleanup").start()
 
-    def finalize(self) -> None:
+    def finalize(self, *, quiet: bool = False) -> None:
         """Kunci bubble progres sebagai catatan permanen 'apa yang dikerjakan'.
 
         Baris fase-kerja jadi bentuk selesai (Searching→Reading), TANPA header
@@ -1121,11 +1125,24 @@ class _LiveStatus:
         tool sama sekali (jawaban langsung), bubble dihapus agar tidak menyisakan
         pesan kosong.
         """
+        if quiet:
+            # Cancellation is control-plane work: never wait for the UI lock
+            # or issue stale network edits for a detached turn.
+            self._closed = True
+            return
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             if self.message_id is None:
+                if self.lines and hasattr(self, "_render_allowed"):
+                    # Queued state is retained, but obsolete Working redraws
+                    # collapse to one completed feed before the final answer.
+                    sent = _api_call(self.api, "sendMessage", chat_id=self.chat_id,
+                                     text=self._feed_text(finalize=True), parse_mode="HTML",
+                                     timeout=_PROGRESS_TIMEOUT, attempts=1)
+                    if sent and isinstance(sent.get("result"), dict):
+                        self.message_id = sent["result"].get("message_id")
                 return
             if not self.lines:
                 self._settle_terminal(
@@ -2711,7 +2728,7 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
     return []
 
 
-def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None = None, **params: Any) -> dict[str, Any] | None:
+def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None = None, delivery: bool = False, cancelled=None, **params: Any) -> dict[str, Any] | None:
     """Panggil Bot API; error network tidak boleh menghentikan gateway.
 
     Koneksi Termux ke Telegram sering putus-putus (ConnectionError/timeout),
@@ -2727,13 +2744,32 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
     if attempts is None:
         attempts = max(1, _API_RETRIES) if method in _RETRYABLE_METHODS else 1
     attempts = max(1, attempts)
+    def pause(delay):
+        until = time.monotonic() + delay
+        while time.monotonic() < until:
+            if cancelled and cancelled():
+                return False
+            time.sleep(min(.05, max(0, until-time.monotonic())))
+        return not (cancelled and cancelled())
     for attempt in range(attempts):
+        if cancelled and cancelled():
+            return None
         try:
             response = _HTTP.post(f"{api}/{method}", json=params, timeout=timeout)
             payload = response.json()
             if response.ok and payload.get("ok"):
                 return payload
             description = str(payload.get("description", "HTTP error"))[:160] if isinstance(payload, dict) else "HTTP error"
+            if isinstance(payload, dict) and payload.get('error_code') == 429:
+                try:
+                    delay = float((payload.get('parameters') or {}).get('retry_after', 1))
+                except (TypeError, ValueError):
+                    delay = 1
+                if 0 <= delay <= 30 and attempt < attempts - 1:
+                    if not pause(delay):
+                        return None
+                    continue
+                return payload if delivery else None
             # HTML parse error (mis. tag pre/code tak seimbang) → JANGAN sampai
             # menghilangkan pesan. Kirim ulang sekali sebagai teks polos (tanpa
             # parse_mode, entitas HTML di-escape) supaya isi tetap sampai ke user.
@@ -2761,11 +2797,16 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
             if "message is not modified" in description:
                 return {"ok": True, "result": True}
             print(f"  [telegram] {method} failed: {description}", flush=True)
-            return None  # error tingkat-API, retry tidak menolong
+            return payload if delivery and isinstance(payload, dict) else None
         except (requests.RequestException, ValueError) as exc:
+            if delivery:
+                return {"ok":False,"_known_unsent":True} if isinstance(exc, requests.exceptions.ConnectTimeout) else None
+            if method == "sendMessage" and not isinstance(exc, requests.exceptions.ConnectTimeout):
+                return None  # request may already have been accepted; never blindly replay
             # Error jaringan sementara → backoff & coba lagi (kecuali attempt terakhir).
             if attempt < attempts - 1:
-                time.sleep(min(2.0 * (attempt + 1), 6.0))
+                if not pause(min(2.0 * (attempt + 1), 6.0)):
+                    return None
                 continue
             print(f"  [telegram] {method} failed: {exc.__class__.__name__} (after {attempts}x)", flush=True)
     return None
@@ -3219,12 +3260,28 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
 
     if cancelled():
         return
-    _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
-              timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+    from zeline.telegram_delivery import TurnTransport
+    transport = TurnTransport(cancelled)
+    notice_done = getattr(_ticket, '_telegram_notice_done', None)
+    if notice_done is not None:
+        def await_notice():
+            deadline = time.monotonic() + 2 * _PROGRESS_TIMEOUT + 1
+            while not notice_done.wait(0.05):
+                if cancelled() or time.monotonic() >= deadline:
+                    return
+        transport.submit(await_notice)
+    transport.submit(lambda: _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                                     timeout=_PROGRESS_TIMEOUT, attempts=1), key="typing")
     done = threading.Event()
     learning_updates = _learning_updates if _learning_updates is not None else []
     live = _LiveStatus(api, chat_id, model=getattr(config, "MODEL", ""))
-    heartbeat = _start_working_heartbeat(api, chat_id, done, status=live)
+    live._terminal_retries = False
+    live._render_allowed = lambda: not transport.closed
+    def pulse():
+        while not done.wait(4):
+            transport.submit(live.tick, key="tick")
+    heartbeat = threading.Thread(target=pulse, daemon=True)
+    heartbeat.start() # only queues best-effort UI work
     # CATATAN: streaming/live-edit token (edit satu bubble berulang) DIMATIKAN.
     # Di Android bubble yang di-edit terus makin berat/lag makin panjang, dan
     # markdown setengah jadi (##) sempat keliatan mentah. Alur yang diminta
@@ -3234,12 +3291,12 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     def on_tool(_name, _args):
         if cancelled():
             return
-        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
-                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+        # Transport is independent: tool execution must not await Telegram.
         # Tambahkan satu baris ringkas ke feed live, bukan pesan baru.
         # _safe_progress_line menjaga tag HTML (pre/code) tetap seimbang saat
         # dipangkas — mencegah editMessageText gagal "Can't find end tag pre".
-        live.add(_safe_progress_line(_tool_progress_text(_name, _args)))
+        line = _safe_progress_line(_tool_progress_text(_name, _args))
+        transport.submit(lambda: live.add(line))
         # The registered interaction renderer owns question delivery. Polling
         # here runs before tool dispatch and used to race/double-render cards.
 
@@ -3251,15 +3308,16 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             # Learning is a post-task report, never part of the live tool feed.
             learning_updates.append(result_text)
         # Setelah tool selesai, kita kembali menunggu respons model.
-        live.set_waiting()
+        transport.submit(live.set_waiting, key="waiting")
 
     def on_iteration(current, maximum):
         if cancelled():
             return
         # Awal tiap iterasi = mulai menunggu respons provider. Simpan nomor
         # langkah supaya header status bisa menunjukkan 'step 4/20'.
-        live.set_iteration(current, maximum)
-        live.set_waiting()
+        transport.submit(lambda: live.set_iteration(current, maximum))
+
+        transport.submit(live.set_waiting, key="waiting")
 
     def on_narration(sentence: str):
         if cancelled():
@@ -3273,19 +3331,15 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         sentence = sentence.strip()
         if not sentence:
             return
-        live.detach()
-        for rendered_part in _telegram_html_parts(sentence):
-            if cancelled():
-                return
-            sent = _api_call(
-                api, "sendMessage", chat_id=chat_id,
-                text=rendered_part, parse_mode="HTML",
-            )
-            if sent is None:
-                print("  [telegram] narration delivery stopped after a failed part", flush=True)
-                break
-        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
-                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
+        def deliver_narration():
+            live.detach()
+            for rendered_part in _telegram_html_parts(sentence):
+                if cancelled():
+                    return
+                if _api_call(api, "sendMessage", chat_id=chat_id, text=rendered_part,
+                             parse_mode="HTML", attempts=1, timeout=_PROGRESS_TIMEOUT) is None:
+                    break
+        transport.submit(deliver_narration)
 
     # send_file mengirim file lewat channel ini. Didaftarkan HANYA selama turn
     # berjalan lalu dilepas di finally: kalau tetap terdaftar, sebuah cron job
@@ -3332,8 +3386,15 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
         interaction.unregister_channel(identity)
         # Completed side effects are history, not transient trash. Preserve
         # their progress on success, cancellation, and provider failure alike.
-        live.finalize()
+        def cleanup():
+            try:
+                live.finalize()
+            except Exception:
+                pass
+        transport.submit(cleanup)
     if cancelled():
+        transport.close()
+        live.finalize(quiet=True)
         return
     # /stop sudah mengirim SATU konfirmasi sendiri ("❄️ Stopped — <judul>").
     # Agent mengembalikan sentinel "Stopped." untuk turn yang sama, jadi
@@ -3341,6 +3402,8 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # bawah bisa menambah pesan ketiga. Turn yang dibatalkan berhenti di sini:
     # tidak ada balasan, tidak ada refleksi, tidak ada bubble sisa.
     if isinstance(reply, str) and reply.strip() == _CANCELLED_SENTINEL and _consume_stop(identity):
+        transport.close()
+        live.finalize(quiet=True)
         return
     # Jawaban final SELALU dikirim sebagai pesan baru yang utuh & rapi (bukan
     # edit-in-place). Panjang → dipecah aman multi-part lewat _split_message.
@@ -3348,26 +3411,23 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     # balasan ini untuk pertanyaan yang mana — penting saat user mengirim
     # beberapa pertanyaan dalam bubble terpisah. Part berikutnya tanpa reply
     # (biar rantai jawaban tidak menumpuk quote berulang).
-    first_part = True
-    for rendered_part in _telegram_html_parts(reply):
-        if cancelled():
-            return
+    from zeline.telegram_delivery import FinalReceipt
+    receipt = FinalReceipt(config.DATA_DIR, chat_id, list(_telegram_html_parts(reply)) if str(reply or '').strip() else [])
+    def send_part(index, rendered_part):
         extra: dict[str, Any] = {}
-        if first_part and reply_to_message_id:
-            extra["reply_to_message_id"] = reply_to_message_id
-            extra["allow_sending_without_reply"] = True
-        sent = _api_call(
-            api,
-            "sendMessage",
-            chat_id=chat_id,
-            text=rendered_part,
-            parse_mode="HTML",
-            **extra,
-        )
-        if sent is None:
-            print("  [telegram] final reply delivery stopped after a failed part", flush=True)
+        if index == 0 and reply_to_message_id:
+            extra.update(reply_to_message_id=reply_to_message_id, allow_sending_without_reply=True)
+        return _api_call(api, "sendMessage", chat_id=chat_id, text=rendered_part,
+                         parse_mode="HTML", attempts=1, delivery=True, cancelled=cancelled,
+                         timeout=min(20, max(.1, receipt.deadline-time.monotonic())), **extra)
+    def deliver_final():
+        return receipt.deliver(send_part, cancelled) # no model/tool replay
+    event, result = transport.submit(deliver_final, final=True)
+    while not event.wait(.05):
+        if cancelled():
             return False
-        first_part = False
+    if not result or result[0] is not True:
+        return False # delivery not acknowledged
 
     # Admitted turns must release their ticket BEFORE reflection tries the
     # session's idle gate. The caller schedules it after finish_turn(). Legacy
@@ -3542,17 +3602,21 @@ def _start_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text:
     if callable(getattr(sessions, "admit", None)):
         ticket = sessions.admit(identity, tool_profile, interrupt=True)
         if ticket is not None and ticket.previous_progress is not None:
-            _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress,
-                           reply_to_message_id=reply_to_message_id)
+            notice_done = threading.Event()
+            ticket._telegram_notice_done = notice_done
+            def interrupt_notice():
+                try:
+                    if not ticket.cancel_event.is_set():
+                        _send_busy_ack(api, sessions, identity, chat_id, ticket.previous_progress,
+                                       reply_to_message_id=reply_to_message_id)
+                finally:
+                    notice_done.set()
+            threading.Thread(target=interrupt_notice, daemon=True,
+                             name="zeline-interrupt-notice").start()
         else:
             with _busy_ack_lock:
                 _busy_ack_ts.pop((id(sessions), identity), None)
-    try:
-        _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
-                  timeout=_PROGRESS_TIMEOUT, attempts=_PROGRESS_ATTEMPTS)
-    except Exception:
-        pass
-
+    # Initial typing belongs to the turn transport, never the polling thread.
     def run_reserved():
         reflect_ready = False
         learning_updates: list[str] = []
