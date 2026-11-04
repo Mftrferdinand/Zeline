@@ -52,12 +52,8 @@ reverse-ts = ["tree-sitter-typescript==0.23.2"]
 zeline = "zeline.cli:main"
 
 [project.urls]
-# Homepage points at the repository, not zeline.<the project domain>, because
-# that domain does not resolve yet and PyPI renders this as a clickable sidebar
-# link on every visit. Switch it once DNS is live -- a 404 on the project page
-# is worse than a plain GitHub link.
-Homepage = "https://github.com/Mftrferdinand/Zeline"
-Documentation = "https://github.com/Mftrferdinand/Zeline/blob/main/docs/installation.md"
+Homepage = "https://zeline.zerolinear.com"
+Documentation = "https://zeline.zerolinear.com/installation.html"
 Repository = "https://github.com/Mftrferdinand/Zeline"
 Issues = "https://github.com/Mftrferdinand/Zeline/issues"
 Changelog = "https://github.com/Mftrferdinand/Zeline/blob/main/CHANGELOG.md"
@@ -86,7 +82,61 @@ extend-exclude = ["build", "dist", "zeline/skills"]
 # so CI can block on them without a mass reformat of a working codebase.
 # Style and typing-modernization rules are tracked separately -- see
 # CONTRIBUTING.md -- and get promoted into `select` as they are cleared.
-select = ["E9", "F63", "F7", "F82"]
+select = [
+    "E9",   # SyntaxError
+    "F63",  # f-string invalid
+    "F7",   # from __future__ imports
+    "F82",  # undefined name
+    "E",    # pycodestyle (style)
+    "W",    # pycodestyle warnings
+    "I",    # isort (imports)
+    "C90",  # mccabe complexity
+]
+
+[tool.ruff.lint.per-file-ignores]
+"zeline/skills/**/*.py" = ["E", "W", "I", "C90"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=zeline",
+    "--cov-report=term-missing",
+    "--cov-report=xml:coverage.xml",
+    "--cov-fail-under=60",
+]
+markers = [
+    "unit: fast isolated tests",
+    "integration: tests requiring external services (gateway, browser, MCP)",
+    "slow: tests taking >5s",
+]
+
+[tool.coverage.run]
+source = ["zeline"]
+omit = [
+    "zeline/skills/*",
+    "zeline/zenith_tools/*",
+    "*/tests/*",
+    "*/test_*.py",
+]
+branch = true
+concurrency = ["thread", "multiprocessing"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
 
 [tool.unittest]
 start-directory = "tests"

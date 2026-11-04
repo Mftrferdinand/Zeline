@@ -397,6 +397,9 @@ zeline gateway list
 - **iSH gateway stops** — iOS suspended the app; keep iSH foreground or run the
   gateway on Termux/Linux/macOS/Windows.
 - **Windows box characters look wrong** — use Windows Terminal or PowerShell 7.
+- **Windows arrow keys / TUI broken in PowerShell 7** — run in Windows Terminal (sets `WT_SESSION`), or set `ZELINE_FORCE_ANSI_INPUT=1` to force ANSI input mode.
 
 Repository and issue tracker:
 [github.com/Mftrferdinand/Zeline](https://github.com/Mftrferdinand/Zeline)
+
+Project website: [zeline.zerolinear.com](https://zeline.zerolinear.com)

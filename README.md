@@ -3,12 +3,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Mftrferdinand/Zeline/tree/main/docs"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
+  <a href="https://zeline.zerolinear.com"><img src="https://img.shields.io/badge/Docs-zeline.zerolinear.com-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="https://t.me/zerolinear"><img src="https://img.shields.io/badge/Community-0A84FF?style=flat&labelColor=334155&logo=telegram&logoColor=white"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-1D4ED8?style=flat&labelColor=334155"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-EN-0A84FF?style=flat&labelColor=334155"></a>
   <a href="docs/README.id.md"><img src="https://img.shields.io/badge/Lang-ID-1D4ED8?style=flat&labelColor=334155"></a>
-  <a href="docs/README.zh.md"><img src="https://img.shields.io/badge/Lang-中文-0A84FF?style=flat&labelColor=334155"></a>
+  <a href="docs/README.zh.md"><img src="https://img.shields.io/badge/Lang-中文-1D4ED8?style=flat&labelColor=334155"></a>
+  <br>
+  <a href="https://codecov.io/gh/Mftrferdinand/Zeline"><img src="https://codecov.io/gh/Mftrferdinand/Zeline/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://pypi.org/project/zeline/"><img src="https://img.shields.io/pypi/v/zeline?label=PyPI" alt="PyPI version"></a>
+  <a href="https://github.com/Mftrferdinand/Zeline/actions/workflows/tests.yml"><img src="https://github.com/Mftrferdinand/Zeline/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <br>
   <strong>— by Zerolinear, an AI research lab.</strong>
 </p>
