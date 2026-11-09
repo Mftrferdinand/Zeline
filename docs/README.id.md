@@ -69,7 +69,7 @@ Satu baris, dan tidak butuh Python tooling apa pun — dia menyiapkan environmen
 privat untukmu:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.sh && bash install.sh
 ```
 
 Lalu `zeline setup`. Installer-nya mengunduh wheel bertag dan memverifikasinya
@@ -82,7 +82,7 @@ gateway saat iSH tidak berada di foreground.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Lalu `zeline setup`.
@@ -279,12 +279,13 @@ tanpa mengubah paketnya. Lihat [docs/extending.md](extending.md).
 ## Pengembangan
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pip install -e ".[dev]"
+python3 -m pytest tests -q
 ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI menjalankan `unittest`, bukan `pytest`.
+CI menjalankan `pytest`, yang menemukan metode `unittest.TestCase` maupun tes bergaya pytest.
 
 **Kontribusi terbuka, dan kamu tidak perlu akses tulis ke repo ini.** Fork,
 buat branch, lalu buka pull request ke `main`; PR dari fork menjalankan matriks

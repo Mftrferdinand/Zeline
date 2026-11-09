@@ -122,6 +122,7 @@ def gateway_status(cfg: dict[str, dict[str, Any]]) -> list[tuple[str, bool, list
     """Status konfigurasi deterministik, tanpa menyalakan koneksi platform."""
     result = []
     for name, module in GATEWAYS.items():
+        del module
         gateway_cfg = cfg.get(name, {})
         enabled = bool(gateway_cfg.get("enabled", False))
         result.append((name, enabled, validate_gateway(name, gateway_cfg) if enabled else []))

@@ -159,7 +159,10 @@ class OfflineEvaluationTests(unittest.TestCase):
         captures = []
 
         def record_popen(*args, **kwargs):
-            output_sinks.extend((kwargs['stdout'], kwargs['stderr']))
+            # Windows teardown also launches taskkill through this shared module.
+            argv = args[0] if args else kwargs.get('args', ())
+            if argv and argv[0] == sys.executable and api._WORKER in argv:
+                output_sinks.extend((kwargs['stdout'], kwargs['stderr']))
             return real_popen(*args, **kwargs)
 
         def record_capture(*args, **kwargs):
@@ -276,10 +279,10 @@ class OfflineEvaluationTests(unittest.TestCase):
             '    path=Path(__file__)\n'
             '    original=path.read_text()\n'
             '    poisoned="def run(candidate, task_input):\\n    return 999\\n"\n'
-            '    path.write_text(poisoned.ljust(len(original), "#"))\n'
+            '    path.write_bytes(poisoned.ljust(len(original), "#").encode("utf-8"))\n'
             '    os.utime(path, (946684800, 946684800))\n'
             '    py_compile.compile(str(path), doraise=True)\n'
-            '    path.write_text(original)\n'
+            '    path.write_bytes(original.encode("utf-8"))\n'
             '    os.utime(path, (946684800, 946684800))\n'
             '    policy=json.loads(candidate.split("```json\\n")[1].split("```")[0])\n'
             '    a,b=task_input["operands"]\n'
@@ -289,9 +292,9 @@ class OfflineEvaluationTests(unittest.TestCase):
         # even under -B: that flag prevents ordinary writes, not loading .pyc.
         probe = self.root / 'probe' / 'trusted_adapter.py'
         probe.parent.mkdir()
-        probe.write_text(source)
+        probe.write_bytes(source.encode('utf-8'))
         self.assertEqual(api._run_case(probe, self.candidate, {'operands': [2, 3]}, 3), 5)
-        probe.write_text(source)
+        probe.write_bytes(source.encode('utf-8'))
         os.utime(probe, (946684800, 946684800))
         self.assertEqual(api._run_case(probe, self.candidate, {'operands': [2, 3]}, 3), 999)
         shutil.rmtree(probe.parent / '__pycache__')

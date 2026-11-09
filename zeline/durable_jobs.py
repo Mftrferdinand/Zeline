@@ -67,7 +67,7 @@ class JobStore:
         keys = [str(node.get("key") or f"task-{index+1}") if isinstance(node, dict) else "" for index, node in enumerate(nodes)]
         if len(set(keys)) != len(keys) or any(not key or len(key) > 64 for key in keys):
             raise ValueError("Graph keys must be unique and contain 1-64 characters")
-        mapping = dict(zip(keys, ids))
+        mapping = dict(zip(keys, ids, strict=True))
         request_key = str(idempotency_key)
         if len(request_key) > 128:
             raise ValueError("Idempotency key must be at most 128 characters")
@@ -84,7 +84,7 @@ class JobStore:
                 raise ValueError("Identity job capacity reached; archive acknowledged history first")
             if conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] + len(nodes) > 10000:
                 raise ValueError("Installation job capacity reached")
-            for job_id, node in zip(ids, nodes):
+            for job_id, node in zip(ids, nodes, strict=True):
                 if not isinstance(node, dict):
                     raise ValueError("Each job must be an object")
                 goal = str(node.get("goal", "")).strip()
@@ -102,7 +102,7 @@ class JobStore:
                 conn.execute("INSERT INTO jobs (id,owner,spec,profile,workspace,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
                              (job_id, owner, json.dumps(spec), profile, str(root), now, now))
             edges = {}
-            for job_id, node in zip(ids, nodes):
+            for job_id, node in zip(ids, nodes, strict=True):
                 dependencies = node.get("depends_on", [])
                 if not isinstance(dependencies, list) or len(dependencies) > 32:
                     raise ValueError("depends_on must be a list of at most 32 graph keys or owned job IDs")

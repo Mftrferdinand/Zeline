@@ -1,7 +1,9 @@
 """A silent stdio MCP server must not hold an RPC beyond its read deadline."""
 from __future__ import annotations
 
+import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import threading
@@ -29,9 +31,11 @@ class MCPStdioTimeoutTests(unittest.TestCase):
                 "time.sleep(30)\n",
                 encoding="utf-8",
             )
+            argv = [sys.executable, str(script)]
+            command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
             server = TrackedServer(
                 name="silent", transport="stdio",
-                command=f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}",
+                command=command,
             )
             outcome = []
 

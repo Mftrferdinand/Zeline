@@ -240,7 +240,6 @@ def _command_setup_text() -> str:
 
 def _telegram_commands() -> list[dict[str, str]]:
     return [
-        {"command": "start", "description": "Start Zeline"},
         {"command": "model", "description": "Switch model"},
         {"command": "status", "description": "View runtime status"},
         {"command": "repository", "description": "Project registry"},
@@ -249,6 +248,7 @@ def _telegram_commands() -> list[dict[str, str]]:
         {"command": "stats", "description": "View token usage"},
         {"command": "events", "description": "Recent file/skill/memory"},
         {"command": "lessons", "description": "View self-learning"},
+        {"command": "self", "description": "Three-self evidence status"},
         {"command": "skillforge", "description": "Review skill"},
         {"command": "stop", "description": "Stop the active turn"},
         {"command": "new", "description": "Start a new session"},
@@ -1630,15 +1630,13 @@ def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
 
 
 def _new_session_text() -> str:
-    return (
-        "╭───────────────────🌟\n"
-        "├ Session reset! Starting fresh\n"
-        f"├ Model : {config.MODEL}\n"
-        f"├ Provider : {_provider_label()}\n"
-        "├ Context : 0 tokens\n"
-        f"├ Endpoint : {config.BASE_URL}\n"
-        "╰ Tip : Use /status to check this session."
-    )
+    return "\n".join([
+        "✨ New Session",
+        f"◉ Model : {_one_line(config.MODEL)}",
+        f"◉ Provider : {_one_line(_provider_label())}",
+        "◉ Context : 0 tokens",
+        "◉ Platform : Telegram",
+    ])
 
 
 def _ensure_repository() -> Path:
@@ -1829,36 +1827,35 @@ def _owner_only_reply(command: str, chat_id: int, allowed: list[Any] | None) -> 
 
 
 def _undo_card(args: str) -> str:
-    """Render `zeline undo` for chat: list checkpoints, or restore one by id.
-
-    Reads the SAME workspace the agent writes in (config.WORKSPACE), so the ids
-    an operator sees here are the ids the agent's undo_file tool produced.
-    """
     from zeline import checkpoints
 
     if not checkpoints.enabled():
-        return "↩️ Checkpoints are disabled (tools.checkpoints = false), so there is nothing to undo."
+        return "↩️ Checkpoints\n◉ Status : Disabled"
     workspace = config.WORKSPACE
     target = args.strip()
     lowered = target.lower()
     if lowered.startswith("diff ") or lowered.startswith("--diff "):
         checkpoint_id = target.split(None, 1)[1].strip()
         preview = checkpoints.diff_preview(checkpoint_id, max_lines=18, workspace=workspace)
-        return "🔍 <b>Undo preview</b>\n<pre>" + html.escape(preview[:3200]) + "</pre>"
-    if not target or lowered == "list" or lowered == "--list":
+        return "🔎 Undo Preview\n" + preview[:3200].strip()
+    if not target or lowered in {"list", "--list"}:
         entries = checkpoints.list_checkpoints(workspace=workspace)
         if not entries:
-            return "↩️ No file checkpoints yet. One is recorded whenever the agent edits an existing file."
-        lines = ["╭───────────────↩️", "├ <b>File checkpoints</b> (newest first)"]
+            return "↩️ Checkpoints\n◉ Status : Empty"
+        lines = ["↩️ Checkpoints"]
         for entry in entries[:15]:
-            cid = html.escape(str(entry.get("id", "")))
-            age = html.escape(checkpoints.format_age(float(entry.get("ts", 0))))
-            name = html.escape(_short_path(str(entry.get("path", ""))))
-            lines.append(f"├ <code>{cid}</code> · {age} · {name}")
-        lines.append("╰ Restore one: <code>/undo &lt;id&gt;</code>")
+            cid = _one_line(entry.get("id", ""))
+            age = _one_line(checkpoints.format_age(float(entry.get("ts", 0))))
+            name = _one_line(_short_path(str(entry.get("path", ""))))
+            lines.append(f"◉ {cid} : {age} · {name}")
         return "\n".join(lines)
     ok, message = checkpoints.restore(target, workspace=workspace)
-    return ("↩️ " if ok else "⚠️ ") + html.escape(message)
+    restore_status = "Restored" if ok else "Failed"
+    return "\n".join([
+        "↩️ Checkpoints",
+        f"◉ Status : {restore_status}",
+        f"◉ Detail : {_one_line(message)}",
+    ])
 
 
 def _stats_days(args: str) -> int | None:
@@ -1873,35 +1870,35 @@ def _stats_days(args: str) -> int | None:
 
 
 def _stats_card(args: str) -> str:
-    """Token usage for chat: totals + a per-model table, cost only when priced.
-
-    Mirrors `zeline stats` exactly — tokens always, money only for models the
-    operator configured a price for — and never prints the base URL or key.
-    """
     from zeline import usage_stats
 
     if not usage_stats.enabled():
-        return "📊 Usage tracking is disabled (agent.usage_tracking = false)."
+        return "📊 Token Usage\n◉ Status : Disabled"
     days = _stats_days(args)
     since = usage_stats.since_day_for(days)
     window = f"last {days} day(s)" if since else "all time"
     store = usage_stats.UsageStore()
     totals = store.totals(since)
+    total_calls = totals["calls"]
+    total_models = totals["models"]
+    total_tokens = totals["total_tokens"]
+    prompt_tokens = totals["prompt_tokens"]
+    completion_tokens = totals["completion_tokens"]
     if not totals["calls"]:
-        return (
-            f"📊 <b>Token usage</b> — {html.escape(window)}\n"
-            "No usage recorded yet. It appears after the agent talks to a provider "
-            "(some OpenAI-compatible relays omit the usage block)."
-        )
+        return "\n".join([
+            "📊 Token Usage",
+            f"◉ Range : {window}",
+            "◉ Status : Empty",
+        ])
+
     lines = [
-        "╭───────────────📊",
-        f"├ <b>Token usage</b> — {html.escape(window)}",
-        (
-            f"├ {totals['calls']} call(s) · {totals['models']} model(s)\n"
-            f"├ {usage_stats.format_tokens(totals['total_tokens'])} tokens "
-            f"({usage_stats.format_tokens(totals['prompt_tokens'])} in / "
-            f"{usage_stats.format_tokens(totals['completion_tokens'])} out)"
-        ),
+        "📊 Token Usage",
+        f"◉ Range : {window}",
+        f"◉ Calls : {total_calls}",
+        f"◉ Models : {total_models}",
+        f"◉ Total : {usage_stats.format_tokens(total_tokens)} tokens",
+        f"◉ Input : {usage_stats.format_tokens(prompt_tokens)} tokens",
+        f"◉ Output : {usage_stats.format_tokens(completion_tokens)} tokens",
     ]
     any_priced = False
     priced_total = 0.0
@@ -1913,15 +1910,13 @@ def _stats_card(args: str) -> str:
             any_priced = True
             priced_total += cost
             cost_text = f"{cost:,.4f}"
-        name = html.escape(str(row["bucket"])[:34])
+        name = _one_line(str(row["bucket"])[:34])
+        row_calls = row["calls"]
+        row_total_tokens = row["total_tokens"]
         lines.append(
-            f"├ <code>{name}</code> · {row['calls']}× · "
-            f"{usage_stats.format_tokens(row['total_tokens'])} · {cost_text}"
+            f"◉ {name} : {row_calls}× · {usage_stats.format_tokens(row_total_tokens)} · {cost_text}"
         )
-    if any_priced:
-        lines.append(f"╰ Priced subtotal: {priced_total:,.4f} (configured unit; '—' = unpriced)")
-    else:
-        lines.append("╰ No prices configured, so no cost is shown (Zeline never guesses prices).")
+    lines.append(f"◉ Cost : {priced_total:,.4f}" if any_priced else "◉ Cost : Not configured")
     return "\n".join(lines)
 
 
@@ -2081,19 +2076,22 @@ def _handle_command_update(
         return True
     if command == "/status":
         status = sessions.status(identity)
+        session_id = _one_line(status.get("session_id", "unknown"))
+        provider_name = _one_line(_provider_label())
+        model_name = _one_line(status.get("model", "unknown"))
+        context_text = _one_line(status.get("context", "0 messages"))
+        agent_running = "Yes" if status.get("agent_running") else "No"
         _api_call(
             api, "sendMessage", chat_id=chat_id,
-            text=(
-                "╭───────────────🚥\n"
-                "├ <b>Zeline Gateway Status</b>\n"
-                f"├ Session ID : <code>{html.escape(str(status['session_id']))}</code>\n"
-                f"├ Provider : <code>{html.escape(_provider_label())}</code>\n"
-                f"├ Model : <code>{html.escape(str(status['model']))}</code>\n"
-                f"├ Title : {html.escape(str(status['title']))}\n"
-                f"├ Context : {html.escape(str(status['context']))}\n"
-                f"├ Agent Running : {'Yes' if status['agent_running'] else 'No'}\n"
-                "╰ Platform : Telegram"
-            ), parse_mode="HTML",
+            text="\n".join([
+                "🌐 Zeline Gateway Status",
+                f"◉ Session ID : {session_id}",
+                f"◉ Provider : {provider_name}",
+                f"◉ Model : {model_name}",
+                f"◉ Context : {context_text}",
+                f"◉ Agent Running : {agent_running}",
+                "◉ Platform : Telegram",
+            ]),
         )
         return True
     if command == "/repository":
@@ -2121,12 +2119,12 @@ def _handle_command_update(
     if command == "/stats":
         refusal = _owner_only_reply("/stats", chat_id, allowed)
         text = refusal if refusal is not None else _stats_card(args)
-        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text)
         return True
     if command == "/events":
         refusal = _owner_only_reply("/events", chat_id, allowed)
         text = refusal if refusal is not None else _events_card(identity)
-        _api_call(api, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+        _api_call(api, "sendMessage", chat_id=chat_id, text=text)
         return True
     if command == "/skillforge":
         refusal = _owner_only_reply("/skillforge", chat_id, allowed)

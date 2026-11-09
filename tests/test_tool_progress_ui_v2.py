@@ -35,6 +35,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "http_request": {"url": "https://example.com/api"},
             "browser": {"action": "open", "url": "https://example.com"},
             "code_intel": {"action": "diagnostics", "path": "app.py"},
+            "reverse_engineer": {"action": "references", "path": "artifacts/program", "target_address": 4096},
             "system_env": {},
             "read_file": {"path": "app.py"},
             "write_file": {"path": "app.py"},
@@ -42,8 +43,10 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "patch_file": {"path": "app.py"},
             "search_files": {"query": "handler"},
             "download_file": {"url": "https://example.com/app.zip", "path": "app.zip"},
+            "hash_check": {"path": "app.zip"},
             "undo_file": {"action": "list"},
             "update_task": {"task": "Test UI", "status": "in_progress"},
+            "watch_task": {"action": "list"},
             "manage_skill": {"action": "list"},
             "resolve_lesson": {"tool": "read_file"},
             "execute_code": {"code": "print('ok')"},
@@ -65,7 +68,8 @@ class ToolProgressUiV2Tests(unittest.TestCase):
                     self.assertEqual(rendered, "")
                 else:
                     self.assertTrue(rendered.strip(), f"{name} rendered an empty progress line")
-                    self.assertFalse(rendered.startswith("🔧"), f"{name} fell back instead of using its UI mapping")
+                    self.assertFalse(rendered.startswith(("🔧", "⚙️ Executing tool:")),
+                                     f"{name} fell back instead of using its UI mapping")
 
     def test_v2_key_labels_and_emojis(self):
         cases = (
@@ -88,6 +92,9 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             ("analyze_media", {"path_or_url": "voice.ogg"}, "🎧 Analyzing audio…"),
             ("analyze_media", {"path_or_url": "image.png"}, "👀 Analyzing image…"),
             ("schedule_task", {"action": "list"}, "📅 Reviewing scheduled tasks…"),
+            ("watch_task", {"action": "list"}, "👀 Reviewing task follow-ups…"),
+            ("watch_task", {"action": "start", "task": "Track reward"}, "👀 Starting task follow-up: Track reward"),
+            ("watch_task", {"action": "stop", "task": "Track reward"}, "🛑 Stopping task follow-up: Track reward"),
             ("runtime_info", {}, "🪪 Checking agent runtime…"),
             ("ask_user", {"question": "Continue?"}, "🙋 Requesting your input: Continue?"),
         )

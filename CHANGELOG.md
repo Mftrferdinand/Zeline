@@ -1,5 +1,71 @@
 # Changelog
 
+[0.4.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.5
+
+## [0.4.5] — 2026-10-28
+
+This scoped maintenance candidate preserves the installed agent and Telegram
+behavior while keeping the public persona separate from owner-instance data.
+
+### Changed
+- Task-scoped follow-up watches use bounded polling and delivery, with
+  cross-process registry serialization and shared inbox snapshots.
+- A validated, owner-only instance SOUL override can replace the public default
+  without bundling private persona content into the distribution.
+- Telegram follow-up work has a dedicated progress label.
+
+### Fixed
+- Registration, stop, poll, and scheduler transitions keep watch state
+  consistent across threads and processes.
+
+[0.4.4]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.4
+
+## [0.4.4] — 2026-10-26
+
+This release integrates the reviewed v0.4.4 development work on top of the
+retained v0.4.3 baseline. It keeps self-improvement evidence-backed and
+operator-gated; it does not enable autonomous skill promotion, provider-backed
+GEPA search, or external REA service calls on the default agent path.
+
+### Added
+- Versioned learning receipts and provenance for real memory, lesson and skill
+  mutations, including revision-aware retrieval feedback and evidence-linked
+  lesson resolution ([#348](https://github.com/Mftrferdinand/Zeline/pull/348)).
+- Isolated paired and held-out SkillForge comparisons plus a bounded offline
+  evaluation handoff; GEPA remains an optional training-only, report-only bridge.
+- Bounded native reverse-engineering continuations with artifact digests,
+  paginated observations and read-only parser/worker safeguards.
+
+### Changed
+- Reflection reports only host-generated, reviewable learning receipts; duplicate
+  or no-op changes are suppressed, skill changes remain proposals until explicit
+  review/apply, and reflection memory writes stay bounded and low-confidence.
+- Telegram API progress labels identify the actual provider while linking the
+  complete request label to the actual HTTP(S) request URL.
+
+### Fixed
+- Stale lesson resolution, memory-admission and bounded worker paths now retain
+  revision, cleanup and failure evidence instead of claiming unverified success.
+
+## [0.4.3] — 2026-10-23
+
+This release adds the reviewed bounded native static engine to v0.4.2. It does
+not restore the removed v0.3.5–v0.3.9 code line.
+
+### Added
+- Built-in `reverse_engineer` for bounded ELF/PE inspection, source inventory,
+  validated symbol navigation, native disassembly and paginated references
+  ([#338](https://github.com/Mftrferdinand/Zeline/pull/338)).
+- PE32/PE64 import-slot references preserve static table identity and explicitly
+  leave runtime targets/providers unknown; unsupported addressing is not guessed.
+- Linux, Windows and macOS fresh-wheel/native-worker verification in CI.
+
+### Fixed
+- Scope asynchronous callback state to its own provider request or tool batch
+  ([#330](https://github.com/Mftrferdinand/Zeline/pull/330)).
+- Preserve native worker memory/time controls, deterministic checkpoint IDs,
+  Windows pipe handling and cross-platform test portability.
+
 ## [0.4.2] — 2026-10-22
 
 This release packages the merged terminal runtime UI and updater hardening on
@@ -440,3 +506,5 @@ Release notes for 0.2.5 and earlier are on the
 [#233]: https://github.com/Mftrferdinand/Zeline/pull/233
 [0.4.2]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.2
 [0.4.1]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.1
+
+[0.4.3]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.3

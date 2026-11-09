@@ -73,7 +73,7 @@ One line, and it needs no existing Python tooling — it provisions a private
 environment for you:
 
 ```bash
-curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.sh && bash install.sh
+curl -fsSLO --proto '=https' --tlsv1.2 https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.sh && bash install.sh
 ```
 
 Then `zeline setup`. The installer downloads the versioned wheel and verifies it
@@ -83,7 +83,7 @@ hand. On iSH, run `apk add bash curl python3` first.
 ### Windows PowerShell
 
 ```powershell
-iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.2/install.ps1 -OutFile install.ps1; .\install.ps1
+iwr -UseBasicParsing https://github.com/Mftrferdinand/Zeline/releases/download/v0.4.5/install.ps1 -OutFile install.ps1; .\install.ps1
 ```
 
 Then `zeline setup`.
@@ -278,12 +278,13 @@ package. See [docs/extending.md](docs/extending.md).
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pip install -e ".[dev]"
+python3 -m pytest tests -q
 ruff check zeline tests
 python3 -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-CI runs `unittest`, not `pytest`.
+CI runs `pytest`, which discovers both `unittest.TestCase` methods and pytest-style tests.
 
 **Contributions are welcome, and you do not need write access here.** Fork,
 branch, and open a pull request against `main`; it runs the same CI matrix the

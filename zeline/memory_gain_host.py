@@ -2,11 +2,16 @@
 
 Nothing in a model response can register a pack. A pack must be a local reviewed
 file matching the exact canonical text of a changed record. No pack => no work.
+Private reviewed-file auto packs require POSIX permission checks. Windows ACL
+validation is not implemented, so automatic packs stay disabled there; chmod
+mode bits on Windows are not evidence that a file is private.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -16,9 +21,12 @@ from .memory_gain_automation import Case, MemoryGainAutomation
 
 _CASE_FILE = 'case-packs.json'
 _WORKER = 'zeline.memory_gain_automation:llm_answer'
+_POSIX_PERMISSIONS = os.name == 'posix'
 
 
 def _case_packs() -> list[dict[str, Any]]:
+    if not _POSIX_PERMISSIONS:
+        return []  # Fail closed without a supported private-file permission check.
     path = config.DATA_DIR / 'learning' / _CASE_FILE
     if path.is_symlink():
         return []
@@ -91,7 +99,7 @@ def status_for_identity(identity: str) -> dict[str, int]:
         if not path.is_file() or path.is_symlink():
             return status
         live = {r['id']: r['revision'] for r in memory.MemoryStore(identity).records()}
-        with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=0.2) as db:
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=0.2)) as db:
             rows = db.execute('SELECT record_id,revision,status,substr(result,1,65537) FROM jobs '
                               'WHERE owner=? ORDER BY created DESC LIMIT 128', (identity,)).fetchall()
         for record_id, revision, state, result in rows:

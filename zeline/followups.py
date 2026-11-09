@@ -103,7 +103,10 @@ def _save(value: dict) -> None:
     fd, path = tempfile.mkstemp(prefix="owner-", suffix=".tmp", dir=dest.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), 0o600)
+            else:
+                os.chmod(path, 0o600)
             json.dump(value, stream, ensure_ascii=False, separators=(",", ":"))
             stream.write("\n")
             stream.flush()
