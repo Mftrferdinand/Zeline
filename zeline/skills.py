@@ -609,7 +609,7 @@ def _find_skill(name: str, include_private: bool) -> Path | None | str:
     return None
 
 
-def load_skill(name: str, include_private: bool = False) -> str:
+def load_skill(name: str, include_private: bool = False, file_path: str = "") -> str:
     """Muat skill scope yang diizinkan. Input bukan path filesystem.
 
     Untuk skill folder, isi SKILL.md dikembalikan plus daftar file pendukung
@@ -625,6 +625,17 @@ def load_skill(name: str, include_private: bool = False) -> str:
         except ValueError:
             normalized = name.strip()
         return f"ERROR: skill '{normalized}' not found."
+    if file_path:
+        if found.name != SKILL_ENTRY or not re.fullmatch(
+                r"references/(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}/)*[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.md", file_path):
+            return "ERROR skill: only existing Markdown references inside folder skills can be loaded."
+        try:
+            target = _safe_skill_relative(found.parent, file_path)
+            if target.is_symlink() or not target.is_file() or target.stat().st_size > MAX_SKILL_CHARS:
+                return "ERROR skill: reference not found or too large."
+            return target.read_text(encoding="utf-8")
+        except (ValueError, OSError, UnicodeError):
+            return "ERROR skill: reference cannot be loaded."
     content = found.read_text(encoding="utf-8", errors="replace")
     # Skill folder: sertakan daftar file pendukung relatif ke folder skill.
     if found.name == "SKILL.md":

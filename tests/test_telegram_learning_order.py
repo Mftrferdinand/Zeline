@@ -39,7 +39,7 @@ class LearningOrderTests(unittest.TestCase):
         summary = "\n\n".join(phase + " review: observed task evidence." for phase in PHASES)
         with mock.patch.object(session.agent, "send", side_effect=send), \
                 mock.patch.object(session.agent, "reflect", return_value=summary), \
-                mock.patch.object(telegram, "_api_call", side_effect=lambda api, method, **p: calls.append((method, p)) or {"ok": True}), \
+                mock.patch.object(telegram, "_api_call", side_effect=lambda api, method, **p: calls.append((method, p)) or {"ok": True, "result": {"message_id": len(calls)}}), \
                 mock.patch.object(telegram, "_LiveStatus", return_value=live), \
                 mock.patch.object(telegram, "_start_working_heartbeat", return_value=mock.Mock()), \
                 mock.patch.object(telegram.threading, "Thread", side_effect=thread):
@@ -86,7 +86,7 @@ class LearningOrderTests(unittest.TestCase):
         def api(_api, method, **payload):
             if method == "sendMessage":
                 sent.append(payload["text"])
-                return None if payload["text"] == "Final part two" else {"ok": True}
+                return None if payload["text"] == "Final part two" else {"ok": True, "result": {"message_id": len(sent)}}
             return {"ok": True}
 
         with mock.patch.object(session.agent, "send", return_value="Final task answer"), \

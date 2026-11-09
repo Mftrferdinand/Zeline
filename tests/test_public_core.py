@@ -328,17 +328,20 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # a hole in the scan. The `unknown` assertion enforces that: a new file kind
         # fails this test until it is added to the scanned set.
         source_suffixes = {
-            ".md", ".txt", ".py", ".sh", ".ts", ".js", ".json", ".yml", ".yaml", ".html", ".css",
+            ".md", ".txt", ".py", ".sh", ".ts", ".js", ".mjs", ".c", ".cnf",
+            ".bat", ".vbs", ".json", ".yml", ".yaml", ".html", ".css",
         }
         sources = sorted(
             path for path in skill_root.rglob("*")
             if path.is_file() and path.suffix.lower() in source_suffixes
         )
         self.assertTrue(sources)
+        allowed_nonsuffix = {"LICENSE", ".gitignore"}
         unknown = sorted(
             str(path.relative_to(skill_root)) for path in skill_root.rglob("*")
             if path.is_file() and "__pycache__" not in path.parts
             and path.suffix.lower() not in source_suffixes
+            and path.name not in allowed_nonsuffix
         )
         self.assertEqual(unknown, [])
         upstream_terms = (
@@ -1305,7 +1308,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 return {"ok": True, "result": {"message_id": 1}}
 
         calls = {"n": 0}
-        def flaky(url, json=None, timeout=None):
+        def flaky(url, json=None, timeout=None, **kwargs):
             calls["n"] += 1
             if calls["n"] < 3:
                 raise _rq.ConnectionError("boom")
@@ -1321,7 +1324,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         import requests as _rq
         calls = {"n": 0}
-        def always_fail(url, json=None, timeout=None):
+        def always_fail(url, json=None, timeout=None, **kwargs):
             calls["n"] += 1
             raise _rq.ConnectionError("boom")
         with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram._HTTP, "post", side_effect=always_fail):
@@ -1345,7 +1348,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
 
         sent_texts = []
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, **kwargs):
             sent_texts.append(json.get("text"))
             if json.get("parse_mode") == "HTML":
                 return Resp(False, {"ok": False, "description": "Bad Request: can't parse entities: Can't find end tag \"pre\""})
@@ -2454,18 +2457,17 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Loading skill: test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
-        self.assertEqual(shell, "💻 Executing command… <pre>python -m unittest tests.test_agent</pre>")
+        self.assertEqual(shell, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">python -m unittest tests.test_agent</code></pre>")
+        self.assertIn("python -m unittest tests.test_agent", shell)
         self.assertTrue(shell.endswith("</pre>"))
-        # `<code class="language-...">` di dalam `<pre>` memicu header bahasa +
-        # tombol COPY CODE di Telegram; feed progres harus kartu polos.
-        self.assertNotIn("<code", shell)
-        self.assertNotIn("class=", shell)
+        # header kartu sekarang 🔴🟡🟢 (permintaan operator), bukan label Shell.
+        self.assertNotIn("language-shell", shell)
         self.assertNotIn("Zeline Terminal", shell)
         self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file: <code>agent.py</code> L1-300")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file: agent.py L1-300")
         # read_file tanpa offset/limit → tanpa rentang baris.
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file: <code>hotel-dashboard.html</code>")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file: hotel-dashboard.html")
         self.assertEqual(telegram._tool_progress_text("write_file", {"path": "app.py"}), "📝 Writing file: <code>app.py</code>")
         self.assertEqual(telegram._tool_progress_text("edit_file", {"path": "app.py"}), "📝 Editing file: <code>app.py</code>")
         self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "📝 Editing file: <code>app.py</code>")
@@ -2486,14 +2488,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # varian kartu besar di Telegram ada dua: `<code class="language-...">`
         # di dalam `<pre>`, dan isi yang melebihi satu baris.
         search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
-        self.assertEqual(search, "💻 Executing command… <pre>python -searching ftmo -v</pre>")
-        self.assertNotIn("<code", search)
-        self.assertNotIn("class=", search)
+        self.assertEqual(search, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">python -searching ftmo -v</code></pre>")
         self.assertNotIn("Zeline Terminal", search)
         self.assertNotIn("📺", search)
         coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
-        self.assertEqual(coding, "💻 Executing command… <pre>pytest -q</pre>")
-        self.assertNotIn("<code", coding)
+        self.assertEqual(coding, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">pytest -q</code></pre>")
+        self.assertNotIn("language-shell", coding)
         self.assertNotIn("Zeline Terminal", coding)
         self.assertNotIn("📺", coding)
         # Command panjang / multiline diratakan jadi SATU baris pendek yang
@@ -2508,14 +2508,17 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # Penanda potong: tiga titik ASCII, bukan glyph ellipsis "…" (yang di
         # font monospace Telegram menempel ke karakter terakhir dan terlihat
         # seperti potongan yang dipaksakan).
-        self.assertTrue(truncated.endswith(f"{telegram._TRUNCATION_MARK}</pre>"))
+        self.assertTrue(truncated.endswith(f"{telegram._TRUNCATION_MARK}</code></pre>"))
         self.assertNotIn("…", truncated.split("<pre>", 1)[1])
         self.assertNotIn("\n", truncated)
-        self.assertNotIn("<code", truncated)
+        self.assertNotIn("language-shell", truncated)
         # Isi mentah (setelah unescape) tidak melebihi batas preview + penanda,
         # jadi kartu tidak bisa tumbuh melewati satu baris.
         import html as _html
-        raw_inner = _html.unescape(truncated.split("<pre>", 1)[1][:-len("</pre>")])
+        body = truncated.split("<pre>", 1)[1][:-len("</code></pre>")]
+        if "<code" in body:                      # strip header tag before measuring
+            body = body.split(">", 1)[1]
+        raw_inner = _html.unescape(body)
         self.assertLessEqual(
             len(raw_inner),
             telegram._TERMINAL_PREVIEW_LIMIT + 1 + len(telegram._TRUNCATION_MARK),
@@ -3357,7 +3360,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def json(self): return {"ok": True, "result": {"username": "zerolinearbot"}}
 
         calls = {"n": 0}
-        def flaky(url, json=None, timeout=None):
+        def flaky(url, json=None, timeout=None, **kwargs):
             calls["n"] += 1
             if calls["n"] < 3:
                 raise _rq.ReadTimeout("boom")
@@ -3463,7 +3466,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def stop(self, _identity): return False
         with mock.patch.object(telegram, "_api_call") as api:
             telegram._handle_command_update("bot-api", "/stop", Sessions(), "telegram:42", 42, stop_event=threading.Event(), tool_profile="safe")
-        self.assertEqual(api.call_args.kwargs["text"], "No active task to stop.")
+        self.assertEqual(api.call_args.kwargs["text"], "⛔ No active task.")
 
     def test_telegram_new_stops_old_turn_and_resets_session(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
@@ -3514,7 +3517,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         payload = b"z" * (729 * 1024)
         document = {"file_name": "ZELINE-ZENITH-FORSALE-FINAL.zip", "file_size": len(payload), "file_id": "zip-file"}
-        response = mock.Mock(ok=True, content=payload)
+        response = mock.Mock(ok=True, headers={"Content-Length": str(len(payload))})
+        response.iter_content.return_value = iter([payload])
         with mock.patch.object(telegram, "_api_call", return_value={"result": {"file_path": "documents/zip-file"}}), \
              mock.patch.object(telegram.requests, "get", return_value=response):
             content, error = telegram._download_document("https://api.telegram.org/bottoken", "token", document)

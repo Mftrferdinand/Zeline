@@ -1,7 +1,7 @@
 """Kontinuasi & pembatalan: dua keluhan nyata yang keduanya soal "pesan mana".
 
 1. ``/stop`` membalas TIGA pesan untuk satu pembatalan (konfirmasi + sentinel
-   "Stopped." dari turn + "No active task to stop." dari echo). Yang benar satu.
+   "Stopped." dari turn + "⛔ No active task." dari echo). Yang benar satu.
 2. "lanjut" mengembalikan topik TERLAMA, bukan yang terakhir dikerjakan, karena
    peringkat archive bm25-first dan "lanjut" dicari sebagai kata kunci.
 
@@ -152,12 +152,12 @@ class ContinuationAnchorTests(_ArchiveFixture):
     def test_search_ranking_prefers_the_recent_topic_when_relevance_ties(self):
         """Regresi utama: dulu topik lama yang panjang selalu menang."""
         self.seed_two_topics()
-        rows = self.store.search_archive(self.identity, "telegram invoice")
+        rows = self.store.search_archive(self.identity, "telegram OR invoice")
         self.assertEqual(rows[0]["title"], "Gateway telegram foto")
 
     def test_search_still_finds_an_old_topic_when_the_query_names_it(self):
         self.seed_two_topics()
-        rows = self.store.search_archive(self.identity, "invoice tabel")
+        rows = self.store.search_archive(self.identity, "invoice format")
         self.assertEqual(self.titles(rows), {"Invoice generator"})
 
     def test_search_with_an_empty_query_returns_nothing(self):
@@ -199,7 +199,8 @@ class RecallHistoryToolTests(_ArchiveFixture):
     def test_bare_lanjut_answers_with_the_newest_thread(self):
         self.seed_two_topics()
         out = self._executor()._recall_history("lanjut")
-        self.assertIn("MOST RECENT thread", out)
+        self.assertIn("MOST RECENT archived thread", out)
+        self.assertIn("historical candidate only", out)
         self.assertIn("gateway telegram mati", out)
         self.assertNotIn("invoice bulan", out)
 
@@ -211,12 +212,12 @@ class RecallHistoryToolTests(_ArchiveFixture):
 
     def test_a_named_topic_still_reaches_the_old_conversation(self):
         self.seed_two_topics()
-        out = self._executor()._recall_history("invoice tabel")
+        out = self._executor()._recall_history("invoice format")
         self.assertIn("invoice bulan", out)
 
     def test_empty_archive_says_so_instead_of_failing(self):
         out = self._executor()._recall_history("lanjut")
-        self.assertIn("No recent work to continue", out)
+        self.assertIn("No eligible recent archived thread", out)
 
     def test_stale_archive_tells_the_model_to_ask_not_to_guess(self):
         """Regresi nyata: "lanjut" pagi ini me-recall pekerjaan semalam.
@@ -230,8 +231,8 @@ class RecallHistoryToolTests(_ArchiveFixture):
         self.seed("user", "bikin veo-chat fastapi", "hy", old)
         self.seed("assistant", "veo-chat: pip lambat, install manual", "hy", old + 60)
         out = self._executor()._recall_history("lanjut")
-        self.assertIn("No recent work to continue", out)
-        self.assertIn("Ask the user", out)
+        self.assertIn("No eligible recent archived thread", out)
+        self.assertIn("ask_user", out)
         # Yang paling penting: transkrip sesi lama TIDAK ikut terbawa.
         self.assertNotIn("veo-chat", out)
 
@@ -288,14 +289,14 @@ class StopRepliesOnceTests(unittest.TestCase):
     def test_stop_when_genuinely_idle_still_says_so(self):
         handled, api = self._stop(self._sessions(running=False))
         self.assertTrue(handled)
-        self.assertEqual(api.call_args.kwargs["text"], "No active task to stop.")
+        self.assertEqual(api.call_args.kwargs["text"], "⛔ No active task.")
 
     def test_the_echo_window_expires_so_a_later_stop_is_answered(self):
         self._stop(self._sessions(running=True))
         with mock.patch.object(self.telegram.time, "monotonic",
                                return_value=time.monotonic() + self.telegram._STOP_ECHO_SECONDS + 1):
             _, api = self._stop(self._sessions(running=False))
-        self.assertEqual(api.call_args.kwargs["text"], "No active task to stop.")
+        self.assertEqual(api.call_args.kwargs["text"], "⛔ No active task.")
 
     def test_cancelled_turn_sends_no_reply_and_skips_reflection(self):
         """Sentinel "Stopped." dari turn yang dibatalkan tidak boleh jadi pesan kedua."""

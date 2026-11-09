@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -29,6 +30,95 @@ class TurnAdmissionTests(unittest.TestCase):
         self.module.config.PERSIST_SESSIONS = False
         self.store = self.module.SessionStore()
         self.identity = "telegram:fixture"
+
+    def test_telegram_stop_ack_is_prompt_while_shell_cleanup_blocks(self):
+        from zeline.gateways import telegram
+        ticket = self.store.admit(self.identity, "safe")
+        entered = threading.Event()
+        release = threading.Event()
+        messages = []
+
+        def slow_cleanup(_identity):
+            entered.set()
+            release.wait(1)
+            return 1
+
+        try:
+            with mock.patch.object(self.module.tools, "cancel_identity", side_effect=slow_cleanup), \
+                 mock.patch.object(telegram, "_api_call", side_effect=lambda _api, _method, **kw: messages.append(kw.get("text"))):
+                started = time.monotonic()
+                self.assertTrue(telegram._handle_command_update(
+                    "fixture", "/stop", self.store, self.identity, 42,
+                    stop_event=threading.Event(), tool_profile="safe"))
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, .3, "Telegram ack must not wait for the shell to exit")
+                self.assertTrue(ticket.cancel_event.is_set())
+                self.assertTrue(entered.wait(.3))
+                self.assertEqual(messages, ["⛔ Stopped. You can continue this session."])
+        finally:
+            release.set()
+
+    def test_fresh_turn_waits_until_stop_cleanup_finishes(self):
+        ticket = self.store.admit(self.identity, "safe")
+        entered = threading.Event()
+        release = threading.Event()
+        claimed = []
+
+        def slow_cleanup(_identity):
+            entered.set()
+            release.wait(2)
+            return 1
+
+        with mock.patch.object(self.module.tools, "cancel_identity", side_effect=slow_cleanup):
+            try:
+                self.assertTrue(self.store.request_stop(self.identity))
+                self.assertTrue(entered.wait(.3))
+                self.assertTrue(ticket.cancel_event.is_set())
+                self.assertFalse(self.store.request_stop(self.identity), "repeat stop must not send a second ack")
+                fresh = self.store.admit(self.identity, "safe")
+                worker = threading.Thread(target=lambda: claimed.append(self.store.wait_turn(fresh)))
+                worker.start()
+                self.assertFalse(fresh.started_at, "new turn started before old shell was reaped")
+                self.assertEqual(claimed, [])
+            finally:
+                release.set()
+            worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(claimed, [True])
+        self.store.finish_turn(fresh)
+
+    def test_request_stop_actually_kills_foreground_shell(self):
+        from zeline import tools
+        ticket = self.store.admit(self.identity, "safe")
+        started = threading.Event()
+        output = []
+
+        def run_shell():
+            output.append(tools._run_tracked(
+                [sys.executable, "-c", "import time;time.sleep(20)"],
+                shell=False, cwd=None, seconds=25, identity=self.identity))
+
+        original = tools._fg_track
+        def observe(identity, process):
+            original(identity, process)
+            started.set()
+
+        with mock.patch.object(tools, "_fg_track", side_effect=observe):
+            worker = threading.Thread(target=run_shell, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(started.wait(2))
+                begin = time.monotonic()
+                self.assertTrue(self.store.request_stop(self.identity))
+                self.assertLess(time.monotonic() - begin, .3)
+                worker.join(4)
+                self.assertFalse(worker.is_alive(), "foreground command survived /stop")
+                self.assertTrue(ticket.cancel_event.is_set())
+                self.assertNotEqual(output[0][0], 0)
+            finally:
+                tools.cancel_identity(self.identity)
+                worker.join(4)
+                self.store.finish_turn(ticket)
 
     def test_stop_invalidates_a_worker_waiting_for_the_session_lock(self):
         session = self.store.get_or_create(self.identity, "safe")

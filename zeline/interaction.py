@@ -229,6 +229,11 @@ def register_channel(identity: str, renderer: object) -> None:
         _CHANNELS[identity or "cli:local"] = renderer
 
 
+def has_channel(identity: str) -> bool:
+    with _LOCK:
+        return (identity or "cli:local") in _CHANNELS
+
+
 def unregister_channel(identity: str) -> None:
     with _LOCK:
         _CHANNELS.pop(identity or "cli:local", None)

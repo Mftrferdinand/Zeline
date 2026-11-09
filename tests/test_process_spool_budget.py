@@ -1,18 +1,20 @@
 """Foreground preservation must bound disk spool as well as RAM."""
 import importlib
 import os
-import tempfile
-from types import SimpleNamespace
+import subprocess
+import sys
 from unittest import mock
 
 
 def test_foreground_spool_has_a_disk_budget_and_explicit_handoff_omission(tmp_path):
     output = importlib.import_module("zeline.process_output")
-    payload = b"first\n" + b"x" * 65_536 + b"\nlast\n"
-    stream = tempfile.TemporaryFile(mode="w+b")
-    stream.write(payload)
-    stream.seek(0)
-    process = SimpleNamespace(pid=12345, stdout=stream, poll=lambda: 0)
+    # The Windows reader requires a real process pipe, not a regular disk file.
+    # This trusted fixture emits fixed bytes; it never runs an input artifact.
+    process = subprocess.Popen(
+        [sys.executable, '-I', '-B', '-c',
+         "import sys; sys.stdout.buffer.write(b'first\\n' + b'x' * 65536 + b'\\nlast\\n')"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
     target = tmp_path / "promoted.log"
     with mock.patch.object(output, "SPOOL_BUDGET", 16_384, create=True):
         capture = output.ProcessOutput(process)
@@ -26,3 +28,7 @@ def test_foreground_spool_has_a_disk_budget_and_explicit_handoff_omission(tmp_pa
             assert text.endswith(b"last\n")
         finally:
             capture.finish()
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=3)
+            process.stdout.close()

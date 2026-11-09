@@ -13,7 +13,7 @@ class ModelSwitchTextTests(unittest.TestCase):
         self.assertIsNone(telegram._format_token_count(0))
         self.assertEqual(telegram._format_token_count(512), "512")
 
-    def test_switch_text_has_box_and_route_label(self):
+    def test_switch_text_is_compact_and_keeps_route_label(self):
         caps = {
             "capabilities": {
                 "contextWindow": 1_000_000,
@@ -31,7 +31,12 @@ class ModelSwitchTextTests(unittest.TestCase):
         self.assertIn("Gr/claude-opus-4-8", text)
         self.assertIn("1M tokens", text)
         self.assertIn("128K tokens", text)
-        self.assertIn("Saved to config.yaml", text)
+        self.assertNotIn("Saved to config.yaml", text)
+        self.assertIn("◉ Provider :", text)
+        self.assertIn("◉ Model :", text)
+        self.assertNotIn("╭", text)
+        self.assertNotIn("├", text)
+        self.assertNotIn("╰", text)
         # No Indonesian leftover
         self.assertNotIn("Konteks", text)
         self.assertNotIn("dijaga", text)
@@ -44,7 +49,7 @@ class ModelSwitchTextTests(unittest.TestCase):
             text = telegram._model_switch_text("some/model", {"name": "P", "slug": "p"})
         self.assertIn("Model Switched", text)
         self.assertNotIn("tokens", text)
-        self.assertIn("Saved to config.yaml", text)
+        self.assertNotIn("Saved to config.yaml", text)
 
 
 if __name__ == "__main__":

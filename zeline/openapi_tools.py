@@ -23,6 +23,7 @@ import requests
 import yaml
 
 from zeline import config
+from zeline.http_body import read_preview, format_preview, discard_redirect_body, redact_preview, merge_response_cookies
 
 TOOL_PREFIX = "api_"
 ALLOWED_PROFILES = frozenset({"workspace", "full"})
@@ -531,7 +532,11 @@ class OpenApiRegistry:
         secrets, security_error = _apply_security(tool, headers, params, cookies)
         if security_error:
             return f"ERROR: {security_error}."
-        parsed = urlparse(url)
+        try:
+            parsed = urlparse(url)
+            port = parsed.port
+        except ValueError:
+            return "ERROR: OpenAPI operation resolved to an invalid URL."
         host = parsed.hostname or ""
         if parsed.scheme not in {"http", "https"} or not host:
             return "ERROR: OpenAPI operation resolved to an invalid URL."
@@ -539,11 +544,18 @@ class OpenApiRegistry:
             return "ERROR: OpenAPI operation points to an internal address and is blocked."
         method = tool.method
         body = supplied.get("body") if tool.body_schema is not None else None
-        initial = urlparse(url)
-        initial_origin = (initial.scheme, initial.hostname, initial.port)
+        initial_origin = (
+            parsed.scheme,
+            parsed.hostname,
+            port if port is not None else (443 if parsed.scheme == "https" else 80),
+        )
+        if "accept-encoding" not in {key.lower() for key in headers}:
+            headers["Accept-Encoding"] = "gzip, deflate"
+        # Keep response cookie scope intact across manual redirects.
+        cookies = requests.cookies.cookiejar_from_dict(cookies)
         response = None
-        for redirect_count in range(6):
-            try:
+        try:
+            for redirect_count in range(6):
                 response = requests.request(
                     method,
                     url,
@@ -553,36 +565,55 @@ class OpenApiRegistry:
                     json=body,
                     timeout=REQUEST_TIMEOUT,
                     allow_redirects=False,
+                    stream=True,
+                    hooks={"response": discard_redirect_body},
                 )
-            except requests.RequestException as exc:
-                return f"ERROR OpenAPI request: {exc.__class__.__name__}: {exc}"
-            location = response.headers.get("Location", "")
-            if response.status_code not in {301, 302, 303, 307, 308} or not location:
-                break
-            if redirect_count == 5:
-                return "ERROR: OpenAPI request exceeded 5 redirects."
-            redirected = urljoin(url, location)
-            target = urlparse(redirected)
-            target_origin = (target.scheme, target.hostname, target.port)
-            if target_origin != initial_origin:
-                return "ERROR: cross-origin OpenAPI redirect is blocked."
-            if not target.hostname or _is_internal_host(target.hostname):
-                return "ERROR: OpenAPI redirect points to an internal address and is blocked."
-            url = redirected
-            if response.status_code == 303 or (
-                response.status_code in {301, 302} and method not in {"GET", "HEAD"}
-            ):
-                method = "GET"
-                body = None
-        assert response is not None
-        text = response.text or ""
-        for secret in secrets:
-            if secret:
-                text = text.replace(secret, "[REDACTED]")
-        if len(text) > 8_000:
-            text = text[:8_000] + "\n... [truncated]"
-        content_type = response.headers.get("Content-Type", "")
-        return (
-            f"Status: {response.status_code} {response.reason}\n"
-            f"Content-Type: {content_type}\n\n{text}"
-        ).strip()
+                location = response.headers.get("Location", "")
+                if response.status_code not in {301, 302, 303, 307, 308} or not location:
+                    break
+                # Preserve same-origin Set-Cookie state across the manually
+                # followed redirect chain; cross-origin redirects are rejected
+                # below before any subsequent request is made.
+                merge_response_cookies(cookies, response)
+                if redirect_count == 5:
+                    return "ERROR: OpenAPI request exceeded 5 redirects."
+                redirected = urljoin(url, location)
+                target = urlparse(redirected)
+                try:
+                    target_port = target.port
+                except ValueError:
+                    return "ERROR: invalid HTTP redirect URL."
+                target_origin = (
+                    target.scheme,
+                    target.hostname,
+                    target_port if target_port is not None else (443 if target.scheme == "https" else 80),
+                )
+                if target_origin != initial_origin:
+                    return "ERROR: cross-origin OpenAPI redirect is blocked."
+                if not target.hostname or _is_internal_host(target.hostname):
+                    return "ERROR: OpenAPI redirect points to an internal address and is blocked."
+                status = response.status_code
+                response.close()
+                response = None
+                url = redirected
+                if (status in {302, 303} and method != "HEAD") or (status == 301 and method == "POST"):
+                    method = "GET"
+                    body = None
+            assert response is not None
+            text, truncated = read_preview(response)
+            text = redact_preview(text, secrets, truncated)
+            text = format_preview(text, truncated)
+            content_type = response.headers.get("Content-Type", "")
+            metadata = (
+                f"Status: {response.status_code} {response.reason}\n"
+                f"Content-Type: {content_type}"
+            )
+            metadata = format_preview(redact_preview(metadata, secrets, False), False)
+            return f"{metadata}\n\n{text}".strip()
+        except (requests.RequestException, OSError, ValueError) as exc:
+            # Request exceptions may embed repr(header/query credentials),
+            # including escaped forms that literal secret replacement misses.
+            return f"ERROR OpenAPI request: {exc.__class__.__name__} (request failed; details omitted)."
+        finally:
+            if response is not None:
+                response.close()

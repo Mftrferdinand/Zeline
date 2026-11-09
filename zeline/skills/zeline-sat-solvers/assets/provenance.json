@@ -1,0 +1,37 @@
+{
+  "purpose": "Offline solver integration; uploaded files are retained as unexecuted provenance, not live runners or verified benchmark claims.",
+  "license": "No license declaration was supplied in these three archives. Private operator use only pending redistribution authorization.",
+  "archives": [
+    {
+      "name": "sat_solver",
+      "archive_sha256": "39b8160bf35edc6f2dbf35ac51b9f8afb45096e1ca29fd143c69917c74bb3429",
+      "files": {
+        "sat_solver_standalone/sat_solver.py": "17efa27b3c50d10d75b488eabeff1d1502de991dd67eeb7d4ecb47c2bb83d0bf",
+        "sat_solver_standalone/README.md": "b26ff20b43e2fc985a1d47054c2f04e666d5a4a9ce2cdd190c3702ecde0dc17e"
+      }
+    },
+    {
+      "name": "nonce-synced-v1-v3",
+      "archive_sha256": "bb49bae0bf3cdd5f727ab2718c7a0f942dbc7df1d23deaf26ccd31734993d51f",
+      "files": {
+        "README.md": "7061a65d531d4bd581646caa0fa8b5a7a55f8368ee3dcc70697f6a0cb09816ec",
+        "nonce_solver_v3.py": "47e64804af11ce907523c33c27ab3049156098237efcbb7fcfa3210aeb373460",
+        "run18.mjs": "b5a58a70bd3f34d300c01045c627699290d40f8806ee01e1d3587762e1ea38b3",
+        "mcp_retry.mjs": "7e8d3bf134d1bd90d0417513d31e0bf6396f6075bfe9c034418e87c25df0954f",
+        "check_admission.mjs": "c7d7ce01bc3cd9ac88dd497019a007e2faa4aae78751054c178af905ffe439b9",
+        "probsab.c": "45b93828ff5cf772ab5cd35860e4b13c70505b7ee11bc29bd5a5a21feb71ce1c",
+        "gen_ksat.py": "c291aa7620de43011f68909bd69b00488635d1591a7cd97c86739bd89a4a2dc7"
+      }
+    },
+    {
+      "name": "nonce_solver_v3",
+      "archive_sha256": "f26201177c934971cedc5f04b6c3894f86e015eda96fbb2aa0327d65a21128d0",
+      "files": {
+        "nonce_solver_v3.py": "0de437000c82bbc720dc52ce10aac90602ed1ceda783253e7c2a7adb91302200",
+        "probsab.c": "45b93828ff5cf772ab5cd35860e4b13c70505b7ee11bc29bd5a5a21feb71ce1c",
+        "gen_ksat.py": "c291aa7620de43011f68909bd69b00488635d1591a7cd97c86739bd89a4a2dc7",
+        "README.txt": "12d712aa8e17639a4a97e2fc6317d81c308267b8ac3e3a0b6fb4f84b9d21620b"
+      }
+    }
+  ]
+}

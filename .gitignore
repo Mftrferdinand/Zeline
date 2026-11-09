@@ -44,3 +44,7 @@ dist/
 
 # Local Zeline state
 .zeline/
+
+# Owner uploads retain undeclared redistribution rights; keep local, never publish by default.
+/zeline/skills/zeline-sat-solvers/assets/supplied/
+/zeline/skills/zeline-sat-solvers/assets/adapted/

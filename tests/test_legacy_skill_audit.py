@@ -8,12 +8,22 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "zeline" / "skills"
 
 
 class LegacySkillAuditTests(unittest.TestCase):
+    def test_video_frame_extraction_skips_unrunnable_ffmpeg(self):
+        # A binary on PATH may still fail to load (for example, a stale codec ABI).
+        with mock.patch('shutil.which', side_effect=lambda name: '/bin/' + name), \
+             mock.patch('subprocess.run', return_value=mock.Mock(returncode=1)) as run:
+            with self.assertRaisesRegex(unittest.SkipTest, 'cannot run'):
+                self.test_video_frame_extraction()
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ['/bin/ffmpeg', '-version'])
+
     def test_repaired_legacy_scripts_resolve(self):
         audit = runpy.run_path(str(ROOT / "tests/test_bundled_skill_references.py"))
         names = {"video-frames", "tmux", "manim-video"}
@@ -40,6 +50,12 @@ class LegacySkillAuditTests(unittest.TestCase):
         ffmpeg = shutil.which("ffmpeg")
         if not bash or not ffmpeg or os.name == "nt":
             self.skipTest("requires native bash and ffmpeg")
+        try:
+            prerequisite = subprocess.run([ffmpeg, "-version"], capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            self.skipTest("ffmpeg cannot run in this environment")
+        if prerequisite.returncode:
+            self.skipTest("ffmpeg cannot run in this environment")
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "input video.mp4"
             output = Path(directory) / "frame output.png"

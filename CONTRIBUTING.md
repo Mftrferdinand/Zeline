@@ -10,9 +10,9 @@ steps below will simply fail.
   pushes are rejected.
 - **Tests are not optional.** A behaviour change without a test that fails
   before the fix and passes after it is not finished.
-- **`unittest`, not `pytest`.** CI runs `python -m unittest discover -s tests`.
-  `pytest` is not installed there, so a test that only works under `pytest`
-  passes locally and fails in CI.
+- **One runner for both test styles.** CI runs `python -m pytest tests -q`.
+  This discovers both `unittest.TestCase` methods and pytest functions, including
+  parameterized native-engine cases. Install the `dev` extra before running it.
 - **No secrets, no personal data.** Provider keys, bot tokens, real chat IDs,
   personal emails, and private hostnames do not belong in code, tests, docs, or
   commit messages. Use an obviously fake chat id such as `111222333` in gateway
@@ -36,8 +36,8 @@ live somewhere you can push to. See [Opening a pull request](#opening-a-pull-req
 ## The loop
 
 ```bash
-python -m unittest discover -s tests          # whole suite
-python -m unittest tests.test_agent           # one module, while iterating
+python -m pytest tests -q                     # whole project suite
+python -m pytest tests/test_agent.py -q        # one module, while iterating
 ruff check zeline tests                       # the same gate CI blocks on
 python -m compileall -q zeline                # catches syntax errors early
 ```
@@ -47,7 +47,7 @@ invalid syntax, mistaken comparisons. Those are bugs, so CI can block on them
 without demanding a repo-wide reformat. Remaining style debt is reported by CI
 without failing the build; see `[tool.ruff.lint]` in `pyproject.toml`.
 
-The suite is around 1,000 tests and takes a few minutes on a laptop, longer on a
+The full suite takes a few minutes on a laptop, longer on a
 phone. While iterating, run the module you are touching and the full suite once
 before pushing.
 

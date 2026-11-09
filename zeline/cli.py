@@ -1481,10 +1481,25 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     durable_worker = Worker()
     durable_worker.start()
 
+    # Host-reviewed packs are optional. With none installed there is no
+    # evaluation thread, network traffic, or additional gateway polling.
+    import threading
+    from zeline.memory_gain_host import scheduler_loop
+    review_stop = threading.Event()
+    review_file = config.DATA_DIR / "learning" / "case-packs.json"
+    review_thread = None
+    if review_file.is_file() and not review_file.is_symlink():
+        review_thread = threading.Thread(target=scheduler_loop, args=(review_stop,),
+                                         name="zeline-memory-evaluation", daemon=True)
+        review_thread.start()
+
     def shutdown(_signal=None, _frame=None):
         if screen is not None:
             screen.set_state("STOPPING", "graceful shutdown")
         print("\n==> Stopping gateway…", flush=True)
+        review_stop.set()
+        if review_thread is not None:
+            review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
         runtime.stop()
@@ -1503,6 +1518,9 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
         # Stop arming new jobs first, or a tick during the drain starts work we
         # are about to kill.
+        review_stop.set()
+        if review_thread is not None:
+            review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
         finished, busy = sessions.drain(timeout=timeout)
@@ -1544,6 +1562,9 @@ def _run_gateway_loop(only: list[str] | None) -> int:
             signal.signal(sigusr1, previous_usr1)
         if sigbreak is not None and previous_break is not None:
             signal.signal(sigbreak, previous_break)
+        review_stop.set()
+        if review_thread is not None:
+            review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
         runtime.stop(timeout=1)
@@ -2139,6 +2160,7 @@ def cmd_cron(
     job_id: str | None = None,
     script: str = "", no_agent: bool = False, workdir: str = "", timeout: float = 900,
     model: str = "", profile: str = "", skills: list[str] | None = None, context_from: list[str] | None = None, timezone: str = "",
+    quiet_if_unchanged: bool = False,
 ) -> int:
     """Manage scheduled jobs."""
     from zeline import scheduler as cron_module
@@ -2171,7 +2193,8 @@ def cmd_cron(
         try:
             job = cron_module.add_job(schedule, prompt or "", deliver or "local",
                                       script=script, no_agent=no_agent, workdir=workdir, timeout=timeout,
-                                      model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone)
+                                      model=model, profile=profile, skills=skills, context_from=context_from, timezone=timezone,
+                                      quiet_if_unchanged=quiet_if_unchanged)
         except cron_module.CronError as exc:
             print(f"ERROR: {exc}")
             return 1
@@ -2628,6 +2651,7 @@ def build_parser() -> argparse.ArgumentParser:
     cron_add.add_argument("--context-from", action="append", help="latest successful result from an existing job; repeat up to three times")
     cron_add.add_argument("--script", default="", help="trusted Python or bash script")
     cron_add.add_argument("--no-agent", action="store_true", help="deliver script stdout without calling a model")
+    cron_add.add_argument("--quiet-if-unchanged", action="store_true", help="agent-only: suppress final delivery for the exact no-update marker; errors still report")
     cron_add.add_argument("--workdir", default="", help="existing absolute working directory")
     cron_add.add_argument("--timeout", type=float, default=900, help="script timeout in seconds (maximum 3600)")
     cron_add.add_argument("--deliver", help="where to send results, e.g. telegram:12345 (default: save locally)")
@@ -2832,6 +2856,7 @@ def main(argv: list[str] | None = None) -> int:
             model=getattr(namespace, "model", ""), profile=getattr(namespace, "profile", ""),
             skills=getattr(namespace, "skills", None), context_from=getattr(namespace, "context_from", None),
             timezone=getattr(namespace, "timezone", ""),
+            quiet_if_unchanged=getattr(namespace, "quiet_if_unchanged", False),
         )
     if command == "toolsearch":
         return cmd_toolsearch(getattr(namespace, "action", None) or "status")

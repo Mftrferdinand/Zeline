@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib
+import io
+import requests
 import json
 import os
 import sys
@@ -13,6 +15,19 @@ from unittest import mock
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
+
+
+class _RawBody(io.BytesIO):
+    def read(self, amount, decode_content=False):
+        return super().read(amount)
+
+
+def _streaming_response(status_code=200, reason="OK", text=""):
+    result = requests.Response()
+    result.status_code, result.reason = status_code, reason
+    result.encoding = "utf-8"
+    result.raw = _RawBody(text.encode("utf-8"))
+    return result
 
 
 class _FakeProviderResponse:
@@ -210,7 +225,7 @@ paths:
         tool = registry.tools["api_refs_createItem"]
         self.assertEqual(tool.parameters["properties"]["limit"]["default"], 25)
         self.assertEqual(tool.parameters["properties"]["body"]["required"], ["name"])
-        response = mock.Mock(status_code=201, reason="Created", text="ok")
+        response = _streaming_response(status_code=201, reason="Created", text="ok")
         response.headers = {"Content-Type": "text/plain"}
 
         with mock.patch.object(openapi, "_is_internal_host", return_value=False), mock.patch.object(
@@ -275,7 +290,7 @@ paths:
             encoding="utf-8",
         )
         registry = openapi.OpenApiRegistry("full")
-        response = mock.Mock(status_code=200, reason="OK", text='{"ok":true}')
+        response = _streaming_response(status_code=200, reason="OK", text='{"ok":true}')
         response.headers = {"Content-Type": "application/json"}
 
         with mock.patch.object(openapi, "_is_internal_host", return_value=False), mock.patch.object(
@@ -297,11 +312,13 @@ paths:
             "POST",
             "https://api.example.test/v2/orders/A%2FB",
             params={"dry_run": "true"},
-            headers={"User-Agent": openapi.USER_AGENT, "X-Trace": "trace-7"},
+            headers={"User-Agent": openapi.USER_AGENT, "X-Trace": "trace-7", "Accept-Encoding": "gzip, deflate"},
             cookies={"session": "cookie-9"},
             json={"status": "ready"},
             timeout=openapi.REQUEST_TIMEOUT,
             allow_redirects=False,
+            stream=True,
+            hooks={"response": openapi.discard_redirect_body},
         )
 
     def test_tool_executor_dispatches_an_openapi_call(self):
@@ -319,7 +336,7 @@ paths:
         )
         tools_module = importlib.import_module("zeline.tools")
         executor = tools_module.ToolExecutor("cli:local", "full", self.home)
-        response = mock.Mock(status_code=204, reason="No Content", text="")
+        response = _streaming_response(status_code=204, reason="No Content", text="")
         response.headers = {"Content-Type": ""}
 
         with mock.patch.object(openapi, "_is_internal_host", return_value=False), mock.patch.object(
@@ -362,7 +379,7 @@ paths:
         final = _FakeProviderResponse({
             "choices": [{"message": {"role": "assistant", "content": "API says pong."}}],
         })
-        response = mock.Mock(status_code=200, reason="OK", text="pong")
+        response = _streaming_response(status_code=200, reason="OK", text="pong")
         response.headers = {"Content-Type": "text/plain"}
         agent = agent_module.Zeline(identity="cli:openapi", tool_profile="full", workspace=str(self.home))
 
@@ -409,7 +426,7 @@ paths:
         self.assertIn(env_name, missing)
         self.assertNotIn("serviceToken", tool.parameters["properties"])
 
-        response = mock.Mock(status_code=200, reason="OK", text="done")
+        response = _streaming_response(status_code=200, reason="OK", text="done")
         response.headers = {"Content-Type": "text/plain"}
         with mock.patch.dict(os.environ, {env_name: "TOKEN-PLACEHOLDER-9"}), mock.patch.object(
             openapi, "_is_internal_host", return_value=False
@@ -441,7 +458,7 @@ paths: {/private: {get: {operationId: private}}}
             encoding="utf-8",
         )
         registry = openapi.OpenApiRegistry("full")
-        response = mock.Mock(status_code=200, reason="OK", text="done")
+        response = _streaming_response(status_code=200, reason="OK", text="done")
         response.headers = {"Content-Type": "text/plain"}
         credentials = {
             openapi.credential_env_name(source, "firstKey"): "FIRST-PLACEHOLDER-1",
@@ -471,7 +488,7 @@ paths: {/start: {get: {operationId: start}}}
             encoding="utf-8",
         )
         registry = openapi.OpenApiRegistry("full")
-        redirect = mock.Mock(status_code=302, reason="Found", text="")
+        redirect = _streaming_response(status_code=302, reason="Found", text="")
         redirect.headers = {"Location": "http://127.0.0.1/private"}
 
         with mock.patch.object(openapi, "_is_internal_host", side_effect=[False, True]), mock.patch.object(

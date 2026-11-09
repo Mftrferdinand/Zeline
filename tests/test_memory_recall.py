@@ -49,6 +49,20 @@ class MemoryRecallTests(unittest.TestCase):
         self.assertIn(citation, result["context"])
         self.assertNotIn("Sourdough", result["context"])
 
+    def test_recall_requires_all_topic_terms_and_does_not_mix_a_with_b(self):
+        self.store.add("generator.email is the disposable inbox topic A.")
+        self.store.add("email provider credentials belong to unrelated topic B.")
+        result = self.store.recall("generator.email")
+        self.assertEqual(len(result["records"]), 1)
+        self.assertIn("generator.email", result["records"][0]["text"])
+        self.assertNotIn("provider credentials", result["context"])
+
+    def test_recall_ignores_request_stopwords_but_keeps_the_topic(self):
+        self.store.add("The operator name is Aes.")
+        result = self.store.recall("what is my name")
+        self.assertEqual(len(result["records"]), 1)
+        self.assertIn("operator name", result["records"][0]["text"])
+
     def test_recall_does_not_bulk_inject_for_a_nonlexical_query(self):
         self.store.add("PostgreSQL deployment uses blue-green rollouts.")
         result = self.store.recall("!!!")

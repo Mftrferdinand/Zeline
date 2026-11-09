@@ -12,6 +12,12 @@ class ReflectionAdmissionTests(unittest.TestCase):
     tearDown = support.AgentLoopTests.tearDown
 
     def setup_review(self, profile="full", calls=5):
+        # Each subcase creates a new store. Restore the real Thread first:
+        # persistence loading uses wait_io and must not inherit the previous
+        # subcase's deliberately inert typing-thread mock.
+        for patcher in getattr(self, '_review_patches', []):
+            patcher.stop()
+        self._review_patches = []
         self.sessions = importlib.import_module("zeline.sessions")
         self.telegram = importlib.import_module("zeline.gateways.telegram")
         self.store = self.sessions.SessionStore()
@@ -34,10 +40,14 @@ class ReflectionAdmissionTests(unittest.TestCase):
                     self.target()
                 # Typing is explicitly advanced by tests: no sleeps/races.
 
-        self.addCleanup(mock.patch.stopall)
-        mock.patch.object(self.telegram.threading, "Thread", DeterministicThread).start()
-        mock.patch.object(self.telegram, "_api_call", side_effect=lambda *a, **kw: self.actions.append((a, kw))).start()
-        mock.patch.object(self.session.agent, "_call_llm", return_value={"content": "NO_ACTION"}).start()
+        for patcher in (
+            mock.patch.object(self.telegram.threading, "Thread", DeterministicThread),
+            mock.patch.object(self.telegram, "_api_call", side_effect=lambda *a, **kw: self.actions.append((a, kw))),
+            mock.patch.object(self.session.agent, "_call_llm", return_value={"content": "NO_ACTION"}),
+        ):
+            self._review_patches.append(patcher)
+            self.addCleanup(patcher.stop)
+            patcher.start()
 
     def start_review(self):
         self.telegram._start_reflection("api", self.store, 123, self.identity)

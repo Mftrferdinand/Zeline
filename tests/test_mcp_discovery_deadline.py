@@ -36,11 +36,7 @@ class _Good:
 
 class DiscoveryDeadlineTests(unittest.TestCase):
     def _pool(self, servers):
-        pool = mcp.MCPRegistry.__new__(mcp.MCPRegistry)
-        pool.servers = servers
-        pool._errors = {}
-        pool._tool_cache = None
-        return pool
+        return mcp.MCPRegistry(list(servers.values()))
 
     def test_one_hanging_server_does_not_block_the_good_one(self):
         pool = self._pool({"hanging": _Hanging(), "good": _Good()})
@@ -50,6 +46,42 @@ class DiscoveryDeadlineTests(unittest.TestCase):
         self.assertLess(elapsed, mcp._DISCOVERY_DEADLINE + 2, elapsed)
         self.assertEqual(len(tools), 1)
         self.assertIn("hanging", pool._errors)
+
+    def test_late_server_becomes_available_without_a_second_probe(self):
+        import threading
+        from unittest.mock import patch
+
+        release = threading.Event()
+        finished = threading.Event()
+        calls = []
+
+        class Late:
+            name = "late"
+
+            def list_tools(self):
+                calls.append("probe")
+                release.wait(2)
+                finished.set()
+                return [{"type": "function", "function": {"name": "mcp__late__ping"}}]
+
+        pool = mcp.MCPRegistry([Late(), _Good()])
+        try:
+            with patch.object(mcp, "_DISCOVERY_DEADLINE", 0.02):
+                self.assertEqual(len(pool.schemas()), 1)
+                self.assertIn("late", pool.errors)
+                release.set()
+                self.assertTrue(finished.wait(1))
+                # Synchronize the discovery worker, not an arbitrary sleep.
+                for thread in pool._discovery_threads.values():
+                    thread.join(1)
+                    self.assertFalse(thread.is_alive())
+                names = {s["function"]["name"] for s in pool.schemas()}
+                self.assertEqual(names, {"mcp__good__ping", "mcp__late__ping"})
+                self.assertNotIn("late", pool.errors)
+                self.assertEqual(pool.schemas(), pool.schemas())
+                self.assertEqual(calls, ["probe"])
+        finally:
+            release.set()
 
     def test_dead_server_is_recorded_not_raised(self):
         pool = self._pool({"dead": _Dead(), "good": _Good()})

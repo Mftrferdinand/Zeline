@@ -173,8 +173,18 @@ class SkillForgeTests(unittest.TestCase):
     def test_native_http_error_status_is_not_a_success_observation(self):
         forge = importlib.import_module("zeline.skillforge")
         tools = importlib.import_module("zeline.tools")
-        failed = mock.Mock(status_code=503, reason="Service Unavailable", text="fixture unavailable",
-                           headers={"Content-Type": "text/plain"})
+        import io
+        import requests
+
+        class Raw(io.BytesIO):
+            def read(self, amount, decode_content=False):
+                return super().read(amount)
+
+        failed = requests.Response()
+        failed.status_code, failed.reason = 503, "Service Unavailable"
+        failed.headers["Content-Type"] = "text/plain"
+        failed.encoding = "utf-8"
+        failed.raw = Raw(b"fixture unavailable")
         with mock.patch.object(tools, "_is_internal_ip", return_value=False), mock.patch.object(tools.requests, "request", return_value=failed):
             output = tools._http_request("GET", "https://example.test/fixture")
         self.assertTrue(output.startswith("Status: 503"))

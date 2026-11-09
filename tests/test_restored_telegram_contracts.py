@@ -12,7 +12,7 @@ class RestoredLifecycleContracts(unittest.TestCase):
 
     def test_stop_exact_copy(self):
         sessions = mock.Mock()
-        sessions.stop.return_value = True
+        sessions.request_stop.return_value = True
         with mock.patch.object(self.telegram, "_api_call") as api:
             self.telegram._handle_command_update("fixture", "/stop", sessions,
                 "telegram:fixture-stop", 1, stop_event=threading.Event(), tool_profile="safe")
@@ -82,7 +82,7 @@ class TelegramIconContractTests(unittest.TestCase):
             ("browser", {"action": "screenshot"}, "📸 Capturing webpage screenshot"),
             ("browser", {"action": "close"}, "📴 Closing browser session"),
             ("browser", {"action": "links"}, "🖇️ Extracting page links"),
-            ("http_request", {}, "🖇️ Sending API request"),
+            ("http_request", {}, "⚡ Sending API request"),
             ("code_intel", {"action": "references"}, "🖇️ Finding symbol references"),
             ("search_files", {}, "🔎 Searching workspace"),
             ("web_search", {}, "🔎 Searching the web"),
