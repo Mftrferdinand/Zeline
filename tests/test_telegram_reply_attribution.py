@@ -58,9 +58,14 @@ class ReplyAttributionTests(unittest.TestCase):
                 payload = next(p for p in sent if p["text"] == text)
                 self.assertEqual(payload.get("reply_to_message_id"), target)
                 self.assertTrue(payload.get("allow_sending_without_reply"))
-        for text in ("Narration for first", "Narration for second", "Narration for third"):
+        # Queued narration for the cancelled first turn may be dropped before
+        # dispatch. Never require stale output just to satisfy synchronous timing.
+        for text in ("Narration for second", "Narration for third"):
             with self.subTest(narration=text):
                 payload = next(p for p in sent if p["text"] == text)
+                self.assertNotIn("reply_to_message_id", payload)
+        for payload in sent:
+            if payload["text"] == "Narration for first":
                 self.assertNotIn("reply_to_message_id", payload)
         self.assertFalse(any(p["text"] == "obsolete first answer" for p in sent))
 

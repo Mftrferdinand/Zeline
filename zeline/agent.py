@@ -532,7 +532,8 @@ class Zeline:
             floor = min(self._task_history_floor, latest_user)
             outbound_messages = [outbound_messages[0], *outbound_messages[floor:]]
         runtime_context: list[str] = []
-        task = self._task_store.get(self.identity, self.last_task_id) if self.last_task_id else None
+        task_id = getattr(self, 'last_task_id', None)
+        task = self._task_store.get(self.identity, task_id) if task_id else None
         if task:
             runtime_context.append('<task_checkpoint>\n' + json.dumps(task, ensure_ascii=False) +
                 '\n</task_checkpoint>\nResume only this task from its recorded next step. '
@@ -654,13 +655,24 @@ class Zeline:
                         raise _TurnCancelled()
                     self._active_response = response
                     if response.status_code in {401, 402, 403, 429}:
+                        # Do not depend on optional health instrumentation.
+                        # Never read an uncached streaming error body here: that
+                        # would escape the cancellation/deadline I/O guard.
+                        body = getattr(response, "_content", None) if stream else response.text
                         try:
-                            error_data = json.loads(response.text) if not stream else provider_health._error_payload(response)
+                            error_data = json.loads(body) if isinstance(body, (str, bytes)) and len(body) <= 4096 else None
                         except (ValueError, TypeError):
                             error_data = None
                         error = error_data.get("error", {}) if isinstance(error_data, dict) else {}
-                        code = (error.get("code") or error.get("type")) if isinstance(error, dict) else None
-                        if provider_health._CODES.get(str(code)) == "credit_exhausted":
+                        quota_codes = (
+                            "insufficient_quota", "insufficient_credits", "credit_exhausted",
+                            "credits_exhausted", "insufficient_balance",
+                            "billing_hard_limit_reached", "insufficient_user_quota",
+                        )
+                        exhausted = isinstance(error, dict) and any(
+                            error.get(field) in quota_codes for field in ("code", "type")
+                        )
+                        if exhausted:
                             self._close_response(response)
                             raise ZelineError(provider_status_message(402, self.model))
                     if response.status_code not in retryable:
@@ -1130,16 +1142,20 @@ class Zeline:
         # needs prior context, and skipping them caused "lupa ingatan" reports.
         light_chat = folded in {
             'halo', 'hallo', 'hai', 'hi', 'hello', 'hey', 'makasih', 'terima kasih',
-            'thanks', 'thank you',
+            'thanks', 'thank you', 'oke', 'ok', 'sip', 'ya', 'ya gas', 'gas',
+            'lanjut', 'lanjutin', 'lanjutkan', 'continue', 'go on',
         }
         # Any short message (not just a fixed vocabulary) may be a continuation
         # of the previous work — reuse the fresh recall cache when available.
-        followup = bool(re.fullmatch(r'(?:lanjut(?:in|kan)?|gas(?:kan)?|continue|resume|proceed|next)(?:\s+(?:aja|dong|please|lagi|tadi))*', folded)) or deictic
+        related_followup = folded in {'jelaskan hasilnya', 'jelaskan lagi', 'lebih detail',
+                                     'detailnya', 'kenapa begitu'}
+        followup = related_followup or bool(re.fullmatch(r'(?:lanjut(?:in|kan)?|gas(?:kan)?|continue|resume|proceed|next)(?:\s+(?:aja|dong|please|lagi|tadi))*', folded)) or deictic
         has_recent_context = any(item.get('role') == 'user' for item in self.messages[-12:])
-        local_followup = followup and has_recent_context
+        local_followup = followup and has_recent_context and not related_followup
         with contextlib.suppress(Exception):
             cached = getattr(self, '_automatic_recall_cache', None)
             recalled = None
+            reused_recall = False
             signature = self._memory_read_signature()
             if (getattr(self, "core_memory_in_prompt", False)
                     and signature is not None
@@ -1152,7 +1168,7 @@ class Zeline:
             # A continuation word ("lanjutin", "gas") always refers to the work in
             # flight — reuse its recall context even after a long tool run, so the
             # agent never "forgets" what it was doing mid-task.
-            cache_ttl = 180.0 if followup else 30.0
+            cache_ttl = 180.0 if followup and not related_followup else 30.0
             if (cached and followup and signature is not None
                     and signature == cached['signature']
                     and time.monotonic() - cached['at'] < cache_ttl
@@ -1160,7 +1176,9 @@ class Zeline:
                             or float(record['expires_at']) > time.time()
                             for record in cached['data'].get('records', []))):
                 recalled = cached['data']
+                reused_recall = True
             elif not light_chat and not local_followup:
+                self._automatic_recall_cache = None
                 recalled = self.executor.memory.recall(text)
                 if getattr(self, "core_memory_in_prompt", False):
                     # Lexical recall misses paraphrased topics; pin the operator
@@ -1172,13 +1190,16 @@ class Zeline:
                     if pinned:
                         # Ephemeral per-turn context (never persisted to history).
                         self._turn_memory_context += pinned
-                self._automatic_recall_cache = {'data': recalled, 'at': time.monotonic()}
             if recalled is not None:
                 self._turn_memory_context = recalled.get("context", "") + self._turn_memory_context
                 self.executor.memory.record_retrieval(self.last_learning_turn_id, recalled.get('records', []))
                 from zeline.reflection_markdown import refinement_context
                 self._turn_memory_context += refinement_context(self.identity, recalled.get('records', []))
-                self._automatic_recall_cache['signature'] = self._memory_read_signature()
+                if not reused_recall:
+                    after_signature = self._memory_read_signature()
+                    if signature is not None and after_signature == signature:
+                        self._automatic_recall_cache = {'data': recalled, 'at': time.monotonic(), 'signature': signature}
+                    # Never relabel stale data after a concurrent mutation or extend a reused cache's TTL.
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []
         if _DAILY_CHECKIN_INTENT_RE.search(text):

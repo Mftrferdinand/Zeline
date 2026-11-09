@@ -2893,6 +2893,8 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
         except (requests.RequestException, ValueError) as exc:
             if delivery:
                 return {"ok":False,"_known_unsent":True} if isinstance(exc, requests.exceptions.ConnectTimeout) else None
+            if method == "sendMessage" and not isinstance(exc, requests.exceptions.ConnectTimeout):
+                return None  # request may already have been accepted; never blindly replay
             # Error jaringan sementara → backoff & coba lagi (kecuali attempt terakhir).
             if attempt < attempts - 1:
                 if not pause(min(2.0 * (attempt + 1), 6.0)):
@@ -3538,7 +3540,14 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     live = _LiveStatus(api, chat_id, model=getattr(config, "MODEL", ""))
     live._terminal_retries = False
     live._render_allowed = lambda: not transport.closed
+    # Serialize initial presence before progress, so a fast burst can collapse
+    # into one completed feed. Refresh remains independent of queued UI work.
+    transport.submit(lambda: _api_call(api, "sendChatAction", chat_id=chat_id, action="typing",
+                     timeout=_TYPING_TIMEOUT_SECONDS, attempts=1,
+                     cancelled=lambda: done.is_set() or cancelled()), key="typing")
     def pulse():
+        if done.wait(_TYPING_INTERVAL_SECONDS):
+            return
         while not done.is_set() and not cancelled():
             started = time.monotonic()
             if not awaiting_user.is_set():
@@ -3740,7 +3749,10 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
     finally:
         done.set()
         transport.close()
-        live.finalize(quiet=True)
+        try:
+            live.finalize(quiet=True)
+        except Exception:
+            pass  # Cleanup must not mask an acknowledged final or the real failure.
         heartbeat.join(timeout=0.2)
 
 

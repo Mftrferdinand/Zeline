@@ -7,6 +7,9 @@ import tempfile
 import uuid
 import time
 
+_SUPPORTS_FCHMOD = hasattr(os, "fchmod")
+_SUPPORTS_DIRECTORY_FSYNC = os.name != "nt"
+
 
 class FinalReceipt:
     """Atomic per-part journal. IN_FLIGHT on disk means UNKNOWN after a crash.
@@ -27,17 +30,23 @@ class FinalReceipt:
     def save(self):
         fd, name = tempfile.mkstemp(prefix='.receipt-', dir=self.directory)
         try:
-            with os.fdopen(fd, 'w') as stream:
-                os.fchmod(stream.fileno(), 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                if _SUPPORTS_FCHMOD:
+                    os.fchmod(stream.fileno(), 0o600)
+                else:
+                    os.chmod(name, 0o600)
                 json.dump(self.record, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, self.path)
-            directory = os.open(self.directory, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            # Windows does not expose POSIX directory descriptors/fsync.
+            # File fsync + atomic replacement still apply on every platform.
+            if _SUPPORTS_DIRECTORY_FSYNC:
+                directory = os.open(self.directory, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         finally:
             if os.path.exists(name):
                 os.unlink(name)
@@ -64,8 +73,7 @@ class FinalReceipt:
                     payload = send(index, part['text'])
                 except Exception:
                     payload = None
-                if (isinstance(payload, dict)
-                        and (payload.get('ok') is True or "result" in payload)
+                if (isinstance(payload, dict) and payload.get('ok') is True
                         and isinstance(payload.get('result'), dict)
                         and payload['result'].get('message_id')):
                     part.update(state='ACKED', message_id=payload['result']['message_id'])
@@ -75,9 +83,9 @@ class FinalReceipt:
                     self.save()
                     return False  # UNKNOWN: no automatic replay
                 code = payload.get('error_code')
-                if code in {500, 502, 503, 504}:
-                    # An upstream/proxy failure does not prove non-delivery.
-                    part['error_code'] = code
+                if isinstance(code, int) and 500 <= code < 600:
+                    # Server/upstream failure does not prove non-acceptance.
+                    part.update(state='UNKNOWN', error_code=code)
                     self.save()
                     return False
                 retryable = code == 429 or payload.get('_known_unsent') is True
