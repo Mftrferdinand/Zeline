@@ -655,10 +655,21 @@ class Zeline:
                         raise _TurnCancelled()
                     self._active_response = response
                     if response.status_code in {401, 402, 403, 429}:
-                        # Do not depend on optional health instrumentation.
-                        # Never read an uncached streaming error body here: that
-                        # would escape the cancellation/deadline I/O guard.
+                        # Quota detection is independent of optional telemetry.
+                        # Uncached error previews must stay inside the same
+                        # cancellation/deadline worker as all provider I/O.
                         body = getattr(response, "_content", None) if stream else response.text
+                        if stream and not isinstance(body, (str, bytes)):
+                            from zeline.http_body import read_preview
+                            try:
+                                body, truncated = self._wait_io(lambda: read_preview(response))
+                                if truncated:
+                                    body = None
+                            except (AttributeError, requests.RequestException):
+                                body = None
+                            except BaseException:
+                                self._close_response(response)
+                                raise
                         try:
                             error_data = json.loads(body) if isinstance(body, (str, bytes)) and len(body) <= 4096 else None
                         except (ValueError, TypeError):
@@ -1137,16 +1148,15 @@ class Zeline:
         self.executor._turn_history_cache = {}
         self.last_learning_turn_id = uuid.uuid4().hex
         folded = text.casefold().strip(' \n.!?,')
-        # Only pure greetings/thanks skip recall. Continuation words ("lanjut",
-        # "gas") MUST still recall — they are exactly the turns where the agent
-        # needs prior context, and skipping them caused "lupa ingatan" reports.
+        # Greetings/acknowledgments do not trigger unrelated archive lookup.
+        # Continuations reuse the selected task, but invalidate stale memory.
         light_chat = folded in {
             'halo', 'hallo', 'hai', 'hi', 'hello', 'hey', 'makasih', 'terima kasih',
             'thanks', 'thank you', 'oke', 'ok', 'sip', 'ya', 'ya gas', 'gas',
             'lanjut', 'lanjutin', 'lanjutkan', 'continue', 'go on',
         }
-        # Any short message (not just a fixed vocabulary) may be a continuation
-        # of the previous work — reuse the fresh recall cache when available.
+        # Explicit continuations can reuse a fresh recall; arbitrary short
+        # messages may introduce a new topic and must perform their own lookup.
         related_followup = folded in {'jelaskan hasilnya', 'jelaskan lagi', 'lebih detail',
                                      'detailnya', 'kenapa begitu'}
         followup = related_followup or bool(re.fullmatch(r'(?:lanjut(?:in|kan)?|gas(?:kan)?|continue|resume|proceed|next)(?:\s+(?:aja|dong|please|lagi|tadi))*', folded)) or deictic
@@ -1155,6 +1165,7 @@ class Zeline:
         with contextlib.suppress(Exception):
             cached = getattr(self, '_automatic_recall_cache', None)
             recalled = None
+            pinned_context = ""
             reused_recall = False
             signature = self._memory_read_signature()
             if (getattr(self, "core_memory_in_prompt", False)
@@ -1176,8 +1187,10 @@ class Zeline:
                             or float(record['expires_at']) > time.time()
                             for record in cached['data'].get('records', []))):
                 recalled = cached['data']
+                pinned_context = cached.get('pinned', '')
                 reused_recall = True
-            elif not light_chat and not local_followup:
+            elif (not light_chat and not local_followup) or (followup and (
+                    cached or getattr(self, '_automatic_recall_invalidated', False))):
                 self._automatic_recall_cache = None
                 recalled = self.executor.memory.recall(text)
                 if getattr(self, "core_memory_in_prompt", False):
@@ -1189,16 +1202,19 @@ class Zeline:
                         max_records=6, max_characters=1500)
                     if pinned:
                         # Ephemeral per-turn context (never persisted to history).
-                        self._turn_memory_context += pinned
+                        pinned_context = pinned
             if recalled is not None:
-                self._turn_memory_context = recalled.get("context", "") + self._turn_memory_context
+                self._turn_memory_context = recalled.get("context", "") + pinned_context
                 self.executor.memory.record_retrieval(self.last_learning_turn_id, recalled.get('records', []))
                 from zeline.reflection_markdown import refinement_context
                 self._turn_memory_context += refinement_context(self.identity, recalled.get('records', []))
                 if not reused_recall:
                     after_signature = self._memory_read_signature()
                     if signature is not None and after_signature == signature:
-                        self._automatic_recall_cache = {'data': recalled, 'at': time.monotonic(), 'signature': signature}
+                        self._automatic_recall_cache = {'data': recalled, 'pinned': pinned_context,
+                                                        'at': time.monotonic(), 'signature': signature}
+                    self._automatic_recall_invalidated = (
+                        signature is not None and after_signature != signature)
                     # Never relabel stale data after a concurrent mutation or extend a reused cache's TTL.
         self._turn_cloudflare_detected = False
         skill_names: list[str] = []

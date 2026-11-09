@@ -8,23 +8,6 @@ class BudgetExceeded(RuntimeError):
     """A local dispatch stop, with counts captured at the denied reservation."""
 
     def __init__(self, message: str, *, kind: str | None = None,
-                 used: dict[str, int] | None = None,
-                 limits: dict[str, int] | None = None):
-        super().__init__(message)
-        self.kind = kind
-        self.used = dict(used or {})
-        self.limits = dict(limits or {})
-
-    def __init__(self, message: str, *, kind: str | None = None,
-                 used: dict[str, int] | None = None, limits: dict[str, int] | None = None):
-        super().__init__(message)
-        self.kind = kind
-        # Capture while consume() owns its lock, not later while formatting a
-        # receipt: synchronous children may still update the shared budget.
-        self.used = dict(used or {})
-        self.limits = dict(limits or {})
-
-    def __init__(self, message: str, *, kind: str | None = None,
                  used: dict[str, int] | None = None, limits: dict[str, int] | None = None):
         super().__init__(message)
         self.kind = kind

@@ -45,6 +45,11 @@ dist/
 # Local Zeline state
 .zeline/
 
+# Private operator state and local integration backups
+/.hermes/
+/.cache_head_stats.txt
+*.pre-*
+
 # Owner uploads retain undeclared redistribution rights; keep local, never publish by default.
 /zeline/skills/zeline-sat-solvers/assets/supplied/
 /zeline/skills/zeline-sat-solvers/assets/adapted/

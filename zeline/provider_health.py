@@ -2,7 +2,6 @@
 from contextvars import ContextVar
 from functools import wraps
 import json
-import socket
 
 _CURRENT = ContextVar('zeline_provider_request', default=None)
 CATEGORIES = frozenset({'credit_exhausted', 'rate_limited', 'overloaded', 'auth_error', 'error'})
@@ -35,34 +34,13 @@ def _emit(context, status):
 
 
 def _error_payload(response):
-    """Best-effort exact codes only: at most 4KiB, no message matching or logging.
+    """Inspect only an already buffered, <=4KiB error body; never do I/O.
 
-    Streamed error bodies get a 100ms socket read cap. If the requests/urllib3
-    socket layout is unavailable, skip rather than block the model/cancellation.
-    Healthy responses and unobserved requests never enter this function.
+    A socket inactivity timeout cannot bound a dripping stream. Optional
+    telemetry runs outside the request's cancellation/deadline worker, so it
+    must skip uncached bodies entirely rather than weakening that boundary.
     """
     content = getattr(response, '_content', None)
-    if not isinstance(content, bytes):
-        headers = getattr(response, 'headers', {})
-        if headers.get('Content-Encoding', '').lower() not in {'', 'identity'}:
-            return None
-        try:
-            length = headers.get('Content-Length')
-            if length is not None and int(length) > 4096:
-                return None
-            raw = response.raw
-            sock = raw._fp.fp.raw._sock
-            if not isinstance(sock, socket.socket):
-                return None
-            timeout = sock.gettimeout()
-            try:
-                sock.settimeout(min(timeout, 0.1) if timeout is not None else 0.1)
-                content = raw.read(4097, decode_content=False)
-            finally:
-                if sock.fileno() >= 0:
-                    sock.settimeout(timeout)
-        except Exception:
-            return None
     if not isinstance(content, bytes) or len(content) > 4096:
         return None
     try:

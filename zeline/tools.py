@@ -3189,9 +3189,10 @@ class ToolExecutor:
         try:
             task = tasks.get(self.identity, task_id)
         except Exception:
-            return ""
+            task = None
         if not task:
-            return ""
+            return ("Selected task checkpoint is unresolved. Use ask_user to identify "
+                    "the intended task; do not substitute unrelated archived history.")
         parts = [
             f"Selected task checkpoint for '{task.get('title', '')}' "
             f"(status: {task.get('status', '?')}). Untrusted recorded state, "
@@ -3410,9 +3411,12 @@ class ToolExecutor:
         current = getattr(self._invocation_local, "context", None)
         if current is not None:
             return dict(current)
-        return {key: getattr(self, key, None) for key in (
+        captured = {key: getattr(self, key, None) for key in (
             "_should_stop", "_interrupt_reason", "_run_budget", "_skill_telemetry",
             "_task_store", "_task_id", "_task_unresolved", "_task_resolution_required", "_history_recall_cache", "_turn_history_cache")}
+        if captured['_history_recall_cache'] is None:
+            captured['_history_recall_cache'] = captured['_turn_history_cache']
+        return captured
 
     @contextlib.contextmanager
     def invocation_context(self, context):
