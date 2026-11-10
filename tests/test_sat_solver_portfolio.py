@@ -15,13 +15,45 @@ sys.path.insert(0, str(SCRIPTS))
 HAS_Z3 = importlib.import_module('portfolio').binary('z3') is not None
 
 
-def python_workers(root):
+def resource_check_script(marker, baseline_file):
+    """Check the inherited cap against the VM measurement that actually set it."""
+    return ('import json,os,sys\nfrom pathlib import Path\n'
+            'if os.name == "posix" or sys.platform == "darwin":\n'
+            ' import resource\n'
+            ' a,hard=resource.getrlimit(resource.RLIMIT_DATA)\n'
+            ' f,fhard=resource.getrlimit(resource.RLIMIT_FSIZE)\n'
+            ' context={"pid":os.getpid(),"data":(a,hard),"fsize":(f,fhard)}\n'
+            ' if sys.platform == "darwin":\n'
+            '  original=json.loads(Path(' + repr(str(baseline_file)) + ').read_text())\n'
+            '  context["preexec"]=original\n'
+            '  print(context, file=sys.stderr, flush=True)\n'
+            '  assert original["pid"]==os.getpid(), context\n'
+            '  assert a>2*1024**3 and 0<a-original["baseline"]<=2*1024**3, context\n'
+            ' else:\n'
+            '  assert 0<a<=2*1024**3, context\n'
+            ' assert a==hard and 0<f<=16*1024**2 and f==fhard, context\n'
+            'Path(' + repr(str(marker)) + ').write_text("ok")\n')
+
+
+def python_workers(root, baseline_file=None):
     """Execute fixture scripts with Python; keep the backend's argument list."""
     popen = subprocess.Popen
     def launch(argv, *args, **kwargs):
         if Path(argv[0]).parent == root:
             argv = [sys.executable, *argv]
         elif len(argv) > 4 and argv[1] == '-c' and Path(argv[4]).parent == root:
+            if baseline_file is not None:
+                # Observe the exact real probe result used by child_limits, before
+                # the same PID execs the fixture. No production environment hook.
+                setup = ('import portfolio,json; probe=portfolio._darwin_virtual_size; '
+                         'portfolio._darwin_virtual_size=lambda: '
+                         f'(open({str(baseline_file)!r}, "w").write('
+                         'json.dumps({"pid":os.getpid(),"baseline":(b:=probe())})),b)[1]; ')
+                wrapper = argv[2].replace('from portfolio import child_limits;',
+                                          setup + 'from portfolio import child_limits;')
+                if wrapper == argv[2]:
+                    raise AssertionError('Darwin limit wrapper instrumentation did not match')
+                argv = [*argv[:2], wrapper, *argv[3:]]
             argv = [*argv[:4], sys.executable, *argv[4:]]
         return popen(argv, *args, **kwargs)
     return patch.object(subprocess, 'Popen', side_effect=launch)
@@ -277,6 +309,71 @@ class PortfolioTests(unittest.TestCase):
                 self.assertEqual(r['status'], 'ERROR')
                 self.assertEqual(r['error'], 'solver exit code 1')
 
+    def test_resource_fixture_uses_preexec_baseline_not_fresh_vm(self):
+        # A valid cap can exceed fresh-VM + 2 GiB after exec replaces mappings.
+        from types import SimpleNamespace
+        gib = 1024 ** 3
+        with tempfile.TemporaryDirectory() as d:
+            marker, baseline_file = Path(d) / 'limited', Path(d) / 'baseline'
+            baseline_file.write_text(json.dumps({'pid': os.getpid(), 'baseline': 400 * gib}))
+            resource = SimpleNamespace(RLIMIT_DATA=1, RLIMIT_FSIZE=2,
+                                       getrlimit=lambda kind: ((402 * gib,) * 2 if kind == 1
+                                                               else (16 * 1024 ** 2,) * 2))
+            p = importlib.import_module('portfolio')
+            with patch.object(sys, 'platform', 'darwin'), patch.dict(
+                    sys.modules, {'resource': resource}), patch.object(
+                    p, '_darwin_virtual_size', return_value=399 * gib) as fresh_probe:
+                exec(resource_check_script(marker, baseline_file), {})
+            fresh_probe.assert_not_called()
+            self.assertTrue(marker.exists())
+
+    def test_resource_fixture_rejects_unbounded_or_wrong_child_limits(self):
+        from types import SimpleNamespace
+        gib = 1024 ** 3
+        with tempfile.TemporaryDirectory() as d:
+            marker, baseline_file = Path(d) / 'limited', Path(d) / 'baseline'
+            for data, fsize, pid in [(403 * gib, 16 * 1024 ** 2, os.getpid()),
+                                     (-1, 16 * 1024 ** 2, os.getpid()),
+                                     (402 * gib, 17 * 1024 ** 2, os.getpid()),
+                                     (402 * gib, 16 * 1024 ** 2, -1)]:
+                baseline_file.write_text(json.dumps({'pid': pid, 'baseline': 400 * gib}))
+                resource = SimpleNamespace(RLIMIT_DATA=1, RLIMIT_FSIZE=2,
+                                           getrlimit=lambda kind: (data, data) if kind == 1
+                                           else (fsize, fsize))
+                with self.subTest(data=data, fsize=fsize, pid=pid), patch.object(
+                        sys, 'platform', 'darwin'), patch.dict(sys.modules, {'resource': resource}):
+                    with self.assertRaises(AssertionError):
+                        exec(resource_check_script(marker, baseline_file), {})
+                    self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX exec/resource-limit acceptance')
+    def test_resource_baseline_recorder_survives_same_pid_exec(self):
+        # Exercise the test-only recorder and python_workers argument rewriting
+        # even on Linux. Native Darwin alone validates the real libproc baseline.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            marker, baseline_file = root / 'limited', root / 'baseline'
+            fixture = root / 'check'
+            fixture.write_text(resource_check_script(marker, baseline_file))
+            wrapper = ('import os,sys; sys.path.insert(0,sys.argv.pop(1)); '
+                       'import portfolio; portfolio.sys.platform="darwin"; '
+                       + ('portfolio._darwin_virtual_size=lambda: 0; '
+                          if sys.platform != 'darwin' else '')
+                       + 'from portfolio import child_limits; child_limits(); '
+                       'os.execv(sys.argv[1],sys.argv[1:])')
+            with python_workers(root, baseline_file):
+                child = subprocess.Popen([sys.executable, '-c', wrapper, str(SCRIPTS), str(fixture)],
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, stderr = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0, (stdout, stderr))
+            recorded = json.loads(baseline_file.read_text())
+            self.assertEqual(recorded['pid'], child.pid)
+            if sys.platform == 'darwin':
+                self.assertGreater(recorded['baseline'], 0)
+            else:
+                self.assertEqual(recorded['baseline'], 0)
+            self.assertTrue(marker.exists())
+
     def test_child_resource_limits_and_cleanup(self):
         p = importlib.import_module('portfolio')
         with tempfile.TemporaryDirectory() as d:
@@ -285,14 +382,21 @@ class PortfolioTests(unittest.TestCase):
             source.write_text('[[1]]')
             fixture = root / 'check'
             marker = root / 'limited'
-            fixture.write_text('import os,sys\nfrom pathlib import Path\nif os.name == "posix":\n import resource\n a=resource.getrlimit(resource.RLIMIT_DATA)[0]\n f=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\n if sys.platform == "darwin":\n  sys.path.insert(0, ' + repr(str(SCRIPTS)) + ')\n  from portfolio import _darwin_virtual_size\n  baseline=_darwin_virtual_size()\n  assert a>2*1024**3 and 0<a-baseline<=2*1024**3\n else:\n  assert 0<a<=2*1024**3\n assert 0<f<=16*1024**2\nPath(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
+            baseline_file = root / 'preexec-baseline'
+            fixture.write_text(resource_check_script(marker, baseline_file) + 'raise SystemExit(1)\n')
             fixture.chmod(0o700)
-            worker_patch = python_workers(root)
+            worker_patch = python_workers(root, baseline_file)
             worker_patch.start()
             self.addCleanup(worker_patch.stop)
-            with patch.object(p, 'binary', return_value=str(fixture)):
-                p.solve(source, solver='z3')
-            self.assertTrue(marker.exists(), 'child resource limits not applied')
+            # parse_output sees combined child stdout/stderr, before the temporary
+            # backend directory is removed; solve's ERROR alone loses traceback.
+            with patch.object(p, 'binary', return_value=str(fixture)), patch.object(
+                    p, 'parse_output', wraps=p.parse_output) as parsed:
+                answer = p.solve(source, solver='z3')
+            captured = [call.args[0] for call in parsed.call_args_list]
+            self.assertTrue(marker.exists(),
+                            f'child resource limits not applied: {answer}; child output={captured}')
+            self.assertEqual(answer['status'], 'ERROR', answer)
             pidfile = root / 'pid'
             fixture.write_text('import os,time\nfrom pathlib import Path\npid=os.fork() if os.name == "posix" else os.getpid()\nif pid==0:\n time.sleep(5)\nelse:\n Path(' + repr(str(pidfile)) + ').write_text(str(pid))\n time.sleep(5)\n')
             with patch.object(p, 'binary', return_value=str(fixture)):

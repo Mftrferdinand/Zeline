@@ -7,13 +7,22 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 import uuid
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 
 
+# Only registry lookup is process-wide; transactions on different paths are independent.
+# Stores retain their lock, while unused database paths disappear from the registry.
+_PATH_LOCKS = weakref.WeakValueDictionary()
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
 class TaskContextStore:
+    CONNECTION_TIMEOUT = 5
     MAX_TASKS = 128
     MAX_ANCHORS = 2048
     MAX_OWNERS = 256
@@ -42,6 +51,12 @@ class TaskContextStore:
         if any(part.is_symlink() for part in (self.path, *self.path.parents)):
             raise ValueError('Task checkpoint path may not contain symlinks')
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        key = os.path.normcase(str(self.path.resolve()))
+        with _PATH_LOCKS_GUARD:
+            self._transaction_lock = _PATH_LOCKS.get(key)
+            if self._transaction_lock is None:
+                self._transaction_lock = threading.Lock()
+                _PATH_LOCKS[key] = self._transaction_lock
         with self._connection() as db:
             db.execute('CREATE TABLE IF NOT EXISTS task_context(owner TEXT, id TEXT, record TEXT NOT NULL, PRIMARY KEY(owner,id))')
             db.execute('CREATE TABLE IF NOT EXISTS task_focus(owner TEXT PRIMARY KEY, id TEXT)')
@@ -61,16 +76,25 @@ class TaskContextStore:
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         os.close(fd)
         self.path.chmod(0o600)
-        db = sqlite3.connect(str(self.path), timeout=5)
+        # Avoid same-process SQLite busy-handler races/starvation between short
+        # transactions, including separate stores for this canonical path. Keep
+        # BEGIN IMMEDIATE for cross-process atomic capacity/focus/owner guards.
+        deadline = time.monotonic() + self.CONNECTION_TIMEOUT
+        if not self._transaction_lock.acquire(timeout=self.CONNECTION_TIMEOUT):
+            raise sqlite3.OperationalError('Task store transaction lock timed out')
         try:
-            db.execute('BEGIN IMMEDIATE')
-            yield db
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
+            db = sqlite3.connect(str(self.path), timeout=max(0, deadline - time.monotonic()))
+            try:
+                db.execute('BEGIN IMMEDIATE')
+                yield db
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+            finally:
+                db.close()
         finally:
-            db.close()
+            self._transaction_lock.release()
 
     @staticmethod
     def _get(db, owner, task_id):
