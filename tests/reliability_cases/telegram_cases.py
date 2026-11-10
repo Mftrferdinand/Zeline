@@ -119,7 +119,11 @@ class TelegramFixTests(unittest.TestCase):
         self.assertIs(self.send(Session()), True)
         files = list((tg.config.DATA_DIR / 'telegram-outbox').glob('*.json'))
         self.assertEqual(len(files), 1, 'missing durable final receipt')
-        self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+        if os.name == 'nt':
+            from zeline.session_recovery import _windows_private
+            self.assertTrue(_windows_private(files[0]), 'Final receipt ACL is not private')
+        else:
+            self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
         receipt = json.loads(files[0].read_text())
         self.assertEqual(receipt['parts'][0]['state'], 'ACKED')
         self.assertEqual(receipt['parts'][0]['message_id'], 99)

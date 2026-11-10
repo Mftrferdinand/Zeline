@@ -65,15 +65,52 @@ class RecoveryPlatformTests(unittest.TestCase):
         with patch.dict(sys.modules, {'sqlite3': SimpleNamespace(Error=sqlite3.Error)}):
             self.assertEqual(self.module.failure_category(error), 'sqlite_busy')
 
+    def test_acl_semantics_require_one_explicit_owner_full_access_ace(self):
+        check = self.module._owner_only_acl
+        valid = dict(protected=True, present=True, ace_count=1,
+                     ace_type=0, ace_flags=0, access_mask=0x1f01ff,
+                     sid_matches=True)
+        self.assertTrue(check(**valid))
+        for field, value in [('protected', False), ('present', False),
+                             ('ace_count', 0), ('ace_count', 2),
+                             ('ace_type', 1), ('ace_flags', 0x10),
+                             ('ace_flags', 0x08), ('ace_flags', 3),
+                             ('access_mask', 0x120089), ('sid_matches', False)]:
+            with self.subTest(field=field, value=value):
+                self.assertFalse(check(**dict(valid, **{field: value})))
+
     @unittest.skipUnless(os.name == 'nt', 'native Windows ACL acceptance')
     def test_native_acl_rejects_snapshot_replaced_by_public_file(self):
-        self.recovery.save('fixture', [], None, 'token')
-        self.assertEqual(self.recovery.load('fixture')['token'], 'token')
-        public = self.home / 'public.json'
-        public.write_bytes(self.recovery._path('fixture').read_bytes())
-        os.replace(public, self.recovery._path('fixture'))
-        with self.assertRaises(OSError):
-            self.recovery.load('fixture')
+        native_private = self.module._windows_private
+
+        def checked_private(path, *, create=False):
+            facts = {}
+            result = native_private(path, create=create, _diagnostics=facts)
+            if create:
+                self.assertTrue(result, facts)  # Safe native failure evidence, not SDDL/SIDs.
+            return result
+
+        with patch.object(self.module, '_windows_private', side_effect=checked_private):
+            self.recovery.save('fixture', [], None, 'token')
+            self.assertEqual(self.recovery.load('fixture')['token'], 'token')
+            # Re-protect an existing directory and exercise atomic replacement too.
+            self.recovery.save('fixture', [], None, 'new-token')
+            self.assertEqual(self.recovery.load('fixture')['token'], 'new-token')
+            public = self.home / 'public.json'
+            public.write_bytes(self.recovery._path('fixture').read_bytes())
+            os.replace(public, self.recovery._path('fixture'))
+            facts = {}
+            self.assertFalse(native_private(self.recovery._path('fixture'), _diagnostics=facts), facts)
+            with self.assertRaises(OSError):
+                self.recovery.load('fixture')
+
+    def test_reparse_point_fails_before_acl_mutation(self):
+        from types import SimpleNamespace
+        with patch.object(self.module.os, 'name', 'nt'), \
+             patch.object(self.module, '_windows_private') as native_private:
+            self.assertFalse(self.module._private('unused', SimpleNamespace(st_file_attributes=0x400),
+                                                  create=True))
+            native_private.assert_not_called()
 
 
 if __name__ == '__main__':

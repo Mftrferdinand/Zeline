@@ -285,7 +285,7 @@ class PortfolioTests(unittest.TestCase):
             source.write_text('[[1]]')
             fixture = root / 'check'
             marker = root / 'limited'
-            fixture.write_text('import os\nfrom pathlib import Path\nif os.name == "posix":\n import resource\n a=resource.getrlimit(resource.RLIMIT_DATA)[0]\n f=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\n assert 0<a<=2*1024**3\n assert 0<f<=16*1024**2\nPath(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
+            fixture.write_text('import os,sys\nfrom pathlib import Path\nif os.name == "posix":\n import resource\n a=resource.getrlimit(resource.RLIMIT_DATA)[0]\n f=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\n if sys.platform == "darwin":\n  sys.path.insert(0, ' + repr(str(SCRIPTS)) + ')\n  from portfolio import _darwin_virtual_size\n  baseline=_darwin_virtual_size()\n  assert a>2*1024**3 and 0<a-baseline<=2*1024**3\n else:\n  assert 0<a<=2*1024**3\n assert 0<f<=16*1024**2\nPath(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
             fixture.chmod(0o700)
             worker_patch = python_workers(root)
             worker_patch.start()

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 _HOME = tempfile.TemporaryDirectory(prefix='zeline-memory-lock-')
 atexit.register(_HOME.cleanup)
@@ -42,7 +43,10 @@ class MemoryReadLockTests(unittest.TestCase):
         with sqlite3.connect(self.store.db_path) as held:
             held.execute('BEGIN IMMEDIATE')
             start = time.monotonic()
-            self.store.record_retrieval('busy-turn', [record])
+            with mock.patch.object(memory.sqlite3, 'connect', wraps=sqlite3.connect) as connect:
+                self.store.record_retrieval('busy-turn', [record])
+            self.assertEqual(connect.call_args.kwargs['timeout'], 0,
+                             'Best-effort telemetry must never wait for the writer')
             self.assertLess(time.monotonic() - start, 0.6)
         self.assertEqual(self.store.retrievals('busy-turn'), [])
         self.store.record_retrieval('free-turn', [record])

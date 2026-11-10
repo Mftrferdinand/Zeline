@@ -208,10 +208,15 @@ class TelegramPresenceTests(unittest.TestCase):
         from types import SimpleNamespace
         count = []
         paused_counts = []
+        resuming = threading.Event()
+        resumed = threading.Event()
+        resume_baseline = []
 
         def api(_api, method, **params):
             if method == "sendChatAction":
                 count.append(time.monotonic())
+                if resuming.is_set() and len(count) >= resume_baseline[0] + 2:
+                    resumed.set()
             return {"ok": True, "result": {"message_id": 22}}
 
         class Provider:
@@ -221,8 +226,11 @@ class TelegramPresenceTests(unittest.TestCase):
                 before = len(count)
                 time.sleep(.1)
                 paused_counts.append(len(count) - before)
+                resume_baseline.append(len(count))
+                resuming.set()
                 kwargs["on_tool_result"]("ask_user", {}, "User answered")
-                time.sleep(.08)
+                if not resumed.wait(1):
+                    raise AssertionError("Typing did not resume after the human answer")
                 paused_counts.append(len(count) - before)
                 return "Answer received, task complete."
 

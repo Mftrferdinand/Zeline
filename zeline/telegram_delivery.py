@@ -20,6 +20,12 @@ class FinalReceipt:
     def __init__(self, directory, chat_id, parts):
         self.directory = directory / 'telegram-outbox'
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name == 'nt':
+            from .session_recovery import _windows_private
+            info = self.directory.lstat()
+            if (getattr(info, 'st_file_attributes', 0) & 0x400
+                    or not _windows_private(self.directory, create=True)):
+                raise PermissionError('Final receipt directory is not private')
         self.path = self.directory / (uuid.uuid4().hex + '.json')
         self.record = {'version': 1, 'chat_id': chat_id, 'parts': [
             {'text': part, 'state': 'PENDING'} for part in parts]}
@@ -31,7 +37,11 @@ class FinalReceipt:
         fd, name = tempfile.mkstemp(prefix='.receipt-', dir=self.directory)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                if _SUPPORTS_FCHMOD:
+                if os.name == 'nt':
+                    from .session_recovery import _windows_private
+                    if not _windows_private(name, create=True):
+                        raise PermissionError('Final receipt file is not private')
+                elif _SUPPORTS_FCHMOD:
                     os.fchmod(stream.fileno(), 0o600)
                 else:
                     os.chmod(name, 0o600)

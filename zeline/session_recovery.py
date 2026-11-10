@@ -17,7 +17,14 @@ MAX_RECOVERY_BYTES = 2_000_000
 MAX_RECOVERY_IDENTITIES = 256
 
 
-def _windows_private(path, *, create=False):
+def _owner_only_acl(*, protected, present, ace_count, ace_type, ace_flags,
+                    access_mask, sid_matches):
+    """Accept only the explicit, non-inheriting FILE_ALL_ACCESS user ACE."""
+    return (protected and present and ace_count == 1 and ace_type == 0
+            and ace_flags == 0 and access_mask == 0x1f01ff and sid_matches)
+
+
+def _windows_private(path, *, create=False, _diagnostics=None):
     """Set/verify a protected owner-only DACL; never infer Windows privacy from chmod."""
     import ctypes
     from ctypes import wintypes as wt
@@ -32,10 +39,16 @@ def _windows_private(path, *, create=False):
         (security.ConvertSidToStringSidW, [pointer, ctypes.POINTER(wt.LPWSTR)]),
         (security.ConvertStringSecurityDescriptorToSecurityDescriptorW,
          [wt.LPCWSTR, wt.DWORD, ctypes.POINTER(pointer), ctypes.POINTER(wt.DWORD)]),
-        (security.SetFileSecurityW, [wt.LPCWSTR, wt.DWORD, pointer]),
         (security.GetFileSecurityW, [wt.LPCWSTR, wt.DWORD, pointer, wt.DWORD, ctypes.POINTER(wt.DWORD)]),
-        (security.ConvertSecurityDescriptorToStringSecurityDescriptorW,
-         [pointer, wt.DWORD, wt.DWORD, ctypes.POINTER(wt.LPWSTR), ctypes.POINTER(wt.DWORD)]),
+        (security.GetSecurityDescriptorDacl,
+         [pointer, ctypes.POINTER(wt.BOOL), ctypes.POINTER(pointer), ctypes.POINTER(wt.BOOL)]),
+        (security.GetSecurityDescriptorControl,
+         [pointer, ctypes.POINTER(wt.WORD), ctypes.POINTER(wt.DWORD)]),
+        (security.IsValidAcl, [pointer]),
+        (security.GetAclInformation, [pointer, pointer, wt.DWORD, ctypes.c_int]),
+        (security.GetAce, [pointer, wt.DWORD, ctypes.POINTER(pointer)]),
+        (security.IsValidSid, [pointer]),
+        (security.EqualSid, [pointer, pointer]),
     )
     for function, arguments in signatures:
         function.argtypes, function.restype = arguments, wt.BOOL
@@ -60,29 +73,78 @@ def _windows_private(path, *, create=False):
             kernel.LocalFree(sid)
     finally:
         kernel.CloseHandle(token)
+    security.SetNamedSecurityInfoW.argtypes = [wt.LPWSTR, ctypes.c_int, wt.DWORD,
+                                              pointer, pointer, pointer, pointer]
+    # Unlike BOOL APIs this returns a Win32 error code, not GetLastError().
+    security.SetNamedSecurityInfoW.restype = wt.DWORD
+
+    def get_dacl(descriptor):
+        present, defaulted, dacl = wt.BOOL(), wt.BOOL(), pointer()
+        if not security.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present),
+                                                  ctypes.byref(dacl), ctypes.byref(defaulted)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return bool(present.value), dacl
+
     if create:
         descriptor = pointer()
         if not security.ConvertStringSecurityDescriptorToSecurityDescriptorW(expected, 1, ctypes.byref(descriptor), None):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            if not security.SetFileSecurityW(str(path), 0x80000004, descriptor):
-                raise ctypes.WinError(ctypes.get_last_error())
+            present, dacl = get_dacl(descriptor)
+            if not present or not dacl:
+                return False  # Never pass a NULL DACL (unrestricted access).
+            # SECURITY_INFORMATION protection flags are setter instructions;
+            # use the documented modern API, not obsolete SetFileSecurityW.
+            error = security.SetNamedSecurityInfoW(str(path), 1, 0x80000004,
+                                                   None, None, dacl, None)
+            if error:
+                raise ctypes.WinError(error)
         finally:
             kernel.LocalFree(descriptor)
     security.GetFileSecurityW(str(path), 4, None, 0, ctypes.byref(size))
     descriptor = ctypes.create_string_buffer(size.value)
     if not security.GetFileSecurityW(str(path), 4, descriptor, size, ctypes.byref(size)):
         raise ctypes.WinError(ctypes.get_last_error())
-    actual = wt.LPWSTR()
-    if not security.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 4, ctypes.byref(actual), None):
+    control, revision = wt.WORD(), wt.DWORD()
+    if not security.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)):
         raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        # Auto-inheritance bookkeeping does not grant access; require protection
-        # and exactly one explicit full-access ACE for the current principal.
-        header, separator, entries = actual.value.partition('(')
-        return header in {'D:P', 'D:PAI', 'D:PAR', 'D:PARAI'} and separator + entries == expected[3:]
-    finally:
-        kernel.LocalFree(actual)
+    present, dacl = get_dacl(descriptor)
+
+    class AclSize(ctypes.Structure):
+        _fields_ = [('AceCount', wt.DWORD), ('AclBytesInUse', wt.DWORD),
+                    ('AclBytesFree', wt.DWORD)]
+
+    class AllowedAce(ctypes.Structure):
+        _fields_ = [('AceType', wt.BYTE), ('AceFlags', wt.BYTE),
+                    ('AceSize', wt.WORD), ('Mask', wt.DWORD), ('SidStart', wt.DWORD)]
+
+    facts = dict(protected=bool(control.value & 0x1000), present=present and bool(dacl),
+                 ace_count=0, ace_type=-1, ace_flags=-1, access_mask=0, sid_matches=False)
+    if present and dacl and security.IsValidAcl(dacl):
+        acl_size = AclSize()
+        if not security.GetAclInformation(dacl, ctypes.byref(acl_size), ctypes.sizeof(acl_size), 2):
+            raise ctypes.WinError(ctypes.get_last_error())
+        facts['ace_count'] = acl_size.AceCount
+        if acl_size.AceCount == 1:
+            ace_pointer = pointer()
+            if not security.GetAce(dacl, 0, ctypes.byref(ace_pointer)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            ace = ctypes.cast(ace_pointer, ctypes.POINTER(AllowedAce)).contents
+            facts.update(ace_type=ace.AceType, ace_flags=ace.AceFlags, access_mask=ace.Mask)
+            # Only interpret the SID layout for an ACCESS_ALLOWED_ACE.
+            if ace.AceType == 0 and ace.AceSize >= ctypes.sizeof(AllowedAce):
+                ace_sid = pointer(ace_pointer.value + AllowedAce.SidStart.offset)
+                token_sid = ctypes.cast(user, ctypes.POINTER(pointer))[0]
+                facts['sid_matches'] = bool(security.IsValidSid(ace_sid)
+                                            and security.EqualSid(ace_sid, token_sid))
+    if _diagnostics is not None:
+        # CI assertion context only: never expose SID, account, path or SDDL.
+        _diagnostics.update(protected=facts['protected'], dacl_present=facts['present'],
+                            ace_count=facts['ace_count'], allow_ace=facts['ace_type'] == 0,
+                            explicit_noninheriting=facts['ace_flags'] == 0,
+                            full_access=facts['access_mask'] == 0x1f01ff,
+                            token_sid_matches=facts['sid_matches'])
+    return _owner_only_acl(**facts)
 
 
 def _private(path, info, *, create=False):

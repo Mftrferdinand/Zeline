@@ -114,11 +114,41 @@ def parse_output(text, instance, solver, returncode):
     return result('UNKNOWN', solver)
 
 
+def _darwin_virtual_size():
+    """Measure startup VM reservations via libproc; never fall back to no guard."""
+    import ctypes as c
+
+    # xnu/bsd/sys/proc_info.h: PROC_PIDTASKINFO = 4, struct proc_taskinfo.
+    class TaskInfo(c.Structure):
+        _fields_ = [(name, c.c_uint64) for name in
+                    ('pti_virtual_size', 'pti_resident_size', 'pti_total_user',
+                     'pti_total_system', 'pti_threads_user', 'pti_threads_system')]
+        _fields_ += [(name, c.c_int32) for name in
+                     ('pti_policy', 'pti_faults', 'pti_pageins', 'pti_cow_faults',
+                      'pti_messages_sent', 'pti_messages_received', 'pti_syscalls_mach',
+                      'pti_syscalls_unix', 'pti_csw', 'pti_threadnum',
+                      'pti_numrunning', 'pti_priority')]
+
+    library = c.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    library.proc_pidinfo.argtypes = [c.c_int, c.c_int, c.c_uint64, c.c_void_p, c.c_int]
+    library.proc_pidinfo.restype = c.c_int
+    info = TaskInfo()
+    received = library.proc_pidinfo(os.getpid(), 4, 0, c.byref(info), c.sizeof(info))
+    if received != c.sizeof(info) or not info.pti_virtual_size:
+        raise OSError(c.get_errno(), 'cannot measure Darwin SAT virtual-memory baseline')
+    return int(info.pti_virtual_size)
+
+
 def child_limits():
     """POSIX child-only limits; never change the agent process's resources."""
     import resource
+    # XNU also checks existing VM reservations against RLIMIT_DATA. Bound
+    # growth beyond the measured startup mappings, not those mappings themselves.
+    memory_bound = 2 * 1024 ** 3
+    if sys.platform == 'darwin':
+        memory_bound += _darwin_virtual_size()  # Probe errors must fail closed.
     for kind, bound in ((resource.RLIMIT_FSIZE, MAX_OUTPUT_BYTES),
-                        (resource.RLIMIT_DATA, 2 * 1024 ** 3),
+                        (resource.RLIMIT_DATA, memory_bound),
                         (resource.RLIMIT_CORE, 0)):
         soft, hard = resource.getrlimit(kind)
         value = min([bound] + [limit for limit in (soft, hard)
@@ -164,8 +194,8 @@ def run_backend(instance, solver, executable, timeout):
             source.write_text('%d %d\n' % (instance.num_vars, len(instance.clauses)) + ''.join(' '.join(map(str, c)) + ' 0\n' for c in instance.clauses))
             argv.extend(['1', '2.3', str(timeout)])
         output = root / 'stdout'
-        # Darwin refuses a DATA ceiling below the forked parent's current VM use.
-        # Apply the same limits after a fresh interpreter exec, then exec the solver
+        # Measure Darwin's baseline and bound growth after a fresh interpreter
+        # exec (not against the forked parent's mappings), then exec the solver
         # in-place so its PID/process-group and all cleanup guarantees stay intact.
         darwin = sys.platform == 'darwin'
         if darwin:

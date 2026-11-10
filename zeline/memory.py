@@ -463,7 +463,9 @@ class MemoryStore:
         """Persist selected revisions, never infer that the model used them."""
         if not isinstance(turn_id, str) or not 1 <= len(turn_id) <= 120:
             return
-        with self._transaction(timeout=0.2) as (conn, _):
+        # Optional retrieval telemetry must not queue behind a foreground writer.
+        # SQLite busy timeouts are per operation and can exceed a turn's budget.
+        with self._transaction(timeout=0) as (conn, _):
             for item in records[:MAX_RECALL_RECORDS]:
                 if not isinstance(item, dict) or type(item.get('revision')) is not int:
                     continue
