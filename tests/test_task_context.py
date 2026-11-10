@@ -111,7 +111,21 @@ class TaskContextTests(unittest.TestCase):
         events = self.store.get('owner', a['id'])['tool_events']
         self.assertEqual(len(events), 24)
         self.assertTrue(all(len(event['result']) <= 1000 for event in events))
-        self.assertEqual(stat.S_IMODE(self.store.path.stat().st_mode), 0o600)
+        if os.name == 'posix':
+            self.assertEqual(stat.S_IMODE(self.store.path.stat().st_mode), 0o600)
+
+    def test_os_temp_root_alias_is_canonicalized_but_nested_redirect_is_rejected(self):
+        actual = self.root / 'actual-temp'
+        actual.mkdir()
+        alias = self.root / 'os-temp-alias'
+        alias.symlink_to(actual, target_is_directory=True)
+        with patch.object(self.module.tempfile, 'gettempdir', return_value=str(alias)):
+            store = self.module.TaskContextStore(alias / 'state' / 'tasks.sqlite3')
+            self.assertEqual(store.path, actual.resolve() / 'state' / 'tasks.sqlite3')
+            self.assertIsNotNone(store.begin('owner', 'Portable task')['task'])
+            (actual / 'nested-link').symlink_to(self.root, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                self.module.TaskContextStore(alias / 'nested-link' / 'new' / 'tasks.sqlite3')
 
     def test_symlink_parent_rejected_before_creating_outside_directory(self):
         outside = Path(self.tmp.name) / 'outside'

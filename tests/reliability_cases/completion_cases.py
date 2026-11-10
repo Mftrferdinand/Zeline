@@ -42,7 +42,7 @@ def post(payload):
 class CompletionTests(unittest.TestCase):
     def run_case(self, body):
         with tempfile.TemporaryDirectory(prefix='zeline-response-test-') as home:
-            env = dict(os.environ, HOME=home, ZELINE_HOME=home+'/.zeline', PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE='1')
+            env = dict(os.environ, HOME=home, USERPROFILE=home, ZELINE_HOME=home+'/.zeline', PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE='1')
             result = subprocess.run([PYTHON, '-B', '-c', PRELUDE+'\n'+body], cwd=home, env=env, capture_output=True, text=True, timeout=12)
             self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
@@ -119,8 +120,9 @@ def child_limits():
     for kind, bound in ((resource.RLIMIT_FSIZE, MAX_OUTPUT_BYTES),
                         (resource.RLIMIT_DATA, 2 * 1024 ** 3),
                         (resource.RLIMIT_CORE, 0)):
-        _, hard = resource.getrlimit(kind)
-        value = bound if hard == resource.RLIM_INFINITY else min(bound, hard)
+        soft, hard = resource.getrlimit(kind)
+        value = min([bound] + [limit for limit in (soft, hard)
+                               if limit != resource.RLIM_INFINITY])
         resource.setrlimit(kind, (value, value))
 
 
@@ -162,10 +164,19 @@ def run_backend(instance, solver, executable, timeout):
             source.write_text('%d %d\n' % (instance.num_vars, len(instance.clauses)) + ''.join(' '.join(map(str, c)) + ' 0\n' for c in instance.clauses))
             argv.extend(['1', '2.3', str(timeout)])
         output = root / 'stdout'
+        # Darwin refuses a DATA ceiling below the forked parent's current VM use.
+        # Apply the same limits after a fresh interpreter exec, then exec the solver
+        # in-place so its PID/process-group and all cleanup guarantees stay intact.
+        darwin = sys.platform == 'darwin'
+        if darwin:
+            wrapper = ('import os,sys; sys.path.insert(0,sys.argv.pop(1)); '
+                       'from portfolio import child_limits; child_limits(); '
+                       'os.execv(sys.argv[1],sys.argv[1:])')
+            argv = [sys.executable, '-c', wrapper, str(Path(__file__).resolve().parent), *argv]
         with output.open('wb') as stream:
             process = subprocess.Popen(argv, stdout=stream, stderr=stream, shell=False,
                                        start_new_session=(os.name == 'posix'),
-                                       preexec_fn=child_limits if os.name == 'posix' else None)
+                                       preexec_fn=child_limits if os.name == 'posix' and not darwin else None)
             deadline = time.monotonic() + timeout
             try:
                 while process.poll() is None:

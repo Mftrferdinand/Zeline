@@ -11,7 +11,7 @@ SOURCE = Path(os.environ.get('ZELINE_FORMATTER_SOURCE', str(Path(__file__).resol
 
 
 def formatter(metadata):
-    tree = ast.parse(SOURCE.read_text())
+    tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
     names = {'_format_token_count', '_one_line', '_new_session_text'}
     subset = ast.Module(body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names], type_ignores=[])
     fetch = Mock(return_value=metadata)
@@ -38,7 +38,7 @@ class NewSessionModelLimitsTests(unittest.TestCase):
                 self.assertEqual(render(), '✨ Session reset! Starting fresh.\n\n◆ Model: provider/exact-model\n◆ Provider: Fixture provider')
 
     def test_reset_card_never_discovers_models_on_the_polling_thread(self):
-        tree = ast.parse(SOURCE.read_text())
+        tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
         names = {'_format_token_count', '_one_line', '_new_session_text', '_fetch_model_capabilities'}
         subset = ast.Module(body=[node for node in tree.body
                                  if isinstance(node, ast.FunctionDef) and node.name in names], type_ignores=[])

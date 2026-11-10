@@ -15,6 +15,18 @@ sys.path.insert(0, str(SCRIPTS))
 HAS_Z3 = importlib.import_module('portfolio').binary('z3') is not None
 
 
+def python_workers(root):
+    """Execute fixture scripts with Python; keep the backend's argument list."""
+    popen = subprocess.Popen
+    def launch(argv, *args, **kwargs):
+        if Path(argv[0]).parent == root:
+            argv = [sys.executable, *argv]
+        elif len(argv) > 4 and argv[1] == '-c' and Path(argv[4]).parent == root:
+            argv = [*argv[:4], sys.executable, *argv[4:]]
+        return popen(argv, *args, **kwargs)
+    return patch.object(subprocess, 'Popen', side_effect=launch)
+
+
 class PortfolioTests(unittest.TestCase):
     def common(self):
         self.assertTrue((SCRIPTS / 'solver_common.py').exists(), 'shared parser is not implemented')
@@ -74,7 +86,8 @@ class PortfolioTests(unittest.TestCase):
             answer = p.solve(source, solver='z3', out=output)
             self.assertEqual(answer['status'], 'SAT', answer)
             self.assertEqual(output.read_text().strip(), answer['assignment'])
-            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            if os.name == 'posix':
+                self.assertEqual(output.stat().st_mode & 0o777, 0o600)
             source.write_text('[[1], [-1]]')
             failure_out = Path(d) / 'unsat.txt'
             self.assertEqual(p.solve(source, solver='z3', out=failure_out)['status'], 'UNSAT')
@@ -184,7 +197,7 @@ class PortfolioTests(unittest.TestCase):
             slow = root / 'slow'
             slow.write_text('#!' + sys.executable + '\nimport time\ntime.sleep(5)\n')
             slow.chmod(0o700)
-            with patch.object(p, 'SOLVERS', ('z3', 'kissat')), patch.object(
+            with python_workers(root), patch.object(p, 'SOLVERS', ('z3', 'kissat')), patch.object(
                     p, 'binary', side_effect=lambda name: str(slow) if name == 'z3' else kissat):
                 answer = p.solve(source, timeout=.6)
             self.assertEqual(answer['status'], 'SAT', answer)
@@ -198,6 +211,9 @@ class PortfolioTests(unittest.TestCase):
             root = Path(d)
             source = root / 'x.json'
             source.write_text('[[1]]')
+            worker_patch = python_workers(root)
+            worker_patch.start()
+            self.addCleanup(worker_patch.stop)
             def fake(name, body):
                 f = root / name
                 f.write_text('#!' + sys.executable + '\n' + body)
@@ -248,6 +264,9 @@ class PortfolioTests(unittest.TestCase):
             fixture = Path(d) / 'protocol'
             fixture.write_text('#!' + sys.executable + '\nimport sys\nfrom pathlib import Path\nassert len(sys.argv)==5\nassert sys.argv[2]=="1"\nassert sys.argv[3]=="2.3"\nassert float(sys.argv[4])>0\nassert Path(sys.argv[1]).read_text().startswith("3 1\\n1 0\\n")\nraise SystemExit(1)\n')
             fixture.chmod(0o700)
+            worker_patch = python_workers(Path(d))
+            worker_patch.start()
+            self.addCleanup(worker_patch.stop)
             source.write_text('{"clauses": [[1, 1], [2, -2]], "num_vars": 3}')
             with patch.object(p, 'binary', return_value=str(fixture)):
                 self.assertEqual(p.solve(source, solver='probsat')['status'], 'UNKNOWN')
@@ -266,24 +285,50 @@ class PortfolioTests(unittest.TestCase):
             source.write_text('[[1]]')
             fixture = root / 'check'
             marker = root / 'limited'
-            fixture.write_text('#!' + sys.executable + '\nimport resource\nfrom pathlib import Path\na=resource.getrlimit(resource.RLIMIT_DATA)[0]\nf=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\nassert 0<a<=2*1024**3\nassert 0<f<=16*1024**2\nPath(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
+            fixture.write_text('import os\nfrom pathlib import Path\nif os.name == "posix":\n import resource\n a=resource.getrlimit(resource.RLIMIT_DATA)[0]\n f=resource.getrlimit(resource.RLIMIT_FSIZE)[0]\n assert 0<a<=2*1024**3\n assert 0<f<=16*1024**2\nPath(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
             fixture.chmod(0o700)
+            worker_patch = python_workers(root)
+            worker_patch.start()
+            self.addCleanup(worker_patch.stop)
             with patch.object(p, 'binary', return_value=str(fixture)):
                 p.solve(source, solver='z3')
             self.assertTrue(marker.exists(), 'child resource limits not applied')
             pidfile = root / 'pid'
-            fixture.write_text('#!' + sys.executable + '\nimport os,time\nfrom pathlib import Path\npid=os.fork()\nif pid==0:\n time.sleep(5)\nelse:\n Path(' + repr(str(pidfile)) + ').write_text(str(pid))\n time.sleep(5)\n')
+            fixture.write_text('import os,time\nfrom pathlib import Path\npid=os.fork() if os.name == "posix" else os.getpid()\nif pid==0:\n time.sleep(5)\nelse:\n Path(' + repr(str(pidfile)) + ').write_text(str(pid))\n time.sleep(5)\n')
             with patch.object(p, 'binary', return_value=str(fixture)):
                 self.assertEqual(p.solve(source, solver='z3', timeout=.3)['status'], 'TIMEOUT')
             self.assertTrue(pidfile.exists())
             pid = int(pidfile.read_text())
+            if os.name == 'nt':
+                import ctypes
+                from ctypes import wintypes
+                kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+                kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                kernel.OpenProcess.restype = wintypes.HANDLE
+                kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+                kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+                handle = kernel.OpenProcess(0x1000, False, pid)
+                if handle:
+                    try:
+                        code = wintypes.DWORD()
+                        self.assertTrue(kernel.GetExitCodeProcess(handle, ctypes.byref(code)))
+                        self.assertNotEqual(code.value, 259, 'timed-out worker is still active')
+                    finally:
+                        kernel.CloseHandle(handle)
+                else:
+                    self.assertEqual(ctypes.get_last_error(), 87, 'cannot inspect timed-out worker')
+                return
             # A killed orphan may briefly remain as a zombie; it cannot execute.
             proc = Path('/proc') / str(pid) / 'stat'
             end = time.monotonic() + 1
-            while proc.exists() and proc.read_text().split()[2] != 'Z' and time.monotonic() < end:
+            def state():
+                try:
+                    return proc.read_text().split()[2]
+                except (FileNotFoundError, ProcessLookupError):
+                    return None
+            while state() not in (None, 'Z') and time.monotonic() < end:
                 time.sleep(.01)
-            if proc.exists():
-                self.assertEqual(proc.read_text().split()[2], 'Z')
+            self.assertIn(state(), (None, 'Z'))
 
 
 if __name__ == '__main__':

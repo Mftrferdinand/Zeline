@@ -124,10 +124,14 @@ class SessionRecoveryTests(unittest.TestCase):
         recovery = importlib.import_module('zeline.session_recovery')
         self.persistence.save_recovery(self.identity, self.messages, 'title')
         root = self.persistence.recovery.root
-        self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        if os.name == 'posix':
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        else:
+            self.assertTrue(self.persistence.recovery._directory())
         files = list(root.iterdir())
         self.assertEqual(len(files), 1)
-        self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+        if os.name == 'posix':
+            self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
         self.assertNotIn(self.identity, files[0].name)
         before = files[0].read_bytes()
         with patch.object(recovery.os, 'replace', side_effect=OSError('private')):

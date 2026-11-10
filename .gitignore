@@ -46,6 +46,7 @@ dist/
 .zeline/
 
 # Private operator state and local integration backups
+/.hermes/
 /.cache_head_stats.txt
 *.pre-*
 

@@ -18,7 +18,7 @@ class ResponseReliabilityTests(unittest.TestCase):
             allowed={'PATH','LD_PRELOAD','LD_LIBRARY_PATH','PREFIX','SYSTEMROOT',
                      'WINDIR','PATHEXT','TEMP','TMP','TMPDIR','LANG','LC_ALL','PYTHONUTF8'}
             env={key:value for key,value in os.environ.items() if key in allowed}
-            env.update(HOME=home,ZELINE_HOME=str(Path(home)/'state'),
+            env.update(HOME=home,USERPROFILE=home,ZELINE_HOME=str(Path(home)/'state'),
                        PYTHONPATH=os.pathsep.join((str(ROOT),str(ROOT/'tests'))),PYTHONDONTWRITEBYTECODE='1')
             result=subprocess.run([sys.executable,'-B','-m','unittest',
                                    'reliability_cases.'+name],

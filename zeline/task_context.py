@@ -6,6 +6,7 @@ import html
 import json
 import os
 import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -22,6 +23,22 @@ class TaskContextStore:
     def __init__(self, path=None):
         from zeline import config
         self.path = Path(path) if path is not None else config.DATA_DIR / 'task_context.sqlite3'
+        # Canonicalize OS-provided home/temp aliases (e.g. macOS /var -> /private/var),
+        # while still rejecting redirects inside those trusted roots before mkdir.
+        candidate = self.path.absolute()
+        for anchor in sorted((Path.home().absolute(), Path(tempfile.gettempdir()).absolute()),
+                             key=lambda value: len(value.parts), reverse=True):
+            try:
+                relative = candidate.relative_to(anchor)
+            except ValueError:
+                continue
+            current = candidate
+            while current != anchor:
+                if current.is_symlink():
+                    raise ValueError('Task checkpoint path may not contain symlinks')
+                current = current.parent
+            self.path = anchor.resolve() / relative
+            break
         if any(part.is_symlink() for part in (self.path, *self.path.parents)):
             raise ValueError('Task checkpoint path may not contain symlinks')
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

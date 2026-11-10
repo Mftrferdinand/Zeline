@@ -11,14 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 class PublicSolverPackagingTests(unittest.TestCase):
     def test_manifest_does_not_reintroduce_private_uploads_to_sdist(self):
         from setuptools._distutils.filelist import FileList
-        private = ['zeline/skills/zeline-sat-solvers/assets/supplied/fixture/original.py',
-                   'zeline/skills/zeline-sat-solvers/assets/adapted/probsab.c']
-        public = 'zeline/skills/zeline-sat-solvers/scripts/portfolio.py'
+        private = [str(Path('zeline/skills/zeline-sat-solvers/assets/supplied/fixture/original.py')),
+                   str(Path('zeline/skills/zeline-sat-solvers/assets/adapted/probsab.c'))]
+        public = str(Path('zeline/skills/zeline-sat-solvers/scripts/portfolio.py'))
+        # FileList consumes local filesystem paths, including Windows separators.
         files = FileList()
-        files.set_allfiles(private + [public, 'install.sh', 'install.ps1', 'CHANGELOG.md',
-            '.github/RELEASE_NOTES.md', 'docs/index.md', 'zeline/SOUL.md',
-            'zeline/zenith_tools/example.py', 'zeline/skills/cache.pyc',
-            'zeline/skills/__pycache__/cached.pyc'])
+        files.set_allfiles([str(Path(path)) for path in private + [public,
+            'install.sh', 'install.ps1', 'CHANGELOG.md', '.github/RELEASE_NOTES.md',
+            'docs/index.md', 'zeline/SOUL.md', 'zeline/zenith_tools/example.py',
+            'zeline/skills/cache.pyc', 'zeline/skills/__pycache__/cached.pyc']])
         for line in (ROOT / 'MANIFEST.in').read_text().splitlines():
             if line.strip() and not line.lstrip().startswith('#'):
                 files.process_template_line(line)

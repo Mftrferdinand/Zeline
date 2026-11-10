@@ -15,6 +15,18 @@ p = importlib.import_module('portfolio')
 c = importlib.import_module('solver_common')
 
 
+def python_worker(path):
+    """Launch fixture scripts via Python, preserving the solver command list."""
+    popen = subprocess.Popen
+    def launch(argv, *args, **kwargs):
+        if argv[0] == str(path):
+            argv = [sys.executable, *argv]
+        elif len(argv) > 4 and argv[1] == '-c' and argv[4] == str(path):
+            argv = [*argv[:4], sys.executable, *argv[4:]]
+        return popen(argv, *args, **kwargs)
+    return patch.object(subprocess, 'Popen', side_effect=launch)
+
+
 class ExtendedSolverTests(unittest.TestCase):
     def test_extra_theory_constraints_cannot_be_silently_ignored(self):
         with tempfile.TemporaryDirectory() as d:
@@ -26,7 +38,6 @@ class ExtendedSolverTests(unittest.TestCase):
                         c.load_instance(source)
                     self.assertEqual(p.solve(source, solver='cryptominisat', timeout=1)['status'], 'ERROR')
 
-    @unittest.skipUnless(os.name == 'posix', 'POSIX executable fixture')
     def test_glucose_file_with_only_literals_keeps_stdout_status(self):
         # Explicit fixture for a protocol observed from the real Glucose binary, not a solver benchmark.
         formula = c.Instance(4, [[1], [-1, 2], [3]], [[1], [-1, 2], [3]])
@@ -37,7 +48,7 @@ class ExtendedSolverTests(unittest.TestCase):
                               "Path(sys.argv[2]).write_text('1 2 3 -4 0\\n')\n"
                               "print('s SATISFIABLE')\nraise SystemExit(10)\n")
             worker.chmod(0o700)
-            with patch.dict(os.environ, {'ZELINE_SAT_BIN_DIR': str(root)}):
+            with python_worker(worker):
                 answer = p.run_backend(formula, 'glucose', str(worker), 2)
             self.assertEqual(answer['status'], 'SAT', answer)
             self.assertEqual(answer['assignment'], '1110')
@@ -111,7 +122,8 @@ class ExtendedSolverTests(unittest.TestCase):
                 worker.write_text('#!' + sys.executable + '\nimport sys\nfrom pathlib import Path\n'
                                   + check + 'Path(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
                 worker.chmod(0o700)
-                answer = p.run_backend(formula, name, str(worker), 2)
+                with python_worker(worker):
+                    answer = p.run_backend(formula, name, str(worker), 2)
                 self.assertTrue(marker.exists(), name)
                 self.assertNotIn('assignment', answer)
                 self.assertEqual(answer['status'], 'ERROR')
@@ -149,7 +161,8 @@ class ExtendedSolverTests(unittest.TestCase):
                 'assert text.endswith("(check-sat)\\n")\n'
                 'Path(' + repr(str(marker)) + ').write_text("ok")\nraise SystemExit(1)\n')
             worker.chmod(0o700)
-            answer = p.run_backend(formula, 'bitwuzla', str(worker), 2)
+            with python_worker(worker):
+                answer = p.run_backend(formula, 'bitwuzla', str(worker), 2)
             self.assertTrue(marker.exists(), 'Bitwuzla got the wrong input/CLI protocol')
             self.assertEqual(answer['status'], 'ERROR')
 
@@ -164,7 +177,7 @@ class ExtendedSolverTests(unittest.TestCase):
             with patch.dict(os.environ, {'ZELINE_SAT_BIN_DIR': str(root)}):
                 for key, expected in [('cryptominisat', 'cryptominisat5'),
                                       ('probsat_official', 'probSAT'), ('bitwuzla', 'bitwuzla')]:
-                    self.assertEqual(p.binary(key), str(root / expected))
+                    self.assertEqual(p.binary(key), str((root / expected).resolve()))
                 self.assertFalse(p.inspect()['probsat_official']['complete'])
 
 
