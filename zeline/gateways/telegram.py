@@ -2883,12 +2883,13 @@ def _api_call(api: str, method: str, *, timeout: int = 65, attempts: int | None 
                 try:
                     if stopped():
                         return None
-                    fallback_resp = _HTTP.post(f"{api}/{method}", json=plain,
-                                                timeout=max(.01, deadline-time.monotonic()))
-                    if fallback_resp.ok:
-                        rp = fallback_resp.json()
-                        if isinstance(rp, dict) and rp.get("ok"):
-                            return rp
+                    fallback = _bounded_api_post(f"{api}/{method}", plain,
+                        max(.01, deadline-time.monotonic()), cancelled, deadline)
+                    if fallback is None:
+                        return None
+                    fallback_ok, rp = fallback
+                    if fallback_ok and isinstance(rp, dict) and rp.get("ok") is True:
+                        return rp
                 except (requests.RequestException, ValueError):
                     pass
                 return None

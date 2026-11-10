@@ -24,6 +24,23 @@ class HistoryDetailRecallTests(unittest.TestCase):
         self.store = self.persistence_module.SessionPersistence()
         self.executor = self.tools.ToolExecutor('owner', 'full', Path(self.tmp.name))
 
+    def test_discovery_cache_cannot_shadow_explicit_detail_pages(self):
+        self.store.append_turn('owner', 'assistant', 'Amber ' + 'X' * 400 + 'PAGE_TARGET', 'Amber')
+        for query in ('', 'Amber'):
+            with self.subTest(query=query), self.executor.invocation_context({'_history_recall_cache': {}}):
+                self.executor.run('recall_history', {'query': query})
+                detail = self.executor.run('recall_history',
+                    {'query': query, 'message_id': 1, 'offset': 390, 'limit': 60})
+                self.assertIn('PAGE_TARGET', detail)
+                self.assertNotIn('duplicate lookup', detail)
+                repeated = self.executor.run('recall_history',
+                    {'query': query, 'message_id': 1, 'offset': 390, 'limit': 60})
+                self.assertIn('duplicate lookup', repeated)
+                other_page = self.executor.run('recall_history',
+                    {'query': query, 'message_id': 1, 'offset': 0, 'limit': 12})
+                self.assertNotIn('PAGE_TARGET', other_page)
+                self.assertNotIn('duplicate lookup', other_page)
+
     def test_public_detail_recovers_middle_of_long_unicode_answer(self):
         text = 'Amber: ' + ('雪🧭' * 5000) + ' NEXT_STEP_UNIQUE: run amber_test.py ' + ('é' * 5000)
         self.store.append_turn('owner', 'assistant', text, 'Amber')

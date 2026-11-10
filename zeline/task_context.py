@@ -65,6 +65,13 @@ class TaskContextStore:
         db.execute('INSERT OR REPLACE INTO task_context VALUES(?,?,?)',
                    (owner, record['id'], json.dumps(record, ensure_ascii=False)))
 
+    @staticmethod
+    def _unfinished_count(db, owner):
+        # Stream existing records: terminal history stays addressable without
+        # requiring a schema migration or SQLite's optional JSON1 extension.
+        return sum(json.loads(row[0])['status'] not in {'completed', 'cancelled'}
+                   for row in db.execute('SELECT record FROM task_context WHERE owner=?', (owner,)))
+
     def get(self, identity, task_id):
         with self._connection() as db:
             return self._get(db, self._owner(identity), task_id)
@@ -136,16 +143,18 @@ class TaskContextStore:
                 previous.update(status='paused', updated_at=now)
                 self._save(db, owner, previous)
             if selected is None:
-                count = db.execute('SELECT count(*) FROM task_context WHERE owner=?', (owner,)).fetchone()[0]
-                if count >= self.MAX_TASKS:
+                if self._unfinished_count(db, owner) >= self.MAX_TASKS:
                     raise ValueError('Task capacity reached; complete or dismiss old tasks before starting new work')
-                if count == 0 and db.execute('SELECT count(DISTINCT owner) FROM task_context').fetchone()[0] >= self.MAX_OWNERS:
+                exists = db.execute('SELECT 1 FROM task_context WHERE owner=? LIMIT 1', (owner,)).fetchone()
+                if not exists and db.execute('SELECT count(DISTINCT owner) FROM task_context').fetchone()[0] >= self.MAX_OWNERS:
                     raise ValueError('Task owner capacity reached')
                 selected = dict(id=uuid.uuid4().hex, title=self._text(text.splitlines()[0], 160),
                     request=self._text(text, 16000), status='active', summary='', blocker='',
                     next_step='', artifacts=[], tool_events=[], created_at=now, updated_at=now)
                 reason = 'new'
             else:
+                if selected['status'] in {'completed', 'cancelled'} and self._unfinished_count(db, owner) >= self.MAX_TASKS:
+                    raise ValueError('Task capacity reached; complete or dismiss old tasks before resuming work')
                 selected.update(status='active', updated_at=now)
                 reason = 'resume'
             self._save(db, owner, selected)
@@ -250,6 +259,10 @@ class TaskContextStore:
             record = self._get(db, owner, task_id)
             if record is None:
                 raise ValueError('Task not found for this owner')
+            if (record['status'] in {'completed', 'cancelled'}
+                    and status is not None and status not in {'completed', 'cancelled'}
+                    and self._unfinished_count(db, owner) >= self.MAX_TASKS):
+                raise ValueError('Task capacity reached; complete or dismiss old tasks before resuming work')
             record.update(fields)
             if status is not None:
                 record['status'] = status

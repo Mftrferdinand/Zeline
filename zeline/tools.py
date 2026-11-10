@@ -3017,7 +3017,7 @@ class ToolExecutor:
         # Dedupe BEFORE touching the store: a repeated lookup within one turn
         # must not re-open SQLite at all.
         continuation = (not q) or _is_continuation_query(q) or not tokens
-        if cache is not None and cache_key in cache:
+        if message_id is None and cache is not None and cache_key in cache:
             return cache[cache_key] + "\n(duplicate lookup already answered this turn)"
 
         def _remember(text_out: str) -> str:
