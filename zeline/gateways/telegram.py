@@ -1570,7 +1570,7 @@ def _provider_label() -> str:
     return name or (urlparse(config.BASE_URL).hostname or "unknown")
 
 
-def _fetch_model_capabilities(provider: dict[str, str] | None, model_id: str) -> dict[str, Any]:
+def _fetch_model_capabilities(provider: dict[str, str] | None, model_id: str, *, cached_only: bool = False) -> dict[str, Any]:
     """Return the raw capabilities/metadata dict for one model id, or {}.
 
     Reads from the SHARED /models catalog cache (`_fetch_models_catalog`), which
@@ -1580,7 +1580,12 @@ def _fetch_model_capabilities(provider: dict[str, str] | None, model_id: str) ->
     """
     base = (provider or {}).get("base_url") if provider else config.BASE_URL
     key = (provider or {}).get("api_key") if provider else config.API_KEY
-    _, meta = _fetch_models_catalog(str(base or ""), str(key or ""))
+    if cached_only:
+        # Polling-thread cards never discover metadata or perform network I/O.
+        cached = _MODEL_META_CACHE.get(str(base or "").rstrip("/"))
+        meta = cached[1] if cached and time.monotonic() - cached[0] < _MODELS_CACHE_TTL else {}
+    else:
+        _, meta = _fetch_models_catalog(str(base or ""), str(key or ""))
     entry = meta.get(model_id)
     return entry if isinstance(entry, dict) else {}
 
@@ -1635,7 +1640,7 @@ def _new_session_text() -> str:
         f"◆ Model: {_one_line(config.MODEL)}",
         f"◆ Provider: {_one_line(_provider_label())}",
     ]
-    meta = _fetch_model_capabilities(None, config.MODEL)
+    meta = _fetch_model_capabilities(None, config.MODEL, cached_only=True)
     meta = meta if isinstance(meta, dict) else {}
     caps = meta.get("capabilities")
     caps = caps if isinstance(caps, dict) else {}
