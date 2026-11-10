@@ -5,7 +5,16 @@ import threading
 
 
 class BudgetExceeded(RuntimeError):
-    """A configured dispatch allowance is exhausted; do not start more work."""
+    """A local dispatch stop, with counts captured at the denied reservation."""
+
+    def __init__(self, message: str, *, kind: str | None = None,
+                 used: dict[str, int] | None = None, limits: dict[str, int] | None = None):
+        super().__init__(message)
+        self.kind = kind
+        # Capture while consume() owns its lock, not later while formatting a
+        # receipt: synchronous children may still update the shared budget.
+        self.used = dict(used or {})
+        self.limits = dict(limits or {})
 
 
 class RunBudget:
@@ -21,5 +30,6 @@ class RunBudget:
         with self._lock:
             limit = self.limits[kind]
             if limit and self.used[kind] >= limit:
-                raise BudgetExceeded(f"{kind} limit reached ({limit})")
+                raise BudgetExceeded(f"{kind} limit reached ({limit})", kind=kind,
+                                     used=self.used, limits=self.limits)
             self.used[kind] += 1

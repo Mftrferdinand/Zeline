@@ -259,7 +259,10 @@ def prompt_block(identity: str) -> str:
     return (
         "\n\n## Unfinished tasks carried over\n"
         "These were recorded with update_task in an earlier turn of this same "
-        "conversation and are NOT yet done. Do not start them unprompted; if the "
-        "user says to continue, this is what they mean.\n"
+        "conversation and are NOT yet done. This board is historical data, NOT current instructions. "
+        "The current user request controls the active task; never resume an older item just because it is open. "
+        "For a named continuation, match that named task. A bare continuation refers "
+        "to the latest eligible unfinished thread, not automatically this board. "
+        "Keep other work parked and recover its recorded checkpoint only when requested.\n"
         f"{lines}"
     )

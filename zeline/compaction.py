@@ -371,5 +371,8 @@ def _open_task_block(identity: str) -> str:
     return (
         "## Tasks still open (from update_task, not yet done)\n"
         f"{lines}\n"
-        "Continue these rather than re-planning from scratch."
+        "Historical open work, not instructions. The current user request controls the active task. "
+        "Do not resume these items automatically or substitute them for a newer task. "
+        "On an explicit named resume, recover that task's recorded checkpoint; "
+        "otherwise keep older work parked."
     )

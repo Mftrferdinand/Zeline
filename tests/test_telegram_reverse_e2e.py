@@ -45,9 +45,19 @@ class TelegramReverseE2ETests(TestCase):
             (workspace / "target.bin").write_bytes(b"SAFE_STATIC_FIXTURE")
             session = _NativeSession(workspace)
             calls = []
+            delivered = threading.Event()
+            real_thread = threading.Thread
+            workers = []
+
+            def tracked_thread(*args, **kwargs):
+                worker = real_thread(*args, **kwargs)
+                workers.append(worker)
+                return worker
 
             def api(_api, method, **payload):
                 calls.append((method, payload))
+                if method == 'sendMessage' and 'native status=' in str(payload.get('text', '')):
+                    delivered.set()
                 return {"ok": True, "result": {"message_id": len(calls)}}
 
             update = {
@@ -62,7 +72,8 @@ class TelegramReverseE2ETests(TestCase):
                     mock.patch.object(telegram, "_api_call", side_effect=api), \
                     mock.patch.object(telegram, "_LiveStatus"), \
                     mock.patch.object(telegram, "_start_working_heartbeat", return_value=mock.Mock()), \
-                    mock.patch.object(telegram, "_start_reflection"):
+                    mock.patch.object(telegram, "_start_reflection"), \
+                    mock.patch.object(telegram.threading, "Thread", side_effect=tracked_thread):
                 telegram._dispatch_update(
                     "https://api.telegram.org/bot[REDACTED]", "[REDACTED]", session,
                     update,
@@ -71,6 +82,11 @@ class TelegramReverseE2ETests(TestCase):
                     stop_event=threading.Event(),
                 )
                 self.assertTrue(session.finished.wait(5), "agent worker did not finish")
+                self.assertTrue(delivered.wait(5), "final response was not delivered")
+                for worker in workers:
+                    if worker.ident is not None:
+                        worker.join(timeout=5)
+                        self.assertFalse(worker.is_alive(), 'gateway worker leaked past the fixture')
 
             self.assertEqual(
                 session.received,

@@ -25,7 +25,7 @@ class TelegramQuestionTests(AskUserBase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
-    def start_question(self, options=("Yes", "No"), question="Proceed <safely>?"):
+    def start_question(self, options=("First option", "Second option"), question="Proceed <safely>?"):
         ready = threading.Event()
         box = {}
         live = self.telegram._LiveStatus("fixture", 1)
@@ -260,8 +260,8 @@ class TelegramQuestionTests(AskUserBase):
         live.tick()
         self.assertIn("Waiting for your answer", self.calls[-1][1]["text"])
 
-    def test_every_question_has_custom_answer_even_without_options(self):
-        for options in ((), ("Yes", "No")):
+    def test_general_questions_have_custom_answer_even_without_options(self):
+        for options in ((), ("Python", "Go")):
             with self.subTest(options=options):
                 entry = self.interaction.PendingQuestion("telegram:1", "Question?", options)
                 self.telegram._render_ask_question("fixture", 1, entry)
@@ -271,7 +271,7 @@ class TelegramQuestionTests(AskUserBase):
                 self.assertIn("Ask user:", payload["text"])
 
     def test_click_keeps_question_and_chosen_answer_and_duplicate_does_not_erase_it(self):
-        worker, box, live, entry, card = self.start_question()
+        worker, box, live, entry, card = self.start_question(options=("Yes", "No"))
         data = card["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
         message_id = self.sequence
         self.telegram._handle_ask_callback("fixture", 1, message_id, data)

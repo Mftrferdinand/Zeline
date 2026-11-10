@@ -11,10 +11,11 @@ import logging
 import threading
 import time
 import uuid
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
 from zeline import config
 from zeline import tasks
@@ -22,6 +23,7 @@ from zeline import tools
 from zeline.agent import Zeline, ZelineError
 from zeline import interaction
 from zeline.session_store import SessionPersistence
+from zeline.session_recovery import failure_category
 
 
 @dataclass(eq=False)
@@ -38,12 +40,22 @@ class TurnTicket:
     maximum: int = 0
     finished: threading.Event = field(default_factory=threading.Event)
     previous_progress: dict[str, object] | None = None
+    task_id: str | None = None
 
     def cancel(self, reason: str = "stop") -> None:
         # A hard stop always overrides a prior soft redirect.
         if not self.reason or reason == "stop":
             self.reason = reason
         self.cancel_event.set()
+
+
+@dataclass
+class PendingAdmission:
+    """A cold reservation can be cancelled before its history reaches RAM."""
+    ready: threading.Event = field(default_factory=threading.Event)
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    ticket: TurnTicket | None = None
+    error: Exception | None = None
 
 
 @dataclass
@@ -70,6 +82,12 @@ class SessionStore:
         self.max_sessions = max(1, max_sessions or config.MAX_SESSIONS)
         self._sessions: OrderedDict[str, Session] = OrderedDict()
         self._lock = threading.RLock()
+        # Serialize one identity's cold load/admission without holding the
+        # manager lock over filesystem, SQLite or agent initialization work.
+        self._identity_locks = weakref.WeakValueDictionary()
+        self._loading: dict[str, threading.Event] = {}
+        self._resetting: dict[str, threading.Event] = {}
+        self._admissions: dict[str, list[PendingAdmission]] = {}
         # Drain gate: saat di-pause, turn BARU ditolak halus sementara turn yang
         # sedang jalan dibiarkan selesai. Dipakai restart tanpa memotong kerja.
         self._paused = threading.Event()
@@ -101,6 +119,14 @@ class SessionStore:
                 return
             self._sessions.pop(victim)
 
+    def _identity_lock(self, identity: str):
+        with self._lock:
+            lock = self._identity_locks.get(identity)
+            if lock is None:
+                lock = threading.RLock()
+                self._identity_locks[identity] = lock
+            return lock
+
     def get_or_create(
         self,
         identity: str,
@@ -108,69 +134,143 @@ class SessionStore:
         workspace: str | None = None,
         system_extra: str = "",
     ) -> Session:
-        with self._lock:
-            session = self._sessions.get(identity)
-            if session is None:
-                self._evict_if_needed()
+        with self._identity_lock(identity):
+            with self._lock:
+                session = self._sessions.get(identity)
+                if session is not None:
+                    self._sessions.move_to_end(identity)
+                    session.last_used = time.monotonic()
+                    return session
+            with self._lock:
+                if identity in self._resetting:
+                    raise ZelineError("This conversation is resetting; send the message again after it finishes.")
+                load_cancelled = threading.Event()
+                self._loading[identity] = load_cancelled
+            try:
                 agent = Zeline(
                     identity=identity,
                     tool_profile=tool_profile,
                     workspace=workspace,
                     system_extra=system_extra,
+                    core_memory_in_prompt=True,
                 )
                 title = "New Session"
                 # Pulihkan history dari disk supaya restart gateway tidak
                 # menghapus konteks percakapan sebelumnya.
                 if self._persistence is not None:
                     try:
-                        stored, stored_title = self._persistence.load(identity)
+                        from zeline import cancellation
+                        restore_deadline = time.monotonic() + 15.0
+                        stored, stored_title = cancellation.wait_io(
+                            lambda: self._persistence.load(identity),
+                            lambda: load_cancelled.is_set() or time.monotonic() >= restore_deadline)
                         if stored:
                             agent.load_history(stored)
                         if stored_title:
                             title = stored_title
                     except Exception as exc:
+                        # Never publish an empty session after a failed restore:
+                        # its next checkpoint could overwrite recoverable history.
+                        # Persistence.load already tries its bounded recovery snapshot.
                         logging.getLogger(__name__).warning(
-                            "Session restore failed (%s)", type(exc).__name__)
-                        raise ZelineError("Saved conversation could not be restored; "
-                                          "existing state has been preserved.") from None
+                            "Session restore failed (%s); existing history preserved",
+                            failure_category(exc))
+                        raise ZelineError(
+                            "Conversation history could not be restored; existing state "
+                            "has been preserved. Retry after storage recovers; no work "
+                            "was started.") from None
                 session = Session(
                     agent=agent,
                     lock=threading.Lock(),
                     last_used=time.monotonic(),
                     title=title,
                 )
-                self._sessions[identity] = session
-            else:
-                self._sessions.move_to_end(identity)
-                session.last_used = time.monotonic()
-            return session
+                if (self._persistence is not None
+                        and self._persistence.recovery_present(identity)):
+                    session.persistence_error = "recovery_snapshot_loaded; SQLite commit not verified"
+                with self._lock:
+                    if load_cancelled.is_set() or identity in self._resetting:
+                        raise ZelineError("Conversation loading was cancelled; no work was started.")
+                    self._evict_if_needed()
+                    self._sessions[identity] = session
+                return session
+            finally:
+                with self._lock:
+                    if self._loading.get(identity) is load_cancelled:
+                        self._loading.pop(identity, None)
 
     def admit(
         self, identity: str, tool_profile: str, workspace: str | None = None,
         system_extra: str = "", *, interrupt: bool = False,
     ) -> TurnTicket | None:
         """Atomically reserve FIFO order BEFORE starting a gateway worker."""
-        with self._lock:
+        with self._identity_lock(identity):
             if self._paused.is_set():
                 return None
             session = self.get_or_create(identity, tool_profile, workspace, system_extra)
-            previous = self._progress_locked(session)
-            ticket = TurnTicket(identity, session, previous_progress=previous)
-            if interrupt:
-                current = session.active_turn
-                if current is None and session.pending_turns:
-                    current = session.pending_turns[0]
-                if current is not None and not current.cancel_event.is_set():
-                    current.cancel("interrupt")
-                    session.cancel_event = current.cancel_event
-                    # Wake a question waiter. Foreground redirection is handled
-                    # by the executor using the ticket's immutable predicate.
-                    interaction.cancel(identity)
-                    session.agent.force_cancel()
-            session.pending_turns.append(ticket)
-            session.running = True  # Includes admitted-but-not-yet-started work.
-            session.wake.set()
-            return ticket
+            with self._lock:
+                if self._paused.is_set() or self._sessions.get(identity) is not session:
+                    return None
+                return self._admit_session_locked(identity, session, interrupt)
+
+    def _admit_session_locked(self, identity, session, interrupt):
+        previous = self._progress_locked(session)
+        ticket = TurnTicket(identity, session, previous_progress=previous)
+        if interrupt:
+            current = session.active_turn
+            if current is None and session.pending_turns:
+                current = session.pending_turns[0]
+            if current is not None and not current.cancel_event.is_set():
+                current.cancel("interrupt")
+                session.cancel_event = current.cancel_event
+                # Wake a question waiter. Foreground redirection is handled
+                # by the executor using the ticket's immutable predicate.
+                interaction.cancel(identity)
+                session.agent.force_cancel()
+        session.pending_turns.append(ticket)
+        session.running = True  # Includes admitted-but-not-yet-started work.
+        session.wake.set()
+        return ticket
+
+    def begin_admission(self, identity: str, tool_profile: str, *, interrupt: bool = False):
+        """Reserve cold intake order promptly; restore history off the poll loop."""
+        with self._lock:
+            if self._paused.is_set():
+                return None
+            pending = self._admissions.get(identity)
+            session = self._sessions.get(identity)
+            if session is not None and not pending:
+                return self._admit_session_locked(identity, session, interrupt)
+            reservation = PendingAdmission()
+            previous = pending[-1] if pending else None
+            self._admissions.setdefault(identity, []).append(reservation)
+
+        def restore():
+            try:
+                if previous is not None:
+                    while not previous.ready.wait(.05):
+                        if reservation.cancel_event.is_set():
+                            return
+                if reservation.cancel_event.is_set():
+                    return
+                ticket = self.admit(identity, tool_profile, interrupt=interrupt)
+                with self._lock:
+                    reservation.ticket = ticket
+                    if ticket is not None and reservation.cancel_event.is_set():
+                        self.release(ticket)
+            except Exception as exc:
+                reservation.error = exc
+            finally:
+                with self._lock:
+                    pending = self._admissions.get(identity, [])
+                    if reservation in pending:
+                        pending.remove(reservation)
+                    if not pending:
+                        self._admissions.pop(identity, None)
+                    reservation.ready.set()
+
+        threading.Thread(target=restore, daemon=True, name="zeline-history-restore").start()
+        return reservation
 
     def release(self, ticket: TurnTicket) -> None:
         """Drop an unused reservation if its transport worker failed to start."""
@@ -236,6 +336,7 @@ class SessionStore:
         on_tool: Callable | None = None, on_tool_result: Callable | None = None,
         on_iteration: Callable | None = None, on_narration: Callable | None = None,
         on_stream_delta: Callable | None = None, *, ticket: TurnTicket | None = None,
+        task_reference: dict[str, Any] | None = None,
     ) -> str:
         own_ticket = ticket is None
         if ticket is None:
@@ -264,7 +365,7 @@ class SessionStore:
                         pending = [*session.agent.export_history(), {"role": "user", "content": text}]
                         self._persistence.save_checkpoint(identity, pending, session.title)
                     except Exception as exc:
-                        session.persistence_error = f"checkpoint failed ({type(exc).__name__})"
+                        session.persistence_error = f"checkpoint failed ({failure_category(exc)})"
                         logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
                         raise ZelineError("Progress could not be saved; no work was started.") from None
 
@@ -279,12 +380,13 @@ class SessionStore:
                         on_iteration(current, maximum)
 
                 def checkpoint(messages):
+                    ticket.task_id = getattr(session.agent, "last_task_id", None)
                     if self._persistence is None:
                         return
                     try:
                         self._persistence.save_checkpoint(identity, messages, session.title)
                     except Exception as exc:
-                        session.persistence_error = f"checkpoint failed ({type(exc).__name__})"
+                        session.persistence_error = f"checkpoint failed ({failure_category(exc)})"
                         logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
                         raise ZelineError("Progress could not be saved; no further tools were started. "
                                           "Verify the last action before retrying.") from None
@@ -295,6 +397,7 @@ class SessionStore:
                     interrupt_reason=lambda: ticket.reason,
                     take_steer=take_steer, on_narration=on_narration,
                     on_stream_delta=on_stream_delta, on_checkpoint=checkpoint,
+                    **({"task_reference": task_reference} if task_reference else {}),
                 )
                 if ticket.cancel_event.is_set():
                     reply = "Stopped."
@@ -306,17 +409,35 @@ class SessionStore:
                         session.persistence_error = ""
                     except Exception as exc:
                         # Do not expose exception text, paths, identities or message content.
-                        session.persistence_error = f"save_turn failed ({type(exc).__name__})"
+                        session.persistence_error = f"save_turn failed ({failure_category(exc)})"
+                        try:
+                            self._persistence.save_recovery(
+                                identity, session.agent.export_history(), session.title)
+                            recovery_note = "Snapshot pemulihan lokal tersimpan; commit SQLite tetap gagal."
+                        except Exception as recovery_exc:
+                            session.persistence_error += f"; recovery failed ({failure_category(recovery_exc)})"
+                            recovery_note = "Pemulihan lokal juga gagal; simpan jawaban penting sebelum restart."
                         logging.getLogger(__name__).warning("Session persistence: %s", session.persistence_error)
                         if not ticket.cancel_event.is_set():
                             reply += ("\n\n⚠️ Riwayat percakapan ini gagal disimpan. "
-                                      "Hasil tugas tidak dibatalkan; simpan jawaban penting sebelum restart.")
+                                      "Hasil tugas tidak dibatalkan. " + recovery_note)
                 return reply
         finally:
             # Gateway reservations span result delivery too, so the next turn
             # cannot steal channels or deliver before the prior final is sent.
             if own_ticket:
                 self.finish_turn(ticket)
+
+    def bind_task_message(self, identity: str, message_id: int, task_id: str | None = None) -> bool:
+        with self._lock:
+            session = self._sessions.get(identity)
+            if task_id is None and session is not None:
+                task_id = getattr(session.agent, 'last_task_id', None)
+        if not isinstance(task_id, str) or not task_id:
+            return False
+        from zeline.task_context import TaskContextStore
+        TaskContextStore().bind_message(identity, task_id, message_id)
+        return True
 
     def request_stop(self, identity: str) -> bool:
         """Cancel immediately for interactive gateways; reap owned processes off-loop.
@@ -336,8 +457,16 @@ class SessionStore:
 
     def stop(self, identity: str, *, _defer_cleanup: bool = False) -> bool:
         with self._lock:
+            loading = self._loading.get(identity)
+            pending = self._admissions.get(identity, [])
+            had_loading = (loading is not None and not loading.is_set()) or any(
+                not item.cancel_event.is_set() for item in pending)
+            for item in pending:
+                item.cancel_event.set()
+            if loading is not None:
+                loading.set()
             session = self._sessions.get(identity)
-            had_work = bool(session is not None and session.running)
+            had_work = had_loading or bool(session is not None and session.running)
             if session is not None:
                 session.cancelling = True
                 session.stop_cleanups += 1
@@ -442,6 +571,13 @@ class SessionStore:
 
     def reset(self, identity: str) -> bool:
         with self._lock:
+            reset_token = threading.Event()
+            self._resetting[identity] = reset_token
+            for pending in self._admissions.get(identity, []):
+                pending.cancel_event.set()
+            loading = self._loading.get(identity)
+            if loading is not None:
+                loading.set()
             session = self._sessions.pop(identity, None)
             if session is not None:
                 if session.active_turn is not None:
@@ -457,33 +593,40 @@ class SessionStore:
                         agent.force_cancel()
                     except Exception:
                         pass
-        # /new juga harus melepaskan pertanyaan yang menggantung.
         try:
-            interaction.cancel(identity)
-        except Exception:
-            pass
-        # Sama seperti /stop: proses foreground milik sesi ini harus benar-benar
-        # dibunuh, bukan dibiarkan hidup setelah sesinya dibuang.
-        try:
-            tools.cancel_identity(identity)
-        except Exception:
-            pass
-        # /new atau /reset harus menghapus history disk juga, bukan cuma RAM.
-        cleared_disk = False
-        if self._persistence is not None:
+            # /new juga harus melepaskan pertanyaan yang menggantung.
             try:
-                cleared_disk = self._persistence.reset(identity)
+                interaction.cancel(identity)
             except Exception:
-                cleared_disk = False
-        # Papan tugas ikut dikosongkan: sesi baru yang membawa task lama adalah
-        # polusi yang sama seperti memory yang tidak pernah lupa. Task yang belum
-        # selesai diarsipkan lebih dulu ke tasks/cleared.md, jadi hilang dari
-        # konteks tapi tidak hilang dari disk.
-        try:
-            tasks.clear(identity)
-        except Exception:
-            pass
-        return session is not None or cleared_disk
+                pass
+            # Sama seperti /stop: proses foreground milik sesi ini harus benar-benar
+            # dibunuh, bukan dibiarkan hidup setelah sesinya dibuang.
+            try:
+                tools.cancel_identity(identity)
+            except Exception:
+                pass
+            # /new atau /reset harus menghapus history disk juga, bukan cuma RAM.
+            cleared_disk = False
+            if self._persistence is not None:
+                try:
+                    cleared_disk = self._persistence.reset(identity)
+                except Exception:
+                    cleared_disk = False
+            # Papan tugas ikut dikosongkan: sesi baru yang membawa task lama adalah
+            # polusi yang sama seperti memory yang tidak pernah lupa. Task yang belum
+            # selesai diarsipkan lebih dulu ke tasks/cleared.md, jadi hilang dari
+            # konteks tapi tidak hilang dari disk.
+            try:
+                tasks.clear(identity)
+            except Exception:
+                pass
+            from zeline.task_context import TaskContextStore
+            TaskContextStore().clear(identity)
+            return session is not None or cleared_disk
+        finally:
+            with self._lock:
+                if self._resetting.get(identity) is reset_token:
+                    self._resetting.pop(identity, None)
 
     def switch_provider(self, identity: str) -> None:
         """Ganti model/provider aktif untuk sesi ini TANPA menghapus history.
@@ -525,7 +668,11 @@ class SessionStore:
     def running_identities(self) -> list[str]:
         """Identitas sesi yang turn-nya sedang berjalan saat ini."""
         with self._lock:
-            return [key for key, session in self._sessions.items() if session.running]
+            identities = {key for key, session in self._sessions.items() if session.running}
+            identities.update(key for key, pending in self._admissions.items()
+                              if any(not item.cancel_event.is_set() for item in pending))
+            identities.update(key for key, cancelled in self._loading.items() if not cancelled.is_set())
+            return sorted(identities)
 
     def drain(self, timeout: float = 30.0, poll: float = 0.25) -> tuple[bool, list[str]]:
         """Pause lalu tunggu setiap turn aktif selesai.

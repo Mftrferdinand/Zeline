@@ -46,6 +46,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "hash_check": {"path": "app.zip"},
             "undo_file": {"action": "list"},
             "update_task": {"task": "Test UI", "status": "in_progress"},
+            "task_checkpoint": {"next_step": "Run verification"},
             "watch_task": {"action": "list"},
             "manage_skill": {"action": "list"},
             "resolve_lesson": {"tool": "read_file"},
@@ -55,6 +56,9 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "delegate_task": {"goal": "review UI"},
             "recall_history": {},
             "ask_user": {"question": "Continue?"},
+            "hash_check": {"path": "app.zip"},
+            "reverse_engineer": {"action": "inspect", "path": "bin/tool"},
+            "watch_task": {"action": "list"},
         }
         registry = {definition.name for definition in self.tools.TOOL_DEFS}
         self.assertEqual(registry, set(examples), "update UI examples with any new registry tool")
@@ -76,7 +80,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             ("remove_memory", {"substring": "stale"}, "🌀 Removing memory…"),
             ("search_files", {"query": "handler"}, "🔎 Searching workspace: handler"),
             ("undo_file", {"action": "list"}, "⏱️ Reviewing file checkpoints…"),
-            ("run_shell", {"command": "pytest -q"}, "💻 Executing command… <pre>pytest -q</pre>"),
+            ("run_shell", {"command": "pytest -q"}, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">pytest -q</code></pre>"),
             ("process_control", {"action": "poll", "job_id": "job-1"}, "🛄 Checking process status <code>job-1</code>…"),
             ("system_env", {}, "🖥️ Inspecting system environment…"),
             ("git", {"action": "branch"}, "🗳️ Listing repository branches…"),
@@ -94,6 +98,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             ("watch_task", {"action": "stop", "task": "Track reward"}, "🛑 Stopping task follow-up: Track reward"),
             ("runtime_info", {}, "🪪 Checking agent runtime…"),
             ("ask_user", {"question": "Continue?"}, "🙋 Requesting your input: Continue?"),
+            ("task_checkpoint", {"next_step": "Run verification"}, "📌 Saving task checkpoint…"),
         )
         for name, arguments, expected in cases:
             with self.subTest(name=name, arguments=arguments):

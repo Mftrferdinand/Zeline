@@ -50,6 +50,10 @@ class SecurityHygieneTests(unittest.TestCase):
                 # makes the whole suite unrunnable mid-change instead of reporting
                 # the branding problem this test exists to catch.
                 continue
+            # Ignore rules protect external private tool state; they are not runtime branding.
+            if relative == '.gitignore':
+                folded = '\n'.join(line for line in folded.splitlines()
+                                   if line.strip() != '/.' + terms[0] + '/')
             hits = [term for term in terms if term in folded]
             if hits:
                 offenders.append(f"{relative}: {','.join(hits)}")

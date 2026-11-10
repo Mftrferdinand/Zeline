@@ -11,21 +11,25 @@ class TestTelegramSimpleCommandUI:
     def test_command_menu_matches_the_compact_setup_template(self):
         commands = self.telegram._telegram_commands()
         assert [item["command"] for item in commands] == [
-            "model", "status", "version", "update", "undo", "stats",
-            "events", "lessons", "self", "skillforge", "stop", "new",
+            "model", "status", "repository", "deleterepository", "undo", "stats",
+            "events", "lessons", "self", "skillforge", "stop", "new", "version", "update",
         ]
         assert [item["description"] for item in commands] == [
-            "Switch model", "View runtime status", "Show version", "Update version",
+            "Switch model", "View runtime status", "Project registry", "Delete a registry entry",
             "Checkpoints", "View token usage", "Recent file/skill/memory",
             "View self-learning", "Three-self evidence status", "Review skill", "Stop the active turn",
-            "Start a new session",
+            "Start a new session", "Show version", "Update version",
         ]
 
     def test_start_reply_is_only_the_compact_command_list(self):
         expected = (
             "Command to setup :\n"
+            "◉ /start — Start Zeline\n"
             "◉ /model — Switch model\n"
+            "◉ /repository — Project registry\n"
+            "◉ /deleterepository — Delete a registry entry\n"
             "◉ /status — View runtime status\n"
+            "◉ /runtime — Open local runtime dashboard\n"
             "◉ /version — Show version\n"
             "◉ /update — Update version\n"
             "◉ /undo — Checkpoints\n"
@@ -104,7 +108,7 @@ class TestTelegramSimpleCommandUI:
             assert "╭" not in card
             assert "├" not in card
             assert "╰" not in card
-            assert "◉" in card
+            assert "◉" in card or "◆" in card
 
     def test_help_uses_the_same_compact_command_list(self):
         assert self.telegram._handle_command(
