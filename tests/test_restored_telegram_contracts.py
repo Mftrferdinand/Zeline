@@ -53,10 +53,18 @@ class RestoredLifecycleContracts(unittest.TestCase):
         sessions = mock.Mock()
         sessions.send.return_value = "Final fixture answer"
         sessions.reflect.return_value = "📘 <b>Self-Improvement:</b> verified revision."
-        with mock.patch.object(self.telegram, "_api_call", return_value={"ok": True}) as api, \
+        real_thread = threading.Thread
+
+        def thread(*args, **kwargs):
+            # Only reflection is synchronous; delivery owns a real queue worker.
+            if kwargs.get('name', '').startswith('zeline-reflect-'):
+                return mock.Mock(start=kwargs['target'])
+            return real_thread(*args, **kwargs)
+
+        with mock.patch.object(self.telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 77}}) as api, \
              mock.patch.object(self.telegram, "_LiveStatus"), \
              mock.patch.object(self.telegram, "_start_working_heartbeat", return_value=mock.Mock()), \
-             mock.patch.object(self.telegram.threading, "Thread", side_effect=lambda **kw: mock.Mock(start=kw["target"])):
+             mock.patch.object(self.telegram.threading, "Thread", side_effect=thread):
             self.telegram._send_agent_reply("fixture", sessions, chat_id=1, identity="telegram:fixture",
                 text="Fixture", tool_profile="safe", reply_to_message_id=42)
         messages = [c.kwargs for c in api.call_args_list if c.args[1] == "sendMessage"]
