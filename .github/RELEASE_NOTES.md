@@ -25,7 +25,8 @@ matching version contracts; release artifacts receive separate build,
 metadata, checksum and installation verification.
 
 The tag-triggered workflow verifies merged-main ancestry, tag/package version,
-archive metadata and bundled-file parity. Publication status is reported by the
+archive metadata and bundled-file parity. PyPI uses Trusted Publishing (OIDC),
+not a long-lived API token in the repository. Publication status is reported by the
 release workflow; these notes do not imply PyPI publication before it completes.
 
 ## Install or upgrade
