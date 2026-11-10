@@ -1,5 +1,6 @@
 """Offline candidate-only SQLite read/write isolation contracts."""
 import atexit
+from contextlib import closing
 import os
 from pathlib import Path
 import socket
@@ -13,6 +14,7 @@ from unittest import mock
 _HOME = tempfile.TemporaryDirectory(prefix='zeline-memory-lock-')
 atexit.register(_HOME.cleanup)
 os.environ['HOME'] = _HOME.name
+os.environ['USERPROFILE'] = _HOME.name
 os.environ['ZELINE_HOME'] = str(Path(_HOME.name) / '.zeline')
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -40,7 +42,7 @@ class MemoryReadLockTests(unittest.TestCase):
 
     def test_automatic_retrieval_is_bounded_best_effort_under_contention(self):
         record = self.populate()
-        with sqlite3.connect(self.store.db_path) as held:
+        with closing(sqlite3.connect(self.store.db_path)) as held, held:
             held.execute('BEGIN IMMEDIATE')
             start = time.monotonic()
             with mock.patch.object(memory.sqlite3, 'connect', wraps=sqlite3.connect) as connect:
@@ -48,13 +50,15 @@ class MemoryReadLockTests(unittest.TestCase):
             self.assertEqual(connect.call_args.kwargs['timeout'], 0,
                              'Best-effort telemetry must never wait for the writer')
             self.assertLess(time.monotonic() - start, 0.6)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            held.execute('SELECT 1')
         self.assertEqual(self.store.retrievals('busy-turn'), [])
         self.store.record_retrieval('free-turn', [record])
         self.assertEqual(self.store.retrievals('free-turn')[0]['record_id'], record['id'])
 
     def test_committed_records_and_recall_ignore_writer_reservation(self):
         record = self.populate()
-        with sqlite3.connect(self.store.db_path) as held:
+        with closing(sqlite3.connect(self.store.db_path)) as held, held:
             held.execute('BEGIN IMMEDIATE')
             held.execute('DELETE FROM memory_items WHERE owner=?', (self.store.key,))
             start = time.monotonic()

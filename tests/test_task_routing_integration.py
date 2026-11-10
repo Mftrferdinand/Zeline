@@ -382,7 +382,14 @@ class TaskRoutingIntegrationTests(unittest.TestCase):
 
 
     def test_narration_progress_and_final_messages_all_resume_producing_task(self):
+        self._assert_all_task_outputs_are_mapped(coalesce=True)
+
+    def test_live_narration_progress_and_final_messages_all_resume_producing_task(self):
+        self._assert_all_task_outputs_are_mapped(coalesce=False)
+
+    def _assert_all_task_outputs_are_mapped(self, *, coalesce):
         import json
+        from zeline.telegram_delivery import TurnTransport
         from pathlib import Path
         module = importlib.import_module('zeline.agent')
         module.config.STREAM_RESPONSES = False
@@ -396,18 +403,51 @@ class TaskRoutingIntegrationTests(unittest.TestCase):
             'function': {'name': 'read_file', 'arguments': json.dumps({'path': 'amber.py'})}}]}),
                    response({'content': 'Amber answer.'})]
         delivered = []
+        progress_mapped = threading.Event()
+        final_queued = threading.Event()
+        bind = sessions.bind_task_message
+
+        def bind_message(identity, message_id, **kwargs):
+            result = bind(identity, message_id, **kwargs)
+            if any(mid == message_id and 'Reading file' in text for mid, text in delivered):
+                progress_mapped.set()
+            return result
+
+        class GatedTransport(TurnTransport):
+            def submit(inner, action, *, key=None, final=False):
+                result = super().submit(action, key=key, final=final)
+                if final:
+                    final_queued.set()
+                return result
+
         def api_call(api, method, **kwargs):
+            if method == 'sendChatAction' and coalesce:
+                self.assertTrue(final_queued.wait(5), 'Final was not queued')
             if method == 'sendMessage':
                 message_id = 900 + len(delivered)
                 delivered.append((message_id, kwargs.get('text')))
-                return {'result': {'message_id': message_id}}
+                return {'ok': True, 'result': {'message_id': message_id}}
             return {'ok': True}
-        with patch.object(module.requests, 'post', side_effect=replies), \
+
+        def provider_reply(*args, **kwargs):
+            if len(replies) == 1 and not coalesce:
+                # Observing sendMessage is too early: wait for the actual DB
+                # association, not the transport's preceding network callback.
+                self.assertTrue(progress_mapped.wait(5), 'Live progress was not mapped')
+            return replies.pop(0)
+
+        with patch.object(module.requests, 'post', side_effect=provider_reply), \
+                patch.object(sessions, 'bind_task_message', side_effect=bind_message), \
+                patch('zeline.telegram_delivery.TurnTransport', GatedTransport), \
                 patch.object(self.telegram, '_api_call', side_effect=api_call), \
                 patch.object(self.telegram, '_start_working_heartbeat', return_value=Mock()), \
                 patch.object(self.telegram, '_start_reflection'):
-            self.telegram._send_agent_reply('fixture-api', sessions, chat_id=7, identity='telegram:7',
+            acknowledged = self.telegram._send_agent_reply('fixture-api', sessions, chat_id=7, identity='telegram:7',
                 text='Inspect Amber', tool_profile='full', task_reference={'message_id': 100})
+        self.assertTrue(acknowledged, 'Final delivery was not acknowledged')
+        self.assertTrue(any('Amber working.' in text for _, text in delivered))
+        self.assertTrue(any('Reading file' in text for _, text in delivered))
+        self.assertTrue(any('Amber answer.' in text for _, text in delivered))
         store = importlib.import_module('zeline.task_context').TaskContextStore()
         task = store.focus('telegram:7')
         self.assertGreaterEqual(len(delivered), 3)

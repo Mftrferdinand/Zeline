@@ -33,19 +33,46 @@ class TelegramPresenceTests(unittest.TestCase):
     def test_silent_provider_keeps_typing_without_another_user_message(self):
         calls = []
         lock = threading.Lock()
+        reasoning = threading.Event()
+        refreshed = threading.Event()
+        real_event = threading.Event
+        requested_intervals = []
+        reasoning_ticks = []
+        self.assertLess(self.telegram._TYPING_INTERVAL_SECONDS, 5,
+                        "Refresh must precede Telegram's typing expiry")
+
+        class TrackedEvent:
+            def __init__(self):
+                self.event = real_event()
+
+            def __getattr__(self, name):
+                return getattr(self.event, name)
+
+            def wait(self, timeout=None):
+                if threading.current_thread().name.startswith('zeline-typing-'):
+                    requested_intervals.append(timeout)
+                return self.event.wait(timeout)
 
         def api(_api, method, **params):
             with lock:
                 calls.append((time.monotonic(), method, params))
+                if method == 'sendChatAction' and reasoning.is_set():
+                    reasoning_ticks.append(True)
+                    if len(reasoning_ticks) >= 3:
+                        refreshed.set()
             return {"ok": True, "result": {"message_id": 17}}
 
         class SilentProvider:
             def send(self, **_kwargs):
-                time.sleep(.22)
+                reasoning.set()
+                if not refreshed.wait(1):
+                    raise AssertionError('Silent reasoning did not receive repeated typing refreshes')
+                reasoning.clear()
                 return "Verified offline result."
 
         with mock.patch.object(self.telegram, "_api_call", side_effect=api), \
                 mock.patch.object(self.telegram, "_start_reflection"), \
+                mock.patch.object(self.telegram.threading, 'Event', side_effect=TrackedEvent), \
                 mock.patch.object(self.telegram, "_TYPING_INTERVAL_SECONDS", .04, create=True):
             delivered = self.telegram._send_agent_reply(
                 "offline", SilentProvider(), chat_id=1, identity="presence:silent",
@@ -54,7 +81,10 @@ class TelegramPresenceTests(unittest.TestCase):
         typing = [at for at, method, _params in calls if method == "sendChatAction"]
         self.assertGreaterEqual(len(typing), 3,
                                 "Real reply path sent typing once, then looked dead during reasoning")
-        self.assertLess(max(b - a for a, b in zip(typing, typing[1:])), .16)
+        self.assertGreaterEqual(len(reasoning_ticks), 3)
+        self.assertGreaterEqual(len(requested_intervals), 2)
+        self.assertTrue(all(0 < interval <= .04 for interval in requested_intervals),
+                        'Heartbeat requested a delay beyond its configured cadence')
 
     def test_typing_continues_while_final_delivery_waits_for_ack(self):
         sending = threading.Event()

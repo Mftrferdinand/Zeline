@@ -3704,6 +3704,10 @@ def _send_agent_reply(api: str, sessions, *, chat_id: int, identity: str, text: 
             def cleanup():
                 try:
                     live.finalize()
+                    # A queued tool feed can first acquire its message ID here
+                    # when final submission suppressed obsolete live redraws.
+                    _bind_sent_task_message(sessions, identity, {
+                        'result': {'message_id': getattr(live, 'message_id', None)}})
                 except Exception:
                     pass
             transport.submit(cleanup)
