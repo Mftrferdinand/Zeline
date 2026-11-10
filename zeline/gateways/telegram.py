@@ -1630,13 +1630,23 @@ def _model_switch_text(selected: str, provider: dict[str, str] | None) -> str:
 
 
 def _new_session_text() -> str:
-    return "\n".join([
-        "✨ New Session",
-        f"◉ Model : {_one_line(config.MODEL)}",
-        f"◉ Provider : {_one_line(_provider_label())}",
-        "◉ Context : 0 tokens",
-        "◉ Platform : Telegram",
-    ])
+    lines = [
+        "✨ Session reset! Starting fresh.\n",
+        f"◆ Model: {_one_line(config.MODEL)}",
+        f"◆ Provider: {_one_line(_provider_label())}",
+    ]
+    meta = _fetch_model_capabilities(None, config.MODEL)
+    meta = meta if isinstance(meta, dict) else {}
+    caps = meta.get("capabilities")
+    caps = caps if isinstance(caps, dict) else {}
+    context = caps.get("contextWindow", meta.get("context_length"))
+    try:
+        context_window = _format_token_count(context)
+    except OverflowError:
+        context_window = None
+    if context_window:
+        lines.append(f"◆ Context: {context_window} tokens (detected)")
+    return "\n".join(lines)
 
 
 def _ensure_repository() -> Path:

@@ -1322,9 +1322,9 @@ class ZelinePublicCoreTests(unittest.TestCase):
             live.tick()
         self.assertEqual([m for m in sent if m == "sendMessage"], [])
 
-    def test_api_call_retries_send_on_transient_network_error(self):
-        # sendMessage must retry on ConnectionError so a reply isn't lost when
-        # Termux's link drops momentarily; it succeeds on a later attempt.
+    def test_api_call_retries_send_on_known_unsent_connect_timeout(self):
+        # Only a known-unsent connect timeout is replay-safe. A generic
+        # ConnectionError may follow acceptance and must not duplicate a reply.
         telegram = importlib.import_module("zeline.gateways.telegram")
         import requests as _rq
 
@@ -1337,7 +1337,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         def flaky(url, json=None, timeout=None, **kwargs):
             calls["n"] += 1
             if calls["n"] < 3:
-                raise _rq.ConnectionError("boom")
+                raise _rq.ConnectTimeout("not connected")
             return OKResp()
 
         with mock.patch.object(telegram.time, "sleep"), mock.patch.object(telegram._HTTP, "post", side_effect=flaky):
@@ -1767,12 +1767,14 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["model", "status", "version", "update", "undo", "stats", "events", "lessons", "self", "skillforge", "stop", "new"],
+            ["model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "self", "skillforge", "stop", "new", "version", "update"],
         )
         by_name = {item["command"]: item["description"] for item in commands}
         self.assertEqual(by_name, {
             "model": "Switch model",
             "status": "View runtime status",
+            "repository": "Project registry",
+            "deleterepository": "Delete a registry entry",
             "version": "Show version",
             "update": "Update version",
             "undo": "Checkpoints",
@@ -2676,7 +2678,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 called["reflect"] = identity
                 return None  # tidak ada skill baru → tidak kirim pesan
 
-        with mock.patch.object(telegram, "_api_call", return_value={"result": {"message_id": 5}}):
+        with mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 5}}):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=42, identity="telegram:42", text="hi", tool_profile="full")
             # beri thread background kesempatan jalan
             time.sleep(0.15)
@@ -2700,7 +2702,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
                 delivered.append(kwargs.get("text", ""))
                 if kwargs.get("text") == "📘 <b>Self-Improvement:</b> proposal pending":
                     review_delivered.set()
-            return {"result": {"message_id": 5}}
+            return {"ok": True, "result": {"message_id": 5}}
 
         with mock.patch.object(telegram, "_api_call", side_effect=api):
             telegram._send_agent_reply("bot-api", Sessions(), chat_id=42, identity="telegram:42", text="hi", tool_profile="full")
@@ -3511,7 +3513,8 @@ class ZelinePublicCoreTests(unittest.TestCase):
             def reset(self, identity): self.reset_id = identity; return True
 
         sessions = Sessions()
-        with mock.patch.object(telegram, "_api_call") as api:
+        with mock.patch.object(telegram, "_api_call") as api, \
+                mock.patch.object(telegram, "_fetch_model_capabilities", return_value={}):
             handled = telegram._handle_command_update(
                 "bot-api", "/new", sessions, "telegram:42", 42,
                 stop_event=threading.Event(), tool_profile="safe",
@@ -3521,13 +3524,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(sessions.reset_id, "telegram:42")
         text = api.call_args.kwargs["text"]
         self.assertEqual(text, (
-            "✨ New Session\n"
-            f"◉ Model : {telegram.config.MODEL}\n"
-            f"◉ Provider : {telegram._provider_label()}\n"
-            "◉ Context : 0 tokens\n"
-            "◉ Platform : Telegram"
+            "✨ Session reset! Starting fresh.\n\n"
+            f"◆ Model: {telegram.config.MODEL}\n"
+            f"◆ Provider: {telegram._provider_label()}"
         ))
-        self.assertIn("Context : 0 tokens", text)
+        self.assertNotIn("Context", text)  # Unknown model limits are not invented.
 
     def test_telegram_model_command_persists_model_and_keeps_context(self):
         telegram = importlib.import_module("zeline.gateways.telegram")

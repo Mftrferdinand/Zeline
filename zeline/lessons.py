@@ -2,8 +2,8 @@
 
 events.py records *what* happened (the audit trail). This module records
 *what was learned from it failing* — a short, per-identity table of
-(tool, what_went_wrong, what_to_do_instead) that is injected into the
-system prompt so the agent stops walking into the same wall.
+(tool, what_went_wrong, what_to_do_instead) selected by topic for the
+current user turn so the agent stops walking into the same wall.
 
 Design, stated plainly:
 
@@ -87,7 +87,7 @@ def _escape_prompt_text(text: str) -> str:
     contain attacker-controlled content (web page text, API responses). This
     function strips XML-like tags (both opening and closing) and control
     chars so the text is safe to embed inside ``<lessons>`` blocks in the
-    system prompt.
+    ephemeral user runtime context.
     """
     if not text:
         return ""
