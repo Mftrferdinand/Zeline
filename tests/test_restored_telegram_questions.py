@@ -63,7 +63,7 @@ class TelegramQuestionTests(AskUserBase):
                 self.assertEqual(cleanup["attempts"], self.telegram._PROGRESS_ATTEMPTS)
 
     def test_failed_reconciliation_after_delayed_custom_edit_retires_keyboard(self):
-        worker, box, _live, entry, card = self.start_question()
+        worker, box, _live, entry, card = self.start_question(("Python", "Go"))
         entered, release = threading.Event(), threading.Event()
         completed = []
 
@@ -77,6 +77,7 @@ class TelegramQuestionTests(AskUserBase):
             return None if method == "editMessageText" else {"ok": True}
 
         custom = card["reply_markup"]["inline_keyboard"][-1][0]["callback_data"]
+        self.assertTrue(custom.endswith(":-1"), "custom-input test must tap the owned Fill button")
         with mock.patch.object(self.telegram, "_api_call", side_effect=api):
             mode = threading.Thread(target=self.telegram._handle_ask_callback,
                 args=("fixture", 1, entry.message_id, custom), daemon=True)
@@ -228,8 +229,10 @@ class TelegramQuestionTests(AskUserBase):
         live.tick()
         self.assertIn("Waiting for your answer", self.calls[-1][1]["text"])
 
-    def test_every_question_has_custom_answer_even_without_options(self):
-        for options in ((), ("Yes", "No")):
+    def test_general_question_has_custom_answer_even_without_options(self):
+        # Yes/No is a confirmation pair with exactly two styled buttons;
+        # general choices (and free-text questions) expose custom input.
+        for options in ((), ("Python", "Go")):
             with self.subTest(options=options):
                 entry = self.interaction.PendingQuestion("telegram:1", "Question?", options)
                 self.telegram._render_ask_question("fixture", 1, entry)
@@ -255,8 +258,9 @@ class TelegramQuestionTests(AskUserBase):
         self.assertEqual(len(self.calls), before, "old taps must not overwrite the Q&A receipt")
 
     def test_custom_button_waits_for_real_text_and_receipt_records_it(self):
-        worker, box, live, entry, card = self.start_question()
+        worker, box, live, entry, card = self.start_question(("Python", "Go"))
         data = card["reply_markup"]["inline_keyboard"][-1][0]["callback_data"]
+        self.assertTrue(data.endswith(":-1"), "custom-input test must tap the owned Fill button")
         self.telegram._handle_ask_callback("fixture", 1, self.sequence, data)
         self.assertFalse(entry.event.is_set())
         self.assertTrue(self.interaction.answer("telegram:1", "My own answer"))
@@ -267,8 +271,9 @@ class TelegramQuestionTests(AskUserBase):
     def test_terminal_receipt_wins_after_delayed_custom_edit(self):
         for cancelled in (False, True):
             with self.subTest(cancelled=cancelled):
-                worker, box, live, entry, card = self.start_question()
+                worker, box, live, entry, card = self.start_question(("Python", "Go"))
                 data = card["reply_markup"]["inline_keyboard"][-1][0]["callback_data"]
+                self.assertTrue(data.endswith(":-1"), "custom-input test must tap the owned Fill button")
                 entered = threading.Event()
                 release = threading.Event()
                 errors = []
@@ -313,8 +318,9 @@ class TelegramQuestionTests(AskUserBase):
                 self.assertEqual(edits[-1]["reply_markup"], {"inline_keyboard": []})
 
     def test_failed_custom_edit_never_sends_an_unowned_picker(self):
-        worker, box, live, entry, card = self.start_question()
+        worker, box, live, entry, card = self.start_question(("Python", "Go"))
         data = card["reply_markup"]["inline_keyboard"][-1][0]["callback_data"]
+        self.assertTrue(data.endswith(":-1"), "custom-input test must tap the owned Fill button")
         original_api = self.telegram._api_call.side_effect
 
         def failed_edit(api, method, **payload):

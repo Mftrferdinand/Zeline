@@ -1109,6 +1109,21 @@ class Zeline:
                 selected = self._task_store.begin(self.identity, named_task.group(1),
                     message_id=reference.get('message_id'))
         task = selected.get('task')
+        # A persisted interrupted turn is authoritative current context even
+        # when the task SQLite file was not available to the process that is
+        # reopening the session (for example a crash fixture or a moved data
+        # directory). Resume the provider round from that evidence, but do
+        # not invent an older task and do not enable task-scoped tools.
+        recovery_resume = (
+            task is None
+            and not reference.get('reply_to_message_id')
+            and text.casefold().lstrip().startswith(('lanjut', 'terusin', 'continue', 'resume', 'proceed', 'next'))
+            and any(
+                item.get('role') == 'assistant'
+                and str(item.get('content', '')).startswith('[Zeline recovery]')
+                for item in self.messages
+            )
+        )
         self.executor._task_unresolved = task is None
         self.executor._task_store = self._task_store
         self.executor._task_id = task['id'] if task else None
@@ -1124,12 +1139,19 @@ class Zeline:
                     selected = self._task_store.begin(self.identity, 'resume ' + matches[0]['id'],
                         message_id=reference.get('message_id'))
                     task = selected.get('task')
-            if task is None:
+            if task is None and not recovery_resume:
                 return 'Task reference unresolved. Specify the task or reply to its last message; no work was started.'
+            if recovery_resume:
+                self.last_task_id = None
+                self.executor._task_store = None
+                self.executor._task_id = None
+                self.executor._task_unresolved = False
+                self.executor._task_resolution_required = False
         self.executor._task_unresolved = False
-        self.executor._task_id = task['id']
-        self.last_task_id = task['id']
-        if selected.get('reason') == 'resume' and task['id'] != previous_task:
+        if task is not None:
+            self.executor._task_id = task['id']
+            self.last_task_id = task['id']
+        if selected.get('reason') == 'resume' and task is not None and task['id'] != previous_task:
             self._task_history_floor = len(self.messages)
         elif selected.get('reason') == 'new':
             self._task_history_floor = None

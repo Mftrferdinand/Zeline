@@ -23,7 +23,7 @@ class ReflectionDeliveryTests(unittest.TestCase):
         summary = "📗 <b>Self-Refinement:</b> Saved verified learning evidence."
         with mock.patch.object(session.agent, "send", return_value="Task complete"), \
              mock.patch.object(session.agent, "reflect", return_value=summary) as reflect, \
-             mock.patch.object(telegram, "_api_call", return_value={"ok": True}) as api, \
+             mock.patch.object(telegram, "_api_call", return_value={"ok": True, "result": {"message_id": 77}}) as api, \
              mock.patch.object(telegram, "_LiveStatus"), \
              mock.patch.object(telegram, "_start_working_heartbeat", return_value=mock.Mock()), \
              mock.patch.object(telegram.threading, "Thread", side_effect=thread):

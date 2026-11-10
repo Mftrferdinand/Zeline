@@ -506,6 +506,8 @@ def _tool_progress_text(name: str, arguments: dict[str, Any]) -> str:
     if name == "search_files":
         query = html.escape(str(arguments.get("query", ""))[:200], quote=False)
         return f"🔎 Searching workspace: {query}" if query else "🔎 Searching workspace…"
+    if name == "task_checkpoint":
+        return "📌 Saving task checkpoint…"
     if name == "update_task":
         status = html.escape(str(arguments.get("status", "pending"))[:40], quote=False)
         task = html.escape(str(arguments.get("task", ""))[:120], quote=False)

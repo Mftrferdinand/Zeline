@@ -192,6 +192,17 @@ class TaskContextStore:
         calls = [call for item in tail for call in (item.get('tool_calls') or [])][-48:]
         results = {item.get('tool_call_id'): item.get('content', '') for item in tail
                    if item.get('role') == 'tool'}
+        # The assistant text beside a tool call is the operational frontier
+        # (for example ``NEXT_STEP: ...``). Keep it with the tool evidence so
+        # a stop/reload still carries the plan even when the normal final
+        # assistant reply was never committed.
+        next_step = next((str(item.get('content') or '').strip()
+                          for item in reversed(tail)
+                          if item.get('role') == 'assistant'
+                          and item.get('tool_calls')
+                          and str(item.get('content') or '').strip()), '')
+        if next_step:
+            self.checkpoint(identity, task_id, next_step=next_step)
         for call in calls:
             call_id = call.get('id')
             if not call_id:

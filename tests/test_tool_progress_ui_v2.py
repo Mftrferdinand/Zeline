@@ -46,6 +46,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "hash_check": {"path": "app.zip"},
             "undo_file": {"action": "list"},
             "update_task": {"task": "Test UI", "status": "in_progress"},
+            "task_checkpoint": {"next_step": "Run verification"},
             "watch_task": {"action": "list"},
             "manage_skill": {"action": "list"},
             "resolve_lesson": {"tool": "read_file"},
@@ -97,6 +98,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             ("watch_task", {"action": "stop", "task": "Track reward"}, "🛑 Stopping task follow-up: Track reward"),
             ("runtime_info", {}, "🪪 Checking agent runtime…"),
             ("ask_user", {"question": "Continue?"}, "🙋 Requesting your input: Continue?"),
+            ("task_checkpoint", {"next_step": "Run verification"}, "📌 Saving task checkpoint…"),
         )
         for name, arguments, expected in cases:
             with self.subTest(name=name, arguments=arguments):
