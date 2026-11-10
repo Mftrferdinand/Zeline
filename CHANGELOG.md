@@ -1,5 +1,21 @@
 # Changelog
 
+[0.4.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.6
+
+## [0.4.6] — 2026-11-10
+
+### Changed
+- Integrate the reviewed runtime, task continuity and delivery updates from PR #358.
+- Coordinate same-database task transactions across store instances within the
+  existing five-second contention budget.
+- Update runtime metadata, installer pins and current installation documentation.
+
+### Fixed
+- Associate progress messages created during finalization with their producing task.
+- Validate owner-only recovery permissions through native Windows ACLs.
+- Keep optional retrieval telemetry from blocking behind a SQLite writer.
+- Verify SAT resource limits against the actual pre-exec VM baseline.
+
 [0.4.5]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.5
 
 ## [0.4.5] — 2026-10-28
