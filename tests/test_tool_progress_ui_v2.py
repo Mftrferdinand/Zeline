@@ -45,6 +45,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             "download_file": {"url": "https://example.com/app.zip", "path": "app.zip"},
             "hash_check": {"path": "app.zip"},
             "undo_file": {"action": "list"},
+            "diff_files": {"path_a": "draft.md", "path_b": "final.md"},
             "update_task": {"task": "Test UI", "status": "in_progress"},
             "task_checkpoint": {"next_step": "Run verification"},
             "watch_task": {"action": "list"},
