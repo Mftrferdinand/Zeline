@@ -8,14 +8,16 @@ import socket as _socket
 
 __all__ = ['read_file', 'write_file', 'search_files', 'patch', 'terminal']
 
-_bridge_path: str  # Injected into this module by the per-invocation bootstrap.
+_bridge_path: str | tuple  # Injected by the per-invocation bootstrap.
 
 
 def _call(name, args):
-    with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as connection:
-        connection.connect(globals()['_bridge_path'])
+    address = globals()['_bridge_path']
+    family = getattr(_socket, 'AF_UNIX', _socket.AF_INET) if isinstance(address, str) else _socket.AF_INET
+    with _socket.socket(family, _socket.SOCK_STREAM) as connection:
+        connection.connect(address)
         with connection.makefile('rwb') as stream:
-            stream.write((_json.dumps({'tool': name, 'args': args}) + '\n').encode())
+            stream.write((_json.dumps({'token': globals()['_bridge_token'], 'tool': name, 'args': args}) + '\n').encode())
             stream.flush()
             return _json.loads(stream.readline())
 

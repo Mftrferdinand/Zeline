@@ -45,7 +45,9 @@ def parse(text, positions=None):
         raise ValueError('Memory file exceeds parsing limit; original preserved')
     if positions is None:
         positions = {}
-    lines = text.split('\n')
+    # Native editors may save CRLF. Literal carriage returns in note bodies are
+    # already escaped by render(), so normalize only physical line endings.
+    lines = text.replace('\r\n', '\n').split('\n')
     if len(lines) < 4 or lines[2] != '<!-- zeline-memory-v1 -->' or not lines[0].startswith('# '):
         raise ValueError('Memory Markdown is unreadable; original preserved')
     records = []
@@ -112,16 +114,29 @@ def read_pair(paths):
 
 
 def secure(path):
-    """Reject symlinks at every existing component (including dangling links)."""
+    """Reject user-controlled symlinks, retaining root-owned macOS aliases."""
     import stat
+    import sys
     path = Path(path).absolute()
+    aliases = {'/var': '/private/var', '/tmp': '/private/tmp', '/etc': '/private/etc'}
     for part in reversed([path, *path.parents]):
         try:
-            mode = part.lstat().st_mode
+            observed = part.lstat()
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(mode):
-            raise ValueError('Symlink memory component refused')
+        if stat.S_ISLNK(observed.st_mode):
+            # macOS exposes its system temp roots through immutable-by-user
+            # aliases. Do not generalize this to links inside memory storage.
+            expected = aliases.get(str(part)) if sys.platform == 'darwin' else None
+            trusted = False
+            if expected and observed.st_uid == 0:
+                try:
+                    target = part.readlink()
+                    trusted = (part.parent / target).absolute() == Path(expected)
+                except OSError:
+                    pass
+            if not trusted:
+                raise ValueError('Symlink memory component refused')
     return path
 
 

@@ -597,15 +597,15 @@ def drain_then_stop(
     if drain_timeout is None:
         drain_timeout = float(getattr(config, "RESTART_DRAIN_TIMEOUT", 30.0))
     sigusr1 = getattr(signal, "SIGUSR1", None)
-    if IS_WINDOWS or sigusr1 is None or drain_timeout <= 0:
-        return False, "Restart deferred: safe draining is unavailable; no work was stopped."
-
     state = _load_state()
     if not state or not _process_matches_state(state):
         active, _message, _current = status()
         if active:
             return False, "Restart deferred: active gateway cannot be safely drained; no work was stopped."
         return True, "Gateway is not running; no work was stopped."
+
+    if IS_WINDOWS or sigusr1 is None or drain_timeout <= 0:
+        return False, "Restart deferred: safe draining is unavailable; no work was stopped."
 
     # A gateway spawned by an OLDER build has no SIGUSR1 handler, and the
     # default POSIX disposition for SIGUSR1 is to terminate the process

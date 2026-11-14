@@ -1,4 +1,4 @@
-"""One compact read invocation per bubble, exact repeats only."""
+"""Compact read rows share one feed, counting only exact consecutive repeats."""
 import unittest
 from unittest import mock
 from zeline.gateways import telegram
@@ -23,9 +23,12 @@ class ReadFileSpacingTests(unittest.TestCase):
     def test_round_changes_do_not_count_different_files(self):
         self.live.set_iteration(1,20);self.read('NOTES.md');self.read('PIPELINE.md')
         self.live.set_iteration(2,20);self.read('TickLinkedListPopInvariants.t.sol')
-        self.assertEqual(self.live._render(),'📖 Reading TickLinkedListPopInvariants.t.sol L1-40')
-        self.assertEqual(sum(c.args[1]=='sendMessage' for c in self.api.call_args_list),3)
-        self.assertNotIn('\n',self.live._render())
+        expected='📖 Reading NOTES.md L1-40\n📖 Reading PIPELINE.md L1-40\n📖 Reading TickLinkedListPopInvariants.t.sol L1-40'
+        self.assertEqual(self.live._render(),expected)
+        self.assertEqual(sum(c.args[1]=='sendMessage' for c in self.api.call_args_list),1)
+        self.assertEqual(len(self.live.lines),3)
+        self.assertNotIn('(x',expected)
+        self.assertEqual(self.api.call_args.kwargs['text'],expected)
 
     def test_live_final_and_detach_share_identical_call_count_and_reset(self):
         for finish in ('finalize','detach'):
@@ -41,11 +44,10 @@ class ReadFileSpacingTests(unittest.TestCase):
                 if finish=='detach':
                     self.read('ANOTHER.md');self.assertEqual(self.live._render(),'📖 Reading ANOTHER.md L1-40')
 
-    def test_interleaved_writing_starts_new_uncounted_read_bubble(self):
-        self.live.max_lines=2
+    def test_interleaved_writing_preserves_uncounted_read_rows(self):
         self.read('OLD.md');self.read('NOTES.md');self.read('PIPELINE.md')
         self.live.add('📝 Writing <code>OUT.md</code>')
         self.live.set_iteration(3,20);self.read('NEXT.md')
-        self.assertEqual(self.live._render(),'📖 Reading NEXT.md L1-40')
-        self.assertEqual(sum(c.args[1]=='sendMessage' for c in self.api.call_args_list),5)
-        self.assertEqual(len(self.live.lines),1)
+        self.assertEqual(self.live._render(),'📖 Reading OLD.md L1-40\n📖 Reading NOTES.md L1-40\n📖 Reading PIPELINE.md L1-40\n📝 Writing <code>OUT.md</code>\n📖 Reading NEXT.md L1-40')
+        self.assertEqual(sum(c.args[1]=='sendMessage' for c in self.api.call_args_list),1)
+        self.assertEqual(len(self.live.lines),5)

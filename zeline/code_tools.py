@@ -1,8 +1,9 @@
-"""Per-invocation private Unix IPC for execute_code (no persistent service)."""
+"""Per-invocation authenticated local IPC (no persistent service)."""
 import contextlib
 import json
 import os
 from pathlib import Path
+import secrets
 import socket
 import tempfile
 import threading
@@ -30,10 +31,16 @@ def snippet_bridge(executor, code, seconds):
               '_interrupt_reason': lambda: 'stop'}
     with tempfile.TemporaryDirectory(prefix='zeline-code-') as directory:
         os.chmod(directory, 0o700)
-        path = str(Path(directory) / 'tools.sock')
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        unix = os.name != 'nt' and hasattr(socket, 'AF_UNIX')
+        path = str(Path(directory) / 'tools.sock') if unix else ('127.0.0.1', 0)
+        token = secrets.token_urlsafe(32)
+        family = getattr(socket, 'AF_UNIX', socket.AF_INET) if unix else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as listener:
             listener.bind(path)
-            os.chmod(path, 0o600)
+            if unix:
+                os.chmod(path, 0o600)
+            else:
+                path = listener.getsockname()
             listener.listen(4)
             listener.settimeout(.05)
 
@@ -61,7 +68,9 @@ def snippet_bridge(executor, code, seconds):
                                 continue
                             request = json.loads(payload)
                             name, args = request.get('tool'), request.get('args')
-                            if name not in ALLOWED_TOOLS:
+                            if not secrets.compare_digest(str(request.get('token', '')), token):
+                                output = 'ERROR: bridge authentication failed.'
+                            elif name not in ALLOWED_TOOLS:
                                 output = 'ERROR: nested tool not permitted.'
                             elif name not in registered:
                                 output = 'ERROR: nested tool is not registered or disabled for this profile.'
@@ -87,6 +96,7 @@ def snippet_bridge(executor, code, seconds):
                 'import types as _zt_types, sys as _zt_sys\n'
                 '_zt_module = _zt_types.ModuleType("zeline_tools")\n'
                 f'_zt_module.__dict__["_bridge_path"] = {path!r}\n'
+                f'_zt_module.__dict__["_bridge_token"] = {token!r}\n'
                 f'exec(compile({source!r}, "<zeline_tools>", "exec"), _zt_module.__dict__)\n'
                 '_zt_sys.modules["zeline_tools"] = _zt_module\n'
                 f'exec(compile({code!r}, "<execute_code>", "exec"))\n'

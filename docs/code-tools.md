@@ -32,7 +32,7 @@ Every helper returns `{"success": bool, "tool": str, "output": str}`. `output` i
 
 Inner calls reuse the original session's executor, identity, workspace, registered tools, policies, budgets, audit, checkpoints and cancellation. They do not create a new privileged executor. Disabled or disallowed tools remain unavailable. Arbitrary or recursive `execute_code` dispatch is not exposed by the module.
 
-The code subprocess remains tracked and subject to the enclosing `execute_code` timeout and stop controls. Set the outer timeout high enough for the entire workflow. A short-lived private Unix socket is created for the invocation and removed afterward; no persistent listener is installed. This bridge requires Unix-domain socket support.
+The code subprocess remains tracked and subject to the enclosing `execute_code` timeout and stop controls. Set the outer timeout high enough for the entire workflow. Each invocation creates a short-lived private Unix socket, or an authenticated loopback-only socket on Windows and hosts without Unix-domain sockets. A fresh per-invocation token authorizes dispatch on either transport. The listener and temporary directory are removed afterward; no persistent service or extra dependency is installed.
 
 This is not an OS sandbox: `execute_code` remains an operator-only capability.
 

@@ -24,7 +24,7 @@ socket.create_connection = blocked
 from zeline import config, tools
 
 defs = {tool.name: tool for tool in tools.TOOL_DEFS}
-# Verify the actual public schema, not an imagined Hermes process API.
+# Verify the actual public schema, not an imagined process API.
 assert set(defs["process_control"].parameters["properties"]["action"]["enum"]) == {"list", "poll", "log", "kill"}
 assert "notify_on_complete" not in defs["run_shell"].parameters["properties"]
 assert "action must be one of list, poll, log, kill" in tools._process_control("wait")
@@ -52,6 +52,7 @@ print("execution guidance and real background-control schema verified")
             }
             env.update(
                 HOME=str(home), ZELINE_HOME=str(home / "state"),
+                USERPROFILE=str(home),
                 PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1",
                 PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
             )

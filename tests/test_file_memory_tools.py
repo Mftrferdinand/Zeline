@@ -43,6 +43,55 @@ assert meta['storage']=='markdown', meta
 assert meta['records'][0]['file_path'].endswith('/USER.md'), meta
 """)
 
+    def test_batch_json_preserves_report_and_verified_canonical_paths(self):
+        self.run_fixture("""
+r=json.loads(ex.run('add_memory',{'operations':[
+    {'action':'add','text':'Fixture deployment uses PostgreSQL.'},
+    {'action':'add','text':'Operator prefers concise fixtures.','kind':'user_profile'}]}))
+assert r['success'] is True and len(r['changed'])==2, r
+assert r['total']==2 and r['consolidated']==[], r
+assert r['file_paths']==sorted(f'memories/{ex.memory.key}/{f}' for f in ['MEMORY.md','USER.md']), r
+for path in r['file_paths']:
+    assert (config.DATA_DIR/path).is_file(), r
+assert 'Fixture deployment uses PostgreSQL.' not in json.dumps(r), r
+assert 'Operator prefers concise fixtures.' not in json.dumps(r), r
+""")
+
+    def test_batch_journal_failure_keeps_json_and_committed_receipt(self):
+        self.run_fixture("""
+from unittest.mock import patch
+with patch('zeline.reflection_markdown.record_markdown',side_effect=OSError('fixture journal unavailable')):
+    r=json.loads(ex.run('add_memory',{'operations':[{'action':'add','text':'Fixture memory survives journal failure.'}]}))
+assert r['success'] is True and len(r['changed'])==1, r
+assert r['warning']=='journal unavailable; canonical memory saved', r
+assert r['file_paths']==[f'memories/{ex.memory.key}/MEMORY.md'], r
+assert 'Fixture memory survives journal failure.' in (config.DATA_DIR/r['file_paths'][0]).read_text()
+""")
+
+    def test_batch_revision_checks_noops_and_deletes_preserve_json_contract(self):
+        self.run_fixture("""
+r=ex.run('add_memory',{'fact':'Fixture database is MySQL.'})
+assert r.startswith('OK, saved.') and ' File: ' in r, r
+record=json.loads(ex.run('list_memory',{'include_metadata':True}))['records'][0]
+op={'action':'replace','id':record['id'],'expected_revision':record['revision'],'text':'Fixture database is PostgreSQL.'}
+r=json.loads(ex.run('add_memory',{'operations':[op]}))
+assert r['success'] is True and r['changed']==[record['id']], r
+assert r['file_paths']==[record['file_path']], r
+stale=json.loads(ex.run('add_memory',{'operations':[op]}))
+assert stale['success'] is False and not stale.get('file_paths'), stale
+current=json.loads(ex.run('list_memory',{'include_metadata':True}))['records'][0]
+assert current['revision']>record['revision'] and current['text']==op['text'], current
+noop=json.loads(ex.run('add_memory',{'operations':[{'action':'add','text':op['text']}]}))
+assert noop['success'] is True and not noop['changed'] and not noop.get('file_paths'), noop
+other=ToolExecutor('fixture:other-memory',profile='full',workspace=Path.home())
+assert not json.loads(other.run('list_memory',{'include_metadata':True}))['records']
+deleted=json.loads(ex.run('add_memory',{'operations':[{'action':'remove','id':current['id'],'expected_revision':current['revision']}]}))
+assert deleted['success'] is True and deleted['changed']==[current['id']], deleted
+assert not deleted.get('file_paths'), deleted
+assert not json.loads(ex.run('list_memory',{'include_metadata':True}))['records']
+assert ex.run('add_memory',{'fact':'invalid mixed input','operations':[]}).startswith('ERROR: use fact or operations')
+""")
+
     def test_reflection_memory_receipt_points_to_verified_canonical_file(self):
         self.run_fixture("""
 ex._reflection_mode=True

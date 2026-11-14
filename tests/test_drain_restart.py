@@ -202,14 +202,20 @@ class GatewayDrainStopTests(unittest.TestCase):
         self.assertIn("deferred", message.casefold())
 
     def test_zero_timeout_does_not_authorize_an_immediate_stop(self):
-        with mock.patch.object(self.service, "stop") as hard_stop, mock.patch.object(self.service, "_signal_process") as sig:
+        state = {"pid": 4321, "start_token": "t", "start_ticks": "1", "drain": True}
+        with mock.patch.object(self.service, "_load_state", return_value=state), \
+             mock.patch.object(self.service, "_process_matches_state", return_value=True), \
+             mock.patch.object(self.service, "stop") as hard_stop, mock.patch.object(self.service, "_signal_process") as sig:
             ok, _message = self.service.drain_then_stop(drain_timeout=0)
         self.assertFalse(ok)
         hard_stop.assert_not_called()
         sig.assert_not_called()
 
     def test_windows_defers_when_safe_drain_is_unavailable(self):
-        with mock.patch.object(self.service, "IS_WINDOWS", True), mock.patch.object(self.service, "stop") as hard_stop, mock.patch.object(self.service, "_signal_process") as sig:
+        state = {"pid": 4321, "start_token": "t", "start_ticks": "1", "drain": True}
+        with mock.patch.object(self.service, "_load_state", return_value=state), \
+             mock.patch.object(self.service, "_process_matches_state", return_value=True), \
+             mock.patch.object(self.service, "IS_WINDOWS", True), mock.patch.object(self.service, "stop") as hard_stop, mock.patch.object(self.service, "_signal_process") as sig:
             ok, _message = self.service.drain_then_stop(drain_timeout=30)
         self.assertFalse(ok)
         hard_stop.assert_not_called()

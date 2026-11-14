@@ -194,7 +194,7 @@ for method in (lambda: a._run_turn(), lambda: a._force_final_answer(None)):
 post({'choices':[{'message':{'role':'assistant','content':'partial','reasoning_content':'SECRET'},'finish_reason':'length'}]})
 m = a._call_llm()
 assert m.get('finish_reason') == 'length', m
-assert 'reasoning_content' not in m, m
+assert m.get('reasoning_content') == 'SECRET', m
 a.protocol = 'anthropic'
 post({'content':[{'type':'text','text':'partial'},{'type':'thinking','thinking':'SECRET'}], 'stop_reason':'max_tokens'})
 m = a._call_llm()

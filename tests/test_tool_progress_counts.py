@@ -17,11 +17,11 @@ class ToolProgressCountsTests(unittest.TestCase):
         with mock.patch.object(t,'_api_call',return_value={'ok':True,'result':{'message_id':7}}):
             live.add(t._safe_progress_line(t._tool_progress_text(name,args)),invocation_key=t._tool_progress_key(name,args))
 
-    def test_distinct_read_calls_have_distinct_uncounted_bubbles(self):
+    def test_distinct_read_calls_have_distinct_uncounted_rows(self):
         t,live=self.live()
         for path in ['first.py','second.py','third.py']:self.add(t,live,'read_file',{'path':path})
-        self.assertEqual(live._feed_text(),'📖 Reading third.py')
-        self.assertEqual(len(live.lines),1)
+        self.assertEqual(live._feed_text(),'📖 Reading first.py\n📖 Reading second.py\n📖 Reading third.py')
+        self.assertEqual(len(live.lines),3)
 
     def test_repeated_identical_reads_count_calls_not_heartbeat_ticks(self):
         t,live=self.live()
@@ -35,20 +35,27 @@ class ToolProgressCountsTests(unittest.TestCase):
         t,live=self.live(max_lines=2)
         self.add(t,live,'read_file',{'path':'first.py'})
         for i in range(30):self.add(t,live,'run_shell',{'command':f'printf fixture-{i}'})
-        self.assertNotIn('first.py',live._feed_text())
+        self.assertIn('first.py',live._feed_text())
         self.assertNotIn('(x',live._feed_text())
-        self.assertEqual(live._feed_text(),'💻 Executing command…')
+        self.assertEqual(len(live.lines),31)
+        self.assertEqual(live._feed_text(),live.lines[0]+'\n'+live.lines[-1])
+        self.assertIn('printf fixture-29',live._feed_text())
+        self.assertEqual(sum(live._repeat_counts.values()),31)
 
-    def test_distinct_tools_use_new_bubbles_instead_of_overflow_groups(self):
+    def test_bounded_feed_retains_rows_and_reports_omitted_calls(self):
         t,live=self.live(max_lines=3)
         for name,args in [('read_file',{'path':'first.py'}),('write_file',{'path':'second.py'}),('run_shell',{'command':'pwd'}),('execute_code',{'code':'pass'}),('system_env',{}),('load_skill',{'name':'latest-skill'})]:self.add(t,live,name,args)
-        self.assertEqual(live._feed_text(),'📚 Loading skill: latest-skill')
-        self.assertEqual(len(live.lines),1)
+        self.assertEqual(live._feed_text(),'📖 Reading first.py\n… 4 other tool types · 4 calls\n📚 Loading skill: latest-skill')
+        self.assertEqual(len(live.lines),6)
+        self.assertIn('pwd',live.lines[2])
+        self.assertIn('pass',live.lines[3])
 
     def test_shell_repeat_badge_stays_inline_outside_code(self):
         t,live=self.live()
         for _ in range(2):self.add(t,live,'run_shell',{'command':'printf fixture'})
-        self.assertEqual(live._feed_text(),'💻 Executing command… (x2)')
+        self.assertEqual(live._feed_text(),t._tool_progress_text('run_shell',{'command':'printf fixture'})+' (x2)')
+        self.assertTrue(live._feed_text().endswith('</pre> (x2)'))
+        self.assertEqual(live._feed_text().count('<pre>'),1)
 
     def test_detach_keeps_old_counts_and_restarts_new_bubble_at_one(self):
         t,live=self.live()

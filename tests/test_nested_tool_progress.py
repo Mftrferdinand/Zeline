@@ -30,10 +30,17 @@ class NestedToolProgressTests(unittest.TestCase):
         self.assertEqual([name for name,args in activity],['execute_code','read_file','patch_file','run_shell'])
         self.assertIn('SDK_END_TO_END_OK',next(msg['content'] for msg in agent.messages if msg['role']=='tool'))
         sends=[c.kwargs['text'] for c in api.call_args_list if c.args[1]=='sendMessage']
-        self.assertEqual(len(sends),4)
-        self.assertIn('📖 Reading fixture.txt L2-3','\n'.join(sends))
-        self.assertIn('🐍 Executing code with zeline_tools...',sends[0])
-        self.assertNotIn('Reading',live._feed_text())
+        self.assertEqual(len(sends),1)
+        feed=live._feed_text()
+        self.assertIn('📖 Reading fixture.txt L2-3',feed)
+        self.assertIn('🐍 Executing code: <code>from zeline_tools import read_file, patch, terminal</code>…',sends[0])
+        self.assertIn('📝 Editing file: <code>fixture.txt</code>',feed)
+        self.assertIn('printf SDK_EXECUTED',feed)
+        self.assertEqual(len(live.lines),4)
+        self.assertEqual(feed,'\n'.join(t._tool_progress_text(name,args) for name,args in activity))
+        edits=[c for c in api.call_args_list if c.args[1]=='editMessageText']
+        self.assertEqual(edits[-1].kwargs['text'],feed)
+        self.assertTrue(all(c.kwargs['message_id']==7 and c.kwargs['parse_mode']=='HTML' for c in edits))
         self.assertIsNone(agent.executor._control('_nested_tool_callback'))
 
     def test_execute_code_forwards_original_tool_callback_in_invocation_context(self):

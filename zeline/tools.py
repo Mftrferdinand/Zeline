@@ -3521,11 +3521,11 @@ class ToolExecutor:
                                           operations=operations)
         receipt = self._memory_file_receipt(receipt)
         written_files = set()
+        journal_ok = True
         if receipt.get("file_path") and receipt.get("state") in {"created", "updated"}:
             written_files.add(receipt["file_path"])
         if receipt["state"] in {"created", "updated"}:
             changed_receipts = []
-            journal_ok = True
             try:
                 from zeline.reflection_markdown import record_markdown
                 if operations is not None:
@@ -3559,8 +3559,21 @@ class ToolExecutor:
                     enqueue_for_receipt(self.identity, changed_receipt)
                 except (OSError, ValueError, UnicodeError, TypeError, ImportError):
                     pass
+        if operations is not None:
+            # Batch mutations have always returned one JSON report. Keep host
+            # file receipts and journal warnings inside that machine-readable value.
+            try:
+                report = json.loads(receipt["message"])
+            except ValueError:
+                # Invalid mixed arguments retain the original ERROR text contract.
+                return receipt["message"]
+            if written_files:
+                report["file_paths"] = sorted(written_files)
             if not journal_ok:
-                receipt["message"] += " (journal unavailable; canonical memory saved)"
+                report["warning"] = "journal unavailable; canonical memory saved"
+            return json.dumps(report, ensure_ascii=False)
+        if not journal_ok:
+            receipt["message"] += " (journal unavailable; canonical memory saved)"
         suffix = " File: " + ", ".join(sorted(written_files)) + "." if written_files else ""
         return receipt["message"] + suffix
 

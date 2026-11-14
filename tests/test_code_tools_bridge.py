@@ -1,11 +1,20 @@
 """Offline integration tests for snippet-only native tool dispatch."""
 import json
+import os
+import shlex
+import subprocess
+import sys
 import threading
 import time
 
 import pytest
 
 from zeline import tools
+
+
+def python_command(source):
+    args = [sys.executable, '-c', source]
+    return subprocess.list2cmdline(args) if os.name == 'nt' else shlex.join(args)
 
 
 @pytest.fixture
@@ -17,14 +26,15 @@ def test_real_files_shell_and_audit(executor, monkeypatch):
     audit, events = [], []
     monkeypatch.setattr(executor, '_audit', lambda n, a, r: audit.append((n, a, r)))
     executor._nested_tool_callback = lambda n, a: events.append((n, a))
-    result = executor.run('execute_code', {'code': '''
+    shell_command = python_command("print('shell-real')")
+    result = executor.run('execute_code', {'code': f'''
 from zeline_tools import read_file, write_file, search_files, patch, terminal
 import json
 results = [write_file('note.txt', 'hello bridge\\n'),
            read_file(path='note.txt'),
            patch('note.txt', old_string='hello', new_string='real'),
            search_files('real'),
-           terminal("printf 'shell-real'")]
+           terminal({shell_command!r})]
 print(json.dumps(results))
 '''})
     assert result.startswith('exit=0\n'), result
@@ -55,6 +65,28 @@ def test_profile_denied(tmp_path):
     result = executor.run('execute_code', {'code': "from zeline_tools import write_file; write_file('no.txt','no')"})
     assert 'not allowed' in result
     assert not (tmp_path / 'no.txt').exists()
+
+
+def test_tcp_fallback_without_unix_socket_support(executor, monkeypatch):
+    from zeline import code_tools
+    monkeypatch.delattr(code_tools.socket, 'AF_UNIX', raising=False)
+    result=executor.run('execute_code', {'code': "from zeline_tools import write_file,read_file; assert write_file('tcp.txt','real TCP dispatch')['success']; print(read_file('tcp.txt')['output'])"})
+    assert result.startswith('exit=0\n') and 'real TCP dispatch' in result, result
+    assert (executor.workspace/'tcp.txt').read_text()=='real TCP dispatch'
+    assert not any(t.name=='zeline-code-tools' for t in threading.enumerate())
+
+
+@pytest.mark.parametrize('tcp',[False,True])
+def test_invalid_bridge_token_never_dispatches(executor,monkeypatch,tcp):
+    from zeline import code_tools
+    if tcp:
+        monkeypatch.delattr(code_tools.socket,'AF_UNIX',raising=False)
+    events=[]
+    executor._nested_tool_callback=lambda *args: events.append(args)
+    result=executor.run('execute_code',{'code': "import zeline_tools; zeline_tools._bridge_token='invalid'; print(zeline_tools.write_file('denied.txt','must not exist'))"})
+    assert 'bridge authentication failed' in result,result
+    assert not (executor.workspace/'denied.txt').exists()
+    assert events==[]
 
 
 def test_context_policy_and_no_escalation(executor, monkeypatch):
@@ -91,7 +123,7 @@ def test_timeout_cancel_and_cleanup(executor, monkeypatch, cancel):
         timer.start()
     started = time.monotonic()
     try:
-        result = executor.run('execute_code', {'code': "from zeline_tools import terminal; print(terminal('sleep 20'))"})
+        result = executor.run('execute_code', {'code': f"from zeline_tools import terminal; print(terminal({python_command('import time; time.sleep(20)')!r}))"})
     finally:
         if timer:
             timer.cancel()
@@ -142,7 +174,8 @@ def test_callback_capture_is_stable(executor):
     executor._nested_tool_callback = lambda n, a: events.append(n)
     context = executor.capture_context()
     executor._nested_tool_callback = lambda *a: pytest.fail('wrong context callback')
-    result = executor.run('execute_code', {'code': "from zeline_tools import terminal; print(terminal(command='printf captured'))"}, _context=context)
+    shell_command = python_command("print('captured')")
+    result = executor.run('execute_code', {'code': f"from zeline_tools import terminal; print(terminal(command={shell_command!r}))"}, _context=context)
     assert 'captured' in result and result.startswith('exit=0')
     assert events == ['run_shell']
 
@@ -154,7 +187,8 @@ def test_same_live_run_and_identity(executor, monkeypatch):
         calls.append((executor.identity, executor.profile, executor.workspace, name))
         return original(name, args, **kwargs)
     monkeypatch.setattr(executor, 'run', observed)
-    result = executor.run('execute_code', {'code': "from zeline_tools import terminal; print(terminal('printf live'))"})
+    shell_command = python_command("print('live')")
+    result = executor.run('execute_code', {'code': f"from zeline_tools import terminal; print(terminal({shell_command!r}))"})
     assert 'live' in result
     assert [call[-1] for call in calls] == ['execute_code', 'run_shell']
     assert all(call[:3] == (executor.identity, 'full', executor.workspace) for call in calls)

@@ -56,6 +56,8 @@ class SafeRestartTests(unittest.TestCase):
     def test_native_shell_finishes_once_after_restart_is_deferred(self):
         from pathlib import Path
         import shlex
+        import os
+        import subprocess
         import sys
         import threading
         import time
@@ -66,7 +68,9 @@ class SafeRestartTests(unittest.TestCase):
               f'started=Path({str(started)!r}); release=Path({str(release)!r}); out=Path({str(written)!r}); '
               'started.touch()\nwhile not release.exists(): time.sleep(.01)\n'
               'with out.open("a") as f: f.write("completed\\n")\nprint("completed")')
-        command=shlex.quote(sys.executable)+' -c '+shlex.quote(code)
+        script=root/'foreground-work.py';script.write_text(code,encoding='utf-8')
+        args=[sys.executable,str(script)]
+        command=subprocess.list2cmdline(args) if os.name=='nt' else shlex.join(args)
         worker=threading.Thread(target=lambda:results.append(tools._run_shell(command,root,timeout=5,identity='fixture-restart',should_stop=cancel.is_set)),daemon=True)
         worker.start()
         try:

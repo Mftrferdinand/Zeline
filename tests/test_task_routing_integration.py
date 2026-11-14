@@ -409,7 +409,7 @@ class TaskRoutingIntegrationTests(unittest.TestCase):
 
         def bind_message(identity, message_id, **kwargs):
             result = bind(identity, message_id, **kwargs)
-            if any(mid == message_id and 'Reading file' in text for mid, text in delivered):
+            if any(mid == message_id and '📖 Reading amber.py' in text for mid, text in delivered):
                 progress_mapped.set()
             return result
 
@@ -446,7 +446,7 @@ class TaskRoutingIntegrationTests(unittest.TestCase):
                 text='Inspect Amber', tool_profile='full', task_reference={'message_id': 100})
         self.assertTrue(acknowledged, 'Final delivery was not acknowledged')
         self.assertTrue(any('Amber working.' in text for _, text in delivered))
-        self.assertTrue(any('Reading file' in text for _, text in delivered))
+        self.assertTrue(any('📖 Reading amber.py' in text for _, text in delivered))
         self.assertTrue(any('Amber answer.' in text for _, text in delivered))
         store = importlib.import_module('zeline.task_context').TaskContextStore()
         task = store.focus('telegram:7')

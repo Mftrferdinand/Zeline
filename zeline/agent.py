@@ -809,8 +809,12 @@ class Zeline:
             raise ZelineError("Provider returned no response choices.") from exc
         if not isinstance(message, dict):
             raise ZelineError("Invalid message format from the provider.")
+        # Keep provider reasoning metadata with the assistant tool-call.  It is
+        # not displayed, but some OpenAI-compatible providers require it when
+        # the same tool-call history is sent back on the next round.
         message = {key: value for key, value in message.items()
-                   if key in {'role', 'content', 'tool_calls', 'function_call', 'refusal'}}
+                   if key in {'role', 'content', 'tool_calls', 'function_call',
+                              'refusal', 'reasoning_content', 'reasoning_details'}}
         if parsed['choices'][0].get('finish_reason') is not None:
             message['finish_reason'] = parsed['choices'][0]['finish_reason']
         return message
@@ -856,6 +860,7 @@ class Zeline:
         tool_map: dict[int, dict[str, Any]] = {}
         usage_chunk: dict[str, Any] | None = None
         reasoning_seen = False
+        reasoning_parts: list[str] = []
         finish_reason: str | None = None
         terminal = False
         try:
@@ -901,6 +906,7 @@ class Zeline:
                     provider_wait.progress()
                 if delta.get("reasoning_content"):
                     reasoning_seen = True
+                    reasoning_parts.append(str(delta["reasoning_content"]))
                 piece = delta.get("content")
                 if piece:
                     content_parts.append(str(piece))
@@ -930,6 +936,8 @@ class Zeline:
         message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
         if tool_map:
             message["tool_calls"] = [tool_map[index] for index in sorted(tool_map)]
+        if reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
         message["finish_reason"] = finish_reason or ("tool_calls" if tool_map else "stop") if (terminal or finish_reason) else "incomplete"
         if not message["content"] and not message.get("tool_calls"):
             # A reasoning-only stream is not a usable answer. Let _call_llm()
@@ -1433,7 +1441,7 @@ class Zeline:
         finally:
             task_cleanup_failed = False
             try:
-                if self.last_task_id:
+                if getattr(self, "last_task_id", None):
                     self._task_store.capture(self.identity, self.last_task_id,
                         self.messages, self._task_capture_seen, self.last_learning_turn_id)
                     self._task_store.pause(self.identity, self.last_task_id)
@@ -1464,7 +1472,7 @@ class Zeline:
 
     def _checkpoint(self, extra: list[dict[str, Any]] | None = None) -> None:
         """Snapshot before dispatch and after each serial result, before UI callbacks."""
-        if self.last_task_id:
+        if getattr(self, "last_task_id", None):
             self._task_store.capture(self.identity, self.last_task_id,
                 [*self.messages, *(extra or [])], self._task_capture_seen, self.last_learning_turn_id)
         callback = getattr(self, "_on_checkpoint", None)
@@ -1672,6 +1680,8 @@ class Zeline:
                     "role": "assistant",
                     "content": message.get("content") or "",
                     "tool_calls": tool_calls,
+                    **{key: message[key] for key in ("reasoning_content", "reasoning_details")
+                       if key in message},
                 }
             )
             # A failed pre-dispatch checkpoint stops the batch before any tool runs.
@@ -2049,7 +2059,9 @@ class Zeline:
                 if not tool_calls or not isinstance(tool_calls, list):
                     break
                 self.messages.append(
-                    {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
+                    {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls,
+                     **{key: message[key] for key in ("reasoning_content", "reasoning_details")
+                        if key in message}}
                 )
                 for tool_call in tool_calls:
                     function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}

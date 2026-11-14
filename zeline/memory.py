@@ -251,15 +251,14 @@ class MemoryStore:
             for path in self.canonical_paths.values():
                 secure(path)
                 notes.append(hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None)
-            if any(notes):
-                return tuple(notes)
+            note_signature = tuple(notes)
             try:
                 stat = self.path.stat()
                 legacy = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
             except FileNotFoundError:
                 legacy = None
             if not self.db_path.exists():
-                return (legacy, 0, 0, 0)
+                return (note_signature, legacy, 0, 0, 0)
             with closing(sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro',
                                          uri=True, timeout=0.05)) as conn:
                 count, revisions, active_count = conn.execute(
@@ -268,7 +267,9 @@ class MemoryStore:
                     'FROM memory_revisions WHERE owner=?',
                     (self.key, self.key)).fetchone()
             # Deletions retain revision history; track active membership too.
-            return (legacy, count, revisions, active_count)
+            # Include the index counters even when canonical Markdown exists:
+            # another process may mutate SQLite before it has rewritten Markdown.
+            return (note_signature, legacy, count, revisions, active_count)
         except (OSError, sqlite3.DatabaseError):
             return None
 
