@@ -26,7 +26,7 @@ class TelegramIconContractTests(unittest.TestCase):
             ("deep_research", {}, "🔍 Researching in depth"),
             ("add_memory", {}, "🔍 Saving to memory"),
             ("list_memory", {}, "🔍 Retrieving saved memories"),
-            ("read_file", {}, "📖 Reading file"),
+            ("read_file", {}, "📖 Reading "),
             ("browser", {"action": "text"}, "📖 Reading webpage content"),
             ("download_file", {}, "📥 Downloading a file"),
             ("run_shell", {"command": "printf demo"}, "💻 Executing command"),

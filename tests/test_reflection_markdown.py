@@ -29,7 +29,7 @@ def test_three_self_reports_describe_distinct_verified_operations():
     assert len(parts) == 3
     assert parts[0] == "📙 Self-enhancement review: Proposal saved for browser-triage (inactive)."
     assert parts[1] == "📘 Self-improvement review: Patched SKILL.md in skill 'zeline-development' (1 replacement)."
-    assert parts[2] == "📗 Self-refinement review: Memory saved."
+    assert parts[2] == "📗 Self-refinement review: Saved memory (file path unavailable)."
     assert "learning/" not in report and "💾" not in report
 
 
@@ -82,7 +82,7 @@ def test_refinement_chat_is_compact_while_journal_keeps_full_evidence(tmp_path, 
     path = record_markdown("telegram:owner", "add_memory", {"fact": fact}, receipt)
     receipt["markdown_file"] = path.relative_to(tmp_path).as_posix()
     report = _format_reflection_actions([("add_memory", {"fact": fact}, json.dumps(receipt))])
-    assert report == "📗 Self-refinement review: Memory saved."
+    assert report == f"📗 Self-refinement review: Saved memory (file path unavailable). Journal: {receipt['markdown_file']}."
     assert fact in path.read_text(encoding="utf-8")
     assert "mem_receipt@1" in path.read_text(encoding="utf-8")
 
@@ -110,8 +110,9 @@ def test_receipt_only_claims_markdown_when_saved(tmp_path, monkeypatch):
     path = record_markdown("cli:local", "add_memory", {}, receipt)
     receipt["markdown_file"] = path.relative_to(tmp_path).as_posix()
     report = _format_reflection_actions([("add_memory", {}, json.dumps(receipt))])
-    assert report == "📗 Self-refinement review: Memory saved."
-    assert path.name not in report and "learning/" not in report
+    assert report == f"📗 Self-refinement review: Saved memory (file path unavailable). Journal: {receipt['markdown_file']}."
+    assert path.name in report and receipt["markdown_file"] in report
+    assert "Saved memory to" not in report  # A journal is not the canonical memory file.
     assert receipt["summary"] in path.read_text(encoding="utf-8")
     assert path.exists()
 

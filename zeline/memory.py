@@ -13,8 +13,10 @@ import hashlib
 from html import escape
 import json
 import math
+import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -47,6 +49,14 @@ REFLECTION_CONFIDENCE = 0.6
 MAX_PROMPT_CHARACTERS = 6000
 MAX_RECALL_RECORDS = 8
 MAX_RECALL_CHARACTERS = 4000
+
+
+def _new_id() -> str:
+    """Return a record id even when the host crypto provider is unavailable."""
+    try:
+        return uuid.uuid4().hex
+    except Exception:
+        return f"{time.time_ns():x}-{os.getpid():x}-{threading.get_ident():x}"
 # Function words alone are not evidence of a shared topic. Public search keeps
 # its historical semantics; automatic recall filters these words and requires
 # any supplied domain/email identifier to match exactly.
@@ -113,7 +123,7 @@ def _coerce_record(item: Any) -> dict[str, Any] | None:
         return None
     now = time.time()
     return {
-        "id": str(item.get("id") or uuid.uuid4().hex),
+        "id": str(item.get("id") or _new_id()),
         "text": str(item["text"]).strip(),
         "kind": str(item.get("kind") or "fact"),
         "source": str(item.get("source") or "user"),
@@ -134,6 +144,10 @@ def _read(path: Path) -> list[dict[str, Any]]:
         if not isinstance(value, list):
             raise ValueError("Expected a list")
         records = [_coerce_record(item) for item in value]
+        for item, record in zip(value, records):
+            if isinstance(item, dict) and record is not None:
+                record.update({k: v for k, v in item.items() if k not in record})
+                record['text'] = item['text']
         if any(record is None for record in records):
             raise ValueError("Invalid record")
         return [record for record in records if record is not None]
@@ -219,17 +233,42 @@ class MemoryStore:
         self.path = _path(self.identity)  # Legacy import path, retained for callers.
         self.db_path = MEMORY_DIR / "memory.sqlite3"
         self.default_source = "user"
+        self.canonical_paths = {name: MEMORY_DIR.parent / 'memories' / self.key / name
+                                for name in ('MEMORY.md', 'USER.md')}
+
+    def _canonical_records(self, conn, indexed):
+        from .memory_markdown import read_pair
+        records = read_pair(self.canonical_paths)
+        if records is None:
+            return indexed, False
+        old = {r['id']: r for r in indexed}
+        changed = False
+        for record in records:
+            previous = old.get(record['id'])
+            if previous and record != previous:
+                record['revision'] = max(record['revision'], previous['revision'] + 1)
+                record['updated_at'] = time.time()
+                changed = True
+        if records != indexed:
+            self._save(conn, records)
+        return records, changed
 
     def retrieval_version(self):
         """A cheap read-only facts version; observation writes do not invalidate it."""
         try:
+            from .memory_markdown import secure
+            notes = []
+            for path in self.canonical_paths.values():
+                secure(path)
+                notes.append(hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None)
+            note_signature = tuple(notes)
             try:
                 stat = self.path.stat()
                 legacy = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
             except FileNotFoundError:
                 legacy = None
             if not self.db_path.exists():
-                return (legacy, 0, 0, 0)
+                return (note_signature, legacy, 0, 0, 0)
             with closing(sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro',
                                          uri=True, timeout=0.05)) as conn:
                 count, revisions, active_count = conn.execute(
@@ -238,12 +277,56 @@ class MemoryStore:
                     'FROM memory_revisions WHERE owner=?',
                     (self.key, self.key)).fetchone()
             # Deletions retain revision history; track active membership too.
-            return (legacy, count, revisions, active_count)
+            # Include the index counters even when canonical Markdown exists:
+            # another process may mutate SQLite before it has rewritten Markdown.
+            return (note_signature, legacy, count, revisions, active_count)
         except (OSError, sqlite3.DatabaseError):
             return None
 
     @contextmanager
     def _transaction(self, timeout: float = 15):
+        from .memory_markdown import (write_pair, locked, secure, backup_sqlite,
+                                      read_pair, read_note, atomic_write, recover,
+                                      sync_directory)
+        for path in (self.db_path, self.path, LEGACY_FILE,
+                     Path(str(self.db_path) + '-journal'), Path(str(self.db_path) + '-wal'),
+                     Path(str(self.db_path) + '-shm')):
+            secure(path)
+        with locked(self.canonical_paths, timeout):
+            marker = secure(self.canonical_paths['MEMORY.md'].parent / '.canonical')
+            canonical = read_pair(self.canonical_paths)
+            if canonical is None:
+                if marker.exists():
+                    raise ValueError('Canonical memory missing; refusing stale index recovery')
+                backup_sqlite(self.db_path)
+            original = {n: read_note(p) if p.exists() else None
+                        for n, p in self.canonical_paths.items()}
+            had_marker = marker.exists()
+            try:
+                with self._indexed_transaction(timeout) as (conn, records):
+                    records, reloaded = self._canonical_records(conn, records)
+                    before = json.dumps(records, sort_keys=True)
+                    yield conn, records
+                    if reloaded or before != json.dumps(records, sort_keys=True) or canonical is None:
+                        write_pair(self.canonical_paths, records)
+                    if not marker.exists():
+                        atomic_write(marker, 'Canonical Markdown initialized\n')
+            except BaseException:
+                # A rejected batch must also undo note changes made before an
+                # index commit failure. Recovery remains durable if interrupted.
+                after = {n: read_note(p) if p.exists() else None
+                         for n, p in self.canonical_paths.items()}
+                if after != original:
+                    atomic_write(marker.parent / '.transaction.json',
+                                 json.dumps(original, ensure_ascii=True))
+                    recover(self.canonical_paths)
+                if not had_marker:
+                    marker.unlink(missing_ok=True)
+                    sync_directory(marker.parent)
+                raise
+
+    @contextmanager
+    def _indexed_transaction(self, timeout: float = 15):
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         try:
             MEMORY_DIR.chmod(0o700)
@@ -296,6 +379,35 @@ class MemoryStore:
         Only a pending legacy import needs a write transaction. Missing storage
         stays empty until a real write; schema creation remains on that path.
         """
+        from .memory_markdown import locked, read_pair, secure
+        for path in (*self.canonical_paths.values(), self.db_path, self.path):
+            secure(path)
+        if any(p.exists() for p in self.canonical_paths.values()):
+            # Canonical reads must not wait for the evidence/index writer. Most
+            # turns only read unchanged notes, so use a read-only cache comparison.
+            with locked(self.canonical_paths, 0.2):
+                canonical = read_pair(self.canonical_paths)
+            if not self.db_path.exists():
+                return canonical
+            try:
+                with closing(sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro',
+                                             uri=True, timeout=0.05)) as conn:
+                    indexed = [json.loads(row[0]) for row in conn.execute(
+                        'SELECT payload FROM memory_items WHERE owner=? ORDER BY position',
+                        (self.key,))]
+            except (sqlite3.Error, json.JSONDecodeError):
+                return canonical
+            if indexed == canonical:
+                return canonical
+            try:
+                # A manual body edit needs a new revision/evidence invalidation.
+                # Recheck under the lock; a busy cache cannot suppress real notes.
+                with self._transaction(timeout=0.2) as (_, records):
+                    return records
+            except sqlite3.OperationalError:
+                return canonical
+        if (next(iter(self.canonical_paths.values())).parent / '.canonical').exists():
+            raise ValueError('Canonical memory pair missing; index is not a fallback')
         records = []
         imported = False
         if self.db_path.exists():
@@ -310,6 +422,15 @@ class MemoryStore:
                     records = [json.loads(row[0]) for row in conn.execute(
                         'SELECT payload FROM memory_items WHERE owner=? ORDER BY position',
                         (self.key,))]
+        if imported:
+            try:
+                with self._transaction(timeout=0.2) as (_, migrated):
+                    return migrated
+            except sqlite3.OperationalError as exc:
+                if 'locked' not in str(exc).lower() and 'busy' not in str(exc).lower():
+                    raise
+                # A pending migration can serve its committed legacy snapshot.
+                return records
         if not imported:
             source = self.path
             if not source.exists() and self.identity == 'cli:local':
@@ -461,7 +582,7 @@ class MemoryStore:
 
     def _record_retrieval(self, turn_id: str, records: list[dict[str, Any]]) -> None:
         """Persist selected revisions, never infer that the model used them."""
-        if not isinstance(turn_id, str) or not 1 <= len(turn_id) <= 120:
+        if not isinstance(turn_id, str) or not 1 <= len(turn_id) <= 120 or not records:
             return
         # Optional retrieval telemetry must not queue behind a foreground writer.
         # SQLite busy timeouts are per operation and can exceed a turn's budget.
@@ -495,9 +616,17 @@ class MemoryStore:
         """Completion is operational telemetry, not verified task success."""
         if outcome not in {'unknown', 'completed', 'cancelled', 'failure'}:
             outcome = 'unknown'
-        with self._transaction(timeout=0.2) as (conn, _):
+        if not self.db_path.exists():
+            return
+        from .memory_markdown import secure
+        secure(self.db_path)
+        # Turn telemetry must not initialize notes or invalidate an empty recall.
+        with closing(sqlite3.connect(str(self.db_path), timeout=0.2)) as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_retrievals'").fetchone():
+                return
             conn.execute('UPDATE memory_retrievals SET turn_outcome=? WHERE owner=? AND turn_id=?',
                          (outcome, self.key, turn_id))
+            conn.commit()
 
     def assess_retrieval(self, turn_id: str, record_id: str, revision: int, *,
                          checker: str, case_id: str, baseline: bool, candidate: bool,
@@ -643,7 +772,7 @@ class MemoryStore:
                         record = _coerce_record({**op, "text": text, "source": source,
                                                 "confidence": REFLECTION_CONFIDENCE if source == "reflection" else 1.0,
                                                 "expires_at": expires_at,
-                                                "id": uuid.uuid4().hex, "revision": 1, "state": "active"})
+                                                "id": _new_id(), "revision": 1, "state": "active"})
                         assert record is not None
                         records.append(record)
                     elif action in {"replace", "remove"}:

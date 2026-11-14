@@ -107,7 +107,7 @@ class PickerAuditTests(unittest.TestCase):
             self.assertEqual(models, ["m1", "m2"])
             fetch.assert_called_once_with("https://prov.invalid/v1", "k", force_refresh=True)
 
-    def test_handle_command_model_clears_or_refreshes_live_models(self):
+    def test_handle_command_model_opens_picker_without_catalog_refresh(self):
         tg = self.telegram
         provider = {"slug": "9router", "name": "9Router", "base_url": "https://9r.invalid/v1", "api_key": "k", "model": "ag/gemini"}
         with mock.patch.object(tg, "_configured_providers", return_value=[provider]), \
@@ -119,7 +119,8 @@ class PickerAuditTests(unittest.TestCase):
                 stop_event=mock.Mock(), tool_profile="full"
             )
             self.assertTrue(handled)
-            fetch.assert_called_once_with("https://9r.invalid/v1", "k", force_refresh=True)
+            fetch.assert_not_called()
+            self.assertTrue(api.called, 'The root picker must still be delivered')
 
 
 if __name__ == "__main__":

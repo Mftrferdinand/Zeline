@@ -1,0 +1,17 @@
+{
+  "motion": {
+    "version": "14.9.0",
+    "license": "MIT",
+    "sha256": "08423884b313dacbd12fdaff2d002a5b862c8009c17da285a8460efad98d63c3"
+  },
+  "number-flow": {
+    "version": "0.6.2",
+    "license": "MIT",
+    "csp": "Per-element adopted shadow stylesheets; server policy unchanged"
+  },
+  "references": [
+    "https://motion.dev/",
+    "https://number-flow.barvian.me/vanilla"
+  ],
+  "runtimeExternalRequests": false
+}

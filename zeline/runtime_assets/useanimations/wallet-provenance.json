@@ -1,0 +1,7 @@
+{
+  "asset": "wallet.json",
+  "origin": "Zeline-authored replacement explicitly requested by user",
+  "renderer": "local Lottie",
+  "description": "Fixed wallet outline and clasp; only inner card moves gently. No whole-icon wobble.",
+  "externalSource": null
+}

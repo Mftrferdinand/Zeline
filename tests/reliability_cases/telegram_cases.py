@@ -141,6 +141,54 @@ class TelegramFixTests(unittest.TestCase):
         self.assertFalse(receipt.deliver(send, lambda:False))
         self.assertEqual(sent, ['one','two'], 'UNKNOWN delivery was replayed')
 
+    def test_terminal_cards_use_real_language_labels_and_balanced_html(self):
+        from html.parser import HTMLParser
+        class Balanced(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.stack = []
+            def handle_starttag(self, tag, attrs):
+                self.stack.append(tag)
+            def handle_endtag(self, tag):
+                assert self.stack and self.stack.pop() == tag, 'misnested progress HTML'
+        for command, language in [('echo hello', 'shell'), ('bash -lc "echo hi"', 'bash'), ('powershell.exe -NoProfile -Command Get-Date', 'powershell'), ('pwsh -Command Get-Date', 'powershell'), ('cmd /c dir', 'batch')]:
+            card = tg._terminal_progress(command)
+            self.assertIn('class="language-' + language + '"', card)
+            self.assertNotIn('🔴🟡🟢', card)
+        raw = tg._terminal_progress('bash -lc "' + ('echo hello; ' * 20) + '"')
+        for limit in (30, 50, 65, 80):
+            parser = Balanced()
+            parser.feed(tg._safe_progress_line(raw, limit=limit))
+            self.assertFalse(parser.stack, 'unclosed progress HTML')
+
+    def test_progress_429_cooldown_survives_separate_refresh_calls(self):
+        from unittest.mock import patch
+        now = [100.0]
+        calls = []
+        def post(*args, **kwargs):
+            calls.append(args)
+            return (False, {'ok':False,'error_code':429,'parameters':{'retry_after':20}}) if len(calls)==1 else (True, {'ok':True,'result':{'message_id':7}})
+        with patch.object(tg, '_API_COOLDOWNS', {}, create=True), patch.object(tg.time, 'monotonic', side_effect=lambda:now[0]), patch.object(tg, '_bounded_api_post', side_effect=post):
+            tg._api_call('inert', 'editMessageText', attempts=1, chat_id=1, text='first')
+            for stamp in (103., 119.):
+                now[0] = stamp
+                tg._api_call('inert', 'editMessageText', attempts=1, chat_id=1, text='latest')
+                tg._api_call('inert', 'sendChatAction', attempts=1, chat_id=1, action='typing')
+            self.assertEqual(sum(args[0].endswith('/editMessageText') for args in calls), 1, 'progress ignored cross-call retry_after')
+            self.assertEqual(sum(args[0].endswith('/sendChatAction') for args in calls), 2, 'message cooldown silenced presence')
+            now[0] = 120.
+            self.assertTrue(tg._api_call('inert', 'editMessageText', attempts=1, chat_id=1, text='latest')['ok'])
+            self.assertEqual(sum(args[0].endswith('/editMessageText') for args in calls), 2)
+
+    def test_progress_cooldown_does_not_suppress_commands_or_other_chats(self):
+        from unittest.mock import patch
+        replies = [(False, {'ok':False,'error_code':429,'parameters':{'retry_after':20}}), (True, {'ok':True,'result':{'message_id':8}})]
+        with patch.object(tg, '_API_COOLDOWNS', {}, create=True), patch.object(tg, '_bounded_api_post', side_effect=[replies[0], replies[1], replies[1], replies[1]]) as post:
+            tg._api_call('inert', 'editMessageText', attempts=1, chat_id=1)
+            self.assertTrue(tg._api_call('inert', 'sendMessage', chat_id=1, text='command')['ok'])
+            self.assertTrue(tg._api_call('inert', 'sendMessage', attempts=1, delivery=True, chat_id=1, text='final')['ok'])
+            self.assertTrue(tg._api_call('inert', 'editMessageText', attempts=1, chat_id=2)['ok'])
+            self.assertEqual(post.call_count, 4)
+
     def test_api_429_honors_retry_after_and_permanent_400_is_not_retried(self):
         from types import SimpleNamespace
         from unittest.mock import patch

@@ -200,7 +200,7 @@ jobs:
           names = set(archive.namelist())
 
           missing_assets = []
-          for tree in ("zeline/skills", "zeline/zenith_tools"):
+          for tree in ("zeline/skills", "zeline/zenith_tools", "zeline/runtime_assets"):
               for path in Path(tree).rglob("*"):
                   if not path.is_file():
                       continue

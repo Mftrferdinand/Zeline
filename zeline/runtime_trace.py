@@ -22,6 +22,14 @@ MAX_TRACE_BYTES = 1_048_576
 _TRACE_LOCK = threading.Lock()
 
 
+def _call_id() -> str:
+    """Generate a trace id without making diagnostics depend on OS crypto."""
+    try:
+        return uuid.uuid4().hex
+    except Exception:
+        return f"fallback-{time.time_ns():x}-{os.getpid():x}-{threading.get_ident():x}"
+
+
 def trace_path() -> Path:
     return config.DATA_DIR / "logs" / "runtime-trace.jsonl"
 
@@ -75,7 +83,7 @@ def _record(record: dict) -> None:
 def tool_span(identity: str, tool: str):
     """Record an invocation without accepting or inspecting its arguments."""
     base = {
-        "call_id": uuid.uuid4().hex,
+        "call_id": _call_id(),
         "owner": hashlib.sha256(str(identity).encode()).hexdigest()[:32],
         "tool": re.sub(r"[^a-zA-Z0-9_-]", "_", str(tool))[:96],
     }

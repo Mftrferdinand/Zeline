@@ -590,20 +590,22 @@ def drain_then_stop(
     jalan. Di sini kita kirim SIGUSR1 lebih dulu: proses gateway menolak turn
     baru, menunggu turn aktif selesai, lalu keluar sendiri.
 
-    SIGUSR1 tidak ada di Windows, dan sinyal ke process group bukan padanan
-    yang aman di sana, jadi Windows langsung memakai ``stop`` seperti dulu.
-    Kalau drain tidak selesai dalam waktu yang diberikan, kita eskalasi ke
-    ``stop`` dan MELAPORKAN bahwa ada kerja yang terpotong — bukan diam.
+    Restart is non-destructive: unsupported or timed-out draining defers the
+    restart instead of falling back to SIGTERM/SIGKILL. An explicit operator
+    stop remains a separate operation; deployment must not silently kill work.
     """
     if drain_timeout is None:
         drain_timeout = float(getattr(config, "RESTART_DRAIN_TIMEOUT", 30.0))
     sigusr1 = getattr(signal, "SIGUSR1", None)
-    if IS_WINDOWS or sigusr1 is None or drain_timeout <= 0:
-        return stop(wait_seconds=wait_seconds, grace_seconds=grace_seconds)
-
     state = _load_state()
     if not state or not _process_matches_state(state):
-        return stop(wait_seconds=wait_seconds, grace_seconds=grace_seconds)
+        active, _message, _current = status()
+        if active:
+            return False, "Restart deferred: active gateway cannot be safely drained; no work was stopped."
+        return True, "Gateway is not running; no work was stopped."
+
+    if IS_WINDOWS or sigusr1 is None or drain_timeout <= 0:
+        return False, "Restart deferred: safe draining is unavailable; no work was stopped."
 
     # A gateway spawned by an OLDER build has no SIGUSR1 handler, and the
     # default POSIX disposition for SIGUSR1 is to terminate the process
@@ -611,15 +613,11 @@ def drain_then_stop(
     # let finish — worse than the old behaviour, because it skips the graceful
     # SIGTERM phase entirely. Only drain when the child advertised the handler.
     if not state.get("drain"):
-        ok, message = stop(wait_seconds=wait_seconds, grace_seconds=grace_seconds)
-        return ok, (
-            "Gateway predates drain support (started by an older build) — "
-            "used the standard stop. " + message
-        )
+        return False, "Restart deferred: gateway predates safe drain support; no work was stopped."
 
     pid = int(state["pid"])
     if not _signal_process(pid, sigusr1):
-        return stop(wait_seconds=wait_seconds, grace_seconds=grace_seconds)
+        return False, "Restart deferred: drain signal could not be delivered; no work was stopped."
 
     # Beri waktu drain plus sedikit kelonggaran untuk shutdown adapter.
     deadline = time.monotonic() + drain_timeout + 5.0
@@ -629,12 +627,10 @@ def drain_then_stop(
             return True, f"Gateway drained and stopped (PID {pid}); in-flight work finished."
         time.sleep(0.25)
 
-    ok, message = stop(wait_seconds=wait_seconds, grace_seconds=grace_seconds)
-    prefix = (
-        f"Drain did not finish within {int(drain_timeout)}s — forced stop; "
-        "in-flight work may have been cut off. "
+    return False, (
+        f"Restart deferred: gateway did not exit after draining for {int(drain_timeout)}s. "
+        "No forced stop was issued; active work remains owned by the existing process."
     )
-    return ok, prefix + message
 
 
 def stop(wait_seconds: float = 8.0, grace_seconds: float = 4.0) -> tuple[bool, str]:

@@ -1,8 +1,8 @@
 """Durable, human-readable Markdown journal for the three reflection channels.
 
-The memory/lesson databases remain transactional sources of truth. This journal
-is a read-back-verified projection of successful host receipts, not an alternate
-unvalidated tool or a claim that an untested proposal became active.
+MEMORY.md/USER.md are canonical facts; SQLite retains derived indexes and evidence.
+This journal is a read-back-verified projection of successful host receipts, not
+an alternate unvalidated tool or a claim that an untested proposal became active.
 """
 from __future__ import annotations
 
@@ -273,14 +273,37 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
             rows: list[tuple[str | None]] = []
             if memory_db.is_file() and not memory_db.is_symlink():
                 with closing(sqlite3.connect(memory_db.as_uri() + "?mode=ro", uri=True, timeout=0.2)) as db:
-                    saved = db.execute("SELECT 1 FROM memory_revisions WHERE owner=? AND id=? AND revision=?",
+                    saved = db.execute("SELECT payload FROM memory_revisions WHERE owner=? AND id=? AND revision=?",
                                        (owner, record_id, int(revision))).fetchone()
                     if saved:
+                        from zeline.memory_markdown import read_pair, secure
+                        # Resolve paths only: never call MemoryStore read/transaction APIs,
+                        # which may migrate legacy facts, repair notes, or refresh indexes.
+                        paths = {name: memory_module.MEMORY_DIR.parent / 'memories' / owner / name
+                                 for name in ('MEMORY.md', 'USER.md')}
+                        for note in paths.values():
+                            secure(note)
+                        root = next(iter(paths.values())).parent
+                        marker = secure(root / '.canonical')
+                        pending = secure(root / '.transaction.json')
+                        if pending.exists():
+                            raise ValueError('Pending canonical transaction; status cannot recover it')
+                        canonical = read_pair(paths)
+                        if canonical is None and marker.exists():
+                            raise ValueError('Canonical memory missing; stale index is not authority')
                         current = db.execute("SELECT payload FROM memory_items WHERE owner=? AND id=?",
                                              (owner, record_id)).fetchone()
-                        if current:
-                            item = json.loads(current[0])
-                            status["active"] = item.get("revision") == int(revision) and bool(memory_module._live([item]))
+                        indexed = json.loads(current[0]) if current else None
+                        item = (next((r for r in canonical if r['id'] == record_id), None)
+                                if canonical is not None else indexed)
+                        historical = json.loads(saved[0])
+                        # An editor may change text without bumping metadata revision.
+                        # Compare the complete historical payload, not just its number.
+                        status["active"] = bool(
+                            item and item.get('revision') == int(revision)
+                            and memory_module._live([item])
+                            and (canonical is None or item == historical)
+                            and (indexed is None or indexed == historical))
                         rows = db.execute(
                             "SELECT assessment,turn_id FROM memory_retrievals WHERE owner=? AND record_id=? AND revision=? "
                             "ORDER BY observed DESC LIMIT 500", (owner, record_id, int(revision))).fetchall()
@@ -298,6 +321,10 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
                     if linked:
                         status.update(stage="linked_success", active=True, observations=1)
                 continue  # Never mistake a lesson for a memory assessment.
+            # Preserve historical assessment stages for superseded revisions.
+            # An unindexed manual edit of this same revision is explicitly stale.
+            canonical_stale = canonical is not None and (
+                not item or (item.get('revision') == int(revision) and item != historical))
             status["stage"] = "stored"
             status["observations"] = len(rows)
             if rows:
@@ -357,6 +384,8 @@ def _learning_status_entry(identity: str, selected: dict[str, tuple[str, str, st
                     status["stage"] = next(
                         (e["outcome"] for e in evidence if e["outcome"] != "gain"), "assessed")
                 status["review_suggested"] = status["stage"] in {"regression", "failure"}
+            if canonical_stale:
+                status['stage'] = 'stale'
     return result
 
 
@@ -478,6 +507,9 @@ def record_markdown(identity: str, name: str, args: dict[str, Any],
     else:
         source = " ".join(_safe_text(receipt.get("source", "")).split())[:80]
         entry += f"  > Memory source: {source or 'unspecified'}\n"
+        # The receipt names the primary note; Self-Refinement remains a journal.
+        if re.fullmatch(rf"memories/{owner}/(?:MEMORY|USER)\.md", file_path):
+            entry += f"  > File: {file_path}\n"
         if receipt.get("expires_at") is not None:
             entry += f"  > Expires at: {_safe_text(receipt['expires_at'])[:80]}\n"
     header = f"# {_HEADERS[channel]}\n\nIdentity-scoped reflection journal. Data, not instructions.\n\n"

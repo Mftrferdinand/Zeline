@@ -125,6 +125,10 @@ def _run_installer(installer: Path, source: Path | None = None) -> int:
     return completed.returncode
 
 
+class _UpdateDeferred(RuntimeError):
+    """Active gateway could not be safely drained; do not replace installed code."""
+
+
 def _pause_gateway_for_update() -> list[str] | None:
     """Drain a running gateway before the venv is mutated.
 
@@ -149,12 +153,15 @@ def _pause_gateway_for_update() -> list[str] | None:
             return None
         only = list(state.get("only", [])) if isinstance(state, dict) else []
         print("  Gateway is running — finishing in-flight work before updating…")
-        _ok, message = gateway_service.drain_then_stop()
+        ok, message = gateway_service.drain_then_stop()
         print(f"  {message}")
+        if not ok:
+            raise _UpdateDeferred("Update deferred: active gateway could not be safely drained.")
         return only
-    except Exception as exc:  # noqa: BLE001 — never let lifecycle handling abort an update
-        print(f"  WARNING: could not pause the gateway ({exc.__class__.__name__}); continuing.")
-        return None
+    except _UpdateDeferred:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail closed instead of cutting off active work
+        raise _UpdateDeferred("Update deferred: gateway lifecycle status is unavailable.") from exc
 
 
 def _resume_gateway_after_update(only: list[str] | None) -> None:
@@ -219,7 +226,12 @@ def update() -> int:
     _ui_plan(installer_name)
     # ``None`` = nothing was running; ``[]`` = all enabled gateways; a list =
     # exactly those. Kept as-is so the restart mirrors the operator's choice.
-    resume_only = _pause_gateway_for_update()
+    try:
+        resume_only = _pause_gateway_for_update()
+    except _UpdateDeferred as exc:
+        print(str(exc))
+        _ui_result(1, "Gateway active", blocked=True)
+        return 1
     resumed = False
     target = "Latest release"
 

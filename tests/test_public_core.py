@@ -1767,12 +1767,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         commands = telegram._telegram_commands()
         self.assertEqual(
             [item["command"] for item in commands],
-            ["model", "status", "repository", "deleterepository", "undo", "stats", "events", "lessons", "self", "skillforge", "stop", "new", "version", "update"],
+            ["model", "status", "runtime", "repository", "deleterepository", "undo", "stats", "events", "lessons", "self", "skillforge", "stop", "new", "version", "update"],
         )
         by_name = {item["command"]: item["description"] for item in commands}
         self.assertEqual(by_name, {
             "model": "Switch model",
             "status": "View runtime status",
+            "runtime": "Open local runtime dashboard",
             "repository": "Project registry",
             "deleterepository": "Delete a registry entry",
             "version": "Show version",
@@ -2494,17 +2495,17 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Loading skill: test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
-        self.assertEqual(shell, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">python -m unittest tests.test_agent</code></pre>")
+        self.assertEqual(shell, "💻 Executing command… <pre><code class=\"language-shell\">python -m unittest tests.test_agent</code></pre>")
         self.assertIn("python -m unittest tests.test_agent", shell)
         self.assertTrue(shell.endswith("</pre>"))
-        # header kartu sekarang 🔴🟡🟢 (permintaan operator), bukan label Shell.
-        self.assertNotIn("language-shell", shell)
+        # Standard Shell header restored by operator request.
+        self.assertIn("language-shell", shell)
         self.assertNotIn("Zeline Terminal", shell)
         self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading file: agent.py L1-300")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "zeline/agent.py", "offset": 1, "limit": 300}), "📖 Reading agent.py L1-300")
         # read_file tanpa offset/limit → tanpa rentang baris, font normal.
-        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading file: hotel-dashboard.html")
+        self.assertEqual(telegram._tool_progress_text("read_file", {"path": "/data/data/com.termux/files/home/hotel-dashboard.html"}), "📖 Reading hotel-dashboard.html")
         self.assertEqual(telegram._tool_progress_text("write_file", {"path": "app.py"}), "📝 Writing file: <code>app.py</code>")
         self.assertEqual(telegram._tool_progress_text("edit_file", {"path": "app.py"}), "📝 Editing file: <code>app.py</code>")
         self.assertEqual(telegram._tool_progress_text("patch_file", {"path": "app.py"}), "📝 Editing file: <code>app.py</code>")
@@ -2525,12 +2526,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # varian kartu besar di Telegram ada dua: `<code class="language-...">`
         # di dalam `<pre>`, dan isi yang melebihi satu baris.
         search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
-        self.assertEqual(search, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">python -searching ftmo -v</code></pre>")
+        self.assertEqual(search, "💻 Executing command… <pre><code class=\"language-shell\">python -searching ftmo -v</code></pre>")
         self.assertNotIn("Zeline Terminal", search)
         self.assertNotIn("📺", search)
         coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
-        self.assertEqual(coding, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">pytest -q</code></pre>")
-        self.assertNotIn("language-shell", coding)
+        self.assertEqual(coding, "💻 Executing command… <pre><code class=\"language-shell\">pytest -q</code></pre>")
+        self.assertIn("language-shell", coding)
         self.assertNotIn("Zeline Terminal", coding)
         self.assertNotIn("📺", coding)
         # Command panjang / multiline diratakan jadi SATU baris pendek yang
@@ -2548,7 +2549,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(truncated.endswith(f"{telegram._TRUNCATION_MARK}</code></pre>"))
         self.assertNotIn("…", truncated.split("<pre>", 1)[1])
         self.assertNotIn("\n", truncated)
-        self.assertNotIn("language-shell", truncated)
+        self.assertIn("language-shell", truncated)
         # Isi mentah (setelah unescape) tidak melebihi batas preview + penanda,
         # jadi kartu tidak bisa tumbuh melewati satu baris.
         import html as _html
@@ -2607,7 +2608,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertEqual(telegram._finalize_line("🔍 Researching in depth: FundedNext prop firm review"), "📖 Read web · FundedNext prop firm review")
         self.assertEqual(telegram._finalize_line("📖 Reading <code>agent.py</code> L1-27"), "📖 Reading <code>agent.py</code> L1-27")
 
-    def test_telegram_live_status_collapses_only_search_research(self):
+    def test_telegram_live_status_retains_distinct_search_queries(self):
         telegram = importlib.import_module("zeline.gateways.telegram")
 
         def fake_api(_api, method, **kwargs):
@@ -2618,13 +2619,13 @@ class ZelinePublicCoreTests(unittest.TestCase):
         with mock.patch.object(telegram, "_api_call", side_effect=fake_api):
             live = telegram._LiveStatus("bot-api", 1)
             live.add("🔎 Searching the web: FTMO 2025")
-            live.add("🔎 Searching the web: FTMO OANDA")   # kategori sama → collapse
-            live.add("🔎 Searching the web: FTMO rules")   # tetap satu baris search
+            live.add("🔎 Searching the web: FTMO OANDA")
+            live.add("🔎 Searching the web: FTMO rules")
             live.add("🔍 Researching in depth: FTMO")
-        # Search/research tetap di-collapse (repetitif): 1 search + 1 research.
+        # Distinct invocations share a feed without being counted as reruns.
         searches = [l for l in live.lines if l.startswith("🔎 Searching the web")]
-        self.assertEqual(len(searches), 1)
-        self.assertEqual(searches[0], "🔎 Searching the web: FTMO rules")  # baris terbaru
+        self.assertEqual(searches, ["🔎 Searching the web: FTMO 2025", "🔎 Searching the web: FTMO OANDA", "🔎 Searching the web: FTMO rules"])
+        self.assertNotIn('(x', live._feed_text())
         self.assertEqual(len([l for l in live.lines if l.startswith("🔍 Researching in depth")]), 1)
 
     def test_telegram_live_status_does_not_collapse_coding_actions(self):

@@ -80,7 +80,7 @@ class ToolProgressUiV2Tests(unittest.TestCase):
             ("remove_memory", {"substring": "stale"}, "🌀 Removing memory…"),
             ("search_files", {"query": "handler"}, "🔎 Searching workspace: handler"),
             ("undo_file", {"action": "list"}, "⏱️ Reviewing file checkpoints…"),
-            ("run_shell", {"command": "pytest -q"}, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">pytest -q</code></pre>"),
+            ("run_shell", {"command": "pytest -q"}, "💻 Executing command… <pre><code class=\"language-shell\">pytest -q</code></pre>"),
             ("process_control", {"action": "poll", "job_id": "job-1"}, "🛄 Checking process status <code>job-1</code>…"),
             ("system_env", {}, "🖥️ Inspecting system environment…"),
             ("git", {"action": "branch"}, "🗳️ Listing repository branches…"),

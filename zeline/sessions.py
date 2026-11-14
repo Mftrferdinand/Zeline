@@ -75,6 +75,7 @@ class Session:
     cancelling: bool = False
     stop_cleanups: int = 0
     persistence_error: str = ""
+    review_deferred: bool = False
 
 
 class SessionStore:
@@ -357,6 +358,9 @@ class SessionStore:
                     if session.title == "New Session":
                         session.title = text.strip().splitlines()[0][:80] or "New Session"
 
+                # A failed turn keeps learning evidence but must not immediately
+                # hit the same provider again through an optional background review.
+                session.review_deferred = True
                 # Persist the inbound request before provider dispatch. If the
                 # process dies before Zeline.send reaches its first internal
                 # checkpoint, a later “continue” still sees this request.
@@ -391,14 +395,18 @@ class SessionStore:
                         raise ZelineError("Progress could not be saved; no further tools were started. "
                                           "Verify the last action before retrying.") from None
 
-                reply = session.agent.send(
-                    text, on_tool=on_tool, on_tool_result=on_tool_result,
-                    on_iteration=iteration, should_stop=ticket.cancel_event.is_set,
-                    interrupt_reason=lambda: ticket.reason,
-                    take_steer=take_steer, on_narration=on_narration,
-                    on_stream_delta=on_stream_delta, on_checkpoint=checkpoint,
-                    **({"task_reference": task_reference} if task_reference else {}),
-                )
+                from zeline.runtime_state import Trace
+                with Trace(identity, text, model=getattr(session.agent, "model", "")) as observed, observed.provider(session.agent):
+                    reply = session.agent.send(
+                        text, on_tool=observed.tool(on_tool), on_tool_result=observed.result(on_tool_result),
+                        on_iteration=observed.iteration(iteration), should_stop=ticket.cancel_event.is_set,
+                        interrupt_reason=lambda: ticket.reason,
+                        take_steer=take_steer, on_narration=observed.narration(on_narration),
+                        on_stream_delta=observed.stream(on_stream_delta), on_checkpoint=checkpoint,
+                        **({"task_reference": task_reference} if task_reference else {}),
+                    )
+                    if ticket.cancel_event.is_set() or reply == "Stopped.":
+                        observed.outcome = "cancelled"
                 if ticket.cancel_event.is_set():
                     reply = "Stopped."
                 session.last_used = time.monotonic()
@@ -421,6 +429,7 @@ class SessionStore:
                         if not ticket.cancel_event.is_set():
                             reply += ("\n\n⚠️ Riwayat percakapan ini gagal disimpan. "
                                       "Hasil tugas tidak dibatalkan. " + recovery_note)
+                session.review_deferred = ticket.cancel_event.is_set() or reply == "Stopped."
                 return reply
         finally:
             # Gateway reservations span result delivery too, so the next turn
@@ -522,6 +531,8 @@ class SessionStore:
         ada, terlalu ringan, atau tidak ada yang layak disimpan. Ambang default
         disamakan dengan ``Zeline.reflect`` (5) supaya keputusan "sesi ini cukup
         berbobot untuk direfleksikan" tidak berbeda tergantung pemanggil.
+        Failed or stopped turns keep their learning evidence pending; a later
+        successful user turn re-enables the optional provider review.
         """
         with self._lock:
             session = self._sessions.get(identity)
@@ -534,7 +545,8 @@ class SessionStore:
         previous_executor_check = getattr(session.agent.executor, "_should_stop", None)
         try:
             with self._lock:
-                if session.running or session.pending_turns or session.cancel_event.is_set():
+                if (session.running or session.pending_turns or session.cancel_event.is_set()
+                        or session.review_deferred):
                     return None
                 ticket = TurnTicket(identity, session, maximum=5)
                 ticket.started_at = time.monotonic()

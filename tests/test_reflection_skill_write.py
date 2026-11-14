@@ -31,7 +31,7 @@ def test_reflect_runs_patch_and_projects_real_review_result():
         with mock.patch.object(agent, "_call_llm", side_effect=[call, {"role": "assistant", "content": "NO_ACTION"}]):
             report = agent.reflect(min_tool_calls=5)
         assert report.startswith("📘 Self-improvement review: Patched SKILL.md in skill 'demo-flow' (1 replacement).")
-        assert "Self-Improvement.md" not in report
+        assert "Self-Improvement.md" in report
         journal = agent_module.config.DATA_DIR / "learning" / agent.executor.memory.key / "Self-Improvement.md"
         assert journal.is_file()
         assert "Run focused checks" in journal.read_text(encoding="utf-8")
@@ -71,7 +71,7 @@ def test_verified_small_reflection_patch_writes_skill_md_and_reports_it():
         receipt["markdown_file"] = journal.relative_to(agent_module.config.DATA_DIR).as_posix()
         summary = agent_module._format_reflection_actions([("manage_skill", args, json.dumps(receipt))])
         assert summary.startswith("📘 Self-improvement review: Patched SKILL.md in skill 'demo-flow' (1 replacement).")
-        assert "Self-Improvement.md" not in summary
+        assert "Self-Improvement.md" in summary
 
 
 def test_reflection_patches_skill_and_existing_reference_with_verified_receipts():
@@ -107,10 +107,10 @@ def test_reflection_patches_skill_and_existing_reference_with_verified_receipts(
             for i, args in enumerate(edits)]}
         with mock.patch.object(agent, "_call_llm", side_effect=[call, {"role": "assistant", "content": "NO_ACTION"}]):
             report = agent.reflect(min_tool_calls=5)
-        assert report == ("📘 Self-improvement review: "
-            "Patched SKILL.md in skill 'demo-flow' (1 replacement). · "
-            "Patched references/runbook.md in skill 'demo-flow' (1 replacement). · "
-            "Patched references/backup.md in skill 'demo-flow' (1 replacement).")
+        journal_path = f"learning/{agent.executor.memory.key}/Self-Improvement.md"
+        expected = [f"Patched {name} in skill 'demo-flow' (1 replacement). File: skills/private/demo-flow/{name}. Journal: {journal_path}."
+                    for name in ('SKILL.md', 'references/runbook.md', 'references/backup.md')]
+        assert report == "📘 Self-improvement review: " + ' · '.join(expected)
         assert "Verify output and logs." in ref.read_text(encoding="utf-8")
         assert "Verify output and logs." in agent.executor.run(
             "load_skill", {"name": "demo-flow", "file_path": "references/runbook.md"})
@@ -239,7 +239,9 @@ def test_reflection_has_enough_rounds_to_discover_read_and_patch_reference():
         calls.append({"role": "assistant", "content": "NO_ACTION"})
         with mock.patch.object(agent, "_call_llm", side_effect=calls):
             report = agent.reflect(min_tool_calls=5)
-        assert report == "📘 Self-improvement review: Patched references/runbook.md in skill 'demo-flow' (1 replacement)."
+        assert report == ("📘 Self-improvement review: Patched references/runbook.md in skill 'demo-flow' (1 replacement). "
+                          "File: skills/private/demo-flow/references/runbook.md. "
+                          f"Journal: learning/{agent.executor.memory.key}/Self-Improvement.md.")
         assert "Verify output and logs." in ref.read_text(encoding="utf-8")
 
 
