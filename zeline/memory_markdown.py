@@ -224,8 +224,6 @@ def locked(paths, timeout):
     try:
         if os.name == 'nt':
             import msvcrt
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b'\0')
             def acquire():
                 os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
@@ -250,6 +248,11 @@ def locked(paths, timeout):
                 if time.monotonic() >= deadline:
                     raise sqlite3.OperationalError('Memory lock timeout') from exc
                 time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+        # Windows byte locks may extend beyond EOF. Initialize only after
+        # acquiring: a peer can lock byte zero after our empty-file check,
+        # making a pre-lock write fail with EACCES outside the retry loop.
+        if os.name == 'nt' and os.fstat(fd).st_size == 0:
+            os.write(fd, b'\0')
         recover(paths)
         yield
     finally:

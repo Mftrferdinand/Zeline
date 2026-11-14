@@ -115,7 +115,9 @@ def test_timeout_cancel_and_cleanup(executor, monkeypatch, cancel):
         paths.append(obj.name)
         return obj
     monkeypatch.setattr(code_tools.tempfile, 'TemporaryDirectory', temporary)
-    monkeypatch.setattr(tools, '_clamp_timeout', lambda value: 1)
+    # Give the nested command its own deadline before the owning snippet expires.
+    # Equal deadlines race timeout reporting against bridge cancellation.
+    monkeypatch.setattr(tools, '_clamp_timeout', lambda value: int(value))
     stop = threading.Event()
     executor._should_stop = stop.is_set
     timer = threading.Timer(.3, stop.set) if cancel else None
@@ -123,7 +125,7 @@ def test_timeout_cancel_and_cleanup(executor, monkeypatch, cancel):
         timer.start()
     started = time.monotonic()
     try:
-        result = executor.run('execute_code', {'code': f"from zeline_tools import terminal; print(terminal({python_command('import time; time.sleep(20)')!r}))"})
+        result = executor.run('execute_code', {'code': f"from zeline_tools import terminal; print(terminal({python_command('import time; time.sleep(20)')!r}, timeout=1))", 'timeout': 3})
     finally:
         if timer:
             timer.cancel()
