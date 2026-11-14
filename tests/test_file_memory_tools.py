@@ -12,7 +12,7 @@ class FileMemoryToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="zeline-file-tools-") as home:
             env = {k: v for k, v in os.environ.items() if k in {
                 "PATH", "PREFIX", "LD_LIBRARY_PATH", "LD_PRELOAD", "TMPDIR", "LANG"}}
-            env.update(HOME=home, USERPROFILE=home, ZELINE_HOME=home + "/.zeline", PYTHONDONTWRITEBYTECODE="1")
+            env.update(HOME=home, USERPROFILE=home, ZELINE_HOME=home + "/.zeline", PYTHONDONTWRITEBYTECODE="1", PYTHONHASHSEED="0")
             prefix = "import sys,socket,json\nfrom pathlib import Path\n"
             prefix += f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
             prefix += "socket.create_connection=lambda *a,**k: (_ for _ in ()).throw(AssertionError('network forbidden'))\n"
