@@ -59,9 +59,15 @@ assert 'Operator prefers concise fixtures.' not in json.dumps(r), r
 
     def test_batch_journal_failure_keeps_json_and_committed_receipt(self):
         self.run_fixture("""
-from unittest.mock import patch
-with patch('zeline.reflection_markdown.record_markdown',side_effect=OSError('fixture journal unavailable')):
+import zeline.reflection_markdown as markdown
+original_record_markdown=markdown.record_markdown
+def fail_record_markdown(*args,**kwargs):
+    raise OSError('fixture journal unavailable')
+markdown.record_markdown=fail_record_markdown
+try:
     r=json.loads(ex.run('add_memory',{'operations':[{'action':'add','text':'Fixture memory survives journal failure.'}]}))
+finally:
+    markdown.record_markdown=original_record_markdown
 assert r['success'] is True and len(r['changed'])==1, r
 assert r['warning']=='journal unavailable; canonical memory saved', r
 assert r['file_paths']==[f'memories/{ex.memory.key}/MEMORY.md'], r
