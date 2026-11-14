@@ -13,8 +13,10 @@ import hashlib
 from html import escape
 import json
 import math
+import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -47,6 +49,14 @@ REFLECTION_CONFIDENCE = 0.6
 MAX_PROMPT_CHARACTERS = 6000
 MAX_RECALL_RECORDS = 8
 MAX_RECALL_CHARACTERS = 4000
+
+
+def _new_id() -> str:
+    """Return a record id even when the host crypto provider is unavailable."""
+    try:
+        return uuid.uuid4().hex
+    except Exception:
+        return f"{time.time_ns():x}-{os.getpid():x}-{threading.get_ident():x}"
 # Function words alone are not evidence of a shared topic. Public search keeps
 # its historical semantics; automatic recall filters these words and requires
 # any supplied domain/email identifier to match exactly.
@@ -113,7 +123,7 @@ def _coerce_record(item: Any) -> dict[str, Any] | None:
         return None
     now = time.time()
     return {
-        "id": str(item.get("id") or uuid.uuid4().hex),
+        "id": str(item.get("id") or _new_id()),
         "text": str(item["text"]).strip(),
         "kind": str(item.get("kind") or "fact"),
         "source": str(item.get("source") or "user"),
@@ -762,7 +772,7 @@ class MemoryStore:
                         record = _coerce_record({**op, "text": text, "source": source,
                                                 "confidence": REFLECTION_CONFIDENCE if source == "reflection" else 1.0,
                                                 "expires_at": expires_at,
-                                                "id": uuid.uuid4().hex, "revision": 1, "state": "active"})
+                                                "id": _new_id(), "revision": 1, "state": "active"})
                         assert record is not None
                         records.append(record)
                     elif action in {"replace", "remove"}:

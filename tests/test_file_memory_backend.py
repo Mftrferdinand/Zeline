@@ -167,3 +167,13 @@ def test_unicode_marker_roundtrip_classification_and_isolation(store):
     other = memory.MemoryStore('../test:other')
     assert other.list() == []
     assert other.canonical_paths != store.canonical_paths
+
+
+def test_record_id_falls_back_when_host_crypto_provider_is_unavailable(store, monkeypatch):
+    def unavailable_uuid():
+        raise OSError('provider unavailable')
+
+    monkeypatch.setattr(memory.uuid, 'uuid4', unavailable_uuid)
+    receipt = store.add_receipt('still persists without random provider')
+    assert receipt['state'] == 'created'
+    assert receipt['record_id']
