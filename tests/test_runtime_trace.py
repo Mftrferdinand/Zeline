@@ -94,6 +94,16 @@ class RuntimeTraceTests(unittest.TestCase):
                 completed = True
         self.assertTrue(completed)
 
+    def test_uuid_provider_failure_does_not_prevent_work(self):
+        trace = importlib.import_module("zeline.runtime_trace")
+        with mock.patch.object(trace.uuid, "uuid4", side_effect=OSError("provider unavailable")):
+            with trace.tool_span("owner", "read_file"):
+                completed = True
+        self.assertTrue(completed)
+        rows = [json.loads(line) for line in trace.trace_path().read_text().splitlines()]
+        self.assertEqual(rows[0]["call_id"], rows[1]["call_id"])
+        self.assertTrue(rows[0]["call_id"].startswith("fallback-"))
+
     def test_rotated_trace_has_bounded_file_count(self):
         trace = importlib.import_module("zeline.runtime_trace")
         with mock.patch.object(trace, "MAX_TRACE_BYTES", 1024):
