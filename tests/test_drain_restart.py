@@ -7,7 +7,7 @@ user asked for. These tests pin the drain path end to end:
 - The gateway process exits only after active turns finish (SIGUSR1 path).
 - `zeline update` drains a live gateway before mutating the venv and brings
   it back afterwards.
-- Windows, which has no SIGUSR1, falls back to the existing stop path.
+- Unsupported or timed-out drains defer restart; explicit stop is separate.
 """
 from __future__ import annotations
 
@@ -193,61 +193,44 @@ class GatewayDrainStopTests(unittest.TestCase):
         self.assertIn("drained", message.casefold())
 
     @unittest.skipIf(not hasattr(signal, "SIGUSR1"), "POSIX-only signal path")
-    def test_failed_drain_escalates_and_says_work_may_be_cut_off(self):
+    def test_failed_drain_defers_without_cutting_off_work(self):
         state = {"pid": 4321, "start_token": "t", "start_ticks": "1", "drain": True}
-        with mock.patch.object(self.service, "_load_state", return_value=state), \
-             mock.patch.object(self.service, "_process_matches_state", return_value=True), \
-             mock.patch.object(self.service, "_signal_process", return_value=True), \
-             mock.patch.object(self.service, "stop", return_value=(True, "Gateway stopped (managed, PID 4321).")) as hard_stop:
-            ok, message = self.service.drain_then_stop(drain_timeout=0.0 + 0.2)
-        self.assertTrue(ok)
-        hard_stop.assert_called_once()
-        self.assertIn("cut off", message.casefold())
-
-    def test_zero_timeout_keeps_the_old_immediate_stop(self):
-        with mock.patch.object(self.service, "stop", return_value=(True, "Gateway stopped.")) as hard_stop, \
-             mock.patch.object(self.service, "_signal_process") as sig:
-            ok, _message = self.service.drain_then_stop(drain_timeout=0)
-        self.assertTrue(ok)
-        hard_stop.assert_called_once()
-        sig.assert_not_called()
-
-    def test_windows_falls_back_to_stop_because_it_has_no_sigusr1(self):
-        with mock.patch.object(self.service, "IS_WINDOWS", True), \
-             mock.patch.object(self.service, "stop", return_value=(True, "Gateway stopped.")) as hard_stop, \
-             mock.patch.object(self.service, "_signal_process") as sig:
-            ok, _message = self.service.drain_then_stop(drain_timeout=30)
-        self.assertTrue(ok)
-        hard_stop.assert_called_once()
-        sig.assert_not_called()
-
-    def test_no_running_gateway_delegates_to_stop(self):
-        with mock.patch.object(self.service, "_load_state", return_value=None), \
-             mock.patch.object(self.service, "stop", return_value=(False, "Gateway is not running.")) as hard_stop:
-            ok, message = self.service.drain_then_stop(drain_timeout=30)
+        with mock.patch.object(self.service, "_load_state", return_value=state), mock.patch.object(self.service, "_process_matches_state", return_value=True), mock.patch.object(self.service, "_signal_process", return_value=True), mock.patch.object(self.service.time, "monotonic", side_effect=[0,100]), mock.patch.object(self.service, "stop") as hard_stop:
+            ok, message = self.service.drain_then_stop(drain_timeout=0.2)
         self.assertFalse(ok)
-        hard_stop.assert_called_once()
+        hard_stop.assert_not_called()
+        self.assertIn("deferred", message.casefold())
+
+    def test_zero_timeout_does_not_authorize_an_immediate_stop(self):
+        with mock.patch.object(self.service, "stop") as hard_stop, mock.patch.object(self.service, "_signal_process") as sig:
+            ok, _message = self.service.drain_then_stop(drain_timeout=0)
+        self.assertFalse(ok)
+        hard_stop.assert_not_called()
+        sig.assert_not_called()
+
+    def test_windows_defers_when_safe_drain_is_unavailable(self):
+        with mock.patch.object(self.service, "IS_WINDOWS", True), mock.patch.object(self.service, "stop") as hard_stop, mock.patch.object(self.service, "_signal_process") as sig:
+            ok, _message = self.service.drain_then_stop(drain_timeout=30)
+        self.assertFalse(ok)
+        hard_stop.assert_not_called()
+        sig.assert_not_called()
+
+    def test_no_running_gateway_needs_no_stop(self):
+        with mock.patch.object(self.service, "_load_state", return_value=None), mock.patch.object(self.service, "status", return_value=(False,"not running",None)), mock.patch.object(self.service, "stop") as hard_stop:
+            ok, message = self.service.drain_then_stop(drain_timeout=30)
+        self.assertTrue(ok)
+        hard_stop.assert_not_called()
         self.assertIn("not running", message.casefold())
 
     @unittest.skipIf(not hasattr(signal, "SIGUSR1"), "POSIX-only signal path")
     def test_gateway_without_the_drain_marker_is_never_signalled(self):
-        """A pre-drain child has no SIGUSR1 handler; the default action kills it.
-
-        Signalling it would be WORSE than the old behaviour — SIGUSR1's default
-        POSIX disposition terminates the process immediately, skipping the
-        graceful SIGTERM phase. So an unmarked state must fall back to `stop`
-        and say why.
-        """
         legacy_state = {"pid": 4321, "start_token": "t", "start_ticks": "1"}
-        with mock.patch.object(self.service, "_load_state", return_value=legacy_state), \
-             mock.patch.object(self.service, "_process_matches_state", return_value=True), \
-             mock.patch.object(self.service, "_signal_process") as sig, \
-             mock.patch.object(self.service, "stop", return_value=(True, "Gateway stopped (managed, PID 4321).")) as hard_stop:
+        with mock.patch.object(self.service, "_load_state", return_value=legacy_state), mock.patch.object(self.service, "_process_matches_state", return_value=True), mock.patch.object(self.service, "_signal_process") as sig, mock.patch.object(self.service, "stop") as hard_stop:
             ok, message = self.service.drain_then_stop(drain_timeout=30)
-        self.assertTrue(ok)
+        self.assertFalse(ok)
         sig.assert_not_called()
-        hard_stop.assert_called_once()
-        self.assertIn("predates drain support", message.casefold())
+        hard_stop.assert_not_called()
+        self.assertIn("predates safe drain support", message.casefold())
 
     def test_start_marks_new_children_as_drain_capable(self):
         """`drain_then_stop` relies on this flag; pin that `start` writes it."""
@@ -335,7 +318,8 @@ class UpdaterGatewayLifecycleTests(unittest.TestCase):
 
     def test_pause_helper_survives_a_broken_gateway_service(self):
         with mock.patch.object(self.service, "status", side_effect=RuntimeError("boom")):
-            self.assertFalse(self.updater._pause_gateway_for_update())
+            with self.assertRaises(self.updater._UpdateDeferred):
+                self.updater._pause_gateway_for_update()
 
 
 if __name__ == "__main__":

@@ -559,9 +559,9 @@ def cmd_setup_agent() -> int:
     cfg = config.stored_config_copy()
     agent_cfg = cfg.setdefault("agent", {})
     name = _ask("Agent name", str(cfg.get("name", "Zeline"))).strip() or "Zeline"
-    rounds_raw = _ask("Max tool rounds [1-50]", str(agent_cfg.get("max_tool_rounds", config.DEFAULT_MAX_TOOL_ROUNDS)))
+    rounds_raw = _ask("Max tool rounds [0=unlimited, 1-100000]", str(agent_cfg.get("max_tool_rounds", config.DEFAULT_MAX_TOOL_ROUNDS)))
     turn_seconds_raw = _ask(
-        f"Max turn seconds [{int(config.MIN_CONFIGURABLE_TURN_SECONDS)}-{int(config.MAX_CONFIGURABLE_TURN_SECONDS)}]",
+        f"Max turn seconds [0=unlimited, {int(config.MIN_CONFIGURABLE_TURN_SECONDS)}-{int(config.MAX_CONFIGURABLE_TURN_SECONDS)}]",
         str(int(float(agent_cfg.get("max_turn_seconds", config.DEFAULT_MAX_TURN_SECONDS)))),
     )
     sessions_raw = _ask("Max sessions [1-1000]", str(agent_cfg.get("max_sessions", 50)))
@@ -577,10 +577,10 @@ def cmd_setup_agent() -> int:
     except ValueError:
         print("Max tool rounds, max turn seconds, and max sessions must be numbers.")
         return 2
-    if not 1 <= rounds <= 50:
-        print("Max tool rounds must be between 1 and 50.")
+    if not 0 <= rounds <= 100_000:
+        print("Max tool rounds must be 0 (unlimited) or between 1 and 100000.")
         return 2
-    if not config.MIN_CONFIGURABLE_TURN_SECONDS <= turn_seconds <= config.MAX_CONFIGURABLE_TURN_SECONDS:
+    if turn_seconds != 0 and not config.MIN_CONFIGURABLE_TURN_SECONDS <= turn_seconds <= config.MAX_CONFIGURABLE_TURN_SECONDS:
         print(
             "Max turn seconds must be between "
             f"{int(config.MIN_CONFIGURABLE_TURN_SECONDS)} and "
@@ -1345,8 +1345,10 @@ def cmd_gateway_stop() -> int:
 def cmd_gateway_restart(only: list[str] | None = None) -> int:
     # Restart harus MENUNGGU kerja yang sedang jalan, bukan memotongnya:
     # SIGUSR1 → drain → exit, dengan eskalasi paksa hanya bila drain gagal.
-    _stopped, stop_message = gateway_service.drain_then_stop()
+    stopped, stop_message = gateway_service.drain_then_stop()
     print(stop_message)
+    if not stopped:
+        return 1
     started, start_message = gateway_service.start(only=only)
     print(start_message)
     if not started:
@@ -1430,6 +1432,24 @@ def _router_diagnostics():
     return detect_9router(config.BASE_URL, _provider_display())
 
 
+def _gateway_activity_detail(adapters: list[str], observation: dict, *, enabled: bool) -> str:
+    """Foreground feedback reports observed work, not a decorative busy claim."""
+    base = "Adapters: " + ", ".join(adapters)
+    if not enabled:
+        return "Task telemetry unavailable · " + base
+    rows = [row for row in observation.get("agents", [])
+            if isinstance(row, dict) and row.get("active") is True]
+    if not rows:
+        return "idle; waiting for tasks · " + base
+    def clean(value):
+        return "".join(char for char in str(value or "") if char.isprintable())[:90]
+    row = rows[-1]
+    state = clean(row.get("state")) or "state not reported"
+    tool = clean(row.get("tool"))
+    activity = state + (f" · last tool: {tool}" if tool else "")
+    return f"{activity} · {len(rows)} active · {base}"
+
+
 def _run_gateway_loop(only: list[str] | None) -> int:
     """Loop gateway foreground. Dipisah agar kunci proses dilepas di satu tempat."""
     _print_banner()
@@ -1455,8 +1475,14 @@ def _run_gateway_loop(only: list[str] | None) -> int:
     if wake_message:
         print(f"  {wake_message}", flush=True)
     sessions = SessionStore()
+    from zeline import runtime_state
+    # Polling can deliver queued messages immediately; enable observation before
+    # adapter threads start, not after the first task has already entered send().
+    if os.environ.get("ZELINE_RUNTIME_ENABLED", "1").lower() not in {"0", "false", "off"}:
+        runtime_state.STATE.enable()
     runtime = run_all(sessions, config.GATEWAYS, names=only)
     if not runtime.threads:
+        runtime_state.STATE.disable()
         if screen is not None:
             screen.set_state("FAILED", "no gateway passed validation")
         print("No gateway passed validation.")
@@ -1474,6 +1500,10 @@ def _run_gateway_loop(only: list[str] | None) -> int:
             print(f"  [cron] {len(pending)} scheduled job(s) armed", flush=True)
     elif cron_module.list_jobs():
         print("  [cron] disabled by config (tools.cron = false)", flush=True)
+
+    # The read-only localhost dashboard shares the gateway's lifetime.
+    runtime_state.start_dashboard(sessions, runtime, cron,
+                                  provider=str(config.PROVIDER.get("name", "")))
 
     # Durable jobs live outside parent sessions and /new. The gateway owns
     # their worker, independently of whether recurring cron jobs are enabled.
@@ -1516,18 +1546,21 @@ def _run_gateway_loop(only: list[str] | None) -> int:
         if screen is not None:
             screen.set_state("DRAINING", "finishing in-flight work")
         print(f"\n==> Draining (up to {int(timeout)}s) before restart…", flush=True)
-        # Stop arming new jobs first, or a tick during the drain starts work we
-        # are about to kill.
+        # Pause admission while draining; do not destroy workers to perform
+        # a deployment. On timeout, keep the active turn alive and admit work again.
+        finished, busy = sessions.drain(timeout=timeout)
+        if not finished:
+            sessions.resume()
+            if screen is not None:
+                screen.set_state("RUNNING", "restart deferred; active work continues")
+            print(f"  Restart deferred; active work continues: {', '.join(busy)}", flush=True)
+            return
+        print("  ✅ All turns finished; no work was cut off.", flush=True)
         review_stop.set()
         if review_thread is not None:
             review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
-        finished, busy = sessions.drain(timeout=timeout)
-        if finished:
-            print("  ✅ All turns finished; no work was cut off.", flush=True)
-        else:
-            print(f"  ⚠️ Still busy after drain timeout: {', '.join(busy)}", flush=True)
         runtime.stop()
 
     previous_int = signal.signal(signal.SIGINT, shutdown)
@@ -1551,7 +1584,7 @@ def _run_gateway_loop(only: list[str] | None) -> int:
             if not alive:
                 break
             if screen is not None:
-                screen.set_state("RUNNING", "Adapter threads alive: " + ", ".join(alive))
+                screen.set_state("RUNNING", _gateway_activity_detail(alive, runtime_state.STATE.snapshot(), enabled=runtime_state.STATE.enabled))
             time.sleep(0.5)
     except KeyboardInterrupt:
         shutdown()
@@ -1567,6 +1600,7 @@ def _run_gateway_loop(only: list[str] | None) -> int:
             review_thread.join(timeout=3)
         durable_worker.stop()
         cron.stop()
+        runtime_state.stop_dashboard(sessions)
         runtime.stop(timeout=1)
     return 0
 

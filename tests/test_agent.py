@@ -842,7 +842,7 @@ class AgentLoopTests(unittest.TestCase):
         journal = self.agent_module.config.DATA_DIR / 'learning' / agent.executor.memory.key / 'Self-Enhancement.md'
         self.assertTrue(journal.is_file())
         self.assertIn('Umbrella', journal.read_text(encoding='utf-8'))
-        self.assertNotIn('Self-Enhancement.md', summary)
+        self.assertIn('Self-Enhancement.md', summary)
         from zeline.skillforge import ForgeStore
         self.assertGreaterEqual(len(ForgeStore().proposals()), 1)
         skills_module = importlib.import_module("zeline.skills")
@@ -908,7 +908,8 @@ class AgentLoopTests(unittest.TestCase):
         # The chat stays compact; the Markdown projection retains the full fact.
         path = self.agent_module.config.DATA_DIR / 'learning' / agent.executor.memory.key / 'Self-Refinement.md'
         self.assertTrue(path.is_file())
-        self.assertEqual(summary, '📗 Self-refinement review: Memory saved.')
+        key = agent.executor.memory.key
+        self.assertEqual(summary, f'📗 Self-refinement review: Saved memory to memories/{key}/MEMORY.md. Journal: learning/{key}/Self-Refinement.md.')
         self.assertIn(records[0]['text'], path.read_text(encoding='utf-8'))
         # And the store is restored to user-sourced writes afterwards, so a
         # normal turn on the same session does not keep tagging as reflection.
@@ -970,7 +971,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("\n\n", summary)
         self.assertIn("(inactive)", summary)
         self.assertIn("Correction saved (tool success linked)", summary)
-        self.assertIn("Memory saved.", summary)
+        self.assertIn("Saved memory (file path unavailable).", summary)
         self.assertNotIn("task benefit verified", summary)
         self.assertNotIn("verified successful retry", summary)
         self.assertNotIn("Skill score:", summary)

@@ -2494,11 +2494,11 @@ class ZelinePublicCoreTests(unittest.TestCase):
         telegram = importlib.import_module("zeline.gateways.telegram")
         self.assertEqual(telegram._tool_progress_text("load_skill", {"name": "test-driven-development"}), "📚 Loading skill: test-driven-development")
         shell = telegram._tool_progress_text("run_shell", {"command": "python -m unittest tests.test_agent"})
-        self.assertEqual(shell, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">python -m unittest tests.test_agent</code></pre>")
+        self.assertEqual(shell, "💻 Executing command… <pre><code class=\"language-shell\">python -m unittest tests.test_agent</code></pre>")
         self.assertIn("python -m unittest tests.test_agent", shell)
         self.assertTrue(shell.endswith("</pre>"))
-        # header kartu sekarang 🔴🟡🟢 (permintaan operator), bukan label Shell.
-        self.assertNotIn("language-shell", shell)
+        # Standard Shell header restored by operator request.
+        self.assertIn("language-shell", shell)
         self.assertNotIn("Zeline Terminal", shell)
         self.assertNotIn("📺", shell)
         # read_file dgn offset/limit → tampilkan rentang baris; basename saja (bukan path lokal).
@@ -2525,12 +2525,12 @@ class ZelinePublicCoreTests(unittest.TestCase):
         # varian kartu besar di Telegram ada dua: `<code class="language-...">`
         # di dalam `<pre>`, dan isi yang melebihi satu baris.
         search = telegram._tool_progress_text("run_shell", {"command": "python -searching ftmo -v"})
-        self.assertEqual(search, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">python -searching ftmo -v</code></pre>")
+        self.assertEqual(search, "💻 Executing command… <pre><code class=\"language-shell\">python -searching ftmo -v</code></pre>")
         self.assertNotIn("Zeline Terminal", search)
         self.assertNotIn("📺", search)
         coding = telegram._tool_progress_text("run_shell", {"command": "pytest -q"})
-        self.assertEqual(coding, "💻 Executing command… <pre><code class=\"language-🔴🟡🟢\">pytest -q</code></pre>")
-        self.assertNotIn("language-shell", coding)
+        self.assertEqual(coding, "💻 Executing command… <pre><code class=\"language-shell\">pytest -q</code></pre>")
+        self.assertIn("language-shell", coding)
         self.assertNotIn("Zeline Terminal", coding)
         self.assertNotIn("📺", coding)
         # Command panjang / multiline diratakan jadi SATU baris pendek yang
@@ -2548,7 +2548,7 @@ class ZelinePublicCoreTests(unittest.TestCase):
         self.assertTrue(truncated.endswith(f"{telegram._TRUNCATION_MARK}</code></pre>"))
         self.assertNotIn("…", truncated.split("<pre>", 1)[1])
         self.assertNotIn("\n", truncated)
-        self.assertNotIn("language-shell", truncated)
+        self.assertIn("language-shell", truncated)
         # Isi mentah (setelah unescape) tidak melebihi batas preview + penanda,
         # jadi kartu tidak bisa tumbuh melewati satu baris.
         import html as _html

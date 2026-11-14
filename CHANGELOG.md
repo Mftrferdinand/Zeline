@@ -1,5 +1,33 @@
 # Changelog
 
+[0.4.7]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.7
+
+## [0.4.7] — 2026-11-14
+
+### Added
+- Canonical identity-scoped `MEMORY.md` and `USER.md` documents with guarded
+  legacy migration, atomic pair updates and verified file-backed memory receipts.
+  SQLite remains a rebuildable fact index and retrieval/evidence store.
+- Temporary `zeline_tools` bridge inside Python `execute_code` snippets for native
+  file, patch and shell tools, reusing executor policy, audit, checkpoints,
+  cancellation and budgets instead of creating a privileged executor.
+
+### Changed
+- Keep Telegram tool activity in one feed with actual code and command previews;
+  only exact reruns of the same tool arguments receive `(x2)` and `(xN)` badges.
+- Defer safe restart and update when an active gateway cannot be drained; do not
+  force-stop active work or replace installed code after a failed drain.
+- Align current runtime version, installers and installation documentation on
+  v0.4.7, retaining immutable asset links and Trusted Publishing (OIDC).
+
+### Fixed
+- Provider-wait recovery, progress watchdogs and stale-presence handling preserve
+  task ownership while distinguishing ongoing work from abandoned activity.
+- Reply-context continuity associates follow-ups with their originating task
+  and message instead of relying only on the newest conversation.
+- Refresh the runtime main-agent/subagent summary independently of opening the
+  Agents panel so the overview does not retain a stale summary.
+
 [0.4.6]: https://github.com/Mftrferdinand/Zeline/releases/tag/v0.4.6
 
 ## [0.4.6] — 2026-11-10

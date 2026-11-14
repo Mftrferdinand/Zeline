@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zeline"
-version = "0.4.6"
+version = "0.4.7"
 description = "Zeline — an open-source agentic AI framework by Zerolinear."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -67,7 +67,7 @@ include = ["zeline", "zeline.*"]
 exclude = ["tests*", "zeline.skills*", "zeline.skills.zeline-sat-solvers.assets.supplied*", "zeline.skills.zeline-sat-solvers.assets.adapted*"]
 
 [tool.setuptools.package-data]
-zeline = ["SOUL.md", "skills/*.md", "skills/**/*", "skills/zeline-agentid-watcher/assets/upstream/.gitignore", "zenith_tools/**/*.py"]
+zeline = ["SOUL.md", "skills/*.md", "skills/**/*", "skills/zeline-agentid-watcher/assets/upstream/.gitignore", "zenith_tools/**/*.py", "runtime_assets/*", "runtime_assets/**/*"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["*.pyc", "*.pyo", "__pycache__/*", "**/*.pyc", "**/*.pyo", "**/__pycache__/*", "skills/zeline-sat-solvers/assets/supplied/*", "skills/zeline-sat-solvers/assets/adapted/*"]

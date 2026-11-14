@@ -69,7 +69,8 @@ def _timeout_seconds() -> float:
         value = 180.0
     # Never outlive the turn budget: a question that expires after the turn is
     # already dead just produces a silent hang.
-    ceiling = max(30.0, float(getattr(config, "MAX_TURN_SECONDS", 360.0)) - 30.0)
+    budget = float(getattr(config, "MAX_TURN_SECONDS", 360.0))
+    ceiling = max(30.0, budget - 30.0) if budget > 0 else float("inf")
     return max(5.0, min(value, ceiling))
 
 

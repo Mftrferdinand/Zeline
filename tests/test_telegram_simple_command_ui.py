@@ -11,11 +11,11 @@ class TestTelegramSimpleCommandUI:
     def test_command_menu_matches_the_compact_setup_template(self):
         commands = self.telegram._telegram_commands()
         assert [item["command"] for item in commands] == [
-            "model", "status", "repository", "deleterepository", "undo", "stats",
+            "model", "status", "runtime", "repository", "deleterepository", "undo", "stats",
             "events", "lessons", "self", "skillforge", "stop", "new", "version", "update",
         ]
         assert [item["description"] for item in commands] == [
-            "Switch model", "View runtime status", "Project registry", "Delete a registry entry",
+            "Switch model", "View runtime status", "Open local runtime dashboard", "Project registry", "Delete a registry entry",
             "Checkpoints", "View token usage", "Recent file/skill/memory",
             "View self-learning", "Three-self evidence status", "Review skill", "Stop the active turn",
             "Start a new session", "Show version", "Update version",

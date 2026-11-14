@@ -362,6 +362,7 @@ class ForgeStore:
                     raise ValueError('Active skill read-back did not match candidate')
                 return {'version': 1, 'kind': 'skill', 'state': 'updated', 'success': True,
                         'action': 'patch', 'name': name, 'file_path': target_name,
+                        'target_file': written_target.relative_to(config.DATA_DIR).as_posix(),
                         'replacements': 1,
                         'record_id': revision_of(target_name + '\0' + candidate) if reference else revision_of(candidate),
                         'revision': revision_of(candidate), 'summary': 'Verified file write',

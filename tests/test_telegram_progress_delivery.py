@@ -26,25 +26,26 @@ class ProgressDeliveryTests(AskUserBase):
         self.assertNotIn("Working", sends[0].kwargs["text"], "untracked message cannot be cleaned later")
         self.assertNotIn("/stop", sends[0].kwargs["text"])
 
-    def test_failed_detach_does_not_abandon_the_old_working_message(self):
-        calls = []
-
-        def api(_api, method, **payload):
-            calls.append((method, payload))
-            if method == "sendMessage":
-                return {"ok": True, "result": {"message_id": 7}}
+    def test_failed_cleanup_keeps_different_tools_in_the_known_feed(self):
+        calls=[];sends=[]
+        def api(_api,method,**payload):
+            calls.append((method,payload))
+            if method=='sendMessage':
+                sends.append(payload);return {'ok':True,'result':{'message_id':len(sends)+6}}
             return None
-
-        with mock.patch.object(self.telegram, "_api_call", side_effect=api):
-            live = self.telegram._LiveStatus("fixture", 1)
-            live.turn_started -= 160
-            live.add("🌐 Opening webpage: example.org")
-            live.detach()  # Failed cleanup: it may still contain Working.
-            live.add("📖 Reading webpage content")
-            live.turn_started -= 6
+        with mock.patch.object(self.telegram,'_api_call',side_effect=api):
+            live=self.telegram._LiveStatus('fixture',1);live._terminal_retries=False
+            live.turn_started-=160
+            live.add('🌐 Opening webpage: example.org')
+            live.detach()
+            live.add('📖 Reading webpage content')
             live.tick()
-        self.assertEqual(sum(m == "sendMessage" for m, _ in calls), 1)
-        self.assertEqual(live.message_id, 7)
+        self.assertEqual(len(sends),1)
+        self.assertEqual(live.message_id,7)
+        self.assertIn('Opening',live._feed_text())
+        self.assertIn('Reading',live._feed_text())
+        retired=[p for m,p in calls if m=='editMessageText' and p['message_id']==7 and 'Working' not in p['text']]
+        self.assertTrue(retired,'Old bubble was never targeted for terminal cleanup')
 
     def test_failed_waiting_edit_is_retried_without_creating_a_new_message(self):
         calls = []

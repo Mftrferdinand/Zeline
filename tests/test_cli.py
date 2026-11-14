@@ -258,7 +258,7 @@ class ZelineCliTests(unittest.TestCase):
         self.assertTrue(saved["agent"]["persist_sessions"])
 
     def test_agent_setup_rejects_out_of_range_numbers_without_writing(self):
-        with mock.patch.object(self.cli, "_ask", side_effect=["Zeline", "0", "900", "50", "y", "y"]):
+        with mock.patch.object(self.cli, "_ask", side_effect=["Zeline", "-1", "900", "50", "y", "y"]):
             result = self.invoke(["setup", "agent"], expected_status=2)
         self.assertIn("max tool rounds", result.lower())
         self.assertFalse((self.home / "config.json").exists())
@@ -473,10 +473,11 @@ class ZelineCliTests(unittest.TestCase):
         self.assertIn("alpha", saved["providers"])
         self.assertIn("beta", saved["providers"])
 
-    def test_gateway_restart_stops_then_starts_with_same_selection(self):
-        with mock.patch.object(self.cli.gateway_service, "stop", return_value=(True, "stopped")) as stop, mock.patch.object(self.cli.gateway_service, "start", return_value=(True, "started")) as start, mock.patch.object(self.cli.gateway_service, "wait_until_connected", return_value=(True, ["telegram: connected"])):
+    def test_gateway_restart_drains_then_starts_with_same_selection(self):
+        with mock.patch.object(self.cli.gateway_service, "drain_then_stop", return_value=(True, "drained")) as drain, mock.patch.object(self.cli.gateway_service, "stop") as stop, mock.patch.object(self.cli.gateway_service, "start", return_value=(True, "started")) as start, mock.patch.object(self.cli.gateway_service, "wait_until_connected", return_value=(True, ["telegram: connected"])):
             result = self.invoke(["gateway", "restart", "--only", "telegram"])
-        stop.assert_called_once()
+        drain.assert_called_once()
+        stop.assert_not_called()
         start.assert_called_once_with(only=["telegram"])
         self.assertIn("started", result)
         self.assertIn("connected", result.lower())

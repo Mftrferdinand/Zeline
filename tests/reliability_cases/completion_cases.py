@@ -46,6 +46,149 @@ class CompletionTests(unittest.TestCase):
             result = subprocess.run([PYTHON, '-B', '-c', PRELUDE+'\n'+body], cwd=home, env=env, capture_output=True, text=True, timeout=12)
             self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 
+    def test_empty_nonstream_response_recovers_without_replaying_tools(self):
+        self.run_case('''
+a.last_turn_complete = True
+a.messages += [{'role':'assistant','content':'','tool_calls':[{'id':'done','type':'function','function':{'name':'read_file','arguments':'{}'}}]}, {'role':'tool','tool_call_id':'done','content':'VERIFIED_RESULT'}]
+before = json.loads(json.dumps(a.messages))
+calls = []
+def request(*args, **kwargs):
+    calls.append(kwargs['json'])
+    text = None if len(calls) == 1 else 'Verified final answer'
+    return Response({'choices':[{'message':{'role':'assistant','content':text},'finish_reason':'stop'}]})
+agent.requests.post = request
+answer = a._run_turn()
+assert answer == 'Verified final answer', answer
+assert len(calls) == 2, calls
+assert a.messages[:-1] == before, a.messages
+assert a.last_turn_complete is True
+assert all('VERIFIED_RESULT' in str(p['messages']) for p in calls)
+''')
+
+    def test_empty_response_exhaustion_is_incomplete_and_checkpointed(self):
+        self.run_case('''
+a.last_turn_complete = True
+checkpoints = []
+a._checkpoint = lambda: checkpoints.append(json.loads(json.dumps(a.messages)))
+for empty in (None, '', '   '):
+    a.messages = [{'role':'system','content':'test'}, {'role':'tool','tool_call_id':'done','content':'VERIFIED_RESULT'}]
+    before = json.loads(json.dumps(a.messages))
+    calls = []
+    def request(*args, **kwargs):
+        calls.append(kwargs['json'])
+        return Response({'choices':[{'message':{'role':'assistant','content':empty,'reasoning_content':'PRIVATE_REASONING'},'finish_reason':'stop'}]})
+    agent.requests.post = request
+    answer = a._run_turn()
+    assert len(calls) == 3, len(calls)
+    assert a.last_turn_complete is False
+    assert 'Task not complete' in answer, answer
+    assert 'PRIVATE_REASONING' not in str(a.messages)
+    assert a.messages[:-1] == before
+    assert checkpoints[-1] == a.messages
+''')
+
+    def test_empty_summary_is_not_marked_complete(self):
+        self.run_case('''
+a.last_turn_complete = True
+a._checkpoint = lambda: None
+calls = []
+def request(*args, **kwargs):
+    calls.append(kwargs['json'])
+    return Response({'choices':[{'message':{'role':'assistant','content':None},'finish_reason':'stop'}]})
+agent.requests.post = request
+answer = a._force_final_answer(None)
+assert a.last_turn_complete is False, answer
+assert 'Task not complete' in answer, answer
+assert len(calls) == 3, len(calls)
+assert all('tools' not in p for p in calls)
+assert a.messages[-1]['content'] == answer
+''')
+
+    def test_refusal_is_visible_without_retry(self):
+        self.run_case('''
+a.last_turn_complete = True
+a._checkpoint = lambda: None
+calls = []
+def request(*args, **kwargs):
+    calls.append(True)
+    return Response({'choices':[{'message':{'role':'assistant','content':None,'refusal':'Provider declined this request.'},'finish_reason':'stop'}]})
+agent.requests.post = request
+answer = a._run_turn()
+assert answer == 'Provider declined this request.', answer
+assert len(calls) == 1, calls
+assert a.last_turn_complete is False
+''')
+
+    def test_empty_stop_does_not_promote_truncated_draft_to_complete(self):
+        self.run_case('''
+a.last_turn_complete = True
+a._checkpoint = lambda: None
+calls = []
+def request(*args, **kwargs):
+    calls.append(kwargs['json'])
+    text, reason = ('unfinished draft', 'length') if len(calls) == 1 else (None, 'stop')
+    return Response({'choices':[{'message':{'role':'assistant','content':text},'finish_reason':reason}]})
+agent.requests.post = request
+answer = a._run_turn()
+assert a.last_turn_complete is False, answer
+assert 'Task not complete' in answer, answer
+assert len(calls) == 4, calls
+assert all('unfinished draft' in str(p['messages']) for p in calls[1:]), calls
+''')
+
+    def test_stop_during_empty_recovery_prevents_another_request(self):
+        self.run_case('''
+calls = []
+def request(*args, **kwargs):
+    calls.append(True)
+    return Response({'choices':[{'message':{'role':'assistant','content':''},'finish_reason':'stop'}]})
+agent.requests.post = request
+answer = a._run_turn(should_stop=lambda: bool(a._turn_completion_context))
+assert answer == agent.CANCELLED_REPLY, answer
+assert len(calls) == 1, calls
+''')
+
+    def test_summary_recovers_empty_without_enabling_tools(self):
+        self.run_case('''
+a.last_turn_complete = True
+a._checkpoint = lambda: None
+calls = []
+def request(*args, **kwargs):
+    calls.append(kwargs['json'])
+    return Response({'choices':[{'message':{'role':'assistant','content':'' if len(calls)==1 else 'Verified summary'},'finish_reason':'stop'}]})
+agent.requests.post = request
+answer = a._force_final_answer(None)
+assert answer == 'Verified summary', answer
+assert len(calls) == 2
+assert a.last_turn_complete is True
+assert all('tools' not in p for p in calls)
+''')
+
+    def test_summary_transport_failure_is_incomplete(self):
+        self.run_case('''
+a.last_turn_complete = True
+a._call_llm = lambda **kw: (_ for _ in ()).throw(agent.ZelineError('offline transport failure'))
+answer = a._force_final_answer(None)
+assert a.last_turn_complete is False, answer
+assert 'Task not complete' in answer, answer
+''')
+
+    def test_content_filter_is_not_retried_or_marked_complete(self):
+        self.run_case('''
+a._checkpoint = lambda: None
+for method in (lambda: a._run_turn(), lambda: a._force_final_answer(None)):
+    a.last_turn_complete = True
+    calls = []
+    def request(*args, **kwargs):
+        calls.append(True)
+        return Response({'choices':[{'message':{'role':'assistant','content':None},'finish_reason':'content_filter'}]})
+    agent.requests.post = request
+    answer = method()
+    assert a.last_turn_complete is False, answer
+    assert 'filtered' in answer, answer
+    assert len(calls) == 1, calls
+''')
+
     def test_nonstream_finish_metadata(self):
         self.run_case('''
 post({'choices':[{'message':{'role':'assistant','content':'partial','reasoning_content':'SECRET'},'finish_reason':'length'}]})

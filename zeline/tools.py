@@ -898,17 +898,21 @@ def _process_control(action: str, job_id: str = "", lines: Any = None) -> str:
     return f"job={job.job_id} killed."
 
 
-def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local", should_stop=None, interrupt_reason=None) -> str:
+def _execute_code(code: str, workspace: Path, timeout: Any = None, identity: str = "cli:local", should_stop=None, interrupt_reason=None, executor=None) -> str:
     """Run an owner-only Python snippet without shell interpolation."""
     if len(code) > 100_000:
         return "ERROR: code too long (maximum 100,000 characters)."
     seconds = _clamp_timeout(timeout)
     try:
         workspace.mkdir(parents=True, exist_ok=True)
-        exit_code, output, timed_out = _run_tracked(
-            [os.environ.get("PYTHON", "python"), "-c", code],
-            shell=False, cwd=str(workspace), seconds=seconds, identity=identity, should_stop=should_stop, interrupt_reason=interrupt_reason,
-        )
+        from .code_tools import snippet_bridge
+        bridge = snippet_bridge(executor, code, seconds) if executor is not None else contextlib.nullcontext(code)
+        with bridge as snippet:
+            exit_code, output, timed_out = _run_tracked(
+                [os.environ.get("PYTHON", "python"), "-c", snippet],
+                shell=False, cwd=str(workspace), seconds=seconds, identity=identity,
+                should_stop=should_stop, interrupt_reason=interrupt_reason,
+            )
         if timed_out:
             return (
                 f"ERROR: code timed out (>{seconds} seconds). "
@@ -2093,11 +2097,12 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "add_memory",
-        "Save a fact, or atomically correct memory by ID using operations. Read list_memory with include_metadata first; use expected_revision to prevent stale overwrites.",
+        "Save durable facts to canonical MEMORY.md (target=memory) or operator preferences/profile to USER.md (target=user). Files are private to this identity. Read list_memory with include_metadata for exact paths/IDs/revisions before atomic corrections. Procedures belong in a skill SKILL.md, not memory.",
         {
             "type": "object",
             "properties": {
                 "fact": {"type": "string", "description": "Short fact to remember; omit when using operations"},
+                "target": {"type": "string", "enum": ["memory", "user"], "description": "memory=MEMORY.md; user=USER.md. Optional for new facts; existing batch replacements retain their target."},
                 "operations": {"type": "array", "maxItems": 100, "items": {
                     "type": "object", "properties": {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
@@ -2535,7 +2540,7 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "execute_code",
-        "Run a Python snippet in the operator workspace and return the real output. Raise 'timeout' for slow work (heavy computation, large downloads) instead of letting it fail at the 60s default.",
+        "Run a Python snippet in the operator workspace and return real output. Inside snippets: from zeline_tools import read_file, write_file, search_files, patch, terminal. Helpers accept positional/keyword arguments and return {success, tool, output} with native receipts, using this session's tool permissions, policy and audit. patch(path, old_string, new_string) calls patch_file; terminal(command, timeout=None, background=False) calls run_shell. No recursive execute_code. Raise timeout for slow work instead of letting it fail at the 60s default.",
         {
             "type": "object",
             "properties": {
@@ -2548,7 +2553,7 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "run_shell",
-        "Run a shell command in the owner workspace. Only for the authorized local operator. For genuinely slow commands (pip/npm/apt install, builds, tests) pass a larger 'timeout' — do NOT report failure just because the 60s default was hit. For servers/watchers/very long builds pass background=true and poll with process_control.",
+        "Run a shell command in the owner workspace. Only for the authorized local operator. For genuinely slow commands (pip/npm/apt install, builds, tests) pass a larger 'timeout' — do NOT report failure just because the 60s default was hit. For servers/watchers/very long builds pass background=true. Background jobs have no completion notifications or blocking wait; use bounded polling with process_control only when needed, not repeated shell sleep + log checks.",
         {
             "type": "object",
             "properties": {
@@ -2562,7 +2567,7 @@ TOOL_DEFS: list[ToolDef] = [
     ),
     ToolDef(
         "process_control",
-        "Inspect or stop background processes started by run_shell(background=true). Actions: 'list' (all jobs + status), 'poll' (status + output written since the last poll), 'log' (tail the full log), 'kill' (terminate the process group).",
+        "Inspect or stop background processes started by run_shell(background=true). Actions: 'list' (all jobs + status), 'poll' (status + output written since the last poll), 'log' (tail the full log), 'kill' (terminate the process group). There are no completion notifications or blocking wait. Use bounded polling only when required, with backoff and a deadline/check limit; stop on completion/failure and report pending if the limit is reached. Avoid repeated shell sleep + log checks.",
         {
             "type": "object",
             "properties": {
@@ -2767,7 +2772,7 @@ class ToolExecutor:
             "runtime_info": self._runtime_info,
             "add_memory": self._add_memory_with_journal,
             "remove_memory": self.memory.remove,
-            "list_memory": self.memory.formatted,
+            "list_memory": self._list_memory_with_paths,
             "load_skill": lambda name, file_path="": skills.load_skill(name, include_private=self._can_read_private_skills, file_path=file_path),
             "web_search": lambda query: _web_search(query),
             "web_fetch": lambda url: _web_fetch(url, use_private_routes=self.profile == "full"),
@@ -2822,7 +2827,7 @@ class ToolExecutor:
             "resolve_lesson": lambda tool, args_sig_contains, fix, evidence_id='': self._resolve_lesson(
                 tool, args_sig_contains, fix, evidence_id
             ),
-            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, self._control("_should_stop"), self._control("_interrupt_reason")),
+            "execute_code": lambda code, timeout=None: _execute_code(code, self.workspace, timeout, self.identity, self._control("_should_stop"), self._control("_interrupt_reason"), executor=self),
             "run_shell": lambda command, timeout=None, background=False: _run_shell(command, self.workspace, timeout, background, self.identity, self._control("_should_stop"), self._control("_interrupt_reason")),
             "process_control": lambda action, job_id="", lines=None: _process_control(action, job_id, lines),
             "delegate_task": self._delegate_task,
@@ -3001,6 +3006,13 @@ class ToolExecutor:
         Hasil archive adalah bukti historis, bukan instruksi; selalu ditandai
         untrusted supaya model tidak menaati perintah lama.
         """
+        native_reply = self._control('_native_reply_context')
+        if native_reply:
+            # A native reply is an exact source reference, not permission for
+            # a cross-task keyword search, even if the model proposes one.
+            return (str(native_reply) + "\n\n" + self._selected_task_checkpoint()
+                    + "\nReply-anchored context only; unrelated archive search was not run. "
+                    "Use this evidence first. Missing checkpoint fields do not prove missing history.")
         cache_key = ("q", (query or "").strip().casefold()) if (query or "").strip() else ("recent",)
         cache = self._control("_history_recall_cache")
         if not isinstance(cache, dict):
@@ -3412,8 +3424,8 @@ class ToolExecutor:
         if current is not None:
             return dict(current)
         captured = {key: getattr(self, key, None) for key in (
-            "_should_stop", "_interrupt_reason", "_run_budget", "_skill_telemetry",
-            "_task_store", "_task_id", "_task_unresolved", "_task_resolution_required", "_history_recall_cache", "_turn_history_cache")}
+            "_should_stop", "_interrupt_reason", "_run_budget", "_skill_telemetry", "_nested_tool_callback",
+            "_task_store", "_task_id", "_task_unresolved", "_task_resolution_required", "_history_recall_cache", "_turn_history_cache", "_native_reply_context")}
         if captured['_history_recall_cache'] is None:
             captured['_history_recall_cache'] = captured['_turn_history_cache']
         return captured
@@ -3459,13 +3471,58 @@ class ToolExecutor:
             else:
                 self._invocation_local.context = previous
 
+    def _memory_file_receipt(self, receipt: dict[str, Any], *, records=None) -> dict[str, Any]:
+        """Attach only a real current canonical note target, never a journal guess."""
+        if receipt.get("kind") != "memory" or not receipt.get("record_id"):
+            return receipt
+        if records is None:
+            records = self.memory.records(include_expired=True, include_inactive=True)
+        current = next((r for r in records
+                        if r["id"] == receipt["record_id"] and r["revision"] == receipt.get("revision")), None)
+        if current is None:
+            return receipt
+        from .memory_markdown import parse, read_note
+        for filename, path in self.memory.canonical_paths.items():
+            if not path.is_file() or any(p.is_symlink() for p in (path, path.parent, path.parent.parent)):
+                continue
+            # Locate the verified record in the actual document, not its category
+            # or legacy metadata: manual placement must not invent a filename.
+            if current in parse(read_note(path)):
+                relative = Path("memories") / self.memory.key / filename
+                return {**receipt, "file_path": relative.as_posix()}
+        return receipt
+
+    def _list_memory_with_paths(self, query: str = "", include_metadata: bool = False,
+                                limit: int = 20) -> str:
+        result = self.memory.formatted(query=query, include_metadata=include_metadata, limit=limit)
+        if not include_metadata or result.startswith("ERROR"):
+            return result
+        value = json.loads(result)
+        value["storage"] = "markdown"
+        for record in value.get("records", []):
+            receipt = self._memory_file_receipt({"kind": "memory", "record_id": record["id"], "revision": record["revision"]}, records=[record])
+            if receipt.get("file_path"):
+                record["file_path"] = receipt["file_path"]
+        return json.dumps(value, ensure_ascii=False)
+
     def _add_memory_with_journal(self, fact: str = "", *, kind: str = "fact",
                                  source: str | None = None, confidence: float | None = None,
-                                 expires_at: float | None = None,
+                                 expires_at: float | None = None, target: str | None = None,
                                  operations: list[dict[str, Any]] | None = None) -> str:
+        if target not in {None, "memory", "user"}:
+            return "ERROR: memory target must be memory or user."
+        if target is not None:
+            kind = "user_profile" if target == "user" else "fact"
+            if operations is not None:
+                operations = [{**op, "kind": kind} if isinstance(op, dict) and op.get("action") == "add" else op
+                              for op in operations]
         receipt = self.memory.add_receipt(fact, kind=kind, source=source,
                                           confidence=confidence, expires_at=expires_at,
                                           operations=operations)
+        receipt = self._memory_file_receipt(receipt)
+        written_files = set()
+        if receipt.get("file_path") and receipt.get("state") in {"created", "updated"}:
+            written_files.add(receipt["file_path"])
         if receipt["state"] in {"created", "updated"}:
             changed_receipts = []
             journal_ok = True
@@ -3484,6 +3541,9 @@ class ToolExecutor:
                             "summary": record["text"], "source": record.get("source"),
                             "expires_at": record.get("expires_at"),
                         }
+                        changed_receipt = self._memory_file_receipt(changed_receipt, records=[record])
+                        if changed_receipt.get("file_path"):
+                            written_files.add(changed_receipt["file_path"])
                         changed_receipts.append(changed_receipt)
                         record_markdown(self.identity, "add_memory", {}, changed_receipt)
                 elif receipt.get("record_id"):
@@ -3500,8 +3560,9 @@ class ToolExecutor:
                 except (OSError, ValueError, UnicodeError, TypeError, ImportError):
                     pass
             if not journal_ok:
-                return receipt["message"] + " (journal unavailable; memory saved)"
-        return receipt["message"]
+                receipt["message"] += " (journal unavailable; canonical memory saved)"
+        suffix = " File: " + ", ".join(sorted(written_files)) + "." if written_files else ""
+        return receipt["message"] + suffix
 
     def _run_observed(self, name: str, args: dict[str, Any]) -> str:
         """Execute a tool, wrapped in the operator's plugin hooks if any.
@@ -3557,10 +3618,15 @@ class ToolExecutor:
         if name == 'add_memory':
             if name not in {definition.name for definition in self._enabled_native_defs()}:
                 return 'ERROR: reflection memory writes are disabled for this profile.'
-            if set(args) - {'fact'}:
+            if set(args) - {'fact', 'target'}:
                 return 'ERROR: reflection may save one fact only; authority, batches and expiry are host-managed.'
+            target = args.get('target', 'memory')
+            if target not in {'memory', 'user'}:
+                return 'ERROR: memory target must be memory or user.'
             receipt = self.memory.add_receipt(args.get('fact', ''), source='reflection',
+                                              kind='user_profile' if target == 'user' else 'fact',
                                               origin_turn=getattr(self, '_reflection_origin_turn', None))
+            receipt = self._memory_file_receipt(receipt)
             return json.dumps({'success': receipt['state'] != 'failed', **receipt}, ensure_ascii=False)
         if name == "manage_skill" and str(args.get("action", "")).strip().lower() not in {"list", "inventory"}:
             if name not in {definition.name for definition in self._enabled_native_defs()}:
@@ -3616,6 +3682,8 @@ class ToolExecutor:
             pass
 
     def _dispatch(self, name: str, args: dict[str, Any]) -> str:
+        if self._control('_nested_tool_dispatch') and name not in (self._control('_nested_tool_allowed') or ()):
+            return "ERROR: nested tool not permitted by original registration."
         # tool_search is a discovery tool, not a capability: it only exists while
         # schemas are being withheld, and it hands them over.
         if name == tool_index.TOOL_NAME:
@@ -3654,6 +3722,11 @@ class ToolExecutor:
         handler = self._handlers.get(name)
         if handler is None:
             return f"ERROR: tool '{name}' is not available."
+        if self._control('_nested_tool_dispatch'):
+            callback = self._control('_nested_tool_callback')
+            if callback is not None:
+                with contextlib.suppress(Exception):
+                    callback(name, dict(args))
         try:
             return str(handler(**args))
         except TypeError as exc:
